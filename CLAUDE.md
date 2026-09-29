@@ -4,7 +4,7 @@ This project is built on EmDash, Cloudflare's open-source CMS: full-stack TypeSc
 
 ## Source of truth: docs, not memory
 
-EmDash is pre-1.0 and changes fast, so model training data is stale or missing. Before writing EmDash-specific code:
+EmDash is on 1.x but still changes fast (additive releases every few days), so model training data is stale or missing. Before writing EmDash-specific code:
 
 1. Query the Docs MCP (`emdash-docs` → `search_docs`), or
 2. Read llms.txt: https://docs.emdashcms.com/llms.txt (index of all doc pages), then fetch the specific page.
