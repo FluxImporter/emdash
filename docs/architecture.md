@@ -1,6 +1,8 @@
 # EmDash Import: proposed architecture
 
-Status: proposal, awaiting approval before any plugin code is written. Grounded in
+Status: approved with changes. Decisions and milestone order are in
+[the roadmap spec](./superpowers/specs/2026-10-07-flux-import-roadmap-design.md), which wins where the two differ.
+Grounded in
 [docs/phase-0-report.md](./phase-0-report.md).
 
 ## Decision: a native plugin plus a small trusted-route integration, in one npm package
@@ -37,7 +39,7 @@ The job engine is one module used by both halves. Plugin routes and the cron hoo
 through `withEmDashRuntime()` so the writer always has the runtime; the trusted upload route is
 the only place that needs the raw `Request`.
 
-Names are placeholders: plugin id `emdash-import`, package `emdash-import`, permission checks on
+Plugin id `flux-import` (package name chosen in Milestone 8), permission checks on
 the existing `import:execute` permission (admin) for runs and `schema:manage` for schema changes.
 
 ### Why not alternatives
@@ -125,8 +127,8 @@ same batch twice. A batch is idempotent: it re-reads the cursor, processes recor
 4. **Write.** Per record, in order: resolve key; load current entry with `_rev`; compute the plan;
    dry-run stops here. Otherwise media first (download, dedupe, rewrite URLs in Portable Text),
    then taxonomy terms (paths split on `>`, created top-down), then `handleContentCreate` or
-   `handleContentUpdate` with `_rev` and `actor`, honoring entry locks (a locked entry is logged
-   and skipped, never overridden), then publish, schedule or leave as draft through the
+   `handleContentUpdate` with `_rev` and `actor`. `handleContentUpdate` does not enforce entry
+   locks, so the writer checks lock state first and skips and logs locked entries, then publish, schedule or leave as draft through the
    revision-fenced `ctx.content` actions.
 5. **Finish.** Delete-missing pass (trash, unpublish or permanent delete per option), summary,
    CSV log export from `records`.
@@ -159,11 +161,7 @@ upload through the trusted route, a plugin job, batch writes with `_rev`, the ki
 with no duplicates, and `pnpm typecheck && pnpm lint && pnpm test` plus a `pnpm dev` run against a
 local site.
 
-## Open points for your decision
+## Open points
 
-1. Package and plugin names (`emdash-import` is a placeholder).
-2. Byline creation for authors that do not exist yet: create them interactively in the Preview
-   step through the bylines REST API (recommended for v1), or add a trusted route that writes
-   bylines server-side so scheduled runs can create them too.
-3. Whether the external "run next batch" trigger should be a PAT-authenticated trusted route
-   only, or also accept a per-job secret URL.
+Resolved in the roadmap spec: plugin id `flux-import`; bylines map to existing records only in
+v1; the external trigger is the `jobs/next` plugin route with a PAT, with no per-job secret URLs.
