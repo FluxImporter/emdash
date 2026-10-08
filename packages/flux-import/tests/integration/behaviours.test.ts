@@ -177,21 +177,24 @@ describe("uploads", () => {
 		expect((await staged()).length).toBe(before);
 	});
 
-	it("stages an empty body as a 0-byte upload (pins current behaviour)", async () => {
-		// The route's EMPTY_BODY branch never fires over HTTP: the request carries a body stream even
-		// for Content-Length: 0, so an empty upload is staged and answered 201. Reported as a
-		// concern; this test pins the behaviour so a fix shows up here.
+	it("rejects an empty body, declared or streamed, and stores nothing", async () => {
 		const before = (await staged()).length;
-		const res = await client.uploadRaw("");
-		expect(res.status).toBe(201);
-		expect(await res.json()).toMatchObject({
-			success: true,
-			data: {
-				bytes: 0,
-				sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-			},
-		});
-		expect((await staged()).length).toBe(before + 1);
+		const declared = await client.uploadRaw("");
+		expect(declared.status).toBe(400);
+		expect(await declared.json()).toMatchObject({ error: { code: "EMPTY_BODY" } });
+		// No Content-Length: the route stages the stream, counts 0 bytes and deletes the file.
+		const streamed = await fetch(
+			`${client.baseUrl}/_emdash/api/flux-import/uploads?filename=empty.csv`,
+			{
+				method: "POST",
+				headers: { Authorization: `Bearer ${client.token}` },
+				body: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
+				duplex: "half",
+			} as RequestInit,
+		);
+		expect(streamed.status).toBe(400);
+		expect(await streamed.json()).toMatchObject({ error: { code: "EMPTY_BODY" } });
+		expect((await staged()).length).toBe(before);
 	});
 });
 

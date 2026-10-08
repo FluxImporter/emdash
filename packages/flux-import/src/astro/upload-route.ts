@@ -1,6 +1,6 @@
 import { hasPermission } from "@emdash-cms/auth";
 import type { APIRoute } from "astro";
-import { stageUpload, UploadTooLargeError } from "../emdash/uploads.js";
+import { EmDashUploads, stageUpload, UploadTooLargeError } from "../emdash/uploads.js";
 import { maxSourceBytes } from "./config.js";
 
 export const prerender = false;
@@ -37,11 +37,19 @@ export const POST: APIRoute = async ({ request, locals, url }) => {
 		void request.body?.cancel().catch(() => {});
 		return apiError("TOO_LARGE", `The upload exceeds the limit of ${limit} bytes`, 413);
 	}
-	if (!request.body) return apiError("EMPTY_BODY", "The request has no body", 400);
+	// Over HTTP an empty request still carries a body stream, so a declared or counted length of 0
+	// is what catches an empty upload.
+	if (!request.body || declared === 0) {
+		return apiError("EMPTY_BODY", "The request has no body", 400);
+	}
 
 	try {
 		const length = declared !== undefined && Number.isSafeInteger(declared) ? declared : undefined;
 		const staged = await stageUpload(storage, request.body, limit, length);
+		if (staged.bytes === 0) {
+			await new EmDashUploads(storage).delete(staged.uploadId);
+			return apiError("EMPTY_BODY", "The request has no body", 400);
+		}
 		return Response.json({ success: true, data: staged }, { status: 201 });
 	} catch (e) {
 		if (e instanceof UploadTooLargeError) return apiError("TOO_LARGE", e.message, 413);
