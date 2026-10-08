@@ -36,8 +36,13 @@ export class MemoryKv<T> implements KvCollection<T> {
 		const row = this.rows.get(id);
 		return row ? structuredClone(row.value) : null;
 	}
+	private write(id: string, data: T): number {
+		const revision = ++this.rev;
+		this.rows.set(id, { value: structuredClone(data), revision });
+		return revision;
+	}
 	async put(id: string, data: T) {
-		this.rows.set(id, { value: structuredClone(data), revision: ++this.rev });
+		this.write(id, data);
 	}
 	async getVersioned(id: string) {
 		const row = this.rows.get(id);
@@ -47,8 +52,7 @@ export class MemoryKv<T> implements KvCollection<T> {
 		const row = this.rows.get(id);
 		const current = row ? String(row.revision) : null;
 		if (current !== expected) return { applied: false as const };
-		await this.put(id, data);
-		return { applied: true as const, revision: String(this.rev) };
+		return { applied: true as const, revision: String(this.write(id, data)) };
 	}
 	async query(opts: {
 		where?: Where;
