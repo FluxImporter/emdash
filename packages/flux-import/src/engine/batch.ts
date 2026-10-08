@@ -299,9 +299,41 @@ async function importPass(deps: EngineDeps, job: Job, started: number): Promise<
 	return { done: true };
 }
 
-/** Replaced in Task 8. */
-async function retryPass(_deps: EngineDeps, _job: Job, _started: number): Promise<Outcome> {
-	return { done: true };
+const RETRY_PAGE = 100; // plugin storage query limit
+
+async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promise<CsvRecord> {
+	const stream = await deps.source.open(job.uploadId, row.start);
+	for await (const rec of readCsvRecords(stream, {
+		headers: job.headers,
+		startOffset: row.start,
+		startSeq: row.seq,
+	})) {
+		return rec;
+	}
+	throw new CsvSyntaxError("No record at the saved offset", row.start);
+}
+
+async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
+	let processed = 0;
+	for (;;) {
+		const page = await deps.records.query({
+			where: {
+				jobId: job.id,
+				status: { in: ["failed", "conflict"] },
+				seq: { gte: job.retryFromSeq },
+			},
+			orderBy: { seq: "asc" },
+			limit: Math.min(job.batchSize, RETRY_PAGE),
+		});
+		if (page.items.length === 0) return { done: true };
+		for (const { data: row } of page.items) {
+			await processRecord(deps, job, await readOneRecord(deps, job, row), { retry: true });
+			job.retryFromSeq = row.seq + 1;
+			processed++;
+			if (processed >= job.batchSize || deps.now() - started >= job.budgetMs)
+				return { done: false };
+		}
+	}
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LEASE_GRACE_MS, runBatch } from "../../src/engine/batch.js";
-import { createJob } from "../../src/engine/jobs.js";
+import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
 import type { Job } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
@@ -312,5 +312,55 @@ describe("runBatch", () => {
 		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
 		await runToEnd(deps, second.id);
 		expect(deps.content.entries.get("e1")!.pendingPublish).toBe(true);
+	});
+});
+
+describe("retry pass", () => {
+	it("retries failed and conflicting records only", async () => {
+		const { deps, job } = await setup(csv(4));
+		let flaky = true;
+		deps.content.failWrite = (data) =>
+			flaky && data.flux_source_id === "S2"
+				? new ContentWriteError("timeout", "Upstream timeout")
+				: null;
+		expect((await runToEnd(deps, job.id)).counters).toMatchObject({ created: 3, failed: 1 });
+		flaky = false;
+		const callsBefore = deps.content.calls.length;
+		await transitionJob(deps, job.id, "retry");
+		const retried = await runToEnd(deps, job.id);
+		expect(retried).toMatchObject({
+			status: "completed",
+			phase: "import",
+			counters: { created: 4, failed: 0 },
+		});
+		expect(deps.content.calls.slice(callsBefore)).toEqual(["create:e4", "publish:e4"]);
+		expect(deps.content.entries.size).toBe(4);
+	});
+
+	it("leaves records that fail again as failed and still completes", async () => {
+		const { deps, job } = await setup("sku,Name,Price\nS0,Ok,1\nS1,Bad,abc\n");
+		await runToEnd(deps, job.id);
+		await transitionJob(deps, job.id, "retry");
+		const retried = await runToEnd(deps, job.id);
+		expect(retried).toMatchObject({ status: "completed", counters: { created: 1, failed: 1 } });
+	});
+
+	it("retries in bounded batches", async () => {
+		const { deps, job } = await setup(csv(5), { batchSize: 2 });
+		let flaky = true;
+		deps.content.failWrite = () =>
+			flaky ? new ContentWriteError("timeout", "Upstream timeout") : null;
+		expect((await runToEnd(deps, job.id)).counters.failed).toBe(5);
+		flaky = false;
+		await transitionJob(deps, job.id, "retry");
+		const first = await runBatch(deps, job.id, "driver");
+		expect(first).toMatchObject({
+			status: "running",
+			phase: "retry",
+			retryFromSeq: 2,
+			counters: { created: 2, failed: 3 },
+		});
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 5, failed: 0 });
 	});
 });
