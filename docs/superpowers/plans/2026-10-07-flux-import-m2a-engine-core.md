@@ -1247,8 +1247,8 @@ The engine never imports `emdash`. It depends on three ports. `KvCollection<T>` 
 - Consumes: `readCsvHeader`, `CsvSyntaxError` (Task 3); `templateSchema`, `checkTemplate`, `Template`, `SchemaField`, `FieldValue`, `ValueErrorCode` (Task 4); `Change`, `PlanAction` (Task 5).
 - Produces (from `src/engine/ports.ts`):
   - `interface KvCollection<T>` with `get`, `put`, `getVersioned`, `compareAndSet`, `query` (signatures below)
-  - `interface EntrySnapshot { id: string; rev: string; slug: string | null; data: Record<string, unknown> }`
-  - `type UpdateResult = { ok: true } | { ok: false; reason: "conflict" | "locked" }`
+  - `interface EntrySnapshot { id: string; rev: string; slug: string | null; data: Record<string, unknown>; pendingPublish: boolean }` (`pendingPublish`: the entry has a draft that is not live, or was never published)
+  - `type WriteResult = { ok: true; rev: string } | { ok: false; reason: "conflict" | "locked" }`
   - `interface ContentPort` (methods below)
   - `interface SourcePort { open(uploadId: string, offset: number): Promise<ReadableStream<Uint8Array>> }`
   - `class ContentWriteError extends Error { readonly code: string }` — adapters throw it for a record-level write failure (validation, constraint). Any other error aborts the batch.
@@ -1256,7 +1256,7 @@ The engine never imports `emdash`. It depends on three ports. `KvCollection<T>` 
 - Produces (from `src/engine/types.ts`): `JobStatus`, `Counters`, `Job`, `RecordStatus`, `RecordError`, `RecordRow`, `LinkRow`, `EngineDeps`, `recordKey(jobId, seq)`, `linkKey(collection, locale, sourceKey)`, `emptyCounters()`, `BATCH_SIZE_DEFAULT = 50`, `BATCH_SIZE_MAX = 500`, `BUDGET_MS_DEFAULT = 4000`.
 - Produces (from `src/engine/jobs.ts`):
   - `class JobError extends Error { readonly code: JobErrorCode; readonly details: string[] }` with `JobErrorCode = "not_found" | "invalid_transition" | "invalid_template" | "invalid_options" | "invalid_source"`
-  - `createJob(deps: EngineDeps, input: CreateJobInput): Promise<Job>` where `CreateJobInput = { uploadId: string; template: unknown; schemaFields: SchemaField[]; dryRun?: boolean; batchSize?: number; budgetMs?: number }`
+  - `createJob(deps: EngineDeps, input: CreateJobInput): Promise<Job>` where `CreateJobInput = { uploadId: string; template: unknown; schemaFields: SchemaField[]; dryRun?: boolean; publish?: boolean; batchSize?: number; budgetMs?: number }` (`publish` defaults to `true`)
   - `transitionJob(deps: EngineDeps, id: string, action: "pause" | "resume" | "cancel" | "retry"): Promise<Job>`
   - `updateJob(deps: EngineDeps, id: string, change: (job: Job) => Job): Promise<Job>` (compare-and-set loop behind `transitionJob`; M2b routes reuse it)
 - Produces (from `tests/unit/fakes.ts`): `MemoryKv<T>`, `FakeContent`, `FakeSource`, `makeDeps(opts?)`.
@@ -1300,9 +1300,11 @@ export interface EntrySnapshot {
 	rev: string;
 	slug: string | null;
 	data: Record<string, unknown>;
+	/** The entry has a draft that is not live, or has never been published. */
+	pendingPublish: boolean;
 }
 
-export type UpdateResult = { ok: true } | { ok: false; reason: "conflict" | "locked" };
+export type WriteResult = { ok: true; rev: string } | { ok: false; reason: "conflict" | "locked" };
 
 export interface ContentPort {
 	get(collection: string, locale: string, id: string): Promise<EntrySnapshot | null>;
@@ -1313,7 +1315,8 @@ export interface ContentPort {
 		locale: string;
 		slug?: string;
 		data: Record<string, FieldValue>;
-	}): Promise<{ id: string }>;
+	}): Promise<{ id: string; rev: string }>;
+	/** On revisioned collections this stages a draft; `publish` makes it live. */
 	update(input: {
 		collection: string;
 		locale: string;
@@ -1321,7 +1324,8 @@ export interface ContentPort {
 		rev: string;
 		slug?: string;
 		data: Record<string, FieldValue>;
-	}): Promise<UpdateResult>;
+	}): Promise<WriteResult>;
+	publish(input: { collection: string; locale: string; id: string; rev: string }): Promise<WriteResult>;
 	ensureSourceIdField(collection: string): Promise<void>;
 }
 
@@ -1376,6 +1380,7 @@ export interface Job {
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
+	publish: boolean;
 	batchSize: number;
 	budgetMs: number;
 	headers: string[];
@@ -1462,8 +1467,8 @@ import {
 	type KvCollection,
 	SourceMissingError,
 	type SourcePort,
-	type UpdateResult,
 	type Where,
+	type WriteResult,
 } from "../../src/engine/ports.js";
 import type { EngineDeps, Job, LinkRow, RecordRow } from "../../src/engine/types.js";
 import { streamOf } from "./helpers.js";
@@ -1525,7 +1530,15 @@ export class MemoryKv<T> implements KvCollection<T> {
 	}
 }
 
-type StoredEntry = { id: string; locale: string; collection: string; slug: string | null; data: Record<string, unknown>; rev: number };
+type StoredEntry = {
+	id: string;
+	locale: string;
+	collection: string;
+	slug: string | null;
+	data: Record<string, unknown>;
+	rev: number;
+	pendingPublish: boolean;
+};
 
 export class FakeContent implements ContentPort {
 	readonly entries = new Map<string, StoredEntry>();
@@ -1534,12 +1547,20 @@ export class FakeContent implements ContentPort {
 	sourceFieldEnsured = false;
 	/** Called after a successful create or update; throw from it to simulate a crash. */
 	afterWrite: (id: string) => void = () => {};
-	/** Return a ContentWriteError to make the next write for this slug/key fail. */
+	/** Return a ContentWriteError to make a write with this data fail. */
 	failWrite: (data: Record<string, unknown>) => ContentWriteError | null = () => null;
+	/** Return a reason to make publishing this entry fail. */
+	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
 	private next = 0;
 
 	private snap(e: StoredEntry): EntrySnapshot {
-		return { id: e.id, rev: String(e.rev), slug: e.slug, data: structuredClone(e.data) };
+		return {
+			id: e.id,
+			rev: String(e.rev),
+			slug: e.slug,
+			data: structuredClone(e.data),
+			pendingPublish: e.pendingPublish,
+		};
 	}
 	async get(collection: string, locale: string, id: string) {
 		const e = this.entries.get(id);
@@ -1568,12 +1589,13 @@ export class FakeContent implements ContentPort {
 			slug: input.slug ?? null,
 			data: structuredClone(input.data),
 			rev: 1,
+			pendingPublish: true,
 		});
 		this.calls.push(`create:${id}`);
 		this.afterWrite(id);
-		return { id };
+		return { id, rev: "1" };
 	}
-	async update(input: { id: string; rev: string; slug?: string; data: Record<string, unknown> }): Promise<UpdateResult> {
+	async update(input: { id: string; rev: string; slug?: string; data: Record<string, unknown> }): Promise<WriteResult> {
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
@@ -1583,9 +1605,22 @@ export class FakeContent implements ContentPort {
 		e.data = { ...e.data, ...structuredClone(input.data) };
 		if (input.slug !== undefined) e.slug = input.slug;
 		e.rev++;
+		e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
-		return { ok: true };
+		return { ok: true, rev: String(e.rev) };
+	}
+	async publish(input: { id: string; rev: string }): Promise<WriteResult> {
+		const e = this.entries.get(input.id);
+		if (!e) throw new ContentWriteError("not_found", "Entry not found");
+		const forced = this.failPublish(e.id);
+		if (forced) return { ok: false, reason: forced };
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
+		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
+		e.pendingPublish = false;
+		e.rev++;
+		this.calls.push(`publish:${e.id}`);
+		return { ok: true, rev: String(e.rev) };
 	}
 	async ensureSourceIdField() {
 		this.sourceFieldEnsured = true;
@@ -1652,6 +1687,7 @@ describe("createJob", () => {
 		expect(job).toMatchObject({
 			status: "created",
 			dryRun: false,
+			publish: true,
 			batchSize: 50,
 			budgetMs: 4000,
 			headers: ["sku", "Name"],
@@ -1662,6 +1698,12 @@ describe("createJob", () => {
 			error: null,
 		});
 		expect(await deps.jobs.get(job.id)).toEqual(job);
+	});
+
+	it("keeps publish: false when asked", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, { uploadId: "u1", template, schemaFields, publish: false });
+		expect(job.publish).toBe(false);
 	});
 
 	it.each([
@@ -1788,6 +1830,7 @@ export type CreateJobInput = {
 	template: unknown;
 	schemaFields: SchemaField[];
 	dryRun?: boolean;
+	publish?: boolean;
 	batchSize?: number;
 	budgetMs?: number;
 };
@@ -1838,6 +1881,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		uploadId: input.uploadId,
 		template,
 		dryRun: input.dryRun ?? false,
+		publish: input.publish ?? true,
 		batchSize,
 		budgetMs,
 		headers: header.headers,
@@ -1931,10 +1975,10 @@ Behaviour:
   2. Column-count mismatch → `failed` with code `column_count`. Template errors → `failed` with the value errors.
   3. Resolve the entry: `links` by `linkKey`, then `content.get`. If none and the existing row is `writing`, call `content.findBySourceId` and repair the link.
   4. Plan with `planRecord`. Dry-run: save `planned` with `action` and `changes`; count `create`/`update`/`unchanged` into `created`/`updated`/`unchanged`.
-  5. Recovered after a crash (row was `writing` and the entry exists) and the plan is `unchanged` → the earlier write landed: status `created` if the row had no `entryId`, else `updated`.
-  6. Otherwise `unchanged` → `unchanged`. Entry locked (`content.isLocked`) → `locked`.
-  7. Save the row as `writing` (with `entryId` when updating), then `create` (data plus `flux_source_id`) and save the link, or `update` with the entry's `rev`. `{ ok: false, reason }` → that reason as status. `ContentWriteError` → `failed` with its code. Any other error propagates and aborts the batch; the lease then expires and the next driver resumes.
-  8. Save the final row and bump the counter for its status.
+  5. Plan `unchanged` and the row shows an unfinished write of this job (row status `writing`, or an error code starting with `publish_`) → the earlier write landed. With `job.publish` and `entry.pendingPublish`, publish it now with `entry.rev`. Status `created` if the row's `action` is `create`, else `updated`. This repairs a crash between write and publish, and is how a retry publishes after a failed publish.
+  6. Otherwise `unchanged` → `unchanged` (an entry with someone else's pending draft is never published). Entry locked (`content.isLocked`) → `locked`.
+  7. Save the row as `writing` with `action` (and `entryId` when updating), then `create` (data plus `flux_source_id`) and save the link, or `update` with the entry's `rev`. A write `{ ok: false, reason }` → that reason as status. With `job.publish`, call `content.publish` with the `rev` the write returned; a publish `{ ok: false, reason }` → that reason as status with error code `publish_conflict` or `publish_locked`. `ContentWriteError` → `failed` with its code. Any other error propagates and aborts the batch; the lease then expires and the next driver resumes.
+  8. Save the final row (with `action`) and bump the counter for its status.
 - **Release:** compare-and-set loop. If the stored lease is no longer ours, do not overwrite cursor or counters; return the stored job. If the stored status is still `running`, it becomes `completed` (end of input), `failed` (job-level error) or stays `running`. A `paused` or `cancelled` status set during the batch is kept. Clear the lease.
 - **Job-level failures:** `SourceMissingError` → `failed` with code `source_missing`; `CsvSyntaxError` → `failed` with code `csv_syntax` and the byte offset in the message.
 
@@ -2127,6 +2171,42 @@ describe("runBatch", () => {
 		expect(new Set(keys).size).toBe(10);
 		expect(done.counters).toMatchObject({ created: 10, unchanged: 0 });
 		expect(deps.content.calls).toContain("find:S3");
+		expect(deps.content.calls).toContain("publish:e4");
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+	});
+
+	it("publishes every entry it writes by default", async () => {
+		const { deps, job } = await setup(csv(3));
+		await runToEnd(deps, job.id);
+		expect(deps.content.calls.filter((c) => c.startsWith("publish:")).length).toBe(3);
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+	});
+
+	it("leaves entries as drafts when publish is false", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(3));
+		const job = await createJob(deps, { uploadId: "u1", template, schemaFields, publish: false });
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters.created).toBe(3);
+		expect(deps.content.calls.some((c) => c.startsWith("publish:"))).toBe(false);
+		expect([...deps.content.entries.values()].every((e) => e.pendingPublish)).toBe(true);
+	});
+
+	it("records a failed publish and never publishes someone else's draft", async () => {
+		const { deps, job } = await setup(csv(2));
+		deps.content.failPublish = (id) => (id === "e2" ? "conflict" : null);
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 1, conflict: 1 });
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 1 } })).items[0]!.data;
+		expect(row).toMatchObject({ status: "conflict", action: "create", errors: [{ code: "publish_conflict" }] });
+
+		// An editor starts a draft on e1; a later import with identical data must not publish it.
+		deps.content.failPublish = () => null;
+		deps.content.entries.get("e1")!.pendingPublish = true;
+		deps.source.add("u2", csv(2));
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		await runToEnd(deps, second.id);
+		expect(deps.content.entries.get("e1")!.pendingPublish).toBe(true);
 	});
 });
 ```
@@ -2141,7 +2221,7 @@ Expected: FAIL, cannot resolve `../../src/engine/batch.js`.
 `packages/flux-import/src/engine/batch.ts`:
 ```ts
 import { type CsvRecord, CsvSyntaxError, readCsvRecords } from "../sources/csv.js";
-import { dateFieldsOf, planRecord } from "./diff.js";
+import { dateFieldsOf, type PlanAction, planRecord } from "./diff.js";
 import { JobError } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
 import { applyTemplate, SOURCE_ID_FIELD } from "./template.js";
@@ -2280,17 +2360,43 @@ async function decide(
 	const plan = planRecord(entry, mapped.value, dateFieldsOf(job.template));
 	const entryId = entry?.id ?? null;
 	if (job.dryRun) return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
+
+	const publishFailed = (reason: "conflict" | "locked", id: string, action: PlanAction | undefined): RowFields => ({
+		status: reason,
+		sourceKey,
+		entryId: id,
+		...(action ? { action } : {}),
+		errors: [
+			{
+				code: `publish_${reason}`,
+				message:
+					reason === "locked"
+						? "Saved as a draft: the entry is locked, so it was not published"
+						: "Saved as a draft: the entry changed before it could be published",
+			},
+		],
+	});
+
 	if (entry && plan.action === "unchanged") {
-		if (recovering) return { status: existing?.entryId ? "updated" : "created", sourceKey, entryId };
-		return { status: "unchanged", sourceKey, entryId };
+		const unfinished =
+			existing !== null &&
+			(existing.status === "writing" || (existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
+		if (!unfinished) return { status: "unchanged", sourceKey, entryId };
+		const action = existing?.action;
+		if (job.publish && entry.pendingPublish) {
+			const published = await deps.content.publish({ collection, locale, id: entry.id, rev: entry.rev });
+			if (!published.ok) return publishFailed(published.reason, entry.id, action);
+		}
+		return { status: action === "create" ? "created" : "updated", sourceKey, entryId, ...(action ? { action } : {}) };
 	}
 	if (entry && (await deps.content.isLocked(collection, locale, entry.id))) {
 		return { status: "locked", sourceKey, entryId };
 	}
 
-	await save({ status: "writing", sourceKey, entryId });
+	await save({ status: "writing", sourceKey, entryId, action: plan.action });
 	const slugPart = slug === undefined ? {} : { slug };
 	try {
+		let written: { id: string; rev: string };
 		if (!entry) {
 			const created = await deps.content.create({
 				collection,
@@ -2299,14 +2405,26 @@ async function decide(
 				data: { ...data, [SOURCE_ID_FIELD]: sourceKey },
 			});
 			await deps.links.put(linkId, { collection, locale, sourceKey, entryId: created.id });
-			return { status: "created", sourceKey, entryId: created.id, changes: plan.changes };
+			written = created;
+		} else {
+			const result = await deps.content.update({ collection, locale, id: entry.id, rev: entry.rev, ...slugPart, data });
+			if (!result.ok) return { status: result.reason, sourceKey, entryId, action: plan.action };
+			written = { id: entry.id, rev: result.rev };
 		}
-		const result = await deps.content.update({ collection, locale, id: entry.id, rev: entry.rev, ...slugPart, data });
-		if (!result.ok) return { status: result.reason, sourceKey, entryId };
-		return { status: "updated", sourceKey, entryId, changes: plan.changes };
+		if (job.publish) {
+			const published = await deps.content.publish({ collection, locale, id: written.id, rev: written.rev });
+			if (!published.ok) return publishFailed(published.reason, written.id, plan.action);
+		}
+		return {
+			status: plan.action === "create" ? "created" : "updated",
+			sourceKey,
+			entryId: written.id,
+			action: plan.action,
+			changes: plan.changes,
+		};
 	} catch (e) {
 		if (e instanceof ContentWriteError) {
-			return { status: "failed", sourceKey, entryId, errors: [{ code: e.code, message: e.message }] };
+			return { status: "failed", sourceKey, entryId, action: plan.action, errors: [{ code: e.code, message: e.message }] };
 		}
 		throw e;
 	}
@@ -2396,7 +2514,7 @@ describe("retry pass", () => {
 		await transitionJob(deps, job.id, "retry");
 		const retried = await runToEnd(deps, job.id);
 		expect(retried).toMatchObject({ status: "completed", phase: "import", counters: { created: 4, failed: 0 } });
-		expect(deps.content.calls.slice(callsBefore)).toEqual(["create:e4"]);
+		expect(deps.content.calls.slice(callsBefore)).toEqual(["create:e4", "publish:e4"]);
 		expect(deps.content.entries.size).toBe(4);
 	});
 
@@ -2678,8 +2796,8 @@ git commit -m "Add per-record log export as spreadsheet-safe CSV"
 
 M2b is written from the Task 2 report and covers, in order:
 
-1. `ContentPort`, `SourcePort` and storage adapters over the real runtime (`withEmDashRuntime()`), mapping EmDash errors to `ContentWriteError` and `UpdateResult`.
+1. `ContentPort` (create, update, publish through `handleContent*`; `pendingPublish` from the entry's draft/live revision state; lock reads from `_emdash_entry_locks`; `flux_source_id` lookup via `handleContentList` `fieldFilters`; field creation with `indexed: true`), `SourcePort` (ranged `storage.download`, with `offset >= size` treated as end of input) and storage adapters, mapping EmDash errors to `ContentWriteError` and `WriteResult`. Align `@astrojs/react` so the workspace resolves one `emdash` copy.
 2. `definePlugin()`: storage collections and indexes for `jobs`, `records`, `links`; the plugin routes from the spec (`sources/sample`, `jobs/create`, `jobs/next`, `jobs/get`, `jobs/list`, `jobs/pause`, `jobs/resume`, `jobs/cancel`, `jobs/retry`, `jobs/records`, `jobs/log.csv`) with the permission the report settles on; the daily cleanup cron.
-3. `fluxImportRoutes()`: the streaming upload route with `maxSourceBytes`.
-4. Integration tests against `sites/dev`: 10-row, 10,000-row and malformed fixtures, lock skip, dry-run, and kill-and-resume on a real database; then the `workerd` run.
+3. `fluxImportRoutes()`: the upload route with `maxSourceBytes` and unguessable storage keys; staged files deleted when a job ends.
+4. Integration tests against `sites/dev` (dev-bypass PAT harness): 10-row, 10,000-row and malformed fixtures, lock skip, dry-run, publish on and off, and kill-and-resume on a real database; then `sites/dev-cf` for the `workerd` run.
 5. The Milestone 2 review run in `pnpm dev`, reported with results.
