@@ -11,16 +11,23 @@
 		"test": "vitest run"
 	},
 	"peerDependencies": {
+		"astro": ">=6.0.0",
 		"emdash": "^1.2.0"
 	},
 	"dependencies": {
+		"@emdash-cms/auth": "1.2.0",
+		"kysely": "^0.29.0",
 		"luxon": "^3.7.2",
-		"zod": "^4.1.0"
+		"zod": "4.5.4"
 	},
 	"devDependencies": {
+		"@astrojs/react": "^6.0.5",
 		"@types/luxon": "^3.7.0",
 		"@types/node": "^22.0.0",
+		"astro": "^7.3.2",
 		"emdash": "1.2.0",
+		"react": "19.2.4",
+		"react-dom": "19.2.4",
 		"vitest": "^4.1.0"
 	}
 }
