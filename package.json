@@ -1,0 +1,19 @@
+{
+	"name": "flux-import-workspace",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@10.18.0",
+	"engines": {
+		"node": ">=22.16"
+	},
+	"scripts": {
+		"typecheck": "pnpm -r --parallel typecheck",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"test": "pnpm --filter flux-import test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"typescript": "^5.9.0"
+	}
+}
