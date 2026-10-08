@@ -30,7 +30,13 @@ export interface ContentRuntime {
 	): Promise<HandlerResult>;
 	handleContentCreate(
 		collection: string,
-		body: { data: Record<string, unknown>; slug?: string; locale?: string; actor?: ActorInfo },
+		body: {
+			data: Record<string, unknown>;
+			slug?: string;
+			locale?: string;
+			authorId?: string;
+			actor?: ActorInfo;
+		},
 	): Promise<HandlerResult>;
 	handleContentUpdate(
 		collection: string,
@@ -160,6 +166,7 @@ export class EmDashContent implements ContentPort {
 		const result = await this.runtime.handleContentCreate(input.collection, {
 			data: input.data,
 			locale: input.locale,
+			authorId: this.actor.id,
 			actor: this.actor,
 			...(input.slug === undefined ? {} : { slug: input.slug }),
 		});

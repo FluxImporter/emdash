@@ -114,7 +114,13 @@ describe("EmDashContent", () => {
 		expect(runtime.calls[0]).toEqual([
 			"create",
 			"products",
-			{ data: { title: "A", flux_source_id: "S1" }, locale: "en", actor, slug: "a" },
+			{
+				data: { title: "A", flux_source_id: "S1" },
+				locale: "en",
+				authorId: "u1",
+				actor,
+				slug: "a",
+			},
 		]);
 		expect(await content.get("products", "en", "e1")).toMatchObject({ pendingPublish: true });
 
@@ -148,6 +154,27 @@ describe("EmDashContent", () => {
 			data: { title: "B" },
 			pendingPublish: true,
 		});
+	});
+
+	it("sets the importing user as author on create and never sends authorId on update", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.update({
+			collection: "products",
+			locale: "en",
+			id: "e1",
+			rev: "rev-1",
+			data: { title: "B" },
+		});
+		const [, , createBody] = runtime.calls[0] as [string, string, Record<string, unknown>];
+		const [, , , updateBody] = runtime.calls[1] as [
+			string,
+			string,
+			string,
+			Record<string, unknown>,
+		];
+		expect(createBody.authorId).toBe("u1");
+		expect(updateBody).not.toHaveProperty("authorId");
 	});
 
 	it("maps CONFLICT to a conflict result on update and publish", async () => {
