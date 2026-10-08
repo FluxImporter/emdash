@@ -2,6 +2,7 @@ import type { PluginDescriptor } from "emdash";
 import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "./meta.js";
 import { createPlugin, type FluxImportOptions } from "./plugin/definition.js";
 
+export { type FluxImportRoutesOptions, fluxImportRoutes } from "./astro/integration.js";
 export { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "./meta.js";
 export { createPlugin, type FluxImportOptions };
 
