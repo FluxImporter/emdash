@@ -106,6 +106,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		retryFromSeq: 0,
 		schemaReady: false,
 		error: null,
+		failures: 0,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -152,7 +153,7 @@ export function transitionJob(
 			case "pause":
 				return { ...job, status: "paused" };
 			case "resume":
-				return { ...job, status: "running", error: null };
+				return { ...job, status: "running", error: null, failures: 0 };
 			case "cancel":
 				return { ...job, status: "cancelled" };
 			case "retry":

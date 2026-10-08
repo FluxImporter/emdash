@@ -151,6 +151,8 @@ describe("runBatch", () => {
 			status: "failed",
 			error: { code: "csv_syntax" },
 			counters: { created: 1 },
+			// The cursor stays at the end of the last good record ("sku,Name,Price\nS0,Ok,1\n").
+			cursor: { offset: 23, seq: 1 },
 		});
 	});
 
@@ -307,15 +309,265 @@ describe("runBatch", () => {
 
 		// An editor starts a draft on e1; a later import with identical data must not publish it.
 		deps.content.failPublish = () => null;
-		deps.content.entries.get("e1")!.pendingPublish = true;
+		const e1 = deps.content.entries.get("e1")!;
+		e1.pendingPublish = true;
+		e1.rev++; // an editor's draft is a new revision
 		deps.source.add("u2", csv(2));
 		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
 		await runToEnd(deps, second.id);
 		expect(deps.content.entries.get("e1")!.pendingPublish).toBe(true);
 	});
+
+	it("does not overwrite or publish an editor's pending draft (pending_draft)", async () => {
+		const { deps, job } = await setup(csv(2));
+		await runToEnd(deps, job.id);
+		const e1 = deps.content.entries.get("e1")!;
+		e1.rev++;
+		e1.pendingPublish = true;
+		e1.data = { ...e1.data, title: "Editor title" };
+		const callsBefore = deps.content.calls.length;
+		deps.source.add(
+			"u2",
+			csv(2, () => "7"),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		const done = await runToEnd(deps, second.id);
+		expect(done.counters).toMatchObject({ conflict: 1, updated: 1 });
+		const row = (await deps.records.query({ where: { jobId: second.id, seq: 0 } })).items[0]!.data;
+		expect(row).toMatchObject({
+			status: "conflict",
+			errors: [{ code: "pending_draft" }],
+		});
+		const calls = deps.content.calls.slice(callsBefore);
+		expect(calls).not.toContain("update:e1");
+		expect(calls).not.toContain("publish:e1");
+		expect(calls).toEqual(["update:e2", "publish:e2"]);
+		expect(deps.content.entries.get("e1")).toMatchObject({
+			pendingPublish: true,
+			data: { title: "Editor title", price: 0 },
+		});
+	});
+
+	it("publishes its own drafts from a publish: false run when re-run with identical data", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(3));
+		const draftJob = await createJob(deps, {
+			uploadId: "u1",
+			template,
+			schemaFields,
+			publish: false,
+		});
+		await runToEnd(deps, draftJob.id);
+		expect([...deps.content.entries.values()].every((e) => e.pendingPublish)).toBe(true);
+		const second = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		const done = await runToEnd(deps, second.id);
+		expect(done.counters).toMatchObject({ updated: 3, unchanged: 0, conflict: 0 });
+		expect(deps.content.calls.filter((c) => c.startsWith("publish:")).length).toBe(3);
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+		const rows = await deps.records.query({ where: { jobId: second.id } });
+		expect(rows.items.every((r) => r.data.status === "updated" && r.data.action === "update")).toBe(
+			true,
+		);
+		const link = await deps.links.get("products:en:S0");
+		expect(link?.writtenRev).toBe(String(deps.content.entries.get("e1")!.rev));
+	});
+
+	it("explains conflict and locked rows from the write and the lock check", async () => {
+		const { deps, job } = await setup(csv(2));
+		await runToEnd(deps, job.id);
+		const [e0, e1] = [...deps.content.entries.values()];
+		deps.content.locked.add(e0!.id);
+		const realGet = deps.content.get.bind(deps.content);
+		deps.content.get = async (c, l, id) => {
+			const snap = await realGet(c, l, id);
+			return snap && id === e1!.id ? { ...snap, rev: "stale" } : snap;
+		};
+		deps.source.add(
+			"u2",
+			csv(2, () => "7"),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		await runToEnd(deps, second.id);
+		const rows = (
+			await deps.records.query({ where: { jobId: second.id }, orderBy: { seq: "asc" } })
+		).items.map((r) => r.data);
+		expect(rows).toMatchObject([
+			{
+				status: "locked",
+				errors: [{ code: "locked", message: "Not imported: the entry is being edited (locked)" }],
+			},
+			{
+				status: "conflict",
+				errors: [
+					{
+						code: "rev_conflict",
+						message: "Not imported: the entry changed since it was read; retry to re-apply",
+					},
+				],
+			},
+		]);
+	});
+
+	async function crashDuringUpdate(hook: "afterWrite" | "beforePublish") {
+		const ctx = await setup(csv(3));
+		await runToEnd(ctx.deps, ctx.job.id);
+		ctx.deps.source.add(
+			"u2",
+			csv(3, (i) => (i === 1 ? "99" : String(i))),
+		);
+		const second = await createJob(ctx.deps, { uploadId: "u2", template, schemaFields });
+		let crashOn: string | null = "e2";
+		ctx.deps.content[hook] = (id: string) => {
+			if (id === crashOn) {
+				crashOn = null;
+				throw new Error("process killed");
+			}
+		};
+		await expect(runBatch(ctx.deps, second.id, "first")).rejects.toThrow("process killed");
+		ctx.clock.t += ctx.job.budgetMs + LEASE_GRACE_MS + 1;
+		const done = await runToEnd(ctx.deps, second.id);
+		const row = (await ctx.deps.records.query({ where: { jobId: second.id, seq: 1 } })).items[0]!
+			.data;
+		return { ...ctx, done, row };
+	}
+
+	it("leaves an update unpublished when a crash hides the written revision", async () => {
+		const { deps, done, row } = await crashDuringUpdate("afterWrite");
+		expect(done.status).toBe("completed");
+		expect(done.counters).toMatchObject({ unchanged: 2, conflict: 1, updated: 0 });
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "publish_unverified" }] });
+		expect(deps.content.entries.size).toBe(3);
+		expect(deps.content.entries.get("e2")).toMatchObject({
+			pendingPublish: true,
+			data: { price: 99 },
+		});
+	});
+
+	it("publishes an update after a crash between the write and the publish", async () => {
+		const { deps, done, row } = await crashDuringUpdate("beforePublish");
+		expect(done.counters).toMatchObject({ unchanged: 2, updated: 1, conflict: 0 });
+		expect(row).toMatchObject({ status: "updated", action: "update" });
+		expect(deps.content.entries.size).toBe(3);
+		expect(deps.content.entries.get("e2")).toMatchObject({
+			pendingPublish: false,
+			data: { price: 99 },
+		});
+	});
+
+	it("fails the job after three unexpected errors without moving the cursor", async () => {
+		const { deps, clock, job } = await setup(csv(2));
+		deps.content.ensureSourceIdField = async () => {
+			throw new Error("database is down");
+		};
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			await expect(runBatch(deps, job.id, "driver")).rejects.toThrow("database is down");
+			const stored = (await deps.jobs.get(job.id))!;
+			expect(stored).toMatchObject({
+				failures: attempt,
+				error: { code: "internal", message: "database is down" },
+				cursor: job.cursor,
+				counters: job.counters,
+				status: attempt < 3 ? "running" : "failed",
+			});
+			if (attempt < 3) expect(stored.lease?.holder).toBe("driver");
+			else expect(stored.lease).toBeNull();
+			clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		}
+		expect((await runBatch(deps, job.id, "driver")).status).toBe("failed");
+		expect(deps.content.entries.size).toBe(0);
+	});
+
+	it("resets the failure count after a successful batch", async () => {
+		const { deps, clock, job } = await setup(csv(2));
+		let down = true;
+		deps.content.ensureSourceIdField = async () => {
+			if (down) throw new Error("database is down");
+		};
+		await expect(runBatch(deps, job.id, "driver")).rejects.toThrow("database is down");
+		down = false;
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		const done = await runToEnd(deps, job.id);
+		expect(done).toMatchObject({ status: "completed", failures: 0, counters: { created: 2 } });
+	});
+
+	it("fails only the record when a content lookup throws a ContentWriteError", async () => {
+		const { deps, job } = await setup(csv(3));
+		await runToEnd(deps, job.id);
+		const realGet = deps.content.get.bind(deps.content);
+		deps.content.get = async (c, l, id) => {
+			if (id === "e2") throw new ContentWriteError("ambiguous_source_id", "Two entries match");
+			return realGet(c, l, id);
+		};
+		deps.source.add(
+			"u2",
+			csv(3, () => "5"),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		const done = await runToEnd(deps, second.id);
+		expect(done).toMatchObject({ status: "completed", counters: { updated: 2, failed: 1 } });
+		const row = (await deps.records.query({ where: { jobId: second.id, seq: 1 } })).items[0]!.data;
+		expect(row).toMatchObject({ status: "failed", errors: [{ code: "ambiguous_source_id" }] });
+	});
+
+	it("fails only the record when the source-id lookup is ambiguous during crash repair", async () => {
+		const { deps, clock, job } = await setup(csv(5), { batchSize: 5 });
+		let crashOn: string | null = "e3";
+		deps.content.afterWrite = (id) => {
+			if (id === crashOn) {
+				crashOn = null;
+				throw new Error("process killed");
+			}
+		};
+		await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+		deps.content.findBySourceId = async () => {
+			throw new ContentWriteError("ambiguous_source_id", "Two entries match");
+		};
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		const done = await runToEnd(deps, job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 4, failed: 1 } });
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 2 } })).items[0]!.data;
+		expect(row).toMatchObject({ status: "failed", errors: [{ code: "ambiguous_source_id" }] });
+	});
 });
 
 describe("retry pass", () => {
+	it("publishes publish_locked drafts once unlocked and keeps still-locked records locked", async () => {
+		const { deps, job } = await setup(csv(3));
+		await runToEnd(deps, job.id);
+		deps.content.locked.add("e1");
+		deps.content.failPublish = (id) => (id === "e2" ? "locked" : null);
+		deps.source.add(
+			"u2",
+			csv(3, () => "8"),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		const first = await runToEnd(deps, second.id);
+		expect(first.counters).toMatchObject({ updated: 1, locked: 2 });
+		const lockedRow = (await deps.records.query({ where: { jobId: second.id, seq: 1 } })).items[0]!
+			.data;
+		expect(lockedRow).toMatchObject({ status: "locked", errors: [{ code: "publish_locked" }] });
+
+		deps.content.failPublish = () => null;
+		await transitionJob(deps, second.id, "retry");
+		const retried = await runToEnd(deps, second.id);
+		expect(retried.counters).toEqual({
+			created: 0,
+			updated: 2,
+			unchanged: 0,
+			locked: 1,
+			conflict: 0,
+			failed: 0,
+		});
+		const rows = (
+			await deps.records.query({ where: { jobId: second.id }, orderBy: { seq: "asc" } })
+		).items.map((r) => r.data.status);
+		expect(rows).toEqual(["locked", "updated", "updated"]);
+		expect(deps.content.entries.get("e2")).toMatchObject({
+			pendingPublish: false,
+			data: { price: 8 },
+		});
+		expect(deps.content.entries.get("e1")).toMatchObject({ data: { price: 0 } });
+	});
 	it("retries failed and conflicting records only", async () => {
 		const { deps, job } = await setup(csv(4));
 		let flaky = true;

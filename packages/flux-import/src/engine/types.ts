@@ -34,6 +34,8 @@ export interface Job {
 	retryFromSeq: number;
 	schemaReady: boolean;
 	error: { code: string; message: string } | null;
+	/** Consecutive batches that ended in an unexpected error; the job fails at three. */
+	failures: number;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -75,6 +77,11 @@ export interface LinkRow {
 	locale: string;
 	sourceKey: string;
 	entryId: string;
+	/**
+	 * The latest revision this importer produced for the entry (the publish's revision when it
+	 * published, else the write's). A pending draft at any other revision is not the importer's.
+	 */
+	writtenRev?: string;
 }
 
 export interface EngineDeps {

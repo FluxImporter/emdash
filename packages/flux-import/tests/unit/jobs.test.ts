@@ -33,6 +33,7 @@ describe("createJob", () => {
 			lease: null,
 			schemaReady: false,
 			error: null,
+			failures: 0,
 		});
 		expect(await deps.jobs.get(job.id)).toEqual(job);
 	});
@@ -122,9 +123,10 @@ describe("transitionJob", () => {
 			...job,
 			status: "failed",
 			error: { code: "source_missing", message: "gone" },
+			failures: 3,
 		});
 		const resumed = await transitionJob(deps, job.id, "resume");
-		expect(resumed).toMatchObject({ status: "running", error: null });
+		expect(resumed).toMatchObject({ status: "running", error: null, failures: 0 });
 	});
 
 	it("starts a retry pass only on a completed, non-dry-run job", async () => {

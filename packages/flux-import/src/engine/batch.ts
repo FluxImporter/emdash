@@ -1,13 +1,14 @@
 import { type CsvRecord, CsvSyntaxError, readCsvRecords } from "../sources/csv.js";
-import { dateFieldsOf, type PlanAction, planRecord } from "./diff.js";
-import { JobError } from "./jobs.js";
+import { dateFieldsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
+import { JobError, updateJob } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
-import { applyTemplate, SOURCE_ID_FIELD } from "./template.js";
+import { applyTemplate, type MappedRecord, SOURCE_ID_FIELD } from "./template.js";
 import {
 	type Counters,
 	type EngineDeps,
 	emptyCounters,
 	type Job,
+	type LinkRow,
 	linkKey,
 	type RecordRow,
 	recordKey,
@@ -78,6 +79,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
 			error: outcome.error ?? stored.error,
+			failures: 0,
 			lease: null,
 			updatedAt: iso(deps),
 		};
@@ -116,6 +118,75 @@ export async function processRecord(
 	if (counter) job.counters[counter]++;
 }
 
+/** What the write helpers need about the record being processed. */
+type RecordCtx = {
+	deps: EngineDeps;
+	job: Job;
+	sourceKey: string;
+	linkId: string;
+	save: (fields: RowFields) => Promise<void>;
+};
+
+const PENDING_DRAFT_MESSAGE =
+	"Not imported: the entry has an unpublished draft that this import did not write";
+const REV_CONFLICT_MESSAGE = "Not imported: the entry changed since it was read; retry to re-apply";
+const LOCKED_MESSAGE = "Not imported: the entry is being edited (locked)";
+
+function notImported(
+	status: "conflict" | "locked",
+	sourceKey: string,
+	entryId: string,
+	action: PlanAction,
+	code: string,
+	message: string,
+): RowFields {
+	return { status, sourceKey, entryId, action, errors: [{ code, message }] };
+}
+
+function publishFailed(
+	reason: "conflict" | "locked",
+	sourceKey: string,
+	id: string,
+	action: PlanAction | undefined,
+	writtenRev: string | undefined,
+): RowFields {
+	return {
+		status: reason,
+		sourceKey,
+		entryId: id,
+		...(action ? { action } : {}),
+		...(writtenRev === undefined ? {} : { writtenRev }),
+		errors: [
+			{
+				code: `publish_${reason}`,
+				message:
+					reason === "locked"
+						? "Saved as a draft: the entry is locked, so it was not published"
+						: "Saved as a draft: the entry changed before it could be published",
+			},
+		],
+	};
+}
+
+/** Saves the link with the latest revision this importer produced for the entry. */
+function putLink(ctx: RecordCtx, entryId: string, writtenRev: string): Promise<void> {
+	const { collection, locale } = ctx.job.template;
+	return ctx.deps.links.put(ctx.linkId, {
+		collection,
+		locale,
+		sourceKey: ctx.sourceKey,
+		entryId,
+		writtenRev,
+	});
+}
+
+async function publishRev(ctx: RecordCtx, id: string, rev: string) {
+	const { collection, locale } = ctx.job.template;
+	const published = await ctx.deps.content.publish({ collection, locale, id, rev });
+	if (published.ok) await putLink(ctx, id, published.rev);
+	return published;
+}
+
 async function decide(
 	deps: EngineDeps,
 	job: Job,
@@ -135,153 +206,173 @@ async function decide(
 	if (!mapped.ok)
 		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
 
-	const { key: sourceKey, slug, data } = mapped.value;
+	const { key: sourceKey } = mapped.value;
 	const { collection, locale } = job.template;
-	const linkId = linkKey(collection, locale, sourceKey);
-
-	let entry: EntrySnapshot | null = null;
-	const link = await deps.links.get(linkId);
-	if (link) entry = await deps.content.get(collection, locale, link.entryId);
-	const recovering = existing?.status === "writing";
-	if (!entry && recovering) {
-		entry = await deps.content.findBySourceId(collection, locale, sourceKey);
-		if (entry) await deps.links.put(linkId, { collection, locale, sourceKey, entryId: entry.id });
-	}
-
-	const plan = planRecord(entry, mapped.value, dateFieldsOf(job.template));
-	const entryId = entry?.id ?? null;
-	if (job.dryRun)
-		return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
-
-	const publishFailed = (
-		reason: "conflict" | "locked",
-		id: string,
-		action: PlanAction | undefined,
-		writtenRev: string | undefined,
-	): RowFields => ({
-		status: reason,
+	const ctx: RecordCtx = {
+		deps,
+		job,
 		sourceKey,
-		entryId: id,
-		...(action ? { action } : {}),
-		...(writtenRev === undefined ? {} : { writtenRev }),
-		errors: [
-			{
-				code: `publish_${reason}`,
-				message:
-					reason === "locked"
-						? "Saved as a draft: the entry is locked, so it was not published"
-						: "Saved as a draft: the entry changed before it could be published",
-			},
-		],
-	});
-
-	if (entry && plan.action === "unchanged") {
-		const unfinished =
-			existing !== null &&
-			(existing.status === "writing" ||
-				(existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
-		if (!unfinished) return { status: "unchanged", sourceKey, entryId };
-		const action = existing?.action;
-		const writtenRev = existing?.writtenRev;
-		if (job.publish && entry.pendingPublish) {
-			// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
-			if (writtenRev === undefined || entry.rev !== writtenRev) {
-				return {
-					status: "conflict",
-					sourceKey,
-					entryId,
-					...(action ? { action } : {}),
-					...(writtenRev === undefined ? {} : { writtenRev }),
-					errors: [
-						{
-							code: "publish_unverified",
-							message:
-								"Saved as a draft: the entry may have changed after the import wrote it, so it was not published",
-						},
-					],
-				};
+		linkId: linkKey(collection, locale, sourceKey),
+		save,
+	};
+	// Known so far, so that a ContentWriteError from any content call still reports it.
+	let entryId: string | null = null;
+	let action: PlanAction | undefined;
+	try {
+		let link = await deps.links.get(ctx.linkId);
+		let entry = link ? await deps.content.get(collection, locale, link.entryId) : null;
+		if (!entry && existing?.status === "writing") {
+			entry = await deps.content.findBySourceId(collection, locale, sourceKey);
+			if (entry) {
+				link = { collection, locale, sourceKey, entryId: entry.id };
+				await deps.links.put(ctx.linkId, link);
 			}
-			const published = await deps.content.publish({
-				collection,
-				locale,
-				id: entry.id,
-				rev: entry.rev,
-			});
-			if (!published.ok) return publishFailed(published.reason, entry.id, action, writtenRev);
 		}
+		entryId = entry?.id ?? null;
+		const plan = planRecord(entry, mapped.value, dateFieldsOf(job.template));
+		action = plan.action;
+		if (job.dryRun)
+			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
+		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
+		if (plan.action === "unchanged") return await finishUnchanged(ctx, entry, link, existing);
+		if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
+			const code = "pending_draft";
+			return notImported("conflict", sourceKey, entry.id, plan.action, code, PENDING_DRAFT_MESSAGE);
+		}
+		if (await deps.content.isLocked(collection, locale, entry.id)) {
+			return notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
+		}
+		return await writeRecord(ctx, entry, plan, mapped.value);
+	} catch (e) {
+		if (!(e instanceof ContentWriteError)) throw e;
 		return {
-			status: action === "create" ? "created" : "updated",
+			status: "failed",
 			sourceKey,
 			entryId,
 			...(action ? { action } : {}),
+			errors: [{ code: e.code, message: e.message }],
 		};
 	}
-	if (entry && (await deps.content.isLocked(collection, locale, entry.id))) {
-		return { status: "locked", sourceKey, entryId };
-	}
+}
 
-	await save({ status: "writing", sourceKey, entryId, action: plan.action });
-	const slugPart = slug === undefined ? {} : { slug };
-	try {
-		let written: { id: string; rev: string };
-		if (!entry) {
-			const created = await deps.content.create({
-				collection,
-				locale,
-				...slugPart,
-				data: { ...data, [SOURCE_ID_FIELD]: sourceKey },
-			});
-			await deps.links.put(linkId, { collection, locale, sourceKey, entryId: created.id });
-			written = created;
-		} else {
-			const result = await deps.content.update({
-				collection,
-				locale,
-				id: entry.id,
-				rev: entry.rev,
-				...slugPart,
-				data,
-			});
-			if (!result.ok) return { status: result.reason, sourceKey, entryId, action: plan.action };
-			written = { id: entry.id, rev: result.rev };
-		}
-		if (job.publish) {
-			// Record the revision we wrote, so crash repair publishes only that revision.
-			await save({
-				status: "writing",
-				sourceKey,
-				entryId: written.id,
-				action: plan.action,
-				writtenRev: written.rev,
-			});
-			const published = await deps.content.publish({
-				collection,
-				locale,
-				id: written.id,
-				rev: written.rev,
-			});
+/** The entry already holds the mapped data: finish an unfinished write or publish our own draft. */
+async function finishUnchanged(
+	ctx: RecordCtx,
+	entry: EntrySnapshot,
+	link: LinkRow | null,
+	existing: RecordRow | null,
+): Promise<RowFields> {
+	const { job, sourceKey } = ctx;
+	const entryId = entry.id;
+	const unfinished =
+		existing !== null &&
+		(existing.status === "writing" ||
+			(existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
+	if (!unfinished) {
+		// A pending draft at the revision this importer last produced is its own (an earlier
+		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
+		if (job.publish && entry.pendingPublish && link?.writtenRev === entry.rev) {
+			const published = await publishRev(ctx, entryId, entry.rev);
 			if (!published.ok)
-				return publishFailed(published.reason, written.id, plan.action, written.rev);
+				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
+			return { status: "updated", sourceKey, entryId, action: "update" };
 		}
-		return {
-			status: plan.action === "create" ? "created" : "updated",
+		return { status: "unchanged", sourceKey, entryId };
+	}
+	const action = existing?.action;
+	const writtenRev = existing?.writtenRev;
+	if (job.publish && entry.pendingPublish) {
+		// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
+		if (writtenRev === undefined || entry.rev !== writtenRev) {
+			return {
+				status: "conflict",
+				sourceKey,
+				entryId,
+				...(action ? { action } : {}),
+				...(writtenRev === undefined ? {} : { writtenRev }),
+				errors: [
+					{
+						code: "publish_unverified",
+						message:
+							"Saved as a draft: the entry may have changed after the import wrote it, so it was not published",
+					},
+				],
+			};
+		}
+		const published = await publishRev(ctx, entryId, entry.rev);
+		if (!published.ok)
+			return publishFailed(published.reason, sourceKey, entryId, action, writtenRev);
+	}
+	return {
+		status: action === "create" ? "created" : "updated",
+		sourceKey,
+		entryId,
+		...(action ? { action } : {}),
+	};
+}
+
+async function writeRecord(
+	ctx: RecordCtx,
+	entry: EntrySnapshot | null,
+	plan: RecordPlan,
+	mapped: MappedRecord,
+): Promise<RowFields> {
+	const { deps, job, sourceKey, save } = ctx;
+	const { collection, locale } = job.template;
+	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
+	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
+	let written: { id: string; rev: string };
+	if (!entry) {
+		written = await deps.content.create({
+			collection,
+			locale,
+			...slugPart,
+			data: { ...mapped.data, [SOURCE_ID_FIELD]: sourceKey },
+		});
+	} else {
+		const result = await deps.content.update({
+			collection,
+			locale,
+			id: entry.id,
+			rev: entry.rev,
+			...slugPart,
+			data: mapped.data,
+		});
+		if (!result.ok) {
+			return result.reason === "conflict"
+				? notImported(
+						"conflict",
+						sourceKey,
+						entry.id,
+						plan.action,
+						"rev_conflict",
+						REV_CONFLICT_MESSAGE,
+					)
+				: notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
+		}
+		written = { id: entry.id, rev: result.rev };
+	}
+	await putLink(ctx, written.id, written.rev);
+	if (job.publish) {
+		// Record the revision we wrote, so crash repair publishes only that revision.
+		await save({
+			status: "writing",
 			sourceKey,
 			entryId: written.id,
 			action: plan.action,
-			changes: plan.changes,
-		};
-	} catch (e) {
-		if (e instanceof ContentWriteError) {
-			return {
-				status: "failed",
-				sourceKey,
-				entryId,
-				action: plan.action,
-				errors: [{ code: e.code, message: e.message }],
-			};
-		}
-		throw e;
+			writtenRev: written.rev,
+		});
+		const published = await publishRev(ctx, written.id, written.rev);
+		if (!published.ok)
+			return publishFailed(published.reason, sourceKey, written.id, plan.action, written.rev);
 	}
+	return {
+		status: plan.action === "create" ? "created" : "updated",
+		sourceKey,
+		entryId: written.id,
+		action: plan.action,
+		changes: plan.changes,
+	};
 }
 
 async function importPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
@@ -340,7 +431,7 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 		const page = await deps.records.query({
 			where: {
 				jobId: job.id,
-				status: { in: ["failed", "conflict", "writing"] },
+				status: { in: ["failed", "conflict", "locked", "writing"] },
 				seq: { gte: job.retryFromSeq },
 			},
 			orderBy: { seq: "asc" },
@@ -389,8 +480,29 @@ export async function runBatch(deps: EngineDeps, jobId: string, holder: string):
 				error: { code: "csv_syntax", message: `${e.message} at byte ${e.offset}` },
 			};
 		} else {
+			await noteFailure(deps, job.id, holder, e).catch(() => {
+				// Keep the original error; the next driver retries as after a process death.
+			});
 			throw e;
 		}
 	}
 	return release(deps, job, holder, outcome);
+}
+
+const MAX_FAILURES = 3;
+
+/**
+ * Records an unexpected error on the stored job. Cursor, counters and lease stay as they were, so
+ * the next driver recovers exactly as after a process death; the third failure in a row fails
+ * the job and drops the lease.
+ */
+async function noteFailure(deps: EngineDeps, jobId: string, holder: string, e: unknown) {
+	const message = e instanceof Error ? e.message : String(e);
+	await updateJob(deps, jobId, (stored) => {
+		if (stored.lease?.holder !== holder) return stored;
+		const failures = stored.failures + 1;
+		const next: Job = { ...stored, error: { code: "internal", message }, failures };
+		if (failures < MAX_FAILURES) return next;
+		return { ...next, status: stored.status === "running" ? "failed" : stored.status, lease: null };
+	});
 }
