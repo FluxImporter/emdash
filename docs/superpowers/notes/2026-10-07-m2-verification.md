@@ -54,13 +54,35 @@ Two more observations from the same run:
 - The runtime method's own `body` type has no `createdAt` or `publishedAt`. `EmDashHandlers`
   declares both, and they are spread through to the core handler.
 
+**Publish (exercised).** `handleContentPublish(collection, id, { _rev?, actor?, publishedAt?, … })`
+is at `src/emdash-runtime.ts:4575`, and the core handler at `src/api/handlers/content.ts:2341`
+checks `_rev` as a precondition. Second probe run on `posts`, one chain per entry, all inside
+`withEmDashRuntime()`. The same sequence was run twice, once with a create `status` of `"draft"`
+and once with `"published"`, with identical results except for row 1:
+
+| Step | Result | SQLite `ec_posts` row afterwards |
+| --- | --- | --- |
+| 1. `handleContentCreate` | `_rev` v1 | draft: `status draft`; published: `status published`. Both: `published_at` NULL, `live_revision_id` NULL |
+| 2. `handleContentPublish` with the create `_rev` | `success`, `_rev` v2 | `status published`, `published_at` set, `live_revision_id` set, `title 'Pub v1'` |
+| 3. `handleContentUpdate` `{ title: 'Pub v2' }` with the step 2 `_rev` | `success`, `_rev` v3, `draftRevisionId` set | `title 'Pub v1'` (live unchanged), `draft_revision_id` set |
+| 4. `handleContentPublish` with the stale step 2 `_rev` | `{"code":"CONFLICT","message":"Revision precondition did not match"}` | unchanged |
+| 5. `handleContentPublish` with the update's `_rev` (step 3) | `success`, `_rev` v4 | `title 'Pub v2'`, `live_revision_id` = the step 3 draft id, `draft_revision_id` NULL |
+| 6. `handleContentGet` | `_rev` v4, `data.title 'Pub v2'` | |
+
+The `_rev` that a draft-staging update returns is accepted by publish. A stale `_rev` on publish
+fails with `CONFLICT` (a different message from update's, the same code).
+
 **Consequence for M2b:**
 
 - Type the writer port against `EmDashRuntime` from `emdash/middleware` and check `error.code`
-  (`CONFLICT` becomes the record status `conflict`).
-- An "update" of a revisioned collection only stages a draft. The writer must call
-  `handleContentPublish(collection, id, { _rev, actor })` to make imported values live, and it
-  should do the same instead of passing `status: "published"` on create.
+  (`CONFLICT` becomes the record status `conflict`, on update and on publish).
+- On a revisioned collection, "update" only stages a draft. To make imported values live, the
+  writer calls `handleContentPublish(collection, id, { _rev: <the _rev from the update>, actor })`.
+  For creates, it creates and then publishes with the create's `_rev`. It does not rely on
+  `status: "published"` at create, which leaves `published_at` and `live_revision_id` NULL. These
+  calls are verified (table above).
+- Update and publish are two writes. A crash between them leaves a staged draft. On resume, the
+  record should be re-run (update, then publish), not assumed done.
 - Pass `authorId` explicitly if entries need an author.
 
 ## 2. Find by field
@@ -91,8 +113,8 @@ fails with a reason code; it never picks one.
 **Answer:** No public function reads an entry lock without HTTP:
 
 - `handleEntryLockRead`, `claimEntryLockForWrite` and `EntryLockRepository` are internal. They
-  appear only in a hashed chunk (`dist/entry-lock-BAAlKYrz.d.mts`) and are not re-exported from
-  any `package.json` export.
+  live in the hashed chunk `dist/entry-lock-B4n0HdQ_.mjs` (`dist/entry-lock-BAAlKYrz.d.mts` holds
+  only the Zod schemas) and are not re-exported from any `package.json` export.
 - Trusted code can read the lock table `_emdash_entry_locks` through `runtime.db`. It is typed in
   the exported `Database`.
 - Calling the REST lock route internally works only with a credential (a forwarded PAT or cookie).
@@ -300,7 +322,8 @@ as the design assumes.
   injected Astro route does not fit that model.
 - Integration tests run against `sites/dev` over HTTP, and authentication is fully scriptable in
   dev. `POST /_emdash/api/setup/dev-bypass?token=1&content=0` with `X-EmDash-Request: 1`:
-  - runs migrations and applies the seed (schema only with `content=0`)
+  - applies the seed (schema only with `content=0`). The route does not run migrations itself;
+    runtime initialization runs them before any request reaches it.
   - creates `dev@emdash.local` as Admin and marks setup complete
   - sets a session cookie
   - returns a PAT named `dev-bypass-token` with scopes `content:*`, `media:*`, `schema:*` and
@@ -316,8 +339,8 @@ a sandboxed plugin"). `src/astro/routes/api/setup/dev-bypass.ts:107-127`;
 `src/astro/routes/api/admin/api-tokens/index.ts:51`. Dev site, on the existing DB with no users and
 setup not complete:
 `{"success":true,"data":{"message":"Dev setup complete","userCreated":true,"user":{"id":"01M4D2KY…","role":50},"token":"ec_pat_…"}}`.
-I did not run it against a deleted `data.db`. The route's header and the contributing docs say it
-runs migrations first.
+I did not run it against a deleted `data.db`. On a fresh file, migrations come from runtime
+initialization on the first request, not from this route.
 
 **Consequence for M2b:** The vitest global setup does the following:
 
@@ -381,10 +404,17 @@ Places where the answers contradict
 
 1. **"Writing a record", step 5 (`handleContentUpdate` writes the entry).** On collections with
    `revisions` (including `posts` in `sites/dev`), an update only stages a draft; live values do
-   not change. The writer needs an explicit publish step (`handleContentPublish` with `_rev`). The
-   spec needs an M2 default for created and updated entries (publish, or leave as draft) instead of
-   deferring all of this to M5. Creating with `status: "published"` leaves `published_at` and
-   `live_revision_id` NULL, so creates should be published through `handleContentPublish` too.
+   not change. The writer needs an explicit publish step. This was exercised on `sites/dev` (Q1
+   table):
+   - `handleContentPublish` with the `_rev` returned by the draft-staging update makes the values
+     live.
+   - Publish with the create's `_rev` sets `published_at` and `live_revision_id`.
+   - A stale `_rev` on publish returns `CONFLICT`.
+
+   The spec needs an M2 default for created and updated entries (publish, or leave as draft)
+   instead of deferring all of this to M5. Creating with `status: "published"` leaves
+   `published_at` and `live_revision_id` NULL, so creates are published through
+   `handleContentPublish`. Update and publish are two writes, so crash recovery re-runs both.
 2. **Edit locks ("reads the entry's lock state").** There is no public API. The only non-HTTP path
    is a Kysely read of the internal table `_emdash_entry_locks` through `runtime.db`. The query is
    dialect-specific and may change. The spec should name this mechanism and its risk.
