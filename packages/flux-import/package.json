@@ -10,7 +10,8 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
-		"test:integration": "vitest run --config vitest.integration.config.ts"
+		"test:integration": "vitest run --config vitest.integration.config.ts",
+		"test:cf": "vitest run --config vitest.cf.config.ts"
 	},
 	"peerDependencies": {
 		"astro": ">=6.0.0",

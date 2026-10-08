@@ -11,7 +11,8 @@
 		"lint": "biome check .",
 		"format": "biome check --write .",
 		"test": "pnpm --filter flux-import test",
-		"test:integration": "pnpm --filter flux-import test:integration"
+		"test:integration": "pnpm --filter flux-import test:integration",
+		"test:cf": "pnpm --filter flux-import test:cf"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

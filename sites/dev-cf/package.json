@@ -1,0 +1,27 @@
+{
+  "name": "flux-import-dev-cf-site",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "wrangler dev --test-scheduled",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^14.3.4",
+    "@astrojs/react": "^6.0.5",
+    "@emdash-cms/cloudflare": "1.2.0",
+    "astro": "^7.3.2",
+    "emdash": "1.2.0",
+    "flux-import": "workspace:*",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "wrangler": "^4.148.0"
+  }
+}
