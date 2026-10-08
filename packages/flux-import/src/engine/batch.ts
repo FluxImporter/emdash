@@ -78,7 +78,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			schemaReady: job.schemaReady,
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
-			error: outcome.error ?? stored.error,
+			// A finished batch clears an earlier unexpected error; other errors stay until resume.
+			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
 			lease: null,
 			updatedAt: iso(deps),
@@ -221,11 +222,15 @@ async function decide(
 	try {
 		let link = await deps.links.get(ctx.linkId);
 		let entry = link ? await deps.content.get(collection, locale, link.entryId) : null;
-		if (!entry && existing?.status === "writing") {
+		// Any earlier row of this job may stand for a write whose link was never saved: a crash
+		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
+		let repaired = false;
+		if (!entry && existing !== null) {
 			entry = await deps.content.findBySourceId(collection, locale, sourceKey);
 			if (entry) {
 				link = { collection, locale, sourceKey, entryId: entry.id };
 				await deps.links.put(ctx.linkId, link);
+				repaired = true;
 			}
 		}
 		entryId = entry?.id ?? null;
@@ -234,7 +239,8 @@ async function decide(
 		if (job.dryRun)
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
-		if (plan.action === "unchanged") return await finishUnchanged(ctx, entry, link, existing);
+		if (plan.action === "unchanged")
+			return await finishUnchanged(ctx, entry, link, existing, repaired);
 		if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
 			const code = "pending_draft";
 			return notImported("conflict", sourceKey, entry.id, plan.action, code, PENDING_DRAFT_MESSAGE);
@@ -261,13 +267,15 @@ async function finishUnchanged(
 	entry: EntrySnapshot,
 	link: LinkRow | null,
 	existing: RecordRow | null,
+	repaired: boolean,
 ): Promise<RowFields> {
 	const { job, sourceKey } = ctx;
 	const entryId = entry.id;
 	const unfinished =
-		existing !== null &&
-		(existing.status === "writing" ||
-			(existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
+		repaired ||
+		(existing !== null &&
+			(existing.status === "writing" ||
+				(existing.errors ?? []).some((e) => e.code.startsWith("publish_"))));
 	if (!unfinished) {
 		// A pending draft at the revision this importer last produced is its own (an earlier
 		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
@@ -302,6 +310,15 @@ async function finishUnchanged(
 		const published = await publishRev(ctx, entryId, entry.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, entryId, action, writtenRev);
+	} else if (
+		!job.publish &&
+		writtenRev !== undefined &&
+		entry.rev === writtenRev &&
+		link?.writtenRev !== writtenRev
+	) {
+		// The crash came between saving the written revision and saving the link: the draft is
+		// provably ours, so record it on the link for a later publishing run.
+		await putLink(ctx, entryId, writtenRev);
 	}
 	return {
 		status: action === "create" ? "created" : "updated",
@@ -352,16 +369,17 @@ async function writeRecord(
 		}
 		written = { id: entry.id, rev: result.rev };
 	}
+	// Record the revision we wrote before anything else, so crash repair can prove a draft is ours
+	// and publishes or links only that revision.
+	await save({
+		status: "writing",
+		sourceKey,
+		entryId: written.id,
+		action: plan.action,
+		writtenRev: written.rev,
+	});
 	await putLink(ctx, written.id, written.rev);
 	if (job.publish) {
-		// Record the revision we wrote, so crash repair publishes only that revision.
-		await save({
-			status: "writing",
-			sourceKey,
-			entryId: written.id,
-			action: plan.action,
-			writtenRev: written.rev,
-		});
 		const published = await publishRev(ctx, written.id, written.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, written.id, plan.action, written.rev);
@@ -474,6 +492,11 @@ export async function runBatch(deps: EngineDeps, jobId: string, holder: string):
 	} catch (e) {
 		if (e instanceof SourceMissingError) {
 			outcome = { done: false, error: { code: "source_missing", message: e.message } };
+		} else if (
+			e instanceof ContentWriteError &&
+			(e.code === "collection_missing" || e.code === "source_id_field_invalid")
+		) {
+			outcome = { done: false, error: { code: e.code, message: e.message } };
 		} else if (e instanceof CsvSyntaxError) {
 			outcome = {
 				done: false,
