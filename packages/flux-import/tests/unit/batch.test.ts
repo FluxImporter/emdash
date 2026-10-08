@@ -1,0 +1,261 @@
+import { describe, expect, it } from "vitest";
+import { LEASE_GRACE_MS, runBatch } from "../../src/engine/batch.js";
+import { createJob } from "../../src/engine/jobs.js";
+import { ContentWriteError } from "../../src/engine/ports.js";
+import type { Job } from "../../src/engine/types.js";
+import { makeDeps } from "./fakes.js";
+
+const template = {
+	version: 1,
+	collection: "products",
+	locale: "en",
+	key: { from: "sku" },
+	slug: { from: "Name" },
+	fields: { title: { from: "Name", type: "text" }, price: { from: "Price", type: "number" } },
+};
+const schemaFields = [
+	{ slug: "title", type: "string" },
+	{ slug: "price", type: "number" },
+];
+
+function csv(n: number, price = (i: number) => String(i)): string {
+	let out = "sku,Name,Price\n";
+	for (let i = 0; i < n; i++) out += `S${i},Item ${i},${price(i)}\n`;
+	return out;
+}
+
+async function setup(body: string, opts: { dryRun?: boolean; batchSize?: number } = {}) {
+	const { deps, clock } = makeDeps();
+	deps.source.add("u1", body);
+	const job = await createJob(deps, { uploadId: "u1", template, schemaFields, ...opts });
+	return { deps, clock, job };
+}
+
+async function runToEnd(deps: Parameters<typeof runBatch>[0], id: string): Promise<Job> {
+	for (let i = 0; i < 10_000; i++) {
+		const job = await runBatch(deps, id, "driver");
+		if (job.status !== "running") return job;
+	}
+	throw new Error("did not finish");
+}
+
+describe("runBatch", () => {
+	it("imports every record in batches and completes", async () => {
+		const { deps, job } = await setup(csv(25), { batchSize: 10 });
+		const first = await runBatch(deps, job.id, "driver");
+		expect(first).toMatchObject({
+			status: "running",
+			cursor: { seq: 10 },
+			lease: null,
+			schemaReady: true,
+		});
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(done.counters).toMatchObject({ created: 25, failed: 0 });
+		expect(deps.content.entries.size).toBe(25);
+		expect(deps.content.sourceFieldEnsured).toBe(true);
+		const e = [...deps.content.entries.values()][0]!;
+		expect(e).toMatchObject({
+			slug: "item-0",
+			data: { title: "Item 0", price: 0, flux_source_id: "S0" },
+		});
+	});
+
+	it("updates changed entries and leaves identical ones alone on a second run", async () => {
+		const { deps, job } = await setup(csv(3));
+		await runToEnd(deps, job.id);
+		deps.source.add(
+			"u2",
+			csv(3, (i) => (i === 1 ? "99" : String(i))),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		const done = await runToEnd(deps, second.id);
+		expect(done.counters).toMatchObject({ created: 0, updated: 1, unchanged: 2 });
+		expect(deps.content.entries.size).toBe(3);
+	});
+
+	it("stops at the time budget between records", async () => {
+		const { deps, clock, job } = await setup(csv(10));
+		deps.content.afterWrite = () => {
+			clock.t += 1500;
+		};
+		const after = await runBatch(deps, job.id, "driver");
+		expect(after.cursor.seq).toBe(3); // 1500, 3000, 4500 >= 4000
+	});
+
+	it("dry-run plans without writing anything", async () => {
+		const { deps, job } = await setup(csv(3), { dryRun: true });
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 3 });
+		expect(deps.content.entries.size).toBe(0);
+		expect(deps.content.sourceFieldEnsured).toBe(false);
+		const rows = await deps.records.query({ where: { jobId: job.id } });
+		expect(rows.items.every((r) => r.data.status === "planned" && r.data.action === "create")).toBe(
+			true,
+		);
+	});
+
+	it("logs bad records and keeps going", async () => {
+		const body =
+			"sku,Name,Price\nS0,Ok,1\n,No key,2\nS2,Bad price,abc\nS3,Short\nS4,Rejected,4\nS5,Ok,5\n";
+		const { deps, job } = await setup(body);
+		deps.content.failWrite = (data) =>
+			data.flux_source_id === "S4" ? new ContentWriteError("validation", "Title too long") : null;
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(done.counters).toMatchObject({ created: 2, failed: 4 });
+		const rows = (
+			await deps.records.query({ where: { jobId: job.id }, orderBy: { seq: "asc" } })
+		).items.map((r) => r.data);
+		expect(rows.map((r) => [r.status, r.errors?.[0]?.code])).toEqual([
+			["created", undefined],
+			["failed", "missing_key"],
+			["failed", "invalid_number"],
+			["failed", "column_count"],
+			["failed", "validation"],
+			["created", undefined],
+		]);
+	});
+
+	it("skips locked entries and records rev conflicts", async () => {
+		const { deps, job } = await setup(csv(2));
+		await runToEnd(deps, job.id);
+		const [e0, e1] = [...deps.content.entries.values()];
+		deps.content.locked.add(e0!.id);
+		e1!.rev = 99; // changed by an editor after our read would be a conflict; simulate a stale rev
+		const realGet = deps.content.get.bind(deps.content);
+		deps.content.get = async (c, l, id) => {
+			const snap = await realGet(c, l, id);
+			return snap && id === e1!.id ? { ...snap, rev: "1" } : snap;
+		};
+		deps.source.add(
+			"u2",
+			csv(2, () => "7"),
+		);
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		const done = await runToEnd(deps, second.id);
+		expect(done.counters).toMatchObject({ locked: 1, conflict: 1, updated: 0 });
+	});
+
+	it("fails the job when the upload disappears or the CSV breaks mid-file", async () => {
+		const { deps, job } = await setup(csv(2));
+		deps.source.uploads.delete("u1");
+		expect(await runBatch(deps, job.id, "driver")).toMatchObject({
+			status: "failed",
+			error: { code: "source_missing" },
+		});
+
+		const broken = await setup('sku,Name,Price\nS0,Ok,1\nS1,"open,2\n');
+		const out = await runToEnd(broken.deps, broken.job.id);
+		expect(out).toMatchObject({
+			status: "failed",
+			error: { code: "csv_syntax" },
+			counters: { created: 1 },
+		});
+	});
+
+	it("does nothing for paused, cancelled or completed jobs", async () => {
+		const { deps, job } = await setup(csv(2));
+		await deps.jobs.put(job.id, { ...job, status: "paused" });
+		expect((await runBatch(deps, job.id, "driver")).status).toBe("paused");
+		expect(deps.content.entries.size).toBe(0);
+	});
+
+	it("keeps a pause made during the batch", async () => {
+		const { deps, job } = await setup(csv(3));
+		deps.content.afterWrite = () => {
+			const stored = deps.jobs.rows.get(job.id)!;
+			stored.value = { ...stored.value, status: "paused" };
+			stored.revision += 1000;
+		};
+		const after = await runBatch(deps, job.id, "driver");
+		expect(after).toMatchObject({ status: "paused", lease: null, cursor: { seq: 3 } });
+	});
+
+	it("never lets two drivers process the same batch", async () => {
+		const { deps, job } = await setup(csv(20), { batchSize: 5 });
+		await Promise.all([
+			runBatch(deps, job.id, "a"),
+			runBatch(deps, job.id, "b"),
+			runBatch(deps, job.id, "c"),
+		]);
+		const creates = deps.content.calls.filter((c) => c.startsWith("create:"));
+		expect(creates.length).toBe(5);
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters.created).toBe(20);
+		expect(deps.content.entries.size).toBe(20);
+	});
+
+	it("respects a live lease held by another driver and takes over an expired one", async () => {
+		const { deps, clock, job } = await setup(csv(2));
+		await deps.jobs.put(job.id, {
+			...job,
+			status: "running",
+			lease: { holder: "other", expiresAt: clock.t + 1000 },
+		});
+		expect((await runBatch(deps, job.id, "driver")).cursor.seq).toBe(0);
+		clock.t += 1001;
+		expect((await runBatch(deps, job.id, "driver")).status).toBe("completed");
+	});
+
+	it("does not duplicate entries after a crash between the content write and the record save", async () => {
+		const { deps, clock, job } = await setup(csv(10), { batchSize: 10 });
+		let crashOn: string | null = "e4";
+		deps.content.afterWrite = (id) => {
+			if (id === crashOn) {
+				crashOn = null;
+				throw new Error("process killed");
+			}
+		};
+		await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+		// The lease is still held by the dead driver; wait for it to expire.
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(deps.content.entries.size).toBe(10);
+		const keys = [...deps.content.entries.values()].map((e) => e.data.flux_source_id);
+		expect(new Set(keys).size).toBe(10);
+		expect(done.counters).toMatchObject({ created: 10, unchanged: 0 });
+		expect(deps.content.calls).toContain("find:S3");
+		expect(deps.content.calls).toContain("publish:e4");
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+	});
+
+	it("publishes every entry it writes by default", async () => {
+		const { deps, job } = await setup(csv(3));
+		await runToEnd(deps, job.id);
+		expect(deps.content.calls.filter((c) => c.startsWith("publish:")).length).toBe(3);
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+	});
+
+	it("leaves entries as drafts when publish is false", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(3));
+		const job = await createJob(deps, { uploadId: "u1", template, schemaFields, publish: false });
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters.created).toBe(3);
+		expect(deps.content.calls.some((c) => c.startsWith("publish:"))).toBe(false);
+		expect([...deps.content.entries.values()].every((e) => e.pendingPublish)).toBe(true);
+	});
+
+	it("records a failed publish and never publishes someone else's draft", async () => {
+		const { deps, job } = await setup(csv(2));
+		deps.content.failPublish = (id) => (id === "e2" ? "conflict" : null);
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 1, conflict: 1 });
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 1 } })).items[0]!.data;
+		expect(row).toMatchObject({
+			status: "conflict",
+			action: "create",
+			errors: [{ code: "publish_conflict" }],
+		});
+
+		// An editor starts a draft on e1; a later import with identical data must not publish it.
+		deps.content.failPublish = () => null;
+		deps.content.entries.get("e1")!.pendingPublish = true;
+		deps.source.add("u2", csv(2));
+		const second = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		await runToEnd(deps, second.id);
+		expect(deps.content.entries.get("e1")!.pendingPublish).toBe(true);
+	});
+});
