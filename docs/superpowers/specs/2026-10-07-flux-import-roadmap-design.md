@@ -38,7 +38,7 @@ plus a run against the local EmDash site (`sites/dev`), reported with results.
 | # | Milestone | Scope | Done when |
 | --- | --- | --- | --- |
 | 1 | Phase 0 | Report and architecture | Done (commit `95ec14f`) |
-| 2 | Engine MVP | Workspace and dev site, CSV upload, template v1 (text, number, date, slug), create/update by source key, publish option, job engine, lock skip, record log and CSV export, dry-run diff, `jobs/retry`, a `sites/dev-cf` Cloudflare site for parity | 10,000 rows import; kill-and-resume gives no duplicates and no unpublished leftovers; locked entries skipped; dry-run writes nothing; Node and `workerd` pass |
+| 2 | Engine MVP | Workspace and dev site, CSV upload, template v1 (text, number, date, slug), create/update by source key, publish option, job engine, lock skip, record log and CSV export, dry-run diff, `jobs/retry`, a `sites/dev-cf` Cloudflare site for parity | 10,000 rows import; kill-and-resume gives no duplicates, and any entry a crash leaves unpublished is reported as `publish_unverified`; locked entries skipped; dry-run writes nothing; Node and `workerd` pass |
 | 3 | Sources | JSON, XML, URL (auth headers, SSRF guard, ETag/Last-Modified), pasted snippets, record selection (XPath, JSONPath, row filters), JSONata transforms, then XLSX | Valid, large and malformed fixtures per format |
 | 4 | Field types and schema | Boolean, select, date with timezone, taxonomy paths, media from URL (hash dedupe, `maxUploadSize`, URL rewriting in Portable Text), HTML and Markdown to Portable Text with unknown markup reported, references, bylines (existing only), locales and translation links, additive `schema/apply` route | Each field type has unit and integration tests |
 | 5 | Record rules and safety | Create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" via revisions; delete, trash or unpublish missing entries; publish, draft or schedule; rollback as a resumable job | A finished run rolls back to its pre-run state |
@@ -72,7 +72,7 @@ The upload is the only trusted route, because plugin routes buffer bodies and ca
 | `jobs/get` | plugin | `{ id }` | job |
 | `jobs/list` | plugin | `{ status?, cursor? }` | page of jobs |
 | `jobs/pause`, `jobs/resume`, `jobs/cancel` | plugin | `{ id }` | job |
-| `jobs/retry` | plugin | `{ id }` | job, re-queued for `failed` and `conflict` records only |
+| `jobs/retry` | plugin | `{ id }` | job, re-queued to re-process `failed`, `conflict` and `locked` records and repair unfinished writes |
 | `jobs/records` | plugin | `{ id, status?, cursor? }` | page of record outcomes |
 | `jobs/log.csv` | plugin, raw response | `{ id }` | CSV file |
 
@@ -108,7 +108,7 @@ M5 adds record rules. `version` stays 1 until a change cannot be additive.
 | Collection | Key | Indexes | Purpose |
 | --- | --- | --- | --- |
 | `jobs` | ULID | `status`, `createdAt` | template, upload ref, options, state, lease, cursor, counters |
-| `records` | `${jobId}:${seq}` | `jobId`, `["jobId","status"]` | per-record outcome, reason code, message, entry ID, diff (dry-run) |
+| `records` | `${jobId}:${seq}` | `jobId`, `["jobId","status"]`, `["jobId","seq"]`, `["jobId","status","seq"]` | per-record outcome, reason code, message, entry ID, diff (dry-run) |
 | `links` | `${collection}:${locale}:${sourceKey}` | `entryId` | source key to entry ID, kept across runs |
 
 ### Job lifecycle
@@ -131,15 +131,18 @@ fixed.
 2. Resolve the entry: `links` by source key; if the record was left in `writing` by a crash, look
    the entry up by `flux_source_id` and repair the link.
 3. Dry-run: compute the create, update or skip diff, save it on the record, stop.
-4. For an update, read the entry with `_rev` and its lock state. Locked: `skipped` with reason
-   `locked`.
+4. For an update, read the entry with `_rev` and its lock state. A locked entry makes the record
+   `locked` with reason `locked`.
 5. Mark the record `writing`, then call `handleContentCreate` (with `flux_source_id` set) or
    `handleContentUpdate` with `_rev` and `actor`. A stale `_rev` makes the record `conflict`.
 6. With `publish: true`, call `handleContentPublish` with the `_rev` the write returned. A publish
    that fails leaves the record `conflict` or `locked` with an error code `publish_conflict` or
    `publish_locked`; a retry publishes the pending draft. A crash between write and publish is
-   repaired on resume: a recovered record whose entry still has an unpublished draft is published.
-7. Save the link and mark the record `created`, `updated` or `skipped`.
+   repaired on resume when the write's revision was recorded (the record's `writtenRev` still
+   matches the entry); otherwise the entry stays a draft and the record is `conflict` with
+   `publish_unverified`. An entry with an unpublished draft that this importer did not write is
+   never updated or published (`conflict`, `pending_draft`).
+7. Save the link and mark the record `created`, `updated` or `unchanged`.
 
 Before the first write of a non-dry-run job, the engine adds `flux_source_id` to the target
 collection if it is missing, through `SchemaRegistry` (additive only).
@@ -150,8 +153,8 @@ collection if it is missing, through `SchemaRegistry` (additive only).
   logged with a reason code and message.
 - The job becomes `failed` only when it cannot continue: missing upload, CSV unreadable past the
   cursor, collection or locale gone. It can be resumed after the cause is fixed.
-- Conflicts are not retried inside a batch; `jobs/retry` re-processes `failed` and `conflict`
-  records.
+- Conflicts are not retried inside a batch; `jobs/retry` re-processes `failed`, `conflict` and
+  `locked` records and repairs unfinished writes.
 - `withEmDashRuntime()` is fully trusted, so the engine only receives input that a route has
   already validated.
 - A daily plugin cron task deletes `records` and staged uploads older than the retention setting

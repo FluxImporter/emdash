@@ -19,12 +19,16 @@ export interface KvCollection<T> {
 	}): Promise<{ items: { id: string; data: T }[]; cursor?: string; hasMore: boolean }>;
 }
 
+/** `rev`, `slug` and `data` reflect the latest revision, draft included. */
 export interface EntrySnapshot {
 	id: string;
 	rev: string;
 	slug: string | null;
 	data: Record<string, unknown>;
-	/** The entry has a draft that is not live, or has never been published. */
+	/**
+	 * The entry has a draft that is not live, or has never been published. Always `false` on
+	 * collections without revisions, where writes are live immediately.
+	 */
 	pendingPublish: boolean;
 }
 
@@ -32,11 +36,13 @@ export type WriteResult = { ok: true; rev: string } | { ok: false; reason: "conf
 
 export interface ContentPort {
 	get(collection: string, locale: string, id: string): Promise<EntrySnapshot | null>;
+	/** Throws `ContentWriteError("ambiguous_source_id", …)` when more than one entry matches. */
 	findBySourceId(
 		collection: string,
 		locale: string,
 		sourceId: string,
 	): Promise<EntrySnapshot | null>;
+	/** A lock held by the importing user counts as unlocked. */
 	isLocked(collection: string, locale: string, id: string): Promise<boolean>;
 	create(input: {
 		collection: string;
@@ -53,16 +59,28 @@ export interface ContentPort {
 		slug?: string;
 		data: Record<string, FieldValue>;
 	}): Promise<WriteResult>;
+	/**
+	 * Makes the given revision live. On collections without revisions this succeeds as a no-op
+	 * returning the current revision.
+	 */
 	publish(input: {
 		collection: string;
 		locale: string;
 		id: string;
 		rev: string;
 	}): Promise<WriteResult>;
+	/**
+	 * Idempotent. Creates `flux_source_id` as `string`, `indexed: true`, `translatable: false`; an
+	 * existing field must be verified to be indexed.
+	 */
 	ensureSourceIdField(collection: string): Promise<void>;
 }
 
 export interface SourcePort {
+	/**
+	 * An offset at or past the source size yields an empty stream. EmDash's ranged download returns
+	 * the whole file for such offsets, so adapters must check `offset >= size` first.
+	 */
 	open(uploadId: string, offset: number): Promise<ReadableStream<Uint8Array>>;
 }
 
