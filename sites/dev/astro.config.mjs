@@ -48,4 +48,6 @@ export default defineConfig({
 		},
 	],
 	devToolbar: { enabled: false },
+	// Integration tests fail instead of silently moving to another port.
+	vite: process.env.FLUX_DEV_STRICT_PORT ? { server: { strictPort: true } } : {},
 });

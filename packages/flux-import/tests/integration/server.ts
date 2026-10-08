@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -37,6 +38,9 @@ function serverEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
 async function waitForHealth(server: AstroProcess, timeoutMs: number): Promise<void> {
 	const until = Date.now() + timeoutMs;
 	while (Date.now() < until) {
+		if (server.log.some((line) => /\bin use\b/.test(line))) {
+			throw new Error(`Port in use for ${server.baseUrl}:\n${server.log.join("")}`);
+		}
 		if (server.child.exitCode !== null) {
 			throw new Error(`astro dev exited with ${server.child.exitCode}:\n${server.log.join("")}`);
 		}
@@ -53,6 +57,20 @@ async function waitForHealth(server: AstroProcess, timeoutMs: number): Promise<v
 	);
 }
 
+async function assertPortFree(port: number): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const probe = createServer();
+		probe.once("error", () =>
+			reject(
+				new Error(
+					`Port ${port} is in use; stop the process using it before running the integration tests`,
+				),
+			),
+		);
+		probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
+	});
+}
+
 /**
  * Starts `astro dev` for a site and waits until EmDash answers. `--ignore-lock` keeps it in the
  * foreground: Astro 7 moves `astro dev` to the background when it detects an AI agent, and
@@ -65,6 +83,7 @@ export async function startAstroDev(
 	port: number,
 	env: Record<string, string> = {},
 ): Promise<AstroProcess> {
+	await assertPortFree(port);
 	const child = spawn(
 		process.execPath,
 		[
@@ -76,7 +95,12 @@ export async function startAstroDev(
 			"--host",
 			"127.0.0.1",
 		],
-		{ cwd: siteDir, env: serverEnv(env), stdio: ["ignore", "pipe", "pipe"], detached: true },
+		{
+			cwd: siteDir,
+			env: serverEnv({ ...env, FLUX_DEV_STRICT_PORT: "1" }),
+			stdio: ["ignore", "pipe", "pipe"],
+			detached: true,
+		},
 	);
 	const log: string[] = [];
 	child.stdout?.on("data", (d) => log.push(String(d)));
@@ -96,11 +120,17 @@ export async function startServer(port: number, dir?: string): Promise<DevServer
 	const root = dir ?? (await mkdtemp(join(tmpdir(), "flux-import-it-")));
 	const dbPath = join(root, "test.db");
 	const uploadsDir = join(root, "uploads");
-	const server = await startAstroDev(SITE_DIR, port, {
-		FLUX_DEV_DB: dbPath,
-		FLUX_DEV_UPLOADS: uploadsDir,
-		FLUX_DEV_MAX_SOURCE_BYTES: String(TEST_MAX_SOURCE_BYTES),
-	});
+	let server: AstroProcess;
+	try {
+		server = await startAstroDev(SITE_DIR, port, {
+			FLUX_DEV_DB: dbPath,
+			FLUX_DEV_UPLOADS: uploadsDir,
+			FLUX_DEV_MAX_SOURCE_BYTES: String(TEST_MAX_SOURCE_BYTES),
+		});
+	} catch (e) {
+		if (!dir) await rm(root, { recursive: true, force: true });
+		throw e;
+	}
 	return { ...server, dir: root, dbPath, uploadsDir };
 }
 
