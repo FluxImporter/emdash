@@ -675,6 +675,31 @@ describe("retry pass", () => {
 		});
 		expect(deps.content.entries.get("e1")).toMatchObject({ data: { price: 0 } });
 	});
+	it("does not trust a recorded revision on a different entry with the same source key", async () => {
+		const { deps, job } = await setup(csv(1));
+		deps.content.failPublish = () => "locked";
+		await runToEnd(deps, job.id);
+		const original = deps.content.entries.get("e1")!;
+		const rowBefore = (await deps.records.query({ where: { jobId: job.id, seq: 0 } })).items[0]!
+			.data;
+		expect(rowBefore).toMatchObject({ status: "locked", entryId: "e1" });
+		// An editor duplicates the entry and deletes the original; the copy has the same revision.
+		deps.content.entries.delete("e1");
+		deps.content.entries.set("y1", { ...original, id: "y1", data: structuredClone(original.data) });
+		deps.content.failPublish = () => null;
+		await transitionJob(deps, job.id, "retry");
+		await runToEnd(deps, job.id);
+		expect(deps.content.entries.get("y1")!.pendingPublish).toBe(true);
+		expect(deps.content.calls.filter((c) => c.startsWith("publish:y1"))).toEqual([]);
+		expect((await deps.links.get("products:en:S1"))?.writtenRev).toBeUndefined();
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 0 } })).items[0]!.data;
+		expect(row).toMatchObject({
+			status: "conflict",
+			entryId: "y1",
+			errors: [{ code: "publish_unverified" }],
+		});
+	});
+
 	it("retries failed and conflicting records only", async () => {
 		const { deps, job } = await setup(csv(4));
 		let flaky = true;

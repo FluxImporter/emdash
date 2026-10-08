@@ -289,9 +289,13 @@ async function finishUnchanged(
 	}
 	const action = existing?.action;
 	const writtenRev = existing?.writtenRev;
+	// The recorded revision proves ownership only for the entry it was recorded for: revisions are
+	// version-derived, so a different entry (an editor's copy) can carry the same string.
+	const proven =
+		writtenRev !== undefined && existing?.entryId === entry.id && entry.rev === writtenRev;
 	if (job.publish && entry.pendingPublish) {
 		// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
-		if (writtenRev === undefined || entry.rev !== writtenRev) {
+		if (!proven) {
 			return {
 				status: "conflict",
 				sourceKey,
@@ -310,12 +314,7 @@ async function finishUnchanged(
 		const published = await publishRev(ctx, entryId, entry.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, entryId, action, writtenRev);
-	} else if (
-		!job.publish &&
-		writtenRev !== undefined &&
-		entry.rev === writtenRev &&
-		link?.writtenRev !== writtenRev
-	) {
+	} else if (!job.publish && proven && link?.writtenRev !== writtenRev) {
 		// The crash came between saving the written revision and saving the link: the draft is
 		// provably ours, so record it on the link for a later publishing run.
 		await putLink(ctx, entryId, writtenRev);
