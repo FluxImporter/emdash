@@ -101,6 +101,8 @@ export class FakeContent implements ContentPort {
 	failWrite: (data: Record<string, unknown>) => ContentWriteError | null = () => null;
 	/** Return a reason to make publishing this entry fail. */
 	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
+	/** Called at the start of publish; throw from it to simulate a crash before publishing. */
+	beforePublish: (id: string) => void = () => {};
 	private next = 0;
 
 	private snap(e: StoredEntry): EntrySnapshot {
@@ -175,6 +177,7 @@ export class FakeContent implements ContentPort {
 		return { ok: true, rev: String(e.rev) };
 	}
 	async publish(input: { id: string; rev: string }): Promise<WriteResult> {
+		this.beforePublish(input.id);
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
 		const forced = this.failPublish(e.id);

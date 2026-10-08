@@ -45,8 +45,8 @@ async function claim(
 	const job = current.value;
 	const now = deps.now();
 	if (job.status !== "created" && job.status !== "running") return { ok: false, job };
-	if (job.lease && job.lease.holder !== holder && job.lease.expiresAt > now)
-		return { ok: false, job };
+	// Any live lease blocks the claim, including one held under the same holder name.
+	if (job.lease && job.lease.expiresAt > now) return { ok: false, job };
 	const next: Job = {
 		...job,
 		status: "running",
@@ -156,11 +156,13 @@ async function decide(
 		reason: "conflict" | "locked",
 		id: string,
 		action: PlanAction | undefined,
+		writtenRev: string | undefined,
 	): RowFields => ({
 		status: reason,
 		sourceKey,
 		entryId: id,
 		...(action ? { action } : {}),
+		...(writtenRev === undefined ? {} : { writtenRev }),
 		errors: [
 			{
 				code: `publish_${reason}`,
@@ -179,14 +181,32 @@ async function decide(
 				(existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
 		if (!unfinished) return { status: "unchanged", sourceKey, entryId };
 		const action = existing?.action;
+		const writtenRev = existing?.writtenRev;
 		if (job.publish && entry.pendingPublish) {
+			// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
+			if (writtenRev === undefined || entry.rev !== writtenRev) {
+				return {
+					status: "conflict",
+					sourceKey,
+					entryId,
+					...(action ? { action } : {}),
+					...(writtenRev === undefined ? {} : { writtenRev }),
+					errors: [
+						{
+							code: "publish_unverified",
+							message:
+								"Saved as a draft: the entry may have changed after the import wrote it, so it was not published",
+						},
+					],
+				};
+			}
 			const published = await deps.content.publish({
 				collection,
 				locale,
 				id: entry.id,
 				rev: entry.rev,
 			});
-			if (!published.ok) return publishFailed(published.reason, entry.id, action);
+			if (!published.ok) return publishFailed(published.reason, entry.id, action, writtenRev);
 		}
 		return {
 			status: action === "create" ? "created" : "updated",
@@ -225,13 +245,22 @@ async function decide(
 			written = { id: entry.id, rev: result.rev };
 		}
 		if (job.publish) {
+			// Record the revision we wrote, so crash repair publishes only that revision.
+			await save({
+				status: "writing",
+				sourceKey,
+				entryId: written.id,
+				action: plan.action,
+				writtenRev: written.rev,
+			});
 			const published = await deps.content.publish({
 				collection,
 				locale,
 				id: written.id,
 				rev: written.rev,
 			});
-			if (!published.ok) return publishFailed(published.reason, written.id, plan.action);
+			if (!published.ok)
+				return publishFailed(published.reason, written.id, plan.action, written.rev);
 		}
 		return {
 			status: plan.action === "create" ? "created" : "updated",
@@ -275,6 +304,11 @@ async function retryPass(_deps: EngineDeps, _job: Job, _started: number): Promis
 	return { done: true };
 }
 
+/**
+ * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
+ * the lease. Returns the stored job without doing any work when the job is not runnable or any
+ * live lease exists, whoever holds it (the same holder name included).
+ */
 export async function runBatch(deps: EngineDeps, jobId: string, holder: string): Promise<Job> {
 	const claimed = await claim(deps, jobId, holder);
 	if (!claimed.ok) return claimed.job;

@@ -215,10 +215,65 @@ describe("runBatch", () => {
 		expect(deps.content.entries.size).toBe(10);
 		const keys = [...deps.content.entries.values()].map((e) => e.data.flux_source_id);
 		expect(new Set(keys).size).toBe(10);
-		expect(done.counters).toMatchObject({ created: 10, unchanged: 0 });
+		expect(done.counters).toMatchObject({ created: 9, conflict: 1, unchanged: 0 });
 		expect(deps.content.calls).toContain("find:S3");
+		// The crash came before the written revision was saved, so the repair cannot prove the
+		// draft is ours and leaves it unpublished.
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 3 } })).items[0]!.data;
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "publish_unverified" }] });
+		expect(deps.content.calls).not.toContain("publish:e4");
+		expect(deps.content.entries.get("e4")!.pendingPublish).toBe(true);
+	});
+
+	async function crashBeforePublish() {
+		const ctx = await setup(csv(10), { batchSize: 10 });
+		let crashOn: string | null = "e4";
+		ctx.deps.content.beforePublish = (id) => {
+			if (id === crashOn) {
+				crashOn = null;
+				throw new Error("process killed");
+			}
+		};
+		await expect(runBatch(ctx.deps, ctx.job.id, "first")).rejects.toThrow("process killed");
+		ctx.clock.t += ctx.job.budgetMs + LEASE_GRACE_MS + 1;
+		return ctx;
+	}
+
+	it("publishes the revision it wrote after a crash between the write and the publish", async () => {
+		const { deps, job } = await crashBeforePublish();
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(done.counters).toMatchObject({ created: 10, conflict: 0 });
 		expect(deps.content.calls).toContain("publish:e4");
+		expect(deps.content.entries.size).toBe(10);
+		const keys = [...deps.content.entries.values()].map((e) => e.data.flux_source_id);
+		expect(new Set(keys).size).toBe(10);
 		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+	});
+
+	it("does not publish an editor's change while repairing a crash", async () => {
+		const { deps, job } = await crashBeforePublish();
+		// An editor edits a field the template does not map, so the plan still says unchanged.
+		const e4 = deps.content.entries.get("e4")!;
+		e4.rev++;
+		e4.data = { ...e4.data, notes: "editor draft" };
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 9, conflict: 1 });
+		expect(deps.content.calls).not.toContain("publish:e4");
+		expect(deps.content.entries.get("e4")!.pendingPublish).toBe(true);
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 3 } })).items[0]!.data;
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "publish_unverified" }] });
+	});
+
+	it("does not let the same holder claim its own live lease", async () => {
+		const { deps, clock, job } = await setup(csv(2));
+		await deps.jobs.put(job.id, {
+			...job,
+			status: "running",
+			lease: { holder: "driver", expiresAt: clock.t + 1000 },
+		});
+		expect((await runBatch(deps, job.id, "driver")).cursor.seq).toBe(0);
+		expect(deps.content.calls.some((c) => c.startsWith("create:"))).toBe(false);
 	});
 
 	it("publishes every entry it writes by default", async () => {

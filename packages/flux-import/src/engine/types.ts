@@ -65,6 +65,8 @@ export interface RecordRow {
 	action?: PlanAction;
 	changes?: Change[];
 	errors?: RecordError[];
+	/** The content revision this job wrote, saved before publishing so crash repair publishes only it. */
+	writtenRev?: string;
 	updatedAt: string;
 }
 
