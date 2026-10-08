@@ -5,6 +5,10 @@ export type Where = Record<string, unknown>;
 export interface KvCollection<T> {
 	get(id: string): Promise<T | null>;
 	put(id: string, data: T): Promise<void>;
+	/** Resolves `true` when a row was deleted. */
+	delete(id: string): Promise<boolean>;
+	/** Resolves the number of rows deleted. */
+	deleteMany(ids: string[]): Promise<number>;
 	getVersioned(id: string): Promise<{ value: T; revision: string } | null>;
 	compareAndSet(
 		id: string,

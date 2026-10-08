@@ -25,4 +25,20 @@ describe("MemoryKv", () => {
 		]);
 		expect(results.filter((r) => r.applied)).toHaveLength(1);
 	});
+
+	it("deletes rows and orders and filters ISO timestamps", async () => {
+		const kv = new MemoryKv<{ at: string }>();
+		await kv.put("b", { at: "2026-10-02T00:00:00.000Z" });
+		await kv.put("a", { at: "2026-10-01T00:00:00.000Z" });
+		await kv.put("c", { at: "2026-10-03T00:00:00.000Z" });
+		const page = await kv.query({
+			where: { at: { lt: "2026-10-03T00:00:00.000Z" } },
+			orderBy: { at: "desc" },
+		});
+		expect(page.items.map((i) => i.id)).toEqual(["b", "a"]);
+		expect(await kv.delete("a")).toBe(true);
+		expect(await kv.delete("a")).toBe(false);
+		expect(await kv.deleteMany(["b", "c", "x"])).toBe(2);
+		expect(kv.rows.size).toBe(0);
+	});
 });

@@ -1,3 +1,4 @@
+import type { UploadStorage } from "../../src/emdash/uploads.js";
 import {
 	type ContentPort,
 	ContentWriteError,
@@ -18,10 +19,12 @@ function matches(data: Record<string, unknown>, where: Where): boolean {
 		if (cond !== null && typeof cond === "object") {
 			const c = cond as Record<string, unknown>;
 			if ("in" in c) return (c.in as unknown[]).includes(v);
-			if ("gte" in c && !((v as number) >= (c.gte as number))) return false;
-			if ("gt" in c && !((v as number) > (c.gt as number))) return false;
-			if ("lte" in c && !((v as number) <= (c.lte as number))) return false;
-			if ("lt" in c && !((v as number) < (c.lt as number))) return false;
+			// Numbers and ISO timestamps both compare correctly with the relational operators.
+			const x = v as number | string;
+			if ("gte" in c && !(x >= (c.gte as number | string))) return false;
+			if ("gt" in c && !(x > (c.gt as number | string))) return false;
+			if ("lte" in c && !(x <= (c.lte as number | string))) return false;
+			if ("lt" in c && !(x < (c.lt as number | string))) return false;
 			return true;
 		}
 		return v === cond;
@@ -44,6 +47,14 @@ export class MemoryKv<T> implements KvCollection<T> {
 	async put(id: string, data: T) {
 		this.write(id, data);
 	}
+	async delete(id: string) {
+		return this.rows.delete(id);
+	}
+	async deleteMany(ids: string[]) {
+		let n = 0;
+		for (const id of ids) if (this.rows.delete(id)) n++;
+		return n;
+	}
 	async getVersioned(id: string) {
 		const row = this.rows.get(id);
 		return row ? { value: structuredClone(row.value), revision: String(row.revision) } : null;
@@ -65,9 +76,10 @@ export class MemoryKv<T> implements KvCollection<T> {
 			.filter((i) => matches(i.data as Record<string, unknown>, opts.where ?? {}));
 		for (const [field, dir] of Object.entries(opts.orderBy ?? {}).reverse()) {
 			items = items.sort((a, b) => {
-				const av = (a.data as Record<string, number>)[field] as number;
-				const bv = (b.data as Record<string, number>)[field] as number;
-				return dir === "asc" ? av - bv : bv - av;
+				const av = (a.data as Record<string, number | string>)[field] as number | string;
+				const bv = (b.data as Record<string, number | string>)[field] as number | string;
+				const order = av < bv ? -1 : av > bv ? 1 : 0;
+				return dir === "asc" ? order : -order;
 			});
 		}
 		const start = opts.cursor ? Number(opts.cursor) : 0;
@@ -221,4 +233,74 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 		newId: () => `id${++id}`,
 	} satisfies EngineDeps;
 	return { deps, clock };
+}
+
+type StoredFile = { bytes: Uint8Array; lastModified: Date };
+
+/** In-memory `emdash.storage` with the local adapter's range and NOT_FOUND behaviour. */
+export class FakeStorage implements UploadStorage {
+	readonly files = new Map<string, StoredFile>();
+	/** What each upload() call received: a stream or bytes. */
+	readonly bodies: Array<"stream" | "bytes"> = [];
+	now = () => new Date("2026-10-07T10:00:00Z");
+
+	async upload(options: { key: string; body: Buffer | Uint8Array | ReadableStream<Uint8Array> }) {
+		const { body } = options;
+		let bytes: Uint8Array;
+		this.bodies.push(body instanceof ReadableStream ? "stream" : "bytes");
+		if (body instanceof ReadableStream) {
+			const chunks: Uint8Array[] = [];
+			const reader = body.getReader();
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				chunks.push(value);
+			}
+			bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+			let at = 0;
+			for (const c of chunks) {
+				bytes.set(c, at);
+				at += c.length;
+			}
+		} else {
+			bytes = new Uint8Array(body);
+		}
+		this.files.set(options.key, { bytes, lastModified: this.now() });
+		return { key: options.key, url: `/media/${options.key}`, size: bytes.length };
+	}
+
+	async download(
+		key: string,
+		options?: { range?: { offset: number; length?: number } | { suffix: number } },
+	) {
+		const file = this.files.get(key);
+		if (!file) throw Object.assign(new Error(`File not found: ${key}`), { code: "NOT_FOUND" });
+		const size = file.bytes.length;
+		const range = options?.range;
+		if (range && "offset" in range && range.offset >= 0 && range.offset < size) {
+			const length = Math.min(range.length ?? size, size - range.offset);
+			return {
+				body: streamOf(file.bytes.slice(range.offset, range.offset + length), 7),
+				contentType: "text/csv",
+				size,
+				range: { offset: range.offset, length },
+			};
+		}
+		return { body: streamOf(file.bytes, 7), contentType: "text/csv", size };
+	}
+
+	async delete(key: string) {
+		this.files.delete(key);
+	}
+
+	async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+		const keys = [...this.files.keys()].filter((k) => k.startsWith(options?.prefix ?? "")).sort();
+		const start = options?.cursor ? Number(options.cursor) : 0;
+		const limit = options?.limit ?? 100;
+		const files = keys.slice(start, start + limit).map((key) => {
+			const file = this.files.get(key)!;
+			return { key, size: file.bytes.length, lastModified: file.lastModified };
+		});
+		return start + limit < keys.length ? { files, nextCursor: String(start + limit) } : { files };
+	}
 }
