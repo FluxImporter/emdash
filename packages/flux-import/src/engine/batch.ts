@@ -6,6 +6,7 @@ import { applyTemplate, SOURCE_ID_FIELD } from "./template.js";
 import {
 	type Counters,
 	type EngineDeps,
+	emptyCounters,
 	type Job,
 	linkKey,
 	type RecordRow,
@@ -313,19 +314,42 @@ async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promis
 	throw new CsvSyntaxError("No record at the saved offset", row.start);
 }
 
+/** Rebuilds counters from the record rows, so a crashed retry batch cannot leave them skewed. */
+async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters> {
+	const counters = emptyCounters();
+	let cursor: string | undefined;
+	for (;;) {
+		const page = await deps.records.query({
+			where: { jobId },
+			orderBy: { seq: "asc" },
+			limit: RETRY_PAGE,
+			...(cursor ? { cursor } : {}),
+		});
+		for (const { data } of page.items) {
+			const counter = counterFor(data);
+			if (counter) counters[counter]++;
+		}
+		if (!page.hasMore || !page.cursor) return counters;
+		cursor = page.cursor;
+	}
+}
+
 async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
 	let processed = 0;
 	for (;;) {
 		const page = await deps.records.query({
 			where: {
 				jobId: job.id,
-				status: { in: ["failed", "conflict"] },
+				status: { in: ["failed", "conflict", "writing"] },
 				seq: { gte: job.retryFromSeq },
 			},
 			orderBy: { seq: "asc" },
 			limit: Math.min(job.batchSize, RETRY_PAGE),
 		});
-		if (page.items.length === 0) return { done: true };
+		if (page.items.length === 0) {
+			job.counters = await tallyCounters(deps, job.id);
+			return { done: true };
+		}
 		for (const { data: row } of page.items) {
 			await processRecord(deps, job, await readOneRecord(deps, job, row), { retry: true });
 			job.retryFromSeq = row.seq + 1;

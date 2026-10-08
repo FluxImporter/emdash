@@ -335,6 +335,43 @@ describe("retry pass", () => {
 		});
 		expect(deps.content.calls.slice(callsBefore)).toEqual(["create:e4", "publish:e4"]);
 		expect(deps.content.entries.size).toBe(4);
+		const rows = await deps.records.query({ where: { jobId: job.id }, limit: 100 });
+		const tally = { created: 0, updated: 0, unchanged: 0, failed: 0, locked: 0, conflict: 0 };
+		for (const { data } of rows.items) tally[data.status as keyof typeof tally]++;
+		expect(retried.counters).toEqual(tally);
+	});
+
+	it("recovers a record left writing by a crash mid-retry and keeps counters exact", async () => {
+		const { deps, clock, job } = await setup(csv(3));
+		let flaky = true;
+		deps.content.failWrite = () =>
+			flaky ? new ContentWriteError("timeout", "Upstream timeout") : null;
+		expect((await runToEnd(deps, job.id)).counters.failed).toBe(3);
+		flaky = false;
+		await transitionJob(deps, job.id, "retry");
+		let creates = 0;
+		deps.content.beforePublish = () => {
+			creates++;
+			if (creates === 2) throw new Error("crash");
+		};
+		await expect(runBatch(deps, job.id, "driver")).rejects.toThrow("crash");
+		clock.t += 10 * 60_000;
+		const done = await runToEnd(deps, job.id);
+		expect(done).toMatchObject({ status: "completed", phase: "import" });
+		expect(done.counters).toEqual({
+			created: 3,
+			updated: 0,
+			unchanged: 0,
+			failed: 0,
+			locked: 0,
+			conflict: 0,
+		});
+		const ids = [...deps.content.entries.values()].map((e) => e.data.flux_source_id);
+		expect(ids).toHaveLength(3);
+		expect(new Set(ids).size).toBe(3);
+		expect([...deps.content.entries.values()].every((e) => !e.pendingPublish)).toBe(true);
+		const rows = await deps.records.query({ where: { jobId: job.id }, limit: 100 });
+		expect(rows.items.filter((r) => r.data.status === "writing")).toEqual([]);
 	});
 
 	it("leaves records that fail again as failed and still completes", async () => {
