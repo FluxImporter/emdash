@@ -10,7 +10,8 @@
 		"typecheck": "pnpm -r --parallel typecheck",
 		"lint": "biome check .",
 		"format": "biome check --write .",
-		"test": "pnpm --filter flux-import test"
+		"test": "pnpm --filter flux-import test",
+		"test:integration": "pnpm --filter flux-import test:integration"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",
