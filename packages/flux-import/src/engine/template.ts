@@ -90,10 +90,16 @@ function convert(
 	switch (mapping.type) {
 		case "text":
 			return { ok: true, value: raw };
-		case "number":
-			return NUMBER_RE.test(trimmed)
-				? { ok: true, value: Number(trimmed) }
-				: { ok: false, code: "invalid_number", message: `"${trimmed}" is not a number` };
+		case "number": {
+			if (!NUMBER_RE.test(trimmed)) {
+				return { ok: false, code: "invalid_number", message: `"${trimmed}" is not a number` };
+			}
+			const n = Number(trimmed);
+			if (!Number.isFinite(n)) {
+				return { ok: false, code: "invalid_number", message: `"${trimmed}" is not a number` };
+			}
+			return { ok: true, value: n };
+		}
 		case "date": {
 			const dt = mapping.format
 				? DateTime.fromFormat(trimmed, mapping.format, { zone: mapping.tz })

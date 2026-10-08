@@ -76,13 +76,16 @@ describe("applyTemplate", () => {
 		expect(result.ok && result.value.data).toEqual({ title: null, price: null, released: null });
 	});
 
-	it.each(["1,234", "0x10", "Infinity", "12abc", "1.2.3"])("rejects number %s", (Price) => {
-		const result = applyTemplate(template, { ...row, Price });
-		expect(result).toMatchObject({
-			ok: false,
-			errors: [{ field: "price", code: "invalid_number" }],
-		});
-	});
+	it.each(["1,234", "0x10", "Infinity", "12abc", "1.2.3", "1e999", "-1e999"])(
+		"rejects number %s",
+		(Price) => {
+			const result = applyTemplate(template, { ...row, Price });
+			expect(result).toMatchObject({
+				ok: false,
+				errors: [{ field: "price", code: "invalid_number" }],
+			});
+		},
+	);
 
 	it.each(["2026-03-01", "31/02/2026", "soon"])(
 		"rejects date %s for format dd/MM/yyyy",
