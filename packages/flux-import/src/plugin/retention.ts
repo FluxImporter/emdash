@@ -13,9 +13,9 @@ export interface PurgeResult {
 	uploads: number;
 }
 
-/** Deletes staged files older than a cutoff; `EmDashUploads` implements it. */
+/** Deletes staged files older than a cutoff, except upload IDs in `keep`; `EmDashUploads` implements it. */
 export interface UploadPurger {
-	purgeBefore(cutoff: Date): Promise<number>;
+	purgeBefore(cutoff: Date, keep?: ReadonlySet<string>): Promise<number>;
 }
 
 async function deleteRecords(deps: Pick<EngineDeps, "records">, jobId: string): Promise<number> {
@@ -58,5 +58,14 @@ export async function purgeExpired(
 		records += await deleteRecords(deps, id);
 		await deps.jobs.delete(id);
 	}
-	return { jobs: expired.length, records, uploads: await uploads.purgeBefore(cutoff) };
+
+	// Surviving jobs still read their source file, however old it is.
+	const keep = new Set<string>();
+	cursor = undefined;
+	do {
+		const page = await deps.jobs.query({ limit: PAGE, ...(cursor ? { cursor } : {}) });
+		for (const { data } of page.items) keep.add(data.uploadId);
+		cursor = page.hasMore ? page.cursor : undefined;
+	} while (cursor);
+	return { jobs: expired.length, records, uploads: await uploads.purgeBefore(cutoff, keep) };
 }

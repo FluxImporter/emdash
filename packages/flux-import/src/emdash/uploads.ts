@@ -85,8 +85,12 @@ export class EmDashUploads implements SourcePort {
 		}
 	}
 
-	/** Deletes staged files last modified before `cutoff`, including ones no job references. */
-	async purgeBefore(cutoff: Date): Promise<number> {
+	/**
+	 * Deletes staged files last modified before `cutoff`, including ones no job references.
+	 * Files whose upload ID is in `keep` are left alone.
+	 */
+	async purgeBefore(cutoff: Date, keep: ReadonlySet<string> = new Set()): Promise<number> {
+		const kept = new Set([...keep].map((id) => uploadKey(id)));
 		const expired: string[] = [];
 		let cursor: string | undefined;
 		do {
@@ -96,7 +100,9 @@ export class EmDashUploads implements SourcePort {
 				...(cursor ? { cursor } : {}),
 			});
 			for (const file of page.files) {
-				if (file.lastModified.getTime() < cutoff.getTime()) expired.push(file.key);
+				if (file.lastModified.getTime() < cutoff.getTime() && !kept.has(file.key)) {
+					expired.push(file.key);
+				}
 			}
 			cursor = page.nextCursor;
 		} while (cursor);

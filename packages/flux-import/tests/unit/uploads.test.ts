@@ -130,6 +130,19 @@ describe("EmDashUploads", () => {
 		await expect(uploads.open("../../etc/passwd", 0)).rejects.toBeInstanceOf(SourceMissingError);
 	});
 
+	it("keeps old files whose upload ID is in the keep set", async () => {
+		const { storage, uploads, uploadId } = await staged("old");
+		const { uploadId: other } = await stageUpload(storage, streamOf("old2"), 100);
+		storage.now = () => new Date("2026-10-09T00:00:00Z");
+		const removed = await uploads.purgeBefore(
+			new Date("2026-10-08T00:00:00Z"),
+			new Set([uploadId]),
+		);
+		expect(removed).toBe(1);
+		expect(storage.files.has(uploadKey(uploadId))).toBe(true);
+		expect(storage.files.has(uploadKey(other))).toBe(false);
+	});
+
 	it("deletes one upload and purges files older than a cutoff", async () => {
 		const { storage, uploads, uploadId } = await staged("old");
 		storage.now = () => new Date("2026-10-09T00:00:00Z");

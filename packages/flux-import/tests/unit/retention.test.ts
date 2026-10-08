@@ -16,8 +16,10 @@ const DAY = 24 * 60 * 60 * 1000;
 
 class Purger {
 	cutoffs: Date[] = [];
-	async purgeBefore(cutoff: Date) {
+	keeps: ReadonlySet<string>[] = [];
+	async purgeBefore(cutoff: Date, keep: ReadonlySet<string> = new Set()) {
 		this.cutoffs.push(cutoff);
+		this.keeps.push(keep);
 		return 2;
 	}
 }
@@ -41,6 +43,7 @@ describe("purgeExpired", () => {
 		expect((await deps.records.query({ where: { jobId: recent.id } })).items).toHaveLength(2);
 		expect(deps.links.rows.size).toBe(2);
 		expect(purger.cutoffs[0]!.getTime()).toBe(clock.t - 30 * DAY);
+		expect(purger.keeps[0]!.has("u1")).toBe(true);
 	});
 
 	it("leaves a job with a live lease for the next run", async () => {
@@ -53,7 +56,9 @@ describe("purgeExpired", () => {
 			lease: { holder: "h", expiresAt: clock.t + 60_000 },
 		});
 		clock.t += 1;
-		const result = await purgeExpired(deps, new Purger(), 0);
+		const purger = new Purger();
+		const result = await purgeExpired(deps, purger, 0);
+		expect(purger.keeps[0]).toEqual(new Set(["u1"]));
 		expect(result.jobs).toBe(0);
 		expect(await deps.jobs.get(job.id)).not.toBeNull();
 	});
