@@ -35,6 +35,31 @@ describe("upload route", () => {
 		expect(storage.files.size).toBe(0);
 	});
 
+	it("on Workers requires a Content-Length and reads nothing without one", async () => {
+		const global = globalThis as { FixedLengthStream?: unknown };
+		global.FixedLengthStream = class extends TransformStream {};
+		try {
+			let pulled = false;
+			const body = new ReadableStream<Uint8Array>(
+				{
+					pull(controller) {
+						pulled = true;
+						controller.enqueue(new TextEncoder().encode("a\n1\n"));
+						controller.close();
+					},
+				},
+				{ highWaterMark: 0 },
+			);
+			const { res, body: json, storage } = await post({ body, duplex: "half" });
+			expect(res.status).toBe(411);
+			expect(json).toMatchObject({ success: false, error: { code: "LENGTH_REQUIRED" } });
+			expect(storage.bodies).toEqual([]);
+			expect(pulled).toBe(false);
+		} finally {
+			delete global.FixedLengthStream;
+		}
+	});
+
 	it("stages a non-empty body", async () => {
 		const { res, body, storage } = await post({ body: streamOf("a\n1\n"), duplex: "half" });
 		expect(res.status).toBe(201);

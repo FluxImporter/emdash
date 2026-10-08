@@ -63,6 +63,23 @@ describe("purgeExpired", () => {
 		expect(await deps.jobs.get(job.id)).not.toBeNull();
 	});
 
+	it("stops deleting a job's records when a round deletes nothing", async () => {
+		const { deps, clock } = makeDeps();
+		deps.source.add("u1", "sku,Name\nA,1\n");
+		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		await runBatch(deps, job.id, "driver");
+		clock.t += 1;
+		deps.records.deleteMany = async () => 0;
+		let queries = 0;
+		const query = deps.records.query.bind(deps.records);
+		deps.records.query = (opts) => {
+			if (++queries > 5) throw new Error("deleteRecords did not stop");
+			return query(opts);
+		};
+		expect(await purgeExpired(deps, new Purger(), 0)).toMatchObject({ jobs: 1, records: 0 });
+		expect(queries).toBe(1);
+	});
+
 	it("pages through more records than one query returns", async () => {
 		const { deps, clock } = makeDeps();
 		let body = "sku,Name\n";

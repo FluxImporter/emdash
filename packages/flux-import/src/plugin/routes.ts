@@ -2,6 +2,7 @@ import { z } from "astro/zod";
 import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
 import { EmDashContent } from "../emdash/content.js";
+import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
@@ -163,8 +164,11 @@ export const routes: Record<string, PluginRoute> = {
 				...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
 				...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
 			};
-			return startJob(deps, options, (collection) =>
-				listSchemaFields(runtime.schemaRegistry, collection),
+			return startJob(
+				deps,
+				options,
+				(collection) => listSchemaFields(runtime.schemaRegistry, collection),
+				(locale) => resolveSiteLocale(locale),
 			);
 		});
 	}),

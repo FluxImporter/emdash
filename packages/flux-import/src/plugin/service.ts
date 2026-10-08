@@ -1,6 +1,8 @@
+import type { LocaleResolution } from "../emdash/locale.js";
+import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
 import { type CreateJobInput, createJob, JobError, transitionJob } from "../engine/jobs.js";
-import { buildLogCsv } from "../engine/log.js";
+import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { SourceMissingError } from "../engine/ports.js";
 import type { SchemaField } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
@@ -10,6 +12,13 @@ export const PAGE_SIZE = 50;
 export const SAMPLE_MAX = 20;
 /** Raw plugin responses are capped at 8 MiB (`PLUGIN_ROUTE_MAX_BODY_BYTES`, @emdash-cms/plugin-types). */
 export const LOG_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * Records one jobs/next call processes on Workers, whatever the job's batch size. Cloudflare
+ * allows 1,000 D1 queries per Worker invocation on the paid plan (50 on the free plan;
+ * https://developers.cloudflare.com/workers/platform/limits/), local workerd does not enforce it,
+ * and each record costs about nine plugin storage calls plus EmDash's own content queries.
+ */
+export const WORKERS_BATCH_CAP = 20;
 
 /** A failure the route layer turns into an HTTP error with this code and status. */
 export class ServiceError extends Error {
@@ -59,6 +68,9 @@ export async function sampleSource(
 
 export type StartJobInput = Omit<CreateJobInput, "schemaFields">;
 export type FieldLookup = (collection: string) => Promise<SchemaField[] | null>;
+export type LocaleResolver = (locale: string) => LocaleResolution;
+
+const keepLocale: LocaleResolver = (locale) => ({ ok: true, locale });
 
 function collectionOf(template: unknown): string | null {
 	return typeof template === "object" &&
@@ -69,19 +81,44 @@ function collectionOf(template: unknown): string | null {
 		: null;
 }
 
-/** Creates a job after reading the target collection's fields. */
+/**
+ * Replaces the template's locale with the site's casing of it, so entries are stored and found
+ * under the locale EmDash writes. A template without a string locale is left for createJob to
+ * report.
+ */
+function withSiteLocale(template: unknown, resolveLocale: LocaleResolver): unknown {
+	if (
+		typeof template !== "object" ||
+		template === null ||
+		!("locale" in template) ||
+		typeof template.locale !== "string"
+	) {
+		return template;
+	}
+	const resolved = resolveLocale(template.locale);
+	if (!resolved.ok) {
+		throw new JobError("invalid_template", "The template is invalid", [
+			`locale: ${resolved.message}`,
+		]);
+	}
+	return { ...template, locale: resolved.locale };
+}
+
+/** Creates a job after resolving the template locale and reading the target collection's fields. */
 export async function startJob(
 	deps: EngineDeps,
 	input: StartJobInput,
 	lookupFields: FieldLookup,
+	resolveLocale: LocaleResolver = keepLocale,
 ): Promise<Job> {
-	const collection = collectionOf(input.template);
+	const template = withSiteLocale(input.template, resolveLocale);
+	const collection = collectionOf(template);
 	// Without a collection name the template is invalid; createJob reports that with details.
 	const schemaFields = collection === null ? [] : await lookupFields(collection);
 	if (schemaFields === null) {
 		throw new JobError("invalid_template", `Collection "${collection}" does not exist`);
 	}
-	return createJob(deps, { ...input, schemaFields });
+	return createJob(deps, { ...input, template, schemaFields });
 }
 
 export async function getJob(deps: EngineDeps, id: string): Promise<Job> {
@@ -134,7 +171,12 @@ export async function nextBatch(
 	id: string,
 	holder: string,
 ): Promise<Job> {
-	const job = await runBatch(deps, id, holder);
+	const job = await runBatch(
+		deps,
+		id,
+		holder,
+		onWorkers() ? WORKERS_BATCH_CAP : Number.POSITIVE_INFINITY,
+	);
 	await releaseQuietly(deps, uploads, job);
 	return job;
 }
@@ -185,13 +227,17 @@ export async function jobLogCsv(
 	status?: RecordStatus,
 ): Promise<string> {
 	await getJob(deps, id);
-	const csv = await buildLogCsv(deps, id, status ? { status } : {});
-	if (new TextEncoder().encode(csv).byteLength > LOG_MAX_BYTES) {
+	try {
+		return await buildLogCsv(deps, id, {
+			...(status ? { status } : {}),
+			maxBytes: LOG_MAX_BYTES,
+		});
+	} catch (e) {
+		if (!(e instanceof LogTooLargeError)) throw e;
 		throw new ServiceError(
 			"LOG_TOO_LARGE",
 			"The log is larger than 8 MiB; download it per status (status=failed, conflict, …)",
 			413,
 		);
 	}
-	return csv;
 }

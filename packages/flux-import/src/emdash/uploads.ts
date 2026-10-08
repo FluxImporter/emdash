@@ -3,6 +3,7 @@ import type { Storage } from "emdash";
 import { ulid } from "emdash";
 import { SourceMissingError, type SourcePort } from "../engine/ports.js";
 import { emdashErrorCode } from "./errors.js";
+import { fixedLengthStream } from "./workers.js";
 
 /**
  * Staged source files live in `emdash.storage`, which serves every key outside `backups/` and
@@ -46,6 +47,14 @@ export class UploadTooLargeError extends Error {
 	constructor(readonly limit: number) {
 		super(`The upload exceeds the limit of ${limit} bytes`);
 		this.name = "UploadTooLargeError";
+	}
+}
+
+/** On Workers an upload must declare its length (see `stageUpload`). */
+export class LengthRequiredError extends Error {
+	constructor() {
+		super("Uploads require a Content-Length header");
+		this.name = "LengthRequiredError";
 	}
 }
 
@@ -117,28 +126,6 @@ export interface StagedUpload {
 	sha256: string;
 }
 
-/** Workers-only (`FixedLengthStream`): R2 `put()` needs a stream whose length is known. */
-type FixedLengthStreamCtor = new (length: number) => TransformStream<Uint8Array, Uint8Array>;
-
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array<ArrayBuffer>> {
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	const reader = stream.getReader();
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		chunks.push(value);
-		total += value.byteLength;
-	}
-	const out = new Uint8Array(total);
-	let at = 0;
-	for (const chunk of chunks) {
-		out.set(chunk, at);
-		at += chunk.byteLength;
-	}
-	return out;
-}
-
 /**
  * Streams `body` into storage under a new upload ID, counting and hashing on the way and failing
  * once more than `maxBytes` arrive. The local adapter buffers the stream before writing
@@ -147,8 +134,8 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array<A
  *
  * On Workers, R2 `put()` (@emdash-cms/cloudflare src/storage/r2.ts:55-83 passes the body
  * straight to the binding) rejects a stream of unknown length, so the counted stream goes through
- * `FixedLengthStream` when the request declared its length, and is buffered (at most
- * `maxBytes`) when it did not.
+ * `FixedLengthStream`. Without a declared length it throws `LengthRequiredError` before reading:
+ * buffering would hold about twice `maxBytes` in a 128 MB isolate.
  */
 export async function stageUpload(
 	storage: UploadStorage,
@@ -159,6 +146,8 @@ export async function stageUpload(
 	if (declaredLength !== undefined && declaredLength > maxBytes) {
 		throw new UploadTooLargeError(maxBytes);
 	}
+	const FixedLength = fixedLengthStream();
+	if (FixedLength && declaredLength === undefined) throw new LengthRequiredError();
 	const uploadId = newUploadId();
 	const key = uploadKey(uploadId);
 	const hash = createHash("sha256");
@@ -176,16 +165,11 @@ export async function stageUpload(
 			},
 		}),
 	);
-	const FixedLength = (globalThis as { FixedLengthStream?: FixedLengthStreamCtor })
-		.FixedLengthStream;
 	try {
-		let upload: ReadableStream<Uint8Array> | Uint8Array = counted;
-		if (FixedLength) {
-			upload =
-				declaredLength === undefined
-					? await readAll(counted)
-					: counted.pipeThrough(new FixedLength(declaredLength));
-		}
+		const upload =
+			FixedLength && declaredLength !== undefined
+				? counted.pipeThrough(new FixedLength(declaredLength))
+				: counted;
 		await storage.upload({ key, body: upload, contentType: "text/csv" });
 	} catch (e) {
 		await storage.delete(key).catch(() => {});

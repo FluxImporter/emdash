@@ -228,6 +228,23 @@ describe("EmDashContent", () => {
 		expect(await content.get("products", "fr", "e1")).toMatchObject({ id: "e1" });
 	});
 
+	it("matches the entry's locale case-insensitively", async () => {
+		const { content } = setup();
+		await content.create({ collection: "products", locale: "pt-BR", data: { title: "A" } });
+		expect(await content.get("products", "pt-br", "e1")).toMatchObject({ id: "e1" });
+		expect(await content.get("products", "PT-BR", "e1")).toMatchObject({ id: "e1" });
+		expect(await content.get("products", "pt", "e1")).toBeNull();
+	});
+
+	it("maps a deleted collection to collection_missing", async () => {
+		const { runtime, content } = setup();
+		runtime.handleContentCreate = async () =>
+			fail("COLLECTION_NOT_FOUND", "Collection 'products' not found");
+		await expect(
+			content.create({ collection: "products", locale: "en", data: { title: "A" } }),
+		).rejects.toMatchObject({ code: "collection_missing" });
+	});
+
 	it("finds by source ID with the locale and an indexed field filter", async () => {
 		const { runtime, content } = setup();
 		await content.create({ collection: "products", locale: "en", data: { flux_source_id: "S1" } });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildLogCsv, csvCell, LOG_COLUMNS, recordsToCsvLines } from "../../src/engine/log.js";
+import {
+	buildLogCsv,
+	csvCell,
+	LOG_COLUMNS,
+	LogTooLargeError,
+	recordsToCsvLines,
+} from "../../src/engine/log.js";
 import { type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
@@ -67,6 +73,29 @@ describe("buildLogCsv", () => {
 		expect(lines.length).toBe(251);
 		expect(lines[1]!.startsWith("1,")).toBe(true);
 		expect(lines[250]!.startsWith("250,")).toBe(true);
+	});
+
+	it("stops reading pages as soon as the byte budget is exceeded", async () => {
+		const { deps } = makeDeps();
+		for (let seq = 0; seq < 250; seq++) await deps.records.put(recordKey("j1", seq), row(seq));
+		let queries = 0;
+		const query = deps.records.query.bind(deps.records);
+		deps.records.query = (opts) => {
+			queries++;
+			return query(opts);
+		};
+		const error = await buildLogCsv(deps, "j1", { maxBytes: 500 }).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(LogTooLargeError);
+		expect(queries).toBe(1);
+		// A budget the whole log fits in changes nothing; it counts UTF-8 bytes, not characters
+		// ("éé" has as many characters as "S0" but two more bytes).
+		const full = await buildLogCsv(deps, "j1");
+		const bytes = new TextEncoder().encode(full).byteLength;
+		expect(await buildLogCsv(deps, "j1", { maxBytes: bytes })).toBe(full);
+		await deps.records.put(recordKey("j1", 0), row(0, { sourceKey: "éé" }));
+		await expect(buildLogCsv(deps, "j1", { maxBytes: bytes })).rejects.toBeInstanceOf(
+			LogTooLargeError,
+		);
 	});
 
 	it("filters by status", async () => {

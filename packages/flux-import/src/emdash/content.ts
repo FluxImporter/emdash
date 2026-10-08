@@ -85,10 +85,15 @@ function parse<T>(schema: z.ZodType<T>, data: unknown, op: string): T {
 
 /**
  * EmDash error codes become `emdash_<code>` record codes, so none can collide with the engine's
- * own codes (`publish_*` codes steer crash repair).
+ * own codes (`publish_*` codes steer crash repair). COLLECTION_NOT_FOUND (list, create and update
+ * handlers, src/api/handlers/content.ts:1006, :1413, :1709) becomes `collection_missing`, which
+ * fails the job rather than each record.
  */
 function writeError(op: string, error: HandlerResult["error"]): ContentWriteError {
 	const code = error?.code ?? "UNKNOWN_ERROR";
+	if (code === "COLLECTION_NOT_FOUND") {
+		return new ContentWriteError("collection_missing", `${op} failed: ${error?.message ?? code}`);
+	}
 	return new ContentWriteError(
 		`emdash_${code.toLowerCase()}`,
 		`${op} failed: ${error?.message ?? code}`,
@@ -128,7 +133,11 @@ export class EmDashContent implements ContentPort {
 			throw writeError("Reading the entry", result.error);
 		}
 		const { locale: entryLocale, ...snapshot } = snapshotOf(result.data, "Reading the entry");
-		return entryLocale === null || entryLocale === locale ? snapshot : null;
+		// EmDash stores the configured casing of a locale (resolveContentCreateLocale,
+		// src/i18n/config.ts:54-76), so compare without case.
+		return entryLocale === null || entryLocale.toLowerCase() === locale.toLowerCase()
+			? snapshot
+			: null;
 	}
 
 	async findBySourceId(

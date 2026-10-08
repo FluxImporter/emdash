@@ -23,7 +23,10 @@ async function deleteRecords(deps: Pick<EngineDeps, "records">, jobId: string): 
 	for (;;) {
 		const page = await deps.records.query({ where: { jobId }, limit: PAGE });
 		if (page.items.length === 0) return deleted;
-		deleted += await deps.records.deleteMany(page.items.map((i) => i.id));
+		const n = await deps.records.deleteMany(page.items.map((i) => i.id));
+		// Nothing deleted means the same page would come back forever; the next run tries again.
+		if (n === 0) return deleted;
+		deleted += n;
 	}
 }
 

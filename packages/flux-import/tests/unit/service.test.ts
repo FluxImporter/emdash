@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveSiteLocale } from "../../src/emdash/locale.js";
 import { JobError } from "../../src/engine/jobs.js";
 import type { Job } from "../../src/engine/types.js";
 import {
@@ -14,6 +15,7 @@ import {
 	sampleSource,
 	startJob,
 	uploadNeeded,
+	WORKERS_BATCH_CAP,
 } from "../../src/plugin/service.js";
 import { makeDeps } from "./fakes.js";
 
@@ -99,6 +101,40 @@ describe("startJob", () => {
 		).rejects.toMatchObject({
 			code: "invalid_template",
 		});
+	});
+
+	it("stores the site's casing of the template locale", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(1));
+		const resolve = (locale: string) =>
+			resolveSiteLocale(locale, { defaultLocale: "en", locales: ["en", "pt-BR"] });
+		const job = await startJob(
+			deps,
+			{ uploadId: "u1", template: { ...template, locale: "PT-br" }, dryRun: false },
+			fields,
+			resolve,
+		);
+		expect(job.template.locale).toBe("pt-BR");
+		expect((await deps.jobs.get(job.id))?.template.locale).toBe("pt-BR");
+	});
+
+	it("rejects a locale the site does not configure", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(1));
+		const resolve = (locale: string) =>
+			resolveSiteLocale(locale, { defaultLocale: "en", locales: ["en", "pt-BR"] });
+		const error = await startJob(
+			deps,
+			{ uploadId: "u1", template: { ...template, locale: "fr" }, dryRun: false },
+			fields,
+			resolve,
+		).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(JobError);
+		expect(error).toMatchObject({
+			code: "invalid_template",
+			details: ['locale: Locale "fr" is not configured for this site'],
+		});
+		expect(deps.jobs.rows.size).toBe(0);
 	});
 });
 
@@ -223,5 +259,62 @@ describe("reads", () => {
 		expect(error).toBeInstanceOf(ServiceError);
 		expect(error).toMatchObject({ code: "LOG_TOO_LARGE", status: 413 });
 		await expect(getJob(deps, "nope")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("refuses an oversized log without reading every page", async () => {
+		const { deps } = makeDeps();
+		const uploads = new Uploads();
+		deps.source.add("u1", csv(250));
+		const job = await startJob(
+			deps,
+			{ uploadId: "u1", template, dryRun: false, batchSize: 500 },
+			fields,
+		);
+		await drive(deps, uploads, job.id);
+		const row = (await deps.records.query({ where: { jobId: job.id, seq: 0 } })).items[0]!;
+		await deps.records.put(row.id, {
+			...row.data,
+			errors: [{ code: "x", message: "y".repeat(LOG_MAX_BYTES) }],
+		});
+		let queries = 0;
+		const query = deps.records.query.bind(deps.records);
+		deps.records.query = (opts) => {
+			queries++;
+			return query(opts);
+		};
+		await expect(jobLogCsv(deps, job.id)).rejects.toMatchObject({
+			code: "LOG_TOO_LARGE",
+			status: 413,
+		});
+		expect(queries).toBe(1);
+	});
+});
+
+describe("nextBatch on Workers", () => {
+	it(`processes at most ${WORKERS_BATCH_CAP} records per call, keeping the job's batch size`, async () => {
+		const global = globalThis as { FixedLengthStream?: unknown };
+		global.FixedLengthStream = class extends TransformStream {};
+		try {
+			const { deps } = makeDeps();
+			deps.source.add("u1", csv(60));
+			const job = await startJob(
+				deps,
+				{ uploadId: "u1", template, dryRun: false, batchSize: 50 },
+				fields,
+			);
+			const after = await nextBatch(deps, new Uploads(), job.id, "h");
+			expect(after.cursor.seq).toBe(WORKERS_BATCH_CAP);
+			expect(after.batchSize).toBe(50);
+		} finally {
+			delete global.FixedLengthStream;
+		}
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(60));
+		const job = await startJob(
+			deps,
+			{ uploadId: "u1", template, dryRun: false, batchSize: 50 },
+			fields,
+		);
+		expect((await nextBatch(deps, new Uploads(), job.id, "h")).cursor.seq).toBe(50);
 	});
 });

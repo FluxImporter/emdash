@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	EmDashUploads,
 	isUploadId,
+	LengthRequiredError,
 	newUploadId,
 	stageUpload,
 	UPLOAD_PREFIX,
@@ -66,7 +67,7 @@ describe("stageUpload", () => {
 		expect(storage.bodies).toEqual([]);
 	});
 
-	it("gives Workers storage a known-length stream, or bytes when the length is unknown", async () => {
+	it("gives Workers storage a known-length stream and refuses an unknown length", async () => {
 		const lengths: number[] = [];
 		class FakeFixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
 			constructor(length: number) {
@@ -79,11 +80,12 @@ describe("stageUpload", () => {
 		try {
 			const storage = new FakeStorage();
 			await stageUpload(storage, streamOf("a,b\n", 2), 100, 4);
-			await stageUpload(storage, streamOf("a,b\n", 2), 100);
+			await expect(stageUpload(storage, streamOf("a,b\n", 2), 100)).rejects.toBeInstanceOf(
+				LengthRequiredError,
+			);
 			expect(lengths).toEqual([4]);
-			expect(storage.bodies).toEqual(["stream", "bytes"]);
+			expect(storage.bodies).toEqual(["stream"]);
 			expect([...storage.files.values()].map((f) => new TextDecoder().decode(f.bytes))).toEqual([
-				"a,b\n",
 				"a,b\n",
 			]);
 		} finally {

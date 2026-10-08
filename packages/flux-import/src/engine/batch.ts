@@ -16,6 +16,11 @@ import {
 
 export const LEASE_GRACE_MS = 30_000;
 const CAS_ATTEMPTS = 5;
+/** Content errors that fail the job rather than the record being written. */
+const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
+	"collection_missing",
+	"source_id_field_invalid",
+]);
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
 type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
@@ -250,7 +255,8 @@ async function decide(
 		}
 		return await writeRecord(ctx, entry, plan, mapped.value);
 	} catch (e) {
-		if (!(e instanceof ContentWriteError)) throw e;
+		// A missing collection or a broken source-id field fails every record: fail the job instead.
+		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
 		return {
 			status: "failed",
 			sourceKey,
@@ -392,7 +398,12 @@ async function writeRecord(
 	};
 }
 
-async function importPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
+async function importPass(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+): Promise<Outcome> {
 	const stream = await deps.source.open(job.uploadId, job.cursor.offset);
 	let processed = 0;
 	for await (const rec of readCsvRecords(stream, {
@@ -403,7 +414,7 @@ async function importPass(deps: EngineDeps, job: Job, started: number): Promise<
 		await processRecord(deps, job, rec, { retry: false });
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
-		if (processed >= job.batchSize || deps.now() - started >= job.budgetMs) return { done: false };
+		if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 	}
 	return { done: true };
 }
@@ -442,7 +453,12 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 	}
 }
 
-async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
+async function retryPass(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+): Promise<Outcome> {
 	let processed = 0;
 	for (;;) {
 		const page = await deps.records.query({
@@ -452,7 +468,7 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 				seq: { gte: job.retryFromSeq },
 			},
 			orderBy: { seq: "asc" },
-			limit: Math.min(job.batchSize, RETRY_PAGE),
+			limit: Math.min(limit, RETRY_PAGE),
 		});
 		if (page.items.length === 0) {
 			job.counters = await tallyCounters(deps, job.id);
@@ -462,8 +478,7 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 			await processRecord(deps, job, await readOneRecord(deps, job, row), { retry: true });
 			job.retryFromSeq = row.seq + 1;
 			processed++;
-			if (processed >= job.batchSize || deps.now() - started >= job.budgetMs)
-				return { done: false };
+			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 		}
 	}
 }
@@ -471,13 +486,20 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 /**
  * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
- * live lease exists, whoever holds it (the same holder name included).
+ * live lease exists, whoever holds it (the same holder name included). A batch is at most
+ * `job.batchSize` records, and at most `maxRecords` when that is smaller; the job is not changed.
  */
-export async function runBatch(deps: EngineDeps, jobId: string, holder: string): Promise<Job> {
+export async function runBatch(
+	deps: EngineDeps,
+	jobId: string,
+	holder: string,
+	maxRecords = Number.POSITIVE_INFINITY,
+): Promise<Job> {
 	const claimed = await claim(deps, jobId, holder);
 	if (!claimed.ok) return claimed.job;
 	const job = claimed.job;
 	const started = deps.now();
+	const limit = Math.min(job.batchSize, maxRecords);
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {
@@ -486,15 +508,12 @@ export async function runBatch(deps: EngineDeps, jobId: string, holder: string):
 		}
 		outcome =
 			job.phase === "retry"
-				? await retryPass(deps, job, started)
-				: await importPass(deps, job, started);
+				? await retryPass(deps, job, started, limit)
+				: await importPass(deps, job, started, limit);
 	} catch (e) {
 		if (e instanceof SourceMissingError) {
 			outcome = { done: false, error: { code: "source_missing", message: e.message } };
-		} else if (
-			e instanceof ContentWriteError &&
-			(e.code === "collection_missing" || e.code === "source_id_field_invalid")
-		) {
+		} else if (e instanceof ContentWriteError && JOB_LEVEL_WRITE_ERRORS.has(e.code)) {
 			outcome = { done: false, error: { code: e.code, message: e.message } };
 		} else if (e instanceof CsvSyntaxError) {
 			outcome = {

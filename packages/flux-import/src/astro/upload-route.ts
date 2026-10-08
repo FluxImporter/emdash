@@ -1,6 +1,7 @@
 import { hasPermission } from "@emdash-cms/auth";
 import type { APIRoute } from "astro";
 import { EmDashUploads, stageUpload, UploadTooLargeError } from "../emdash/uploads.js";
+import { onWorkers } from "../emdash/workers.js";
 import { maxSourceBytes } from "./config.js";
 
 export const prerender = false;
@@ -36,6 +37,11 @@ export const POST: APIRoute = async ({ request, locals, url }) => {
 	if (declared !== undefined && Number.isFinite(declared) && declared > limit) {
 		void request.body?.cancel().catch(() => {});
 		return apiError("TOO_LARGE", `The upload exceeds the limit of ${limit} bytes`, 413);
+	}
+	// Workers buffer nothing: R2 needs the length up front (stageUpload), so ask the client for it.
+	if (onWorkers() && (declared === undefined || !Number.isSafeInteger(declared))) {
+		void request.body?.cancel().catch(() => {});
+		return apiError("LENGTH_REQUIRED", "Uploads require a Content-Length header", 411);
 	}
 	// Over HTTP an empty request still carries a body stream, so a declared or counted length of 0
 	// is what catches an empty upload.

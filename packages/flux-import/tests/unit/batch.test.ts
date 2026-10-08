@@ -618,6 +618,23 @@ describe("runBatch", () => {
 		expect(deps.content.entries.size).toBe(0);
 	});
 
+	it.each(["collection_missing", "source_id_field_invalid"])(
+		"fails the job when a record write reports %s",
+		async (code) => {
+			const { deps, job } = await setup(csv(3));
+			deps.content.failWrite = () => new ContentWriteError(code, "gone");
+			const after = await runBatch(deps, job.id, "driver");
+			expect(after).toMatchObject({
+				status: "failed",
+				failures: 0,
+				lease: null,
+				error: { code },
+				cursor: { seq: 0 },
+			});
+			expect(after.counters.failed).toBe(0);
+		},
+	);
+
 	it("fails the job when the source-id field is not an indexed string", async () => {
 		const { deps, job } = await setup(csv(2));
 		deps.content.ensureSourceIdField = async () => {
