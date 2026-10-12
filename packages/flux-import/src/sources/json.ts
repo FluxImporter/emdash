@@ -92,7 +92,17 @@ class ValueExtent {
 			return "more";
 		}
 		if (this.scalar) {
-			const ends = isJsonSpace(b) || b === COMMA || b === CLOSE_ARRAY || b === CLOSE_OBJECT;
+			// Quotes, openers and colons cannot continue a scalar; ending it here lets the next
+			// state reject them instead of losing track of strings and brackets.
+			const ends =
+				isJsonSpace(b) ||
+				b === COMMA ||
+				b === COLON ||
+				b === QUOTE ||
+				b === OPEN_ARRAY ||
+				b === OPEN_OBJECT ||
+				b === CLOSE_ARRAY ||
+				b === CLOSE_OBJECT;
 			return ends ? "before" : "more";
 		}
 		if (b === QUOTE) this.inString = true;

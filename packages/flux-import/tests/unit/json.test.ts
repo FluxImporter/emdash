@@ -86,6 +86,21 @@ describe("jsonReader", () => {
 		expect(error).toMatchObject({ code: "source_syntax", offset });
 	});
 
+	it.each([
+		["a quote inside a scalar", '[abc"]", 2]'],
+		["an array opening inside a scalar", "[1[2], 3]"],
+		["an object opening inside a scalar", '[1{"a":"]"}, 3]'],
+		["a malformed scalar next to a quote in a skipped value", '{"x": ab"c", "a": [1]}'],
+		["a bracket opening in a skipped scalar", '{"x": 1[2], "a": [1]}'],
+	])("fails with source_syntax rather than dropping records for %s", async (_name, input) => {
+		const records = input.startsWith("{") ? "a" : undefined;
+		for (const chunk of [1, 1 << 16]) {
+			const error = await readAll(jsonReader(records), input, chunk).catch((e: unknown) => e);
+			expect(error).toBeInstanceOf(SourceError);
+			expect(error).toMatchObject({ code: "source_syntax" });
+		}
+	});
+
 	it("yields the records before a structural error, then throws", async () => {
 		const input = '[{"a": 1}, {"a": 2}, {"a": "open';
 		const seen: unknown[] = [];
