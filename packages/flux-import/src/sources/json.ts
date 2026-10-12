@@ -3,7 +3,9 @@ import {
 	ByteBuffer,
 	type ByteScanner,
 	decodeUtf8,
+	drainRecords,
 	isJsonSpace,
+	MAX_NESTING,
 	MAX_RECORD_BYTES,
 	type RecordReader,
 	runScanner,
@@ -31,6 +33,25 @@ function describe(b: number): string {
 	return "a number";
 }
 
+/** 16 digits in a row: the text may hold an integer beyond 2^53 that `JSON.parse` would round. */
+const LONG_DIGITS = /\d{16}/;
+
+class UnsafeIntegerError extends Error {}
+
+/**
+ * A `JSON.parse` reviver that keeps an integer beyond 2^53 as its source text, so distinct IDs
+ * stay distinct. Without the reviver's source text (older runtimes) the record fails instead.
+ */
+function keepUnsafeIntegers(_key: string, value: unknown, context?: { source?: string }): unknown {
+	if (typeof value !== "number" || !Number.isInteger(value) || Number.isSafeInteger(value)) {
+		return value;
+	}
+	if (context?.source === undefined) {
+		throw new UnsafeIntegerError("Integer too large to import exactly");
+	}
+	return context.source;
+}
+
 /** Parses one record's bytes; a parse failure is the record's problem, not the job's. */
 export function parseJsonRecord(bytes: Uint8Array): Pick<SourceRecord, "value" | "error"> {
 	const text = decodeUtf8(bytes);
@@ -41,8 +62,13 @@ export function parseJsonRecord(bytes: Uint8Array): Pick<SourceRecord, "value" |
 		};
 	}
 	try {
-		return { value: JSON.parse(text) };
+		return {
+			value: LONG_DIGITS.test(text) ? JSON.parse(text, keepUnsafeIntegers) : JSON.parse(text),
+		};
 	} catch (e) {
+		if (e instanceof UnsafeIntegerError) {
+			return { value: null, error: { code: "invalid_record", message: e.message } };
+		}
 		const reason = e instanceof Error ? e.message : String(e);
 		return { value: null, error: { code: "invalid_record", message: `Invalid JSON: ${reason}` } };
 	}
@@ -72,13 +98,21 @@ class ValueExtent {
 		return this.scalar;
 	}
 
+	/** Opens a container; nesting deeper than `MAX_NESTING` fails the job at the opener. */
+	private open(closer: number, pos: number): void {
+		if (this.closers.length >= MAX_NESTING) {
+			throw syntaxError(`Nesting is deeper than ${MAX_NESTING} levels`, pos);
+		}
+		this.closers.push(closer);
+	}
+
 	/** "more": `b` belongs to the value; "done": `b` ends it; "before": it ended before `b`. */
 	step(b: number, pos: number): "more" | "done" | "before" {
 		if (!this.started) {
 			this.started = true;
 			if (b === QUOTE) this.inString = true;
-			else if (b === OPEN_OBJECT) this.closers.push(CLOSE_OBJECT);
-			else if (b === OPEN_ARRAY) this.closers.push(CLOSE_ARRAY);
+			else if (b === OPEN_OBJECT) this.open(CLOSE_OBJECT, pos);
+			else if (b === OPEN_ARRAY) this.open(CLOSE_ARRAY, pos);
 			else this.scalar = true;
 			return "more";
 		}
@@ -106,8 +140,8 @@ class ValueExtent {
 			return ends ? "before" : "more";
 		}
 		if (b === QUOTE) this.inString = true;
-		else if (b === OPEN_OBJECT) this.closers.push(CLOSE_OBJECT);
-		else if (b === OPEN_ARRAY) this.closers.push(CLOSE_ARRAY);
+		else if (b === OPEN_OBJECT) this.open(CLOSE_OBJECT, pos);
+		else if (b === OPEN_ARRAY) this.open(CLOSE_ARRAY, pos);
 		else if (b === CLOSE_OBJECT || b === CLOSE_ARRAY) {
 			if (this.closers.pop() !== b) {
 				throw syntaxError(`Unexpected "${String.fromCharCode(b)}"`, pos);
@@ -149,7 +183,7 @@ class JsonScanner implements ByteScanner {
 	private readonly buf = new ByteBuffer();
 	private start = 0;
 	private seq: number;
-	private out: SourceRecord[] = [];
+	private readonly out: SourceRecord[] = [];
 	bodyOffset = -1;
 
 	constructor(
@@ -167,9 +201,7 @@ class JsonScanner implements ByteScanner {
 	}
 
 	drain(): SourceRecord[] {
-		const out = this.out;
-		this.out = [];
-		return out;
+		return drainRecords(this.out);
 	}
 
 	private enterBody(offset: number): void {
@@ -410,7 +442,7 @@ class LineScanner implements ByteScanner {
 	private start = -1;
 	private blank = true;
 	private seq: number;
-	private out: SourceRecord[] = [];
+	private readonly out: SourceRecord[] = [];
 	readonly done = false;
 
 	constructor(startSeq: number) {
@@ -418,9 +450,7 @@ class LineScanner implements ByteScanner {
 	}
 
 	drain(): SourceRecord[] {
-		const out = this.out;
-		this.out = [];
-		return out;
+		return drainRecords(this.out);
 	}
 
 	step(b: number, pos: number): void {

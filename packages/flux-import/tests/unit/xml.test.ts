@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_RECORD_BYTES, SourceError } from "../../src/sources/reader.js";
+import { MAX_NESTING, MAX_RECORD_BYTES, SourceError } from "../../src/sources/reader.js";
 import { xmlReader } from "../../src/sources/xml.js";
 import { parseXmlRecordText } from "../../src/sources/xml-record.js";
 import { expectReaderInvariants, readAll, streamOf } from "./helpers.js";
@@ -303,6 +303,68 @@ describe("xmlReader names with combining marks", () => {
 			expect(recs[0]?.value).toEqual({ a: "1" });
 			expect(recs.every((r) => r.error === undefined)).toBe(true);
 		}
+	});
+});
+
+describe("xmlReader bounds", () => {
+	const fail = (input: string, records = "feed/item") =>
+		readAll(xmlReader(records), input, 1 << 16).catch((e: unknown) => e);
+
+	it("fails a 100 KB end-tag name with a short source_syntax message", async () => {
+		const error = await fail(`<feed><item/></${"a".repeat(100_000)}></feed>`);
+		expect(error).toBeInstanceOf(SourceError);
+		expect(error).toMatchObject({ code: "source_syntax" });
+		expect((error as Error).message.length).toBeLessThan(200);
+	});
+
+	it("caps an end-tag name outside records like a start tag", async () => {
+		const error = await fail(`<feed><item/></${"a".repeat(MAX_RECORD_BYTES + 10)}></feed>`);
+		expect(error).toMatchObject({ code: "source_syntax", offset: 13 });
+		expect((error as Error).message).toMatch(/larger than/);
+	});
+
+	it("keeps long names short in structural messages", async () => {
+		const long = "a".repeat(100_000);
+		for (const input of [`<${long}><item/></${long}>`, `<feed><item/></feed><${long}/>`]) {
+			const error = await fail(input);
+			expect(error).toBeInstanceOf(SourceError);
+			expect((error as Error).message.length).toBeLessThan(200);
+		}
+	});
+
+	it("keeps long names short in record messages", async () => {
+		const long = "b".repeat(100_000);
+		const recs = await readAll(xmlReader("feed/item"), `<feed><item><1${long}/></item></feed>`);
+		expect(recs[0]?.error?.code).toBe("invalid_record");
+		expect(recs[0]!.error!.message.length).toBeLessThan(200);
+	});
+
+	it("reports a bare ampersand in text briefly", async () => {
+		const recs = await readAll(
+			xmlReader("feed/item"),
+			`<feed><item><t>Tom & Jerry ${"x".repeat(5000)};</t></item></feed>`,
+		);
+		expect(recs[0]?.error?.code).toBe("invalid_record");
+		expect(recs[0]!.error!.message.length).toBeLessThan(100);
+		expect(recs[0]!.error!.message).toMatch(/"&" must start an entity/);
+	});
+
+	it("reports an unknown entity by its name", () => {
+		expect(() => parseXmlRecordText("<i>&nbsp;</i>")).toThrow(/Unknown entity &nbsp;/);
+	});
+
+	it("fails the job for elements nested deeper than MAX_NESTING outside records", async () => {
+		const depth = 2000;
+		const input = `<feed>${"<a>".repeat(depth)}${"</a>".repeat(depth)}<item/></feed>`;
+		const error = await fail(input);
+		expect(error).toBeInstanceOf(SourceError);
+		expect(error).toMatchObject({ code: "source_syntax", offset: 6 + 3 * (MAX_NESTING - 1) });
+	});
+
+	it("reads elements nested up to MAX_NESTING outside records", async () => {
+		const depth = MAX_NESTING - 1;
+		const input = `<feed>${"<a>".repeat(depth)}${"</a>".repeat(depth)}<item/></feed>`;
+		expect(await readAll(xmlReader("feed/item"), input)).toHaveLength(1);
 	});
 });
 

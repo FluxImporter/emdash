@@ -69,6 +69,17 @@ export class SourceError extends Error {
 	}
 }
 
+/** Deepest nesting of JSON arrays and objects, or of XML elements outside records. */
+export const MAX_NESTING = 1000;
+
+/** Longest name quoted in an error message; longer names are cut and end in "…". */
+const MESSAGE_NAME_MAX = 64;
+
+/** A name from the source, cut short enough to quote in an error message. */
+export function shortName(name: string): string {
+	return name.length > MESSAGE_NAME_MAX ? `${name.slice(0, MESSAGE_NAME_MAX)}…` : name;
+}
+
 /** A `source_syntax` error (malformed JSON, JSON Lines or XML) at a byte offset. */
 export function syntaxError(message: string, offset: number): SourceError {
 	return new SourceError("source_syntax", message, offset);
@@ -77,7 +88,10 @@ export function syntaxError(message: string, offset: number): SourceError {
 /** Sampled responses stop adding records once they hold this many source bytes (one at least). */
 export const SAMPLE_MAX_BYTES = 1024 * 1024;
 
-/** Collects up to `n` error-free record values, stopping early at `SAMPLE_MAX_BYTES`. */
+/**
+ * Collects up to `n` error-free record values. A record that would take the sample past
+ * `SAMPLE_MAX_BYTES` ends it, except the first, which is always kept.
+ */
 export async function takeSample(
 	records: AsyncGenerator<SourceRecord>,
 	n: number,
@@ -86,9 +100,11 @@ export async function takeSample(
 	let bytes = 0;
 	for await (const rec of records) {
 		if (rec.error) continue;
+		const size = rec.end - rec.start;
+		if (values.length > 0 && bytes + size > SAMPLE_MAX_BYTES) break;
 		values.push(rec.value);
-		bytes += rec.end - rec.start;
-		if (values.length >= n || bytes >= SAMPLE_MAX_BYTES) break;
+		bytes += size;
+		if (values.length >= n) break;
 	}
 	return values;
 }
@@ -211,6 +227,11 @@ export interface ByteScanner {
 	finish(end: number): void;
 	/** Takes the records completed so far. */
 	drain(): SourceRecord[];
+}
+
+/** Takes the records queued in `out`, leaving it empty: a scanner's `drain`. */
+export function drainRecords(out: SourceRecord[]): SourceRecord[] {
+	return out.splice(0);
 }
 
 /**

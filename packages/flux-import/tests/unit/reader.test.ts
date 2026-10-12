@@ -66,6 +66,15 @@ describe("takeSample", () => {
 		expect(await takeSample(records([rec(0, big), rec(1, big), rec(2, big)]), 20)).toEqual([0, 1]);
 		expect(await takeSample(records([rec(0, SAMPLE_MAX_BYTES * 2)]), 20)).toEqual([0]);
 	});
+
+	it("does not add a record that would take the sample past SAMPLE_MAX_BYTES", async () => {
+		const list: SourceRecord[] = [
+			{ seq: 0, start: 0, end: 700_000, value: 0 },
+			{ seq: 1, start: 700_000, end: 1_400_000, value: 1 },
+			{ seq: 2, start: 1_400_000, end: 1_400_010, value: 2 },
+		];
+		expect(await takeSample(records(list), 20)).toEqual([0]);
+	});
 });
 
 const TRICKY =

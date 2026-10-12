@@ -3,14 +3,17 @@ import {
 	ByteBuffer,
 	type ByteScanner,
 	decodeUtf8,
+	drainRecords,
 	isJsonSpace,
+	MAX_NESTING,
 	MAX_RECORD_BYTES,
 	type RecordReader,
 	runScanner,
 	SourceError,
 	type SourceRecord,
+	sampleByRead,
+	shortName,
 	syntaxError,
-	takeSample,
 } from "./reader.js";
 import { parseXmlRecord, XML_NAME } from "./xml-record.js";
 
@@ -74,7 +77,7 @@ class XmlScanner implements ByteScanner {
 	private inRecord = false;
 	private recordStart = 0;
 	private seq: number;
-	private out: SourceRecord[] = [];
+	private readonly out: SourceRecord[] = [];
 	bodyOffset = -1;
 
 	constructor(
@@ -96,9 +99,7 @@ class XmlScanner implements ByteScanner {
 	}
 
 	drain(): SourceRecord[] {
-		const out = this.out;
-		this.out = [];
-		return out;
+		return drainRecords(this.out);
 	}
 
 	step(b: number, pos: number): void {
@@ -148,6 +149,9 @@ class XmlScanner implements ByteScanner {
 				this.inStartTag(b, pos);
 				return;
 			case "endName":
+				if (!this.inRecord && pos - this.markupStart >= MAX_RECORD_BYTES) {
+					throw syntax(`A tag is larger than ${MAX_RECORD_BYTES} bytes`, this.markupStart);
+				}
 				if (isSpace(b)) this.mode = "endSpace";
 				else if (b === GT) this.endTag(pos);
 				else if (b === LT) throw syntax('"<" inside a tag', pos);
@@ -280,11 +284,14 @@ class XmlScanner implements ByteScanner {
 		const name = this.tagName();
 		const depth = this.stack.length;
 		if (!this.inRecord && !XML_NAME.test(name)) {
-			throw syntax(`Invalid element name "${name}"`, this.markupStart);
+			throw syntax(`Invalid element name "${shortName(name)}"`, this.markupStart);
 		}
 		if (this.inRecord) {
 			if (!selfClosing) this.stack.push(name);
 			return;
+		}
+		if (!selfClosing && depth >= MAX_NESTING) {
+			throw syntax(`Elements are nested deeper than ${MAX_NESTING} levels`, this.markupStart);
 		}
 		if (depth === 0) {
 			if (this.closed) throw syntax("More than one root element", this.markupStart);
@@ -292,12 +299,16 @@ class XmlScanner implements ByteScanner {
 			if (name !== this.path[0]) {
 				throw new SourceError(
 					"invalid_source",
-					`The root element is <${name}>, not <${this.path[0]}>`,
+					`The root element is <${shortName(name)}>, not <${this.path[0]}>`,
 					this.markupStart,
 				);
 			}
 			if (selfClosing) {
-				throw new SourceError("invalid_source", `The root element <${name}/> is empty`, pos);
+				throw new SourceError(
+					"invalid_source",
+					`The root element <${shortName(name)}/> is empty`,
+					pos,
+				);
 			}
 			this.stack.push(name);
 			this.matched = 1;
@@ -330,8 +341,12 @@ class XmlScanner implements ByteScanner {
 		this.mode = "text";
 		const name = this.tagName();
 		const open = this.stack.at(-1);
-		if (open === undefined) throw syntax(`</${name}> has no start tag`, this.markupStart);
-		if (name !== open) throw syntax(`Expected </${open}>, found </${name}>`, this.markupStart);
+		if (open === undefined) {
+			throw syntax(`</${shortName(name)}> has no start tag`, this.markupStart);
+		}
+		if (name !== open) {
+			throw syntax(`Expected </${shortName(open)}>, found </${shortName(name)}>`, this.markupStart);
+		}
 		this.stack.pop();
 		const depth = this.stack.length;
 		if (this.inRecord && depth === this.parents) {
@@ -371,16 +386,17 @@ class XmlScanner implements ByteScanner {
 		if (this.mode !== "text") throw syntax("Unterminated markup", this.markupStart);
 		if (this.closed) return;
 		const open = this.stack.at(-1);
-		throw syntax(`Unterminated element <${open}>`, this.inRecord ? this.recordStart : end);
+		throw syntax(
+			`Unterminated element <${shortName(open ?? "")}>`,
+			this.inRecord ? this.recordStart : end,
+		);
 	}
 }
 
 /** XML: the elements at the `/` path `records` ("feed/item"). */
 export function xmlReader(records: string): RecordReader {
 	const path = records.split("/");
-	const scan = (stream: ReadableStream<Uint8Array>, startOffset: number, startSeq: number) =>
-		runScanner(stream, startOffset, new XmlScanner(path, startOffset, startSeq, false));
-	return {
+	const reader: RecordReader = {
 		async locate(stream) {
 			const scanner = new XmlScanner(path, 0, 0, true);
 			for await (const _ of runScanner(stream, 0, scanner)) {
@@ -388,10 +404,9 @@ export function xmlReader(records: string): RecordReader {
 			}
 			return { bodyOffset: scanner.bodyOffset };
 		},
-		read: (stream, { startOffset, startSeq }) => scan(stream, startOffset, startSeq),
-		async sample(stream, n) {
-			const values = await takeSample(scan(stream, 0, 0), n);
-			return { records: values, paths: collectPaths(values, "xml") };
-		},
+		read: (stream, { startOffset, startSeq }) =>
+			runScanner(stream, startOffset, new XmlScanner(path, startOffset, startSeq, false)),
+		sample: (stream, n) => sampleByRead(reader, stream, n, (r) => collectPaths(r, "xml")),
 	};
+	return reader;
 }

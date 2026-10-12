@@ -219,3 +219,24 @@ describe("jobs created before M3a", () => {
 		expect([...deps.content.entries.values()].map((e) => e.data.title)).toEqual(["Desk", "Lamp"]);
 	});
 });
+
+describe("JSON keys beyond 2^53", () => {
+	it("imports adjacent unsafe integer keys as two entries", async () => {
+		const body = '[{"sku": 9007199254740993, "name": "A"}, {"sku": 9007199254740992, "name": "B"}]';
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			source: { format: "json" },
+			key: { from: "sku" },
+			fields: { title: { from: "name", type: "text" } },
+		};
+		const { deps, job } = await setup(body, template);
+		const done = await runToEnd(deps, job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 2, failed: 0 } });
+		expect([...deps.content.entries.values()].map((e) => e.data.flux_source_id).sort()).toEqual([
+			"9007199254740992",
+			"9007199254740993",
+		]);
+	});
+});

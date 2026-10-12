@@ -1,6 +1,5 @@
 import type { SourceFormat } from "./reader.js";
-
-const XML_NAME = /^[^\s/@#<>&"'=]+$/;
+import { XML_NAME } from "./xml-record.js";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -58,8 +57,13 @@ export function resolvePath(value: unknown, path: string, format: SourceFormat):
 		return isPlainObject(value) && Object.hasOwn(value, path) ? value[path] : undefined;
 	}
 	let current: unknown = value;
-	for (const part of segments(path, format)) {
+	const parts = segments(path, format);
+	for (const [i, part] of parts.entries()) {
 		if (Array.isArray(current)) return current;
+		// An element with only text collapses to a string; its `#text` is that string.
+		if (format === "xml" && typeof current === "string" && part === "#text") {
+			return i === parts.length - 1 ? current : undefined;
+		}
 		if (!isPlainObject(current) || !Object.hasOwn(current, part)) return undefined;
 		current = current[part];
 	}

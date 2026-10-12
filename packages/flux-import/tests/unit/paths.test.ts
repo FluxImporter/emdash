@@ -53,6 +53,13 @@ describe("resolvePath", () => {
 		expect(resolvePath(xml, "body", "xml")).toEqual({ p: "x", "#text": "mixed" });
 		expect(resolvePath(xml, "body/#text", "xml")).toBe("mixed");
 	});
+
+	it("reads #text of a text element whether or not it has attributes", () => {
+		expect(resolvePath({ title: "Desk" }, "title/#text", "xml")).toBe("Desk");
+		expect(resolvePath(xml, "title/#text", "xml")).toBe("Desk");
+		expect(resolvePath({ title: "Desk" }, "title/#text/x", "xml")).toBeUndefined();
+		expect(resolvePath({ title: "Desk" }, "title/#text", "json")).toBeUndefined();
+	});
 });
 
 describe("collectPaths", () => {
@@ -108,6 +115,8 @@ describe("path syntax", () => {
 		["xml", "body/#text", null],
 		["xml", "@sku/title", /invalid/],
 		["xml", "a b", /invalid/],
+		["xml", "1title", /invalid/],
+		["xml", "title/@1lang", /invalid/],
 		["csv", "Any Column!", null],
 	] as const)("%s path %s", (format, path, problem) => {
 		const result = pathProblem(path, format);
@@ -121,5 +130,6 @@ describe("path syntax", () => {
 		expect(recordsPathProblem("feed/item", "xml")).toBeNull();
 		expect(recordsPathProblem("item", "xml")).toMatch(/root element and the record element/);
 		expect(recordsPathProblem("feed/@sku", "xml")).toMatch(/invalid element name/);
+		expect(recordsPathProblem("feed/1item", "xml")).toMatch(/invalid element name "1item"/);
 	});
 });

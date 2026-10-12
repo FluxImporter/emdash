@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { dropBytes } from "../../src/sources/csv.js";
 import { jsonlReader, jsonReader } from "../../src/sources/json.js";
-import { MAX_RECORD_BYTES, SourceError } from "../../src/sources/reader.js";
+import { MAX_NESTING, MAX_RECORD_BYTES, SourceError } from "../../src/sources/reader.js";
 import { collect, expectReaderInvariants, readAll, streamOf } from "./helpers.js";
 
 /** Decoys before the records: a "data.products" path inside another key, brackets in strings. */
@@ -48,11 +48,41 @@ describe("jsonReader", () => {
 		expect(await readAll(jsonReader("a"), '{"a": []}', 1)).toEqual([]);
 	});
 
-	it("parses deep nesting inside a record", async () => {
-		const deep = `${"[".repeat(10_000)}${"]".repeat(10_000)}`;
+	it("parses nesting up to MAX_NESTING inside a record", async () => {
+		const deep = `${"[".repeat(MAX_NESTING)}${"]".repeat(MAX_NESTING)}`;
 		const recs = await readAll(jsonReader(), `[${deep}, {"b": 1}]`, 1000);
 		expect(recs).toHaveLength(2);
 		expect(recs[0]!.error).toBeUndefined();
+	});
+
+	it("fails the job for nesting deeper than MAX_NESTING inside a record", async () => {
+		const deep = `${"[".repeat(10_000)}${"]".repeat(10_000)}`;
+		const error = await readAll(jsonReader(), `[${deep}, {"b": 1}]`, 1000).catch((e) => e);
+		expect(error).toBeInstanceOf(SourceError);
+		expect(error).toMatchObject({ code: "source_syntax", offset: 1 + MAX_NESTING });
+	});
+
+	it("fails locate for nesting deeper than MAX_NESTING in a skipped value", async () => {
+		const deep = `${"[".repeat(10_000)}${"]".repeat(10_000)}`;
+		const error = await jsonReader("data")
+			.locate(streamOf(`{"skip": ${deep}, "data": []}`, 1000))
+			.catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(SourceError);
+		expect(error).toMatchObject({ code: "source_syntax", offset: 9 + MAX_NESTING });
+	});
+
+	it("keeps integers beyond 2^53 exact as their source text", async () => {
+		const input = '[{"id": 9007199254740993}, {"id": 9007199254740992}, {"id": 12, "p": 1.5}]';
+		expect(values(await readAll(jsonReader(), input))).toEqual([
+			{ id: "9007199254740993" },
+			{ id: "9007199254740992" },
+			{ id: 12, p: 1.5 },
+		]);
+		const lines = '{"id": -12345678901234567890}\n{"id": 9007199254740991}\n';
+		expect(values(await readAll(jsonlReader(), lines))).toEqual([
+			{ id: "-12345678901234567890" },
+			{ id: 9007199254740991 },
+		]);
 	});
 
 	it("fails only the record whose bytes do not parse", async () => {

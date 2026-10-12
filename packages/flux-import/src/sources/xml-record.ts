@@ -1,4 +1,4 @@
-import { decodeUtf8, type SourceRecord } from "./reader.js";
+import { decodeUtf8, type SourceRecord, shortName } from "./reader.js";
 
 const NAME = /[^\s/>=<"'&!?]+/y;
 const SPACE = /\s*/y;
@@ -10,11 +10,17 @@ const NOT_BLANK = /[^ \t\r\n]/;
 
 class XmlRecordError extends Error {}
 
+/**
+ * An entity reference, or a bare "&": a name of at most 32 characters without spaces, "&" or "<",
+ * then the ";" that a bare "&" lacks. A longer name reads as a bare "&", so messages stay short.
+ */
+const ENTITY = /&([^;&\s<]{0,32})(;?)/g;
+
 /** Decodes the five predefined entities and numeric character references; others are errors. */
 function decodeEntities(raw: string): string {
 	if (!raw.includes("&")) return raw;
-	return raw.replace(/&([^;]*);?/g, (match, name: string) => {
-		if (!match.endsWith(";")) throw new XmlRecordError(`"&" must start an entity such as &amp;`);
+	return raw.replace(ENTITY, (_match, name: string, semicolon: string) => {
+		if (semicolon === "") throw new XmlRecordError(`"&" must start an entity such as &amp;`);
 		const predefined = PREDEFINED[name];
 		if (predefined !== undefined) return predefined;
 		const hex = /^#x([0-9a-fA-F]{1,6})$/.exec(name);
@@ -68,7 +74,7 @@ export function parseXmlRecordText(xml: string): unknown {
 		if (!m) fail(`Expected a name at character ${i}`);
 		i = NAME.lastIndex;
 		const found = (m as RegExpExecArray)[0];
-		if (!XML_NAME.test(found)) fail(`Invalid name "${found}"`);
+		if (!XML_NAME.test(found)) fail(`Invalid name "${shortName(found)}"`);
 		return found;
 	};
 	const space = () => {
@@ -112,10 +118,10 @@ export function parseXmlRecordText(xml: string): unknown {
 			i += 2;
 			const closing = name();
 			space();
-			if (src[i] !== ">") fail(`Expected ">" after </${closing}`);
+			if (src[i] !== ">") fail(`Expected ">" after </${shortName(closing)}`);
 			i++;
 			const frame = stack.pop();
-			if (!frame || frame.name !== closing) fail(`Unexpected </${closing}>`);
+			if (!frame || frame.name !== closing) fail(`Unexpected </${shortName(closing)}>`);
 			const value = close(frame as Frame);
 			if (stack.length === 0) {
 				if (NOT_BLANK.test(src.slice(i))) fail("Content after the record element");
@@ -128,18 +134,21 @@ export function parseXmlRecordText(xml: string): unknown {
 				const before = i;
 				space();
 				if (src.startsWith("/>", i) || src[i] === ">") break;
-				if (i === before) fail(`Expected a space before attribute in <${frame.name}>`);
+				if (i === before) {
+					fail(`Expected a space before attribute in <${shortName(frame.name)}>`);
+				}
 				const attr = name();
+				const quoted = shortName(attr);
 				space();
-				if (src[i] !== "=") fail(`Expected "=" after attribute ${attr}`);
+				if (src[i] !== "=") fail(`Expected "=" after attribute ${quoted}`);
 				i++;
 				space();
 				const quote = src[i];
-				if (quote !== '"' && quote !== "'") fail(`Attribute ${attr} must be quoted`);
+				if (quote !== '"' && quote !== "'") fail(`Attribute ${quoted} must be quoted`);
 				i++;
-				const raw = skipPast(quote as string, `attribute ${attr}`);
-				if (raw.includes("<")) fail(`"<" is not allowed in attribute ${attr}`);
-				if (frame.attrs.some(([k]) => k === attr)) fail(`Duplicate attribute ${attr}`);
+				const raw = skipPast(quote as string, `attribute ${quoted}`);
+				if (raw.includes("<")) fail(`"<" is not allowed in attribute ${quoted}`);
+				if (frame.attrs.some(([k]) => k === attr)) fail(`Duplicate attribute ${quoted}`);
 				frame.attrs.push([attr, decodeEntities(raw)]);
 			}
 			if (src[i] === "/") {
