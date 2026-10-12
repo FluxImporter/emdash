@@ -12,7 +12,7 @@ import {
 	syntaxError,
 	takeSample,
 } from "./reader.js";
-import { parseXmlRecord } from "./xml-record.js";
+import { parseXmlRecord, XML_NAME } from "./xml-record.js";
 
 const LT = 0x3c;
 const GT = 0x3e;
@@ -163,6 +163,9 @@ class XmlScanner implements ByteScanner {
 					this.run = 0;
 					this.mode = "comment";
 				} else if (this.bang === "[CDATA[") {
+					if (!this.rootSeen || this.closed) {
+						throw syntax("CDATA outside the root element", this.markupStart);
+					}
 					this.run = 0;
 					this.mode = "cdata";
 				} else if (this.bang === "DOCTYPE") {
@@ -200,7 +203,14 @@ class XmlScanner implements ByteScanner {
 					);
 				}
 				if (b !== GT) {
-					if (this.doctype.length < PROLOG_PI_MAX) this.doctype += String.fromCharCode(b);
+					if (this.doctype.length >= PROLOG_PI_MAX) {
+						throw new SourceError(
+							"xml_dtd_not_allowed",
+							"The DOCTYPE is too long to check; DTDs are not allowed",
+							this.markupStart,
+						);
+					}
+					this.doctype += String.fromCharCode(b);
 					return;
 				}
 				if (this.doctype.trim().split(/\s+/).length > 1) {
@@ -269,6 +279,9 @@ class XmlScanner implements ByteScanner {
 		this.mode = "text";
 		const name = this.tagName();
 		const depth = this.stack.length;
+		if (!this.inRecord && !XML_NAME.test(name)) {
+			throw syntax(`Invalid element name "${name}"`, this.markupStart);
+		}
 		if (this.inRecord) {
 			if (!selfClosing) this.stack.push(name);
 			return;
@@ -342,7 +355,7 @@ class XmlScanner implements ByteScanner {
 		const text = decodeUtf8(this.pi.bytes()) ?? "";
 		if (!/^xml\s/.test(text)) return;
 		const encoding = /encoding\s*=\s*["']([^"']*)["']/.exec(text)?.[1];
-		if (encoding !== undefined && !/^utf-?8$/i.test(encoding)) {
+		if (encoding !== undefined && !/^(utf-?8|us-ascii|ascii)$/i.test(encoding)) {
 			throw new SourceError(
 				"unsupported_encoding",
 				`The XML declaration names encoding "${encoding}"; only UTF-8 is supported`,

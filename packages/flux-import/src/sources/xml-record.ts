@@ -4,6 +4,10 @@ const NAME = /[^\s/>=<"'&!?]+/y;
 const SPACE = /\s*/y;
 const PREDEFINED: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
 
+/** An XML name: starts with a letter, "_" or ":"; then letters, digits, ".", "-", "_" or ":". */
+export const XML_NAME = /^[\p{L}_:][\p{L}\p{N}._:-]*$/u;
+const NOT_BLANK = /[^ \t\r\n]/;
+
 class XmlRecordError extends Error {}
 
 /** Decodes the five predefined entities and numeric character references; others are errors. */
@@ -46,7 +50,7 @@ function finish(frame: Frame, isRecord: boolean): unknown {
 	for (const [name, values] of frame.children) {
 		entries.push([name, values.length === 1 ? values[0] : values]);
 	}
-	if (text.trim() !== "") entries.push(["#text", text]);
+	if (NOT_BLANK.test(text)) entries.push(["#text", text]);
 	return Object.fromEntries(entries);
 }
 
@@ -63,7 +67,9 @@ export function parseXmlRecordText(xml: string): unknown {
 		const m = NAME.exec(src);
 		if (!m) fail(`Expected a name at character ${i}`);
 		i = NAME.lastIndex;
-		return (m as RegExpExecArray)[0];
+		const found = (m as RegExpExecArray)[0];
+		if (!XML_NAME.test(found)) fail(`Invalid name "${found}"`);
+		return found;
 	};
 	const space = () => {
 		SPACE.lastIndex = i;
@@ -112,7 +118,7 @@ export function parseXmlRecordText(xml: string): unknown {
 			if (!frame || frame.name !== closing) fail(`Unexpected </${closing}>`);
 			const value = close(frame as Frame);
 			if (stack.length === 0) {
-				if (src.slice(i).trim() !== "") fail("Content after the record element");
+				if (NOT_BLANK.test(src.slice(i))) fail("Content after the record element");
 				return value;
 			}
 		} else if (src[i] === "<") {
@@ -140,7 +146,7 @@ export function parseXmlRecordText(xml: string): unknown {
 				i += 2;
 				if (stack.length === 0) {
 					const value = finish(frame, true);
-					if (src.slice(i).trim() !== "") fail("Content after the record element");
+					if (NOT_BLANK.test(src.slice(i))) fail("Content after the record element");
 					return value;
 				}
 				close(frame);

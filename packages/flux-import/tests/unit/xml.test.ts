@@ -214,6 +214,76 @@ describe("xmlReader on malformed structure", () => {
 	});
 });
 
+describe("xmlReader hardening", () => {
+	const locateError = (input: string) =>
+		xmlReader("feed/item")
+			.locate(streamOf(input, 1))
+			.catch((e: unknown) => e);
+
+	it.each([
+		[
+			"spaces before the external id",
+			`<!DOCTYPE${" ".repeat(1100)}feed SYSTEM "x.dtd"><feed><item/></feed>`,
+		],
+		[
+			"a long root name before SYSTEM",
+			`<!DOCTYPE ${"f".repeat(1100)} SYSTEM "x.dtd"><feed><item/></feed>`,
+		],
+	])("rejects a DOCTYPE padded past the cap: %s", async (_name, input) => {
+		expect(await locateError(input)).toMatchObject({ code: "xml_dtd_not_allowed" });
+	});
+
+	it.each(["US-ASCII", "ascii", "utf8", "UTF-8"])("accepts the %s declaration", async (enc) => {
+		const input = `<?xml version="1.0" encoding="${enc}"?><feed><item a="1"/></feed>`;
+		expect((await readAll(xmlReader("feed/item"), input)).map((r) => r.value)).toEqual([
+			{ "@a": "1" },
+		]);
+	});
+
+	it.each([
+		["before the root", "<![CDATA[x]]><feed><item/></feed>"],
+		["after the root", "<feed><item/></feed><![CDATA[x]]>"],
+	])("rejects CDATA %s", async (_name, input) => {
+		for (const size of [1, 1 << 16]) {
+			expect(
+				await readAll(xmlReader("feed/item"), input, size).catch((e: unknown) => e),
+			).toMatchObject({
+				code: "source_syntax",
+			});
+		}
+	});
+
+	it("keeps non-breaking space text", async () => {
+		const recs = await readAll(
+			xmlReader("feed/item"),
+			"<feed><item>&#160;</item><item> \n</item></feed>",
+		);
+		expect(recs.map((r) => r.value)).toEqual([{ "#text": "\u00a0" }, {}]);
+	});
+
+	it("rejects an invalid structural element name instead of skipping it", async () => {
+		const input = "<feed><item=x></item=x><item/></feed>";
+		for (const size of [1, 1 << 16]) {
+			expect(
+				await readAll(xmlReader("feed/item"), input, size).catch((e: unknown) => e),
+			).toMatchObject({
+				code: "source_syntax",
+			});
+		}
+	});
+
+	it.each(["<@a>x</@a>", "<#text>x</#text>", "<a=b>x</a=b>", "<1a/>"])(
+		"fails only the record with invalid child name %s",
+		async (child) => {
+			const input = `<feed><item>${child}</item><item><ok>1</ok></item></feed>`;
+			for (const size of [1, 1 << 16]) {
+				const recs = await readAll(xmlReader("feed/item"), input, size);
+				expect(recs.map((r) => r.error?.code ?? r.value)).toEqual(["invalid_record", { ok: "1" }]);
+			}
+		},
+	);
+});
+
 describe("parseXmlRecordText", () => {
 	it("keeps keys as own properties", () => {
 		const value = parseXmlRecordText("<item><__proto__>x</__proto__></item>") as object;
