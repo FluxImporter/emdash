@@ -69,26 +69,36 @@ export function resolvePath(value: unknown, path: string, format: SourceFormat):
 	return current;
 }
 
+/** Deepest segment count `collectPaths` descends to; a path at this depth is a leaf. */
+export const PATHS_MAX_DEPTH = 32;
+/** Most distinct paths `collectPaths` returns. */
+export const PATHS_MAX_COUNT = 1000;
+
 /**
  * The distinct field paths in sampled records, in first-seen order, for the mapper. Nested
  * objects are walked; arrays and scalars are leaves. JSON keys containing "." cannot be
  * addressed and are left out. XML lists `@attributes`, text elements, and `#text` is implied.
+ * The walk stops descending at `PATHS_MAX_DEPTH` segments and stops at `PATHS_MAX_COUNT` paths.
  */
 export function collectPaths(records: unknown[], format: "json" | "xml"): string[] {
 	const found = new Set<string>();
 	const sep = format === "xml" ? "/" : ".";
-	const walk = (obj: Record<string, unknown>, prefix: string) => {
+	const walk = (obj: Record<string, unknown>, prefix: string, depth: number) => {
 		for (const [key, v] of Object.entries(obj)) {
+			if (found.size >= PATHS_MAX_COUNT) return;
 			if (key === "#text" || (format === "json" && key.includes("."))) continue;
 			const path = prefix === "" ? key : `${prefix}${sep}${key}`;
-			if (!isPlainObject(v)) {
+			if (!isPlainObject(v) || depth + 1 >= PATHS_MAX_DEPTH) {
 				found.add(path);
 				continue;
 			}
 			if (format === "xml" && isTextElement(v)) found.add(path);
-			walk(v, path);
+			walk(v, path, depth + 1);
 		}
 	};
-	for (const record of records) if (isPlainObject(record)) walk(record, "");
+	for (const record of records) {
+		if (found.size >= PATHS_MAX_COUNT) break;
+		if (isPlainObject(record)) walk(record, "", 0);
+	}
 	return [...found];
 }

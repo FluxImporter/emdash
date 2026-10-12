@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	collectPaths,
+	PATHS_MAX_COUNT,
+	PATHS_MAX_DEPTH,
 	pathProblem,
 	recordsPathProblem,
 	resolvePath,
@@ -76,6 +78,24 @@ describe("collectPaths", () => {
 			"images/image",
 			"body/p",
 		]);
+	});
+
+	it("stops descending at the depth limit and treats that path as a leaf", () => {
+		let deep: Record<string, unknown> = { leaf: 1 };
+		for (let i = 0; i < 100; i++) deep = { n: deep };
+		const paths = collectPaths([deep], "json");
+		expect(paths).toHaveLength(1);
+		const deepest = paths[0] as string;
+		expect(deepest.split(".")).toHaveLength(PATHS_MAX_DEPTH);
+	});
+
+	it("returns at most PATHS_MAX_COUNT distinct paths", () => {
+		const wide: Record<string, number> = {};
+		for (let i = 0; i < 2000; i++) wide[`k${i}`] = i;
+		const paths = collectPaths([wide], "json");
+		expect(paths).toHaveLength(PATHS_MAX_COUNT);
+		expect(paths[0]).toBe("k0");
+		expect(paths[PATHS_MAX_COUNT - 1]).toBe(`k${PATHS_MAX_COUNT - 1}`);
 	});
 });
 
