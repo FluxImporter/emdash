@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, inject, it } from "vitest";
+import { jsonTemplate, productsJson } from "../fixtures/formats.js";
 import { Client } from "../integration/client.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import { CF_SITE_DIR } from "./global-setup.js";
@@ -51,6 +52,38 @@ describe("workerd parity (D1, R2)", () => {
 		const done = await importCsv("cf_e2e", productsCsv(10), 4);
 		expect(done).toMatchObject({ status: "completed", counters: { created: 10, failed: 0 } });
 		const entries = await client.listAll("cf_e2e");
+		expect(entries.every((e) => e.status === "published")).toBe(true);
+	});
+
+	it("imports 10 JSON records at a records path, and a pasted snippet staged to R2", async () => {
+		await client.createProducts("cf_json");
+		const { uploadId } = await client.upload(productsJson(10, { wrapped: true }), "feed.json");
+		const template = jsonTemplate("cf_json", { format: "json", records: "data.products" });
+		const sample = await client.plugin<{ records: unknown[] }>("sources/sample", {
+			uploadId,
+			n: 2,
+			source: template.source,
+		});
+		expect(sample.records).toHaveLength(2);
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template,
+			dryRun: false,
+			batchSize: 4,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 10, failed: 0 } });
+
+		// Paste stages through FixedLengthStream into R2 (workerd only); same keys update nothing.
+		const pasted = await client.paste("json", productsJson(3));
+		const again = await client.plugin("jobs/create", {
+			uploadId: pasted.uploadId,
+			template: jsonTemplate("cf_json"),
+			dryRun: false,
+		});
+		expect((await client.runToEnd(again.id)).counters).toMatchObject({ unchanged: 3, failed: 0 });
+		const entries = await client.listAll("cf_json");
+		expect(entries).toHaveLength(10);
 		expect(entries.every((e) => e.status === "published")).toBe(true);
 	});
 
