@@ -5,6 +5,10 @@ export type Where = Record<string, unknown>;
 export interface KvCollection<T> {
 	get(id: string): Promise<T | null>;
 	put(id: string, data: T): Promise<void>;
+	/** Resolves `true` when a row was deleted. */
+	delete(id: string): Promise<boolean>;
+	/** Resolves the number of rows deleted. */
+	deleteMany(ids: string[]): Promise<number>;
 	getVersioned(id: string): Promise<{ value: T; revision: string } | null>;
 	compareAndSet(
 		id: string,
@@ -26,8 +30,9 @@ export interface EntrySnapshot {
 	slug: string | null;
 	data: Record<string, unknown>;
 	/**
-	 * The entry has a draft that is not live, or has never been published. Always `false` on
-	 * collections without revisions, where writes are live immediately.
+	 * The entry has a draft that is not live, or is not published (EmDash: `status` is not
+	 * `"published"` or `draftRevisionId` is set). On collections without revisions writes are
+	 * live immediately, so only an unpublished status counts there.
 	 */
 	pendingPublish: boolean;
 }

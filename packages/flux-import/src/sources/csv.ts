@@ -4,6 +4,12 @@ const CR = 0x0d;
 const LF = 0x0a;
 const BOM = [0xef, 0xbb, 0xbf];
 
+/**
+ * The largest record (a row with its quoted newlines) the reader accepts. It bounds memory per
+ * record, which matters in a 128 MB Workers isolate; a larger record makes the file unreadable.
+ */
+export const MAX_RECORD_BYTES = 4 * 1024 * 1024;
+
 export class CsvSyntaxError extends Error {
 	constructor(
 		message: string,
@@ -119,6 +125,9 @@ export async function* parseCsvRows(
 					}
 					continue;
 				}
+				if (p - rowStart >= MAX_RECORD_BYTES) {
+					throw new CsvSyntaxError(`A record is larger than ${MAX_RECORD_BYTES} bytes`, rowStart);
+				}
 				const row = feed(b, p);
 				if (row) yield row;
 			}
@@ -160,6 +169,27 @@ export async function readCsvHeader(stream: ReadableStream<Uint8Array>): Promise
 		return { headers: normalizeHeaders(row.fields), bodyOffset: row.end };
 	}
 	throw new CsvSyntaxError("CSV has no header row", 0);
+}
+
+export interface CsvSample {
+	headers: string[];
+	rows: string[][];
+}
+
+/** Reads the header and up to `n` rows, without validating column counts. */
+export async function readCsvSample(
+	stream: ReadableStream<Uint8Array>,
+	n: number,
+): Promise<CsvSample> {
+	let headers: string[] | null = null;
+	const rows: string[][] = [];
+	for await (const row of parseCsvRows(stream, 0)) {
+		if (headers === null) headers = normalizeHeaders(row.fields);
+		else rows.push(row.fields);
+		if (rows.length >= n) break;
+	}
+	if (headers === null) throw new CsvSyntaxError("CSV has no header row", 0);
+	return { headers, rows };
 }
 
 export interface CsvRecord {

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
 	CsvSyntaxError,
 	dropBytes,
+	MAX_RECORD_BYTES,
 	normalizeHeaders,
 	parseCsvRows,
 	readCsvHeader,
 	readCsvRecords,
+	readCsvSample,
 } from "../../src/sources/csv.js";
 import { collect, streamOf } from "./helpers.js";
 
@@ -123,5 +125,41 @@ describe("readCsvRecords", () => {
 		);
 		expect(Object.getPrototypeOf(rec!.values)).toBe(Object.prototype);
 		expect(Object.keys(rec!.values)).toEqual(["__proto__", "x"]);
+	});
+});
+
+describe("record size limit", () => {
+	it("rejects a record larger than MAX_RECORD_BYTES with its start offset", async () => {
+		const huge = `sku,notes\nA1,ok\nB2,"${"x".repeat(MAX_RECORD_BYTES)}"\n`;
+		const error = await collect(parseCsvRows(streamOf(huge))).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(CsvSyntaxError);
+		expect(error).toMatchObject({ offset: "sku,notes\nA1,ok\n".length });
+	});
+
+	it("accepts a record just under the limit", async () => {
+		const big = `sku,notes\nA1,${"x".repeat(MAX_RECORD_BYTES - 10)}\n`;
+		const rows = await collect(parseCsvRows(streamOf(big)));
+		expect(rows).toHaveLength(2);
+	});
+});
+
+describe("readCsvSample", () => {
+	it("returns the headers and the first n rows", async () => {
+		const sample = await readCsvSample(streamOf("sku,name\nA,1\nB,2\nC,3\n"), 2);
+		expect(sample).toEqual({
+			headers: ["sku", "name"],
+			rows: [
+				["A", "1"],
+				["B", "2"],
+			],
+		});
+	});
+
+	it("returns fewer rows when the file is short and rejects an empty file", async () => {
+		expect(await readCsvSample(streamOf("sku\nA\n"), 20)).toEqual({
+			headers: ["sku"],
+			rows: [["A"]],
+		});
+		await expect(readCsvSample(streamOf(""), 5)).rejects.toBeInstanceOf(CsvSyntaxError);
 	});
 });

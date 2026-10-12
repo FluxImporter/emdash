@@ -1,10 +1,10 @@
 import type { PluginDescriptor } from "emdash";
-import { definePlugin } from "emdash";
+import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "./meta.js";
+import { createPlugin, type FluxImportOptions } from "./plugin/definition.js";
 
-export const FLUX_IMPORT_ID = "flux-import";
-export const FLUX_IMPORT_VERSION = "0.1.0";
-
-export type FluxImportOptions = Record<string, never>;
+export { type FluxImportRoutesOptions, fluxImportRoutes } from "./astro/integration.js";
+export { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "./meta.js";
+export { createPlugin, type FluxImportOptions };
 
 export function fluxImport(options: FluxImportOptions = {}): PluginDescriptor<FluxImportOptions> {
 	return {
@@ -14,14 +14,6 @@ export function fluxImport(options: FluxImportOptions = {}): PluginDescriptor<Fl
 		entrypoint: "flux-import",
 		options,
 	};
-}
-
-export function createPlugin(_options: FluxImportOptions = {}) {
-	return definePlugin({
-		id: FLUX_IMPORT_ID,
-		version: FLUX_IMPORT_VERSION,
-		capabilities: [],
-	});
 }
 
 export default createPlugin;

@@ -16,6 +16,11 @@ import {
 
 export const LEASE_GRACE_MS = 30_000;
 const CAS_ATTEMPTS = 5;
+/** Content errors that fail the job rather than the record being written. */
+const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
+	"collection_missing",
+	"source_id_field_invalid",
+]);
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
 type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
@@ -78,7 +83,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			schemaReady: job.schemaReady,
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
-			error: outcome.error ?? stored.error,
+			// A finished batch clears an earlier unexpected error; other errors stay until resume.
+			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
 			lease: null,
 			updatedAt: iso(deps),
@@ -221,11 +227,15 @@ async function decide(
 	try {
 		let link = await deps.links.get(ctx.linkId);
 		let entry = link ? await deps.content.get(collection, locale, link.entryId) : null;
-		if (!entry && existing?.status === "writing") {
+		// Any earlier row of this job may stand for a write whose link was never saved: a crash
+		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
+		let repaired = false;
+		if (!entry && existing !== null) {
 			entry = await deps.content.findBySourceId(collection, locale, sourceKey);
 			if (entry) {
 				link = { collection, locale, sourceKey, entryId: entry.id };
 				await deps.links.put(ctx.linkId, link);
+				repaired = true;
 			}
 		}
 		entryId = entry?.id ?? null;
@@ -234,7 +244,8 @@ async function decide(
 		if (job.dryRun)
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
-		if (plan.action === "unchanged") return await finishUnchanged(ctx, entry, link, existing);
+		if (plan.action === "unchanged")
+			return await finishUnchanged(ctx, entry, link, existing, repaired);
 		if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
 			const code = "pending_draft";
 			return notImported("conflict", sourceKey, entry.id, plan.action, code, PENDING_DRAFT_MESSAGE);
@@ -244,7 +255,8 @@ async function decide(
 		}
 		return await writeRecord(ctx, entry, plan, mapped.value);
 	} catch (e) {
-		if (!(e instanceof ContentWriteError)) throw e;
+		// A missing collection or a broken source-id field fails every record: fail the job instead.
+		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
 		return {
 			status: "failed",
 			sourceKey,
@@ -261,13 +273,15 @@ async function finishUnchanged(
 	entry: EntrySnapshot,
 	link: LinkRow | null,
 	existing: RecordRow | null,
+	repaired: boolean,
 ): Promise<RowFields> {
 	const { job, sourceKey } = ctx;
 	const entryId = entry.id;
 	const unfinished =
-		existing !== null &&
-		(existing.status === "writing" ||
-			(existing.errors ?? []).some((e) => e.code.startsWith("publish_")));
+		repaired ||
+		(existing !== null &&
+			(existing.status === "writing" ||
+				(existing.errors ?? []).some((e) => e.code.startsWith("publish_"))));
 	if (!unfinished) {
 		// A pending draft at the revision this importer last produced is its own (an earlier
 		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
@@ -281,9 +295,13 @@ async function finishUnchanged(
 	}
 	const action = existing?.action;
 	const writtenRev = existing?.writtenRev;
+	// The recorded revision proves ownership only for the entry it was recorded for: revisions are
+	// version-derived, so a different entry (an editor's copy) can carry the same string.
+	const proven =
+		writtenRev !== undefined && existing?.entryId === entry.id && entry.rev === writtenRev;
 	if (job.publish && entry.pendingPublish) {
 		// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
-		if (writtenRev === undefined || entry.rev !== writtenRev) {
+		if (!proven) {
 			return {
 				status: "conflict",
 				sourceKey,
@@ -302,6 +320,10 @@ async function finishUnchanged(
 		const published = await publishRev(ctx, entryId, entry.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, entryId, action, writtenRev);
+	} else if (!job.publish && proven && link?.writtenRev !== writtenRev) {
+		// The crash came between saving the written revision and saving the link: the draft is
+		// provably ours, so record it on the link for a later publishing run.
+		await putLink(ctx, entryId, writtenRev);
 	}
 	return {
 		status: action === "create" ? "created" : "updated",
@@ -352,16 +374,17 @@ async function writeRecord(
 		}
 		written = { id: entry.id, rev: result.rev };
 	}
+	// Record the revision we wrote before anything else, so crash repair can prove a draft is ours
+	// and publishes or links only that revision.
+	await save({
+		status: "writing",
+		sourceKey,
+		entryId: written.id,
+		action: plan.action,
+		writtenRev: written.rev,
+	});
 	await putLink(ctx, written.id, written.rev);
 	if (job.publish) {
-		// Record the revision we wrote, so crash repair publishes only that revision.
-		await save({
-			status: "writing",
-			sourceKey,
-			entryId: written.id,
-			action: plan.action,
-			writtenRev: written.rev,
-		});
 		const published = await publishRev(ctx, written.id, written.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, written.id, plan.action, written.rev);
@@ -375,7 +398,12 @@ async function writeRecord(
 	};
 }
 
-async function importPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
+async function importPass(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+): Promise<Outcome> {
 	const stream = await deps.source.open(job.uploadId, job.cursor.offset);
 	let processed = 0;
 	for await (const rec of readCsvRecords(stream, {
@@ -386,7 +414,7 @@ async function importPass(deps: EngineDeps, job: Job, started: number): Promise<
 		await processRecord(deps, job, rec, { retry: false });
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
-		if (processed >= job.batchSize || deps.now() - started >= job.budgetMs) return { done: false };
+		if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 	}
 	return { done: true };
 }
@@ -425,7 +453,12 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 	}
 }
 
-async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<Outcome> {
+async function retryPass(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+): Promise<Outcome> {
 	let processed = 0;
 	for (;;) {
 		const page = await deps.records.query({
@@ -435,7 +468,7 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 				seq: { gte: job.retryFromSeq },
 			},
 			orderBy: { seq: "asc" },
-			limit: Math.min(job.batchSize, RETRY_PAGE),
+			limit: Math.min(limit, RETRY_PAGE),
 		});
 		if (page.items.length === 0) {
 			job.counters = await tallyCounters(deps, job.id);
@@ -445,8 +478,7 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 			await processRecord(deps, job, await readOneRecord(deps, job, row), { retry: true });
 			job.retryFromSeq = row.seq + 1;
 			processed++;
-			if (processed >= job.batchSize || deps.now() - started >= job.budgetMs)
-				return { done: false };
+			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 		}
 	}
 }
@@ -454,13 +486,20 @@ async function retryPass(deps: EngineDeps, job: Job, started: number): Promise<O
 /**
  * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
- * live lease exists, whoever holds it (the same holder name included).
+ * live lease exists, whoever holds it (the same holder name included). A batch is at most
+ * `job.batchSize` records, and at most `maxRecords` when that is smaller; the job is not changed.
  */
-export async function runBatch(deps: EngineDeps, jobId: string, holder: string): Promise<Job> {
+export async function runBatch(
+	deps: EngineDeps,
+	jobId: string,
+	holder: string,
+	maxRecords = Number.POSITIVE_INFINITY,
+): Promise<Job> {
 	const claimed = await claim(deps, jobId, holder);
 	if (!claimed.ok) return claimed.job;
 	const job = claimed.job;
 	const started = deps.now();
+	const limit = Math.min(job.batchSize, maxRecords);
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {
@@ -469,11 +508,13 @@ export async function runBatch(deps: EngineDeps, jobId: string, holder: string):
 		}
 		outcome =
 			job.phase === "retry"
-				? await retryPass(deps, job, started)
-				: await importPass(deps, job, started);
+				? await retryPass(deps, job, started, limit)
+				: await importPass(deps, job, started, limit);
 	} catch (e) {
 		if (e instanceof SourceMissingError) {
 			outcome = { done: false, error: { code: "source_missing", message: e.message } };
+		} else if (e instanceof ContentWriteError && JOB_LEVEL_WRITE_ERRORS.has(e.code)) {
+			outcome = { done: false, error: { code: e.code, message: e.message } };
 		} else if (e instanceof CsvSyntaxError) {
 			outcome = {
 				done: false,

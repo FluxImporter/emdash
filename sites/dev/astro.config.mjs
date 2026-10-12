@@ -3,7 +3,12 @@ import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash, { local } from "emdash/astro";
 import { sqlite } from "emdash/db";
-import { fluxImport } from "flux-import";
+import { fluxImport, fluxImportRoutes } from "flux-import";
+
+// Integration tests point the site at a throwaway database and upload directory.
+const databaseFile = process.env.FLUX_DEV_DB ?? "./data.db";
+const uploadsDir = process.env.FLUX_DEV_UPLOADS ?? "./uploads";
+const maxSourceBytes = Number(process.env.FLUX_DEV_MAX_SOURCE_BYTES) || undefined;
 
 export default defineConfig({
 	output: "server",
@@ -17,13 +22,14 @@ export default defineConfig({
 	integrations: [
 		react(),
 		emdash({
-			database: sqlite({ url: "file:./data.db" }),
+			database: sqlite({ url: `file:${databaseFile}` }),
 			plugins: [fluxImport()],
 			storage: local({
-				directory: "./uploads",
+				directory: uploadsDir,
 				baseUrl: "/_emdash/api/media/file",
 			}),
 		}),
+		fluxImportRoutes(maxSourceBytes ? { maxSourceBytes } : {}),
 	],
 	fonts: [
 		{
@@ -42,4 +48,6 @@ export default defineConfig({
 		},
 	],
 	devToolbar: { enabled: false },
+	// Integration tests fail instead of silently moving to another port.
+	vite: process.env.FLUX_DEV_STRICT_PORT ? { server: { strictPort: true } } : {},
 });
