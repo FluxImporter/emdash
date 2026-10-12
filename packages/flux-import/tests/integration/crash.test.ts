@@ -1,19 +1,22 @@
 import { rm } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
+import { jsonTemplate, productsJson } from "../fixtures/formats.js";
 import { Client, devBypass } from "./client.js";
 import { productsCsv, template } from "./fixtures.js";
 import { type DevServer, startServer, stopServer } from "./server.js";
 
 const PORT = 4398;
 const ROWS = 10_000;
+/** The 10,000-record JSON fixture is about 1.6 MB, over the shared server's 1 MB limit. */
+const MAX_SOURCE_BYTES = 4_000_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let server: DevServer;
 let client: Client;
 
 async function restart(): Promise<void> {
-	server = await startServer(PORT, server.dir);
+	server = await startServer(PORT, server.dir, MAX_SOURCE_BYTES);
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 }
 
@@ -27,9 +30,10 @@ async function waitForLease(id: string): Promise<Job> {
 }
 
 beforeAll(async () => {
-	server = await startServer(PORT);
+	server = await startServer(PORT, undefined, MAX_SOURCE_BYTES);
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	await client.createProducts("it_crash");
+	await client.createProducts("it_crash_json");
 });
 
 afterAll(async () => {
@@ -37,14 +41,16 @@ afterAll(async () => {
 	await rm(server.dir, { recursive: true, force: true });
 });
 
-describe("kill and resume", () => {
+describe.each([
+	["CSV", "it_crash", "products.csv", productsCsv(ROWS), template("it_crash")],
+	["JSON", "it_crash_json", "products.json", productsJson(ROWS), jsonTemplate("it_crash_json")],
+])("kill and resume (%s)", (_format, collection, filename, body, jobTemplate) => {
 	it("leaves no duplicates and reports any entry a crash left unpublished", async () => {
-		const csv = productsCsv(ROWS);
-		const csvBytes = Buffer.byteLength(csv);
-		const { uploadId } = await client.upload(csv);
+		const sourceBytes = Buffer.byteLength(body);
+		const { uploadId } = await client.upload(body, filename);
 		const created = await client.plugin("jobs/create", {
 			uploadId,
-			template: template("it_crash"),
+			template: jobTemplate,
 			dryRun: false,
 			batchSize: 500,
 			budgetMs: 2_000,
@@ -72,11 +78,13 @@ describe("kill and resume", () => {
 		}
 		const cursor = (killed as Job).cursor;
 		console.info(
-			`cursor after the kills: offset ${cursor.offset} of ${csvBytes} bytes, seq ${cursor.seq} of ${ROWS} rows`,
+			`cursor after the kills: offset ${cursor.offset} of ${sourceBytes} bytes, seq ${cursor.seq} of ${ROWS} rows`,
 		);
-		if (!(cursor.offset > 0 && cursor.offset < csvBytes && cursor.seq > 0 && cursor.seq < ROWS)) {
+		if (
+			!(cursor.offset > 0 && cursor.offset < sourceBytes && cursor.seq > 0 && cursor.seq < ROWS)
+		) {
 			throw new Error(
-				`The kills did not land mid-job: cursor ${JSON.stringify(cursor)} for ${csvBytes} bytes and ${ROWS} rows`,
+				`The kills did not land mid-job: cursor ${JSON.stringify(cursor)} for ${sourceBytes} bytes and ${ROWS} rows`,
 			);
 		}
 		expect((killed as Job).status).toBe("running");
@@ -88,7 +96,7 @@ describe("kill and resume", () => {
 		expect(done.counters.failed).toBe(0);
 		expect(await client.records(created.id, "writing")).toEqual([]);
 
-		const entries = await client.listAll("it_crash");
+		const entries = await client.listAll(collection);
 		expect(entries).toHaveLength(ROWS);
 		expect(new Set(entries.map((e) => e.data.flux_source_id)).size).toBe(ROWS);
 
