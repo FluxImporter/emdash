@@ -4,8 +4,8 @@ const NAME = /[^\s/>=<"'&!?]+/y;
 const SPACE = /\s*/y;
 const PREDEFINED: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
 
-/** An XML name: starts with a letter, "_" or ":"; then letters, digits, ".", "-", "_" or ":". */
-export const XML_NAME = /^[\p{L}_:][\p{L}\p{N}._:-]*$/u;
+/** An XML name: starts with a letter, "_" or ":"; then letters, combining marks, digits, ".", "-", "_", ":" or "·". */
+export const XML_NAME = /^[\p{L}_:][\p{L}\p{M}\p{N}._:\u00b7-]*$/u;
 const NOT_BLANK = /[^ \t\r\n]/;
 
 class XmlRecordError extends Error {}

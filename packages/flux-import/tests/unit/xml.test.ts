@@ -284,6 +284,28 @@ describe("xmlReader hardening", () => {
 	);
 });
 
+describe("xmlReader names with combining marks", () => {
+	it("resolves a record child with combining marks", async () => {
+		const recs = await readAll(
+			xmlReader("feed/item"),
+			"<feed><item><किताब>5</किताब></item></feed>",
+			1,
+		);
+		expect(recs.map((r) => r.value)).toEqual([{ किताब: "5" }]);
+	});
+
+	it.each([
+		["Devanagari", "फ़ीड/किताबें", "<फ़ीड><किताबें><a>1</a></किताबें><किताबें/></फ़ीड>"],
+		["Thai", "ฟีด/รายการ", "<ฟีด><รายการ><a>1</a></รายการ></ฟีด>"],
+	])("reads records of a %s path", async (_name, path, input) => {
+		for (const size of [1, 1 << 16]) {
+			const recs = await readAll(xmlReader(path), input, size);
+			expect(recs[0]?.value).toEqual({ a: "1" });
+			expect(recs.every((r) => r.error === undefined)).toBe(true);
+		}
+	});
+});
+
 describe("parseXmlRecordText", () => {
 	it("keeps keys as own properties", () => {
 		const value = parseXmlRecordText("<item><__proto__>x</__proto__></item>") as object;
