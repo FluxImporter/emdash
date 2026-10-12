@@ -5,7 +5,9 @@ import {
 	missingPathWarnings,
 	slugify,
 	type Template,
+	templatePaths,
 	templateSchema,
+	unresolvedPaths,
 } from "../../src/engine/template.js";
 
 const template: Template = templateSchema.parse({
@@ -303,16 +305,17 @@ describe("checkTemplate for structured sources", () => {
 });
 
 describe("missingPathWarnings", () => {
-	it("warns about each path no sampled record has, and never for CSV", () => {
+	it("warns about each path no sampled record has", () => {
 		const sample = [{ sku: "A1", name: "Desk", price: null }, { sku: "B2" }];
-		expect(missingPathWarnings(jsonT, sample)).toEqual([
+		let unresolved = templatePaths(jsonT);
+		for (const value of sample) unresolved = unresolvedPaths(jsonT, unresolved, value);
+		expect(missingPathWarnings(unresolved, sample.length)).toEqual([
 			'Path "price.amount" was not found in the first 2 records',
 			'Path "released" was not found in the first 2 records',
 		]);
-		expect(missingPathWarnings(template, [])).toEqual([]);
 	});
 
-	it("gives no warnings for an empty sample", () => {
-		expect(missingPathWarnings(jsonT, [])).toEqual([]);
+	it("gives no warnings when no record was checked", () => {
+		expect(missingPathWarnings(templatePaths(jsonT), 0)).toEqual([]);
 	});
 });

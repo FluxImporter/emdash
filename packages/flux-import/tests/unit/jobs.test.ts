@@ -152,15 +152,66 @@ describe("createJob for JSON, JSON Lines and XML", () => {
 		});
 	});
 
-	it("stores no missing-path warnings when the source has no records", async () => {
+	it.each([
+		["an empty JSON array", "[]", { format: "json" }, "No records found in the file"],
+		["an empty JSON Lines file", "\n", { format: "jsonl" }, "No records found in the file"],
+		[
+			"an empty records path",
+			'{"data": []}',
+			{ format: "json", records: "data" },
+			'No records found at "data"',
+		],
+		[
+			"an Atom feed read as feed/item",
+			"<feed><entry><title>Desk</title></entry></feed>",
+			{ format: "xml", records: "feed/item" },
+			'No records found at "feed/item"',
+		],
+	])("warns that %s has no records", async (_name, body, source, warning) => {
 		const { deps } = makeDeps();
-		deps.source.add("u1", "[]");
+		deps.source.add("u1", body);
+		const job = await createJob(deps, { uploadId: "u1", template: jsonT(source), schemaFields });
+		expect(job.warnings).toEqual([warning]);
+	});
+
+	it("gives a CSV file without rows no warning", async () => {
+		const { deps } = setup("sku,Name\n");
+		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(job.warnings).toEqual([]);
+	});
+
+	it("counts only readable records as checked for missing paths", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", '[{"sku": "A1"}, {"sku": }, {"sku": "B2"}]');
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: jsonT({ format: "json" }),
+			schemaFields,
+		});
+		expect(job.warnings).toEqual(['Path "name" was not found in the first 2 records']);
+	});
+
+	it("gives no warnings when every sampled record fails to parse", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", '[{"sku": }, {"sku": tru}]');
 		const job = await createJob(deps, {
 			uploadId: "u1",
 			template: jsonT({ format: "json" }),
 			schemaFields,
 		});
 		expect(job.warnings).toEqual([]);
+	});
+
+	it("rejects an XML records path with an invalid element name", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", "<feed><item/></feed>");
+		const err = await createJob(deps, {
+			uploadId: "u1",
+			template: jsonT({ format: "xml", records: "feed/1item" }),
+			schemaFields,
+		}).catch((e: unknown) => e);
+		expect(err).toMatchObject({ code: "invalid_source" });
+		expect((err as JobError).details.join(" ")).toMatch(/invalid element name "1item"/);
 	});
 
 	it.each([
@@ -202,7 +253,11 @@ describe("createJob for JSON, JSON Lines and XML", () => {
 				template: jsonT({ format: "xml", records: "feed/item" }),
 				schemaFields,
 			}),
-		).rejects.toMatchObject({ code: "invalid_source", details: ["xml_dtd_not_allowed at byte 0"] });
+		).rejects.toMatchObject({
+			code: "invalid_source",
+			details: ["xml_dtd_not_allowed at byte 0"],
+			sourceCode: "xml_dtd_not_allowed",
+		});
 	});
 
 	it("rejects a field path that is not valid for the format", async () => {

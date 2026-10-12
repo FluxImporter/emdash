@@ -36,6 +36,8 @@ export class ServiceError extends Error {
 		readonly code: string,
 		message: string,
 		readonly status: number,
+		/** Machine-readable details, such as the source error `code`. */
+		readonly details?: { code: string },
 	) {
 		super(message);
 		this.name = "ServiceError";
@@ -80,7 +82,8 @@ export async function sampleSource(
 	} catch (e) {
 		if (e instanceof SourceMissingError) throw new ServiceError("UPLOAD_NOT_FOUND", e.message, 404);
 		if (e instanceof CsvSyntaxError || e instanceof SourceError) {
-			throw new ServiceError("INVALID_SOURCE", `${e.message} at byte ${e.offset}`, 400);
+			const code = e instanceof SourceError ? e.code : "csv_syntax";
+			throw new ServiceError("INVALID_SOURCE", `${e.message} at byte ${e.offset}`, 400, { code });
 		}
 		throw e;
 	}

@@ -215,16 +215,26 @@ export function templatePaths(t: Template): string[] {
 	];
 }
 
+/** The paths of `paths` that do not resolve in one record value. */
+export function unresolvedPaths(t: Template, paths: readonly string[], value: unknown): string[] {
+	return paths.filter((path) => resolvePath(value, path, t.source.format) === undefined);
+}
+
 /**
- * Warnings for JSON, JSON Lines and XML paths that resolve in none of the sampled record values.
- * An empty sample proves nothing, so it gives none. CSV columns are checked against the header
- * by `checkTemplate` instead.
+ * Warnings for JSON, JSON Lines and XML template paths that resolved in none of `checked`
+ * record values. Nothing checked proves nothing, so it gives none. CSV columns are checked
+ * against the header by `checkTemplate` instead.
  */
-export function missingPathWarnings(t: Template, sample: unknown[]): string[] {
-	if (t.source.format === "csv" || sample.length === 0) return [];
-	return templatePaths(t)
-		.filter((path) => !sample.some((v) => resolvePath(v, path, t.source.format) !== undefined))
-		.map((path) => `Path "${path}" was not found in the first ${sample.length} records`);
+export function missingPathWarnings(unresolved: readonly string[], checked: number): string[] {
+	if (checked === 0) return [];
+	return unresolved.map((path) => `Path "${path}" was not found in the first ${checked} records`);
+}
+
+/** The warning for a source whose records array or element holds no records. */
+export function noRecordsWarning(source: { records?: string | undefined }): string {
+	return source.records === undefined
+		? "No records found in the file"
+		: `No records found at "${source.records}"`;
 }
 
 export type SchemaField = { slug: string; type: string };

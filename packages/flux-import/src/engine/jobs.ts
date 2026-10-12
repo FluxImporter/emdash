@@ -1,12 +1,20 @@
-import { CSV_SOURCE, type RecordReader, SourceError } from "../sources/reader.js";
+import {
+	CSV_SOURCE,
+	type RecordReader,
+	SourceError,
+	type SourceErrorCode,
+} from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
 	missingPathWarnings,
+	noRecordsWarning,
 	type SchemaField,
 	type Template,
+	templatePaths,
 	templateSchema,
+	unresolvedPaths,
 } from "./template.js";
 import {
 	BATCH_SIZE_DEFAULT,
@@ -30,6 +38,8 @@ export class JobError extends Error {
 		readonly code: JobErrorCode,
 		message: string,
 		readonly details: string[] = [],
+		/** The `SourceError` code when an unreadable source caused this error. */
+		readonly sourceCode?: SourceErrorCode,
 	) {
 		super(message);
 		this.name = "JobError";
@@ -99,9 +109,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const warnings =
 		template.source.format === "csv"
 			? []
-			: missingPathWarnings(
-					template,
-					await asJobError(() => sampleValues(deps, reader, input.uploadId, located.bodyOffset)),
+			: await asJobError(() =>
+					sampleWarnings(deps, reader, template, input.uploadId, located.bodyOffset),
 				);
 
 	const now = new Date(deps.now()).toISOString();
@@ -140,34 +149,46 @@ async function asJobError<T>(run: () => Promise<T>): Promise<T> {
 	} catch (e) {
 		if (e instanceof SourceMissingError) throw new JobError("invalid_source", e.message);
 		if (e instanceof SourceError) {
-			throw new JobError("invalid_source", e.message, [`${e.code} at byte ${e.offset}`]);
+			throw new JobError("invalid_source", e.message, [`${e.code} at byte ${e.offset}`], e.code);
 		}
 		throw e;
 	}
 }
 
 /**
- * Up to `WARNING_SAMPLE` record values for the missing-path check. A structural error ends the
- * sample early: the job is still created and fails at that offset when it runs, as CSV does.
+ * Warnings from the first `WARNING_SAMPLE` records: template paths none of them has, or that the
+ * source has no records. Each record is checked against the paths still unresolved and then
+ * dropped, so no record values are kept. Every record read counts toward `WARNING_SAMPLE`, but
+ * only one whose value was readable (no record error) counts as checked: a record that failed to
+ * parse says nothing about paths. A structural error ends the sample early without a no-records
+ * warning: the job is still created and fails at that offset when it runs, as CSV does.
  */
-async function sampleValues(
+async function sampleWarnings(
 	deps: EngineDeps,
 	reader: RecordReader,
+	template: Template,
 	uploadId: string,
 	bodyOffset: number,
-): Promise<unknown[]> {
-	const values: unknown[] = [];
+): Promise<string[]> {
+	let unresolved = templatePaths(template);
 	let seen = 0;
+	let checked = 0;
 	try {
 		const stream = await deps.source.open(uploadId, bodyOffset);
 		for await (const rec of reader.read(stream, { startOffset: bodyOffset, startSeq: 0 })) {
-			if (!rec.error) values.push(rec.value);
-			if (++seen >= WARNING_SAMPLE) break;
+			seen++;
+			if (!rec.error) {
+				checked++;
+				unresolved = unresolvedPaths(template, unresolved, rec.value);
+			}
+			if (seen >= WARNING_SAMPLE) break;
 		}
 	} catch (e) {
 		if (!(e instanceof SourceError)) throw e;
+		return missingPathWarnings(unresolved, checked);
 	}
-	return values;
+	if (seen === 0) return [noRecordsWarning(template.source)];
+	return missingPathWarnings(unresolved, checked);
 }
 
 /** The reader for a stored job; jobs created before M3a are CSV with `headers`. */

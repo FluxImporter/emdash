@@ -55,7 +55,13 @@ const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
 const format = z.enum(SOURCE_FORMATS);
-const source = z.object({ format, records: z.string().min(1).optional() }).strict();
+/**
+ * The template's `sourceSchema` (engine/template.ts) rebuilt with astro/zod, a different Zod
+ * than the engine's; definition.test.ts checks both accept and reject the same blocks.
+ */
+const source = z
+	.object({ format: format.default("csv"), records: z.string().min(1).optional() })
+	.strict();
 
 export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {
 	if (!ctx.cron) return;
@@ -73,12 +79,24 @@ interface Services {
 	actor: ActorInfo;
 }
 
-function toRouteError(e: unknown): unknown {
-	if (e instanceof ServiceError) return new PluginRouteError(e.code, e.message, e.status);
+/** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
+export function toRouteError(e: unknown): unknown {
+	if (e instanceof ServiceError) {
+		return new PluginRouteError(e.code, e.message, e.status, e.details);
+	}
 	if (e instanceof JobError) {
 		const status = e.code === "not_found" ? 404 : e.code === "invalid_transition" ? 409 : 400;
-		const details = e.details.length > 0 ? { problems: e.details } : undefined;
-		return new PluginRouteError(e.code.toUpperCase(), e.message, status, details);
+		const details = {
+			...(e.details.length > 0 ? { problems: e.details } : {}),
+			...(e.sourceCode === undefined ? {} : { code: e.sourceCode }),
+		};
+		const hasDetails = Object.keys(details).length > 0;
+		return new PluginRouteError(
+			e.code.toUpperCase(),
+			e.message,
+			status,
+			hasDetails ? details : undefined,
+		);
 	}
 	return e;
 }

@@ -99,6 +99,23 @@ describe("sampleSource", () => {
 		).rejects.toMatchObject({ code: "INVALID_SOURCE", status: 400 });
 	});
 
+	it("names the source error code in the details", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("x", '<!DOCTYPE feed [<!ENTITY a "b">]><feed/>');
+		deps.source.add("e", '<?xml version="1.0" encoding="ISO-8859-1"?><feed/>');
+		deps.source.add("c", 'sku\n"open');
+		await expect(
+			sampleSource(deps, "x", 5, { format: "xml", records: "feed/item" }),
+		).rejects.toMatchObject({ code: "INVALID_SOURCE", details: { code: "xml_dtd_not_allowed" } });
+		await expect(
+			sampleSource(deps, "e", 5, { format: "xml", records: "feed/item" }),
+		).rejects.toMatchObject({ code: "INVALID_SOURCE", details: { code: "unsupported_encoding" } });
+		await expect(sampleSource(deps, "c", 5)).rejects.toMatchObject({
+			code: "INVALID_SOURCE",
+			details: { code: "csv_syntax" },
+		});
+	});
+
 	it("reports a missing upload as 404 and an unreadable one as 400", async () => {
 		const { deps } = makeDeps();
 		deps.source.add("bad", 'sku\n"open');
@@ -186,6 +203,19 @@ describe("startJob", () => {
 		).rejects.toMatchObject({
 			code: "invalid_template",
 		});
+	});
+
+	it("names the source error code of an unreadable source", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", '<!DOCTYPE feed SYSTEM "x.dtd"><feed/>');
+		const xmlTemplate = {
+			...template,
+			source: { format: "xml", records: "feed/item" },
+			fields: { title: { from: "title", type: "text" } },
+		};
+		await expect(
+			startJob(deps, { uploadId: "u1", template: xmlTemplate, dryRun: false }, fields),
+		).rejects.toMatchObject({ code: "invalid_source", sourceCode: "xml_dtd_not_allowed" });
 	});
 
 	it("stores the site's casing of the template locale", async () => {
