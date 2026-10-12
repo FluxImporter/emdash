@@ -217,10 +217,11 @@ export function templatePaths(t: Template): string[] {
 
 /**
  * Warnings for JSON, JSON Lines and XML paths that resolve in none of the sampled record values.
- * CSV columns are checked against the header by `checkTemplate` instead.
+ * An empty sample proves nothing, so it gives none. CSV columns are checked against the header
+ * by `checkTemplate` instead.
  */
 export function missingPathWarnings(t: Template, sample: unknown[]): string[] {
-	if (t.source.format === "csv") return [];
+	if (t.source.format === "csv" || sample.length === 0) return [];
 	return templatePaths(t)
 		.filter((path) => !sample.some((v) => resolvePath(v, path, t.source.format) !== undefined))
 		.map((path) => `Path "${path}" was not found in the first ${sample.length} records`);

@@ -1,6 +1,13 @@
-import { CsvSyntaxError, readCsvHeader } from "../sources/csv.js";
+import { CSV_SOURCE, type RecordReader, SourceError } from "../sources/reader.js";
+import { checkSource, readerFor } from "../sources/readers.js";
 import { SourceMissingError } from "./ports.js";
-import { checkTemplate, type SchemaField, templateSchema } from "./template.js";
+import {
+	checkTemplate,
+	missingPathWarnings,
+	type SchemaField,
+	type Template,
+	templateSchema,
+} from "./template.js";
 import {
 	BATCH_SIZE_DEFAULT,
 	BATCH_SIZE_MAX,
@@ -39,6 +46,8 @@ export type CreateJobInput = {
 	budgetMs?: number;
 };
 
+/** Records read at job creation to warn about JSON and XML paths that none of them has. */
+export const WARNING_SAMPLE = 20;
 const BUDGET_MS_MIN = 500;
 const BUDGET_MS_MAX = 25_000;
 const CAS_ATTEMPTS = 5;
@@ -69,17 +78,17 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	}
 	const template = parsed.data;
 
-	let header: { headers: string[]; bodyOffset: number };
-	try {
-		header = await readCsvHeader(await deps.source.open(input.uploadId, 0));
-	} catch (e) {
-		if (e instanceof SourceMissingError || e instanceof CsvSyntaxError) {
-			throw new JobError("invalid_source", e.message);
-		}
-		throw e;
+	const sourceProblems = checkSource(template.source);
+	if (sourceProblems.length > 0) {
+		throw new JobError("invalid_source", "The source block is invalid", sourceProblems);
 	}
+	const reader = readerFor(template.source);
+	const located = await asJobError(async () =>
+		reader.locate(await deps.source.open(input.uploadId, 0)),
+	);
+	const columns = located.columns ?? null;
 
-	const problems = checkTemplate(template, input.schemaFields, header.headers);
+	const problems = checkTemplate(template, input.schemaFields, columns);
 	if (problems.length > 0) {
 		throw new JobError(
 			"invalid_template",
@@ -87,6 +96,13 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			problems,
 		);
 	}
+	const warnings =
+		template.source.format === "csv"
+			? []
+			: missingPathWarnings(
+					template,
+					await asJobError(() => sampleValues(deps, reader, input.uploadId, located.bodyOffset)),
+				);
 
 	const now = new Date(deps.now()).toISOString();
 	const job: Job = {
@@ -98,8 +114,10 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		publish: input.publish ?? true,
 		batchSize,
 		budgetMs,
-		headers: header.headers,
-		cursor: { offset: header.bodyOffset, seq: 0 },
+		source: template.source,
+		...(columns === null ? {} : { columns }),
+		warnings,
+		cursor: { offset: located.bodyOffset, seq: 0 },
 		counters: emptyCounters(),
 		lease: null,
 		phase: "import",
@@ -113,6 +131,53 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const result = await deps.jobs.compareAndSet(job.id, null, job);
 	if (!result.applied) throw new Error(`Job id ${job.id} already exists`);
 	return job;
+}
+
+/** A missing upload or an unreadable source fails job creation with `invalid_source`. */
+async function asJobError<T>(run: () => Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (e) {
+		if (e instanceof SourceMissingError) throw new JobError("invalid_source", e.message);
+		if (e instanceof SourceError) {
+			throw new JobError("invalid_source", e.message, [`${e.code} at byte ${e.offset}`]);
+		}
+		throw e;
+	}
+}
+
+/**
+ * Up to `WARNING_SAMPLE` record values for the missing-path check. A structural error ends the
+ * sample early: the job is still created and fails at that offset when it runs, as CSV does.
+ */
+async function sampleValues(
+	deps: EngineDeps,
+	reader: RecordReader,
+	uploadId: string,
+	bodyOffset: number,
+): Promise<unknown[]> {
+	const values: unknown[] = [];
+	let seen = 0;
+	try {
+		const stream = await deps.source.open(uploadId, bodyOffset);
+		for await (const rec of reader.read(stream, { startOffset: bodyOffset, startSeq: 0 })) {
+			if (!rec.error) values.push(rec.value);
+			if (++seen >= WARNING_SAMPLE) break;
+		}
+	} catch (e) {
+		if (!(e instanceof SourceError)) throw e;
+	}
+	return values;
+}
+
+/** The reader for a stored job; jobs created before M3a are CSV with `headers`. */
+export function jobReader(job: Job): RecordReader {
+	return readerFor(job.source ?? CSV_SOURCE, job.columns ?? job.headers ?? []);
+}
+
+/** A stored job's template; templates stored before M3a have no source block and are CSV. */
+export function jobTemplate(job: Job): Template {
+	return job.template.source ? job.template : { ...job.template, source: CSV_SOURCE };
 }
 
 export async function updateJob(

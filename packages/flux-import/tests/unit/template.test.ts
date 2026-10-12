@@ -311,4 +311,8 @@ describe("missingPathWarnings", () => {
 		]);
 		expect(missingPathWarnings(template, [])).toEqual([]);
 	});
+
+	it("gives no warnings for an empty sample", () => {
+		expect(missingPathWarnings(jsonT, [])).toEqual([]);
+	});
 });
