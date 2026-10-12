@@ -1,4 +1,5 @@
 import type { LocaleResolution } from "../emdash/locale.js";
+import { type StagedUpload, stageUpload, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
 import { type CreateJobInput, createJob, JobError, transitionJob } from "../engine/jobs.js";
@@ -7,9 +8,18 @@ import { SourceMissingError } from "../engine/ports.js";
 import type { SchemaField } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import { type CsvSample, CsvSyntaxError, readCsvSample } from "../sources/csv.js";
+import {
+	CSV_SOURCE,
+	SourceError,
+	type TemplateSource,
+	type ValueSample,
+} from "../sources/reader.js";
+import { checkSource, readerFor } from "../sources/readers.js";
 
 export const PAGE_SIZE = 50;
 export const SAMPLE_MAX = 20;
+/** Pasted text is staged like an upload, up to this many UTF-8 bytes. */
+export const PASTE_MAX_BYTES = 1024 * 1024;
 /** Raw plugin responses are capped at 8 MiB (`PLUGIN_ROUTE_MAX_BODY_BYTES`, @emdash-cms/plugin-types). */
 export const LOG_MAX_BYTES = 8 * 1024 * 1024;
 /**
@@ -50,20 +60,40 @@ function page<T>(result: { items: { data: T }[]; cursor?: string; hasMore: boole
 		: { items, hasMore: result.hasMore };
 }
 
+/**
+ * Samples a staged source: CSV keeps its `{ headers, rows }` shape; JSON, JSON Lines and XML
+ * return `{ records, paths }` (records that fail to parse are left out).
+ */
 export async function sampleSource(
 	deps: EngineDeps,
 	uploadId: string,
 	n: number,
-): Promise<CsvSample> {
+	source: TemplateSource = CSV_SOURCE,
+): Promise<CsvSample | ValueSample> {
+	const problems = checkSource(source);
+	if (problems.length > 0) throw new ServiceError("INVALID_SOURCE", problems.join("; "), 400);
+	const count = Math.min(n, SAMPLE_MAX);
 	try {
-		return await readCsvSample(await deps.source.open(uploadId, 0), Math.min(n, SAMPLE_MAX));
+		const stream = await deps.source.open(uploadId, 0);
+		if (source.format === "csv") return await readCsvSample(stream, count);
+		return await readerFor(source).sample(stream, count);
 	} catch (e) {
 		if (e instanceof SourceMissingError) throw new ServiceError("UPLOAD_NOT_FOUND", e.message, 404);
-		if (e instanceof CsvSyntaxError) {
+		if (e instanceof CsvSyntaxError || e instanceof SourceError) {
 			throw new ServiceError("INVALID_SOURCE", `${e.message} at byte ${e.offset}`, 400);
 		}
 		throw e;
 	}
+}
+
+/** Stages pasted text like an upload. Empty or whitespace-only text is `EMPTY_BODY`. */
+export async function stagePaste(storage: UploadStorage, text: string): Promise<StagedUpload> {
+	if (text.trim() === "") throw new ServiceError("EMPTY_BODY", "The pasted text is empty", 400);
+	const bytes = new TextEncoder().encode(text);
+	if (bytes.byteLength > PASTE_MAX_BYTES) {
+		throw new ServiceError("TOO_LARGE", `Pasted text is limited to ${PASTE_MAX_BYTES} bytes`, 413);
+	}
+	return stageUpload(storage, new Blob([bytes]).stream(), PASTE_MAX_BYTES, bytes.byteLength);
 }
 
 export type StartJobInput = Omit<CreateJobInput, "schemaFields">;

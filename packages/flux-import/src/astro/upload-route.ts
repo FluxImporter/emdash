@@ -6,7 +6,8 @@ import { maxSourceBytes } from "./config.js";
 
 export const prerender = false;
 
-const CSV_FILENAME = /^[^/\\\0]{1,251}\.csv$/i;
+/** The extension only gates acceptance; the template's `source.format` decides parsing. */
+const SOURCE_FILENAME = /^(?=.{1,255}$)[^/\\\0]+\.(?:csv|json|jsonl|ndjson|xml)$/i;
 
 /** Same envelope as EmDash's own API errors (`emdash` src/api/error.ts:31-43). */
 function apiError(code: string, message: string, status: number): Response {
@@ -14,7 +15,7 @@ function apiError(code: string, message: string, status: number): Response {
 }
 
 /**
- * POST /_emdash/api/flux-import/uploads?filename=<name>.csv
+ * POST /_emdash/api/flux-import/uploads?filename=<name>.csv|.json|.jsonl|.ndjson|.xml
  *
  * EmDash's middleware authenticates this path and applies CSRF (`X-EmDash-Request: 1` for
  * session callers; PATs need the `admin` scope), verification report question 5. The route adds
@@ -28,8 +29,12 @@ export const POST: APIRoute = async ({ request, locals, url }) => {
 	if (!storage) return apiError("NOT_CONFIGURED", "EmDash storage is not configured", 500);
 
 	const filename = url.searchParams.get("filename") ?? "";
-	if (!CSV_FILENAME.test(filename)) {
-		return apiError("UNSUPPORTED_SOURCE", "filename must name a .csv file", 415);
+	if (!SOURCE_FILENAME.test(filename)) {
+		return apiError(
+			"UNSUPPORTED_SOURCE",
+			"filename must name a .csv, .json, .jsonl, .ndjson or .xml file",
+			415,
+		);
 	}
 	const limit = maxSourceBytes();
 	const header = request.headers.get("content-length");

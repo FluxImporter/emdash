@@ -4,14 +4,15 @@ import { POST } from "../../src/astro/upload-route.js";
 import { FakeStorage } from "./fakes.js";
 import { streamOf } from "./helpers.js";
 
-const URL_ = "http://site.test/_emdash/api/flux-import/uploads?filename=data.csv";
+const BASE = "http://site.test/_emdash/api/flux-import/uploads?filename=";
+const URL_ = `${BASE}data.csv`;
 
-async function post(init: RequestInit & { duplex?: "half" }) {
+async function post(init: RequestInit & { duplex?: "half" }, url = URL_) {
 	const storage = new FakeStorage();
-	const request = new Request(URL_, { method: "POST", ...init });
+	const request = new Request(url, { method: "POST", ...init });
 	const context = {
 		request,
-		url: new URL(URL_),
+		url: new URL(url),
 		locals: { user: { id: "admin", role: 50 }, emdash: { storage } },
 	} as unknown as APIContext;
 	const res = await POST(context);
@@ -65,5 +66,37 @@ describe("upload route", () => {
 		expect(res.status).toBe(201);
 		expect(body).toMatchObject({ success: true, data: { bytes: 4 } });
 		expect(storage.files.size).toBe(1);
+	});
+
+	it.each([
+		"feed.json",
+		"feed.JSONL",
+		"feed.ndjson",
+		"feed.xml",
+		"a.b.csv",
+		`${"n".repeat(251)}.csv`,
+	])("accepts %s", async (name) => {
+		const { res } = await post(
+			{ body: streamOf("x"), duplex: "half" },
+			BASE + encodeURIComponent(name),
+		);
+		expect(res.status).toBe(201);
+	});
+
+	it.each([
+		"feed.txt",
+		"feed.json.gz",
+		"../feed.json",
+		"feed",
+		".json",
+		`${"n".repeat(250)}.ndjson`,
+	])("rejects %s with 415 and stores nothing", async (name) => {
+		const { res, body, storage } = await post(
+			{ body: streamOf("x"), duplex: "half" },
+			BASE + encodeURIComponent(name),
+		);
+		expect(res.status).toBe(415);
+		expect(body).toMatchObject({ error: { code: "UNSUPPORTED_SOURCE" } });
+		expect(storage.files.size).toBe(0);
 	});
 });

@@ -6,6 +6,7 @@ import { ensureRetentionScheduled } from "../../src/plugin/routes.js";
 
 const ROUTES = [
 	"sources/sample",
+	"sources/paste",
 	"jobs/create",
 	"jobs/next",
 	"jobs/get",
@@ -27,6 +28,10 @@ describe("createPlugin", () => {
 		for (const name of ROUTES) expect(plugin.routes[name]?.permission).toBe("import:execute");
 		expect(plugin.routes["jobs/log.csv"]).toMatchObject({ methods: ["GET"], response: "raw" });
 		expect(plugin.routes["jobs/next"]?.methods).toEqual(["POST"]);
+		expect(plugin.routes["sources/paste"]).toMatchObject({
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 1024 * 1024 },
+		});
 	});
 
 	it("declares the storage indexes the queries use", () => {
@@ -67,6 +72,17 @@ describe("createPlugin", () => {
 		const sample = plugin.routes["sources/sample"]!.input!;
 		expect(sample.safeParse({ uploadId: UPLOAD_ID, n: 21 }).success).toBe(false);
 		expect(sample.parse({ uploadId: UPLOAD_ID })).toEqual({ uploadId: UPLOAD_ID, n: 5 });
+		expect(
+			sample.safeParse({ uploadId: UPLOAD_ID, source: { format: "xml", records: "feed/item" } })
+				.success,
+		).toBe(true);
+		expect(sample.safeParse({ uploadId: UPLOAD_ID, source: { format: "yaml" } }).success).toBe(
+			false,
+		);
+		const paste = plugin.routes["sources/paste"]!.input!;
+		expect(paste.safeParse({ format: "json", text: "[]" }).success).toBe(true);
+		expect(paste.safeParse({ format: "xlsx", text: "x" }).success).toBe(false);
+		expect(paste.safeParse({ format: "csv" }).success).toBe(false);
 		expect(plugin.routes["jobs/get"]!.input!.safeParse({ id: "a/b" }).success).toBe(false);
 		expect(
 			plugin.routes["jobs/records"]!.input!.safeParse({ id: "J1", status: "bogus" }).success,
