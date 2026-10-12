@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	applyTemplate,
 	checkTemplate,
+	missingPathWarnings,
 	slugify,
 	type Template,
 	templateSchema,
@@ -29,6 +30,25 @@ const row = {
 };
 
 describe("templateSchema", () => {
+	it("defaults the source to CSV and accepts the other formats", () => {
+		expect(template.source).toEqual({ format: "csv" });
+		const base = { version: 1, collection: "p", locale: "en", key: { from: "sku" } };
+		const fields = { title: { from: "name", type: "text" } };
+		for (const source of [
+			{ format: "json" },
+			{ format: "json", records: "data.products" },
+			{ format: "jsonl" },
+			{ format: "xml", records: "feed/item" },
+		]) {
+			expect(templateSchema.parse({ ...base, source, fields }).source).toEqual(source);
+		}
+		expect(templateSchema.safeParse({ ...base, source: { format: "yaml" }, fields }).success).toBe(
+			false,
+		);
+		expect(
+			templateSchema.safeParse({ ...base, source: { format: "json", extra: 1 }, fields }).success,
+		).toBe(false);
+	});
 	it("defaults tz to UTC", () => {
 		const t = templateSchema.parse({
 			version: 1,
@@ -172,5 +192,123 @@ describe("checkTemplate", () => {
 			'Field "title" has type "number"; a text mapping needs one of string, text, url',
 			'Field "price" does not exist in collection "products"',
 		]);
+	});
+});
+
+const jsonT = templateSchema.parse({
+	version: 1,
+	collection: "products",
+	locale: "en",
+	source: { format: "json" },
+	key: { from: "sku" },
+	slug: { from: "name" },
+	fields: {
+		title: { from: "name", type: "text" },
+		price: { from: "price.amount", type: "number" },
+		released: { from: "released", type: "date" },
+	},
+});
+
+describe("applyTemplate with typed values", () => {
+	it("takes JSON numbers as numbers and turns numbers and booleans into text", () => {
+		const result = applyTemplate(jsonT, {
+			sku: 1001,
+			name: true,
+			price: { amount: 12.5 },
+			released: "2026-03-01",
+		});
+		expect(result).toEqual({
+			ok: true,
+			value: {
+				key: "1001",
+				slug: "true",
+				data: { title: "true", price: 12.5, released: "2026-03-01T00:00:00.000Z" },
+			},
+		});
+	});
+
+	it("reads numeric strings, null and missing paths as before", () => {
+		const result = applyTemplate(jsonT, { sku: "A1", name: "Desk", price: { amount: "7" } });
+		expect(result.ok && result.value.data).toEqual({ title: "Desk", price: 7, released: null });
+		const nulls = applyTemplate(jsonT, { sku: "A1", name: "Desk", price: null, released: null });
+		expect(nulls.ok && nulls.value.data).toEqual({ title: "Desk", price: null, released: null });
+	});
+
+	it("fails not_scalar for an object or array where a single value is expected", () => {
+		const result = applyTemplate(jsonT, {
+			sku: ["A1"],
+			name: { first: "D" },
+			price: { amount: [1] },
+			released: { at: "x" },
+		});
+		expect(!result.ok && result.errors.map((e) => [e.field, e.code])).toEqual([
+			["sku", "not_scalar"],
+			["slug", "not_scalar"],
+			["title", "not_scalar"],
+			["price", "not_scalar"],
+			["released", "not_scalar"],
+		]);
+	});
+
+	it("rejects booleans and non-finite numbers in number fields", () => {
+		const t = applyTemplate(jsonT, { sku: "A", name: "n", price: { amount: false } });
+		expect(t).toMatchObject({ ok: false, errors: [{ field: "price", code: "invalid_number" }] });
+	});
+
+	it("fails a non-object record with missing_key", () => {
+		const result = applyTemplate(jsonT, "just a string");
+		expect(!result.ok && result.errors.map((e) => e.code)).toEqual(["missing_key", "empty_slug"]);
+	});
+
+	it("reads XML text elements and attributes", () => {
+		const xmlT = templateSchema.parse({
+			version: 1,
+			collection: "products",
+			locale: "en",
+			source: { format: "xml", records: "feed/item" },
+			key: { from: "@sku" },
+			fields: {
+				title: { from: "title", type: "text" },
+				lang: { from: "title/@lang", type: "text" },
+				price: { from: "price", type: "number" },
+			},
+		});
+		const result = applyTemplate(xmlT, {
+			"@sku": "A1",
+			title: { "@lang": "ro", "#text": "Masă" },
+			price: "12.50",
+		});
+		expect(result).toEqual({
+			ok: true,
+			value: { key: "A1", data: { title: "Masă", lang: "ro", price: 12.5 } },
+		});
+	});
+});
+
+describe("checkTemplate for structured sources", () => {
+	const fields = [
+		{ slug: "title", type: "string" },
+		{ slug: "price", type: "number" },
+		{ slug: "released", type: "datetime" },
+	];
+
+	it("checks path syntax instead of columns", () => {
+		expect(checkTemplate(jsonT, fields, null)).toEqual([]);
+		const bad = templateSchema.parse({
+			...jsonT,
+			fields: { title: { from: "name..first", type: "text" } },
+		});
+		expect(checkTemplate(bad, fields, null)).toEqual(['"name..first" has an empty key']);
+	});
+});
+
+describe("missingPathWarnings", () => {
+	it("warns about each path no sampled record has, and never for CSV", () => {
+		const sample = [{ sku: "A1", name: "Desk", price: null }, { sku: "B2" }];
+		expect(missingPathWarnings(jsonT, sample)).toEqual([
+			'Path "price.amount" was not found in the first 2 records',
+			'Path "released" was not found in the first 2 records',
+		]);
+		expect(missingPathWarnings(template, [])).toEqual([]);
 	});
 });
