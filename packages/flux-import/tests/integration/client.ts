@@ -81,6 +81,14 @@ export class Client {
 		return json.data;
 	}
 
+	/** Stages pasted text through the `sources/paste` route. */
+	paste(format: "csv" | "json" | "jsonl" | "xml", text: string) {
+		return this.plugin<{ uploadId: string; bytes: number; sha256: string }>("sources/paste", {
+			format,
+			text,
+		});
+	}
+
 	async uploadRaw(
 		body: string | Uint8Array<ArrayBuffer>,
 		filename = "data.csv",

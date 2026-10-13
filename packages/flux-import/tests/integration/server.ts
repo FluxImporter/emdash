@@ -115,8 +115,15 @@ export async function startAstroDev(
 	return server;
 }
 
-/** Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted). */
-export async function startServer(port: number, dir?: string): Promise<DevServer> {
+/**
+ * Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted), with
+ * an upload limit of `maxSourceBytes`.
+ */
+export async function startServer(
+	port: number,
+	dir?: string,
+	maxSourceBytes = TEST_MAX_SOURCE_BYTES,
+): Promise<DevServer> {
 	const root = dir ?? (await mkdtemp(join(tmpdir(), "flux-import-it-")));
 	const dbPath = join(root, "test.db");
 	const uploadsDir = join(root, "uploads");
@@ -125,7 +132,7 @@ export async function startServer(port: number, dir?: string): Promise<DevServer
 		server = await startAstroDev(SITE_DIR, port, {
 			FLUX_DEV_DB: dbPath,
 			FLUX_DEV_UPLOADS: uploadsDir,
-			FLUX_DEV_MAX_SOURCE_BYTES: String(TEST_MAX_SOURCE_BYTES),
+			FLUX_DEV_MAX_SOURCE_BYTES: String(maxSourceBytes),
 		});
 	} catch (e) {
 		if (!dir) await rm(root, { recursive: true, force: true });

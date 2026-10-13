@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveSiteLocale } from "../../src/emdash/locale.js";
+import { EmDashUploads } from "../../src/emdash/uploads.js";
 import { JobError } from "../../src/engine/jobs.js";
 import type { Job } from "../../src/engine/types.js";
 import {
@@ -10,14 +11,16 @@ import {
 	listJobs,
 	listRecords,
 	nextBatch,
+	PASTE_MAX_BYTES,
 	releaseUploadIfUnused,
 	ServiceError,
 	sampleSource,
+	stagePaste,
 	startJob,
 	uploadNeeded,
 	WORKERS_BATCH_CAP,
 } from "../../src/plugin/service.js";
-import { makeDeps } from "./fakes.js";
+import { FakeStorage, makeDeps } from "./fakes.js";
 
 const template = {
 	version: 1,
@@ -60,8 +63,57 @@ describe("sampleSource", () => {
 		const { deps } = makeDeps();
 		deps.source.add("u1", csv(30));
 		const sample = await sampleSource(deps, "u1", 50);
-		expect(sample.headers).toEqual(["sku", "Name", "Price"]);
-		expect(sample.rows).toHaveLength(20);
+		expect(sample).toMatchObject({ headers: ["sku", "Name", "Price"] });
+		expect("rows" in sample && sample.rows).toHaveLength(20);
+	});
+
+	it("returns records and paths for JSON and XML", async () => {
+		const { deps } = makeDeps();
+		deps.source.add(
+			"j",
+			'{"data": [{"sku": "A1", "price": {"amount": 1}}, {"sku": "B2", "tags": []}]}',
+		);
+		expect(await sampleSource(deps, "j", 5, { format: "json", records: "data" })).toEqual({
+			records: [
+				{ sku: "A1", price: { amount: 1 } },
+				{ sku: "B2", tags: [] },
+			],
+			paths: ["sku", "price.amount", "tags"],
+		});
+		deps.source.add("x", '<feed><item sku="A1"><t>x</t></item></feed>');
+		expect(await sampleSource(deps, "x", 5, { format: "xml", records: "feed/item" })).toEqual({
+			records: [{ "@sku": "A1", t: "x" }],
+			paths: ["@sku", "t"],
+		});
+	});
+
+	it("reports a bad source block or an unreadable document as INVALID_SOURCE", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("x", '<!DOCTYPE feed [<!ENTITY a "b">]><feed/>');
+		await expect(sampleSource(deps, "x", 5, { format: "xml" })).rejects.toMatchObject({
+			code: "INVALID_SOURCE",
+			message: expect.stringMatching(/required for xml/),
+		});
+		await expect(
+			sampleSource(deps, "x", 5, { format: "xml", records: "feed/item" }),
+		).rejects.toMatchObject({ code: "INVALID_SOURCE", status: 400 });
+	});
+
+	it("names the source error code in the details", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("x", '<!DOCTYPE feed [<!ENTITY a "b">]><feed/>');
+		deps.source.add("e", '<?xml version="1.0" encoding="ISO-8859-1"?><feed/>');
+		deps.source.add("c", 'sku\n"open');
+		await expect(
+			sampleSource(deps, "x", 5, { format: "xml", records: "feed/item" }),
+		).rejects.toMatchObject({ code: "INVALID_SOURCE", details: { code: "xml_dtd_not_allowed" } });
+		await expect(
+			sampleSource(deps, "e", 5, { format: "xml", records: "feed/item" }),
+		).rejects.toMatchObject({ code: "INVALID_SOURCE", details: { code: "unsupported_encoding" } });
+		await expect(sampleSource(deps, "c", 5)).rejects.toMatchObject({
+			code: "INVALID_SOURCE",
+			details: { code: "csv_syntax" },
+		});
 	});
 
 	it("reports a missing upload as 404 and an unreadable one as 400", async () => {
@@ -75,6 +127,56 @@ describe("sampleSource", () => {
 			code: "INVALID_SOURCE",
 			status: 400,
 		});
+	});
+});
+
+describe("stagePaste", () => {
+	it("stages the text's UTF-8 bytes like an upload", async () => {
+		const storage = new FakeStorage();
+		const text = '[{"sku": "Ș1"}]';
+		const staged = await stagePaste(storage, text);
+		expect(staged.bytes).toBe(new TextEncoder().encode(text).byteLength);
+		expect(staged.sha256).toMatch(/^[0-9a-f]{64}$/);
+		const stream = await new EmDashUploads(storage).open(staged.uploadId, 0);
+		expect(await new Response(stream).text()).toBe(text);
+	});
+
+	it("rejects empty or blank text with EMPTY_BODY and stores nothing", async () => {
+		const storage = new FakeStorage();
+		for (const text of ["", " \n\t"]) {
+			await expect(stagePaste(storage, text)).rejects.toMatchObject({
+				code: "EMPTY_BODY",
+				status: 400,
+			});
+		}
+		expect(storage.files.size).toBe(0);
+	});
+
+	it("rejects text over 1 MiB with TOO_LARGE", async () => {
+		const storage = new FakeStorage();
+		await expect(stagePaste(storage, "é".repeat(PASTE_MAX_BYTES / 2 + 1))).rejects.toMatchObject({
+			code: "TOO_LARGE",
+			status: 413,
+		});
+		expect(storage.files.size).toBe(0);
+	});
+
+	it("passes the length on Workers, where R2 needs it", async () => {
+		const global = globalThis as { FixedLengthStream?: unknown };
+		const lengths: number[] = [];
+		global.FixedLengthStream = class extends TransformStream {
+			constructor(length: number) {
+				super();
+				lengths.push(length);
+			}
+		};
+		try {
+			const staged = await stagePaste(new FakeStorage(), "a,b\n1,2\n");
+			expect(staged.bytes).toBe(8);
+			expect(lengths).toEqual([8]);
+		} finally {
+			delete global.FixedLengthStream;
+		}
 	});
 });
 
@@ -101,6 +203,19 @@ describe("startJob", () => {
 		).rejects.toMatchObject({
 			code: "invalid_template",
 		});
+	});
+
+	it("names the source error code of an unreadable source", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", '<!DOCTYPE feed SYSTEM "x.dtd"><feed/>');
+		const xmlTemplate = {
+			...template,
+			source: { format: "xml", records: "feed/item" },
+			fields: { title: { from: "title", type: "text" } },
+		};
+		await expect(
+			startJob(deps, { uploadId: "u1", template: xmlTemplate, dryRun: false }, fields),
+		).rejects.toMatchObject({ code: "invalid_source", sourceCode: "xml_dtd_not_allowed" });
 	});
 
 	it("stores the site's casing of the template locale", async () => {

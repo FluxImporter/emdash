@@ -1,3 +1,4 @@
+import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
 import type { ContentPort, KvCollection, SourcePort } from "./ports.js";
 import type { Template } from "./template.js";
@@ -26,7 +27,14 @@ export interface Job {
 	publish: boolean;
 	batchSize: number;
 	budgetMs: number;
-	headers: string[];
+	/** The template's source block. Absent on jobs created before M3a, which are CSV. */
+	source?: TemplateSource;
+	/** CSV header columns; absent for other formats. */
+	columns?: string[];
+	/** Pre-M3a name of `columns`, still read for jobs created before M3a. */
+	headers?: string[];
+	/** Template paths missing from the sampled records (JSON, JSON Lines, XML). */
+	warnings?: string[];
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

@@ -43,6 +43,32 @@ function emptyStream(): ReadableStream<Uint8Array> {
 	});
 }
 
+/**
+ * Passes `body` through and delays cancelling it by one macrotask. The local adapter's body is
+ * `Readable.toWeb(createReadStream(…))` (`emdash` src/storage/local.ts:123-134); on Node 22.23
+ * cancelling that stream in the same microtask run as a `read()` that resumed the paused file
+ * stream makes Node enqueue into the closed controller from `process.nextTick` and crash the
+ * process (ERR_INVALID_STATE "Controller is already closed"). Readers cancel exactly like that
+ * when a batch, a sample or a header read stops early.
+ */
+export function deferCancel(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	const reader = body.getReader();
+	return new ReadableStream<Uint8Array>(
+		{
+			async pull(controller) {
+				const { done, value } = await reader.read();
+				if (done) controller.close();
+				else controller.enqueue(value);
+			},
+			async cancel(reason) {
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				await reader.cancel(reason);
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+}
+
 export class UploadTooLargeError extends Error {
 	constructor(readonly limit: number) {
 		super(`The upload exceeds the limit of ${limit} bytes`);
@@ -83,7 +109,7 @@ export class EmDashUploads implements SourcePort {
 				`Storage ignored the byte range starting at ${offset} for upload ${uploadId}`,
 			);
 		}
-		return result.body;
+		return deferCancel(result.body);
 	}
 
 	async delete(uploadId: string): Promise<void> {

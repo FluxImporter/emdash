@@ -1,6 +1,6 @@
-import { type CsvRecord, CsvSyntaxError, readCsvRecords } from "../sources/csv.js";
+import { SourceError, type SourceRecord } from "../sources/reader.js";
 import { dateFieldsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
-import { JobError, updateJob } from "./jobs.js";
+import { JobError, jobReader, jobTemplate, updateJob } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
 import { applyTemplate, type MappedRecord, SOURCE_ID_FIELD } from "./template.js";
 import {
@@ -98,7 +98,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 export async function processRecord(
 	deps: EngineDeps,
 	job: Job,
-	rec: CsvRecord,
+	rec: SourceRecord,
 	opts: { retry: boolean },
 ): Promise<void> {
 	const key = recordKey(job.id, rec.seq);
@@ -196,19 +196,12 @@ async function publishRev(ctx: RecordCtx, id: string, rev: string) {
 async function decide(
 	deps: EngineDeps,
 	job: Job,
-	rec: CsvRecord,
+	rec: SourceRecord,
 	existing: RecordRow | null,
 	save: (fields: RowFields) => Promise<void>,
 ): Promise<RowFields> {
-	if (rec.error) {
-		return {
-			status: "failed",
-			sourceKey: null,
-			entryId: null,
-			errors: [{ code: "column_count", message: `Expected ${job.headers.length} columns` }],
-		};
-	}
-	const mapped = applyTemplate(job.template, rec.values);
+	if (rec.error) return { status: "failed", sourceKey: null, entryId: null, errors: [rec.error] };
+	const mapped = applyTemplate(jobTemplate(job), rec.value);
 	if (!mapped.ok)
 		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
 
@@ -406,8 +399,7 @@ async function importPass(
 ): Promise<Outcome> {
 	const stream = await deps.source.open(job.uploadId, job.cursor.offset);
 	let processed = 0;
-	for await (const rec of readCsvRecords(stream, {
-		headers: job.headers,
+	for await (const rec of jobReader(job).read(stream, {
 		startOffset: job.cursor.offset,
 		startSeq: job.cursor.seq,
 	})) {
@@ -421,16 +413,17 @@ async function importPass(
 
 const RETRY_PAGE = 100; // plugin storage query limit
 
-async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promise<CsvRecord> {
+async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promise<SourceRecord> {
 	const stream = await deps.source.open(job.uploadId, row.start);
-	for await (const rec of readCsvRecords(stream, {
-		headers: job.headers,
+	for await (const rec of jobReader(job).read(stream, {
 		startOffset: row.start,
 		startSeq: row.seq,
 	})) {
 		return rec;
 	}
-	throw new CsvSyntaxError("No record at the saved offset", row.start);
+	// CSV jobs keep the code they failed with before other formats existed.
+	const code = (job.source?.format ?? "csv") === "csv" ? "csv_syntax" : "source_syntax";
+	throw new SourceError(code, "No record at the saved offset", row.start);
 }
 
 /** Rebuilds counters from the record rows, so a crashed retry batch cannot leave them skewed. */
@@ -515,10 +508,10 @@ export async function runBatch(
 			outcome = { done: false, error: { code: "source_missing", message: e.message } };
 		} else if (e instanceof ContentWriteError && JOB_LEVEL_WRITE_ERRORS.has(e.code)) {
 			outcome = { done: false, error: { code: e.code, message: e.message } };
-		} else if (e instanceof CsvSyntaxError) {
+		} else if (e instanceof SourceError) {
 			outcome = {
 				done: false,
-				error: { code: "csv_syntax", message: `${e.message} at byte ${e.offset}` },
+				error: { code: e.code, message: `${e.message} at byte ${e.offset}` },
 			};
 		} else {
 			await noteFailure(deps, job.id, holder, e).catch(() => {

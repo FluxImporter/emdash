@@ -6,9 +6,10 @@ import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
-import { EmDashUploads, isUploadId } from "../emdash/uploads.js";
+import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
 import { JobError } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
+import { SOURCE_FORMATS } from "../sources/reader.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
 import {
@@ -18,10 +19,12 @@ import {
 	listJobs,
 	listRecords,
 	nextBatch,
+	PASTE_MAX_BYTES,
 	SAMPLE_MAX,
 	ServiceError,
 	type StartJobInput,
 	sampleSource,
+	stagePaste,
 	startJob,
 } from "./service.js";
 
@@ -51,6 +54,14 @@ const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
 const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
+const format = z.enum(SOURCE_FORMATS);
+/**
+ * The template's `sourceSchema` (engine/template.ts) rebuilt with astro/zod, a different Zod
+ * than the engine's; definition.test.ts checks both accept and reject the same blocks.
+ */
+const source = z
+	.object({ format: format.default("csv"), records: z.string().min(1).optional() })
+	.strict();
 
 export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {
 	if (!ctx.cron) return;
@@ -63,16 +74,29 @@ export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">)
 interface Services {
 	deps: EngineDeps;
 	uploads: EmDashUploads;
+	storage: UploadStorage;
 	runtime: EmDashRuntime;
 	actor: ActorInfo;
 }
 
-function toRouteError(e: unknown): unknown {
-	if (e instanceof ServiceError) return new PluginRouteError(e.code, e.message, e.status);
+/** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
+export function toRouteError(e: unknown): unknown {
+	if (e instanceof ServiceError) {
+		return new PluginRouteError(e.code, e.message, e.status, e.details);
+	}
 	if (e instanceof JobError) {
 		const status = e.code === "not_found" ? 404 : e.code === "invalid_transition" ? 409 : 400;
-		const details = e.details.length > 0 ? { problems: e.details } : undefined;
-		return new PluginRouteError(e.code.toUpperCase(), e.message, status, details);
+		const details = {
+			...(e.details.length > 0 ? { problems: e.details } : {}),
+			...(e.sourceCode === undefined ? {} : { code: e.sourceCode }),
+		};
+		const hasDetails = Object.keys(details).length > 0;
+		return new PluginRouteError(
+			e.code.toUpperCase(),
+			e.message,
+			status,
+			hasDetails ? details : undefined,
+		);
 	}
 	return e;
 }
@@ -99,7 +123,7 @@ async function withServices<T>(
 			newId: () => ulid(),
 		};
 		try {
-			return await run({ deps, uploads, runtime, actor });
+			return await run({ deps, uploads, storage: runtime.storage, runtime, actor });
 		} catch (e) {
 			throw toRouteError(e);
 		}
@@ -148,9 +172,24 @@ const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
 
 export const routes: Record<string, PluginRoute> = {
 	"sources/sample": route(
-		z.object({ uploadId, n: z.number().int().min(1).max(SAMPLE_MAX).default(5) }),
-		(ctx) => withServices(ctx, ({ deps }) => sampleSource(deps, ctx.input.uploadId, ctx.input.n)),
+		z.object({
+			uploadId,
+			n: z.number().int().min(1).max(SAMPLE_MAX).default(5),
+			source: source.optional(),
+		}),
+		(ctx) =>
+			withServices(ctx, ({ deps }) =>
+				sampleSource(deps, ctx.input.uploadId, ctx.input.n, ctx.input.source),
+			),
 	),
+
+	// The text is staged like an upload; the template's source block decides how it is parsed.
+	"sources/paste": {
+		...route(z.object({ format, text: z.string() }), (ctx) =>
+			withServices(ctx, ({ storage }) => stagePaste(storage, ctx.input.text)),
+		),
+		request: { body: "json", maxBytes: PASTE_MAX_BYTES },
+	},
 
 	"jobs/create": route(createInput, async (ctx) => {
 		await ensureRetentionScheduled(ctx);

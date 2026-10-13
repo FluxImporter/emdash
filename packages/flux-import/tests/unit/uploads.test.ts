@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+	deferCancel,
 	EmDashUploads,
 	isUploadId,
 	LengthRequiredError,
@@ -156,5 +162,57 @@ describe("EmDashUploads", () => {
 		await uploads.delete(fresh);
 		await uploads.delete(fresh);
 		expect(storage.files.size).toBe(0);
+	});
+});
+
+describe("deferCancel", () => {
+	it("passes the bytes through and cancels the source", async () => {
+		let cancelled = false;
+		const source = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new TextEncoder().encode("ab"));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const reader = deferCancel(source).getReader();
+		expect(new TextDecoder().decode((await reader.read()).value)).toBe("ab");
+		await reader.cancel();
+		expect(cancelled).toBe(true);
+		expect(await text(deferCancel(streamOf("xyz", 1)))).toBe("xyz");
+	});
+
+	it("survives cancelling a Node file stream right after a read (local storage adapter)", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "flux-import-cancel-"));
+		const file = join(dir, "big.bin");
+		await writeFile(file, Buffer.alloc(1_600_000, 0x61));
+		const errors: unknown[] = [];
+		const record = (e: unknown) => {
+			errors.push(e);
+		};
+		process.on("unhandledRejection", record);
+		process.on("uncaughtException", record);
+		try {
+			for (let n = 0; n < 30; n++) {
+				const body = Readable.toWeb(createReadStream(file, { start: 1000 * n }));
+				const reader = deferCancel(body as ReadableStream<Uint8Array>).getReader();
+				const first = await reader.read();
+				expect(first.done).toBe(false);
+				expect(first.value?.byteLength ?? 0).toBeGreaterThan(0);
+				// Let the file stream fill its buffer and pause, then read and cancel at once.
+				await new Promise((r) => setTimeout(r, 5));
+				const second = await reader.read();
+				expect(second.done).toBe(false);
+				expect(second.value?.byteLength ?? 0).toBeGreaterThan(0);
+				await expect(reader.cancel()).resolves.toBeUndefined();
+			}
+			await new Promise((r) => setTimeout(r, 20));
+			expect(errors).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", record);
+			process.off("uncaughtException", record);
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 });
