@@ -73,7 +73,11 @@ describe("compileExpression", () => {
 		["a reference bound to a variable", "($t := $now; $t())", "$now"],
 		["a call through ~>", "name ~> $now()", "$now"],
 		["several at once", "$now() & $millis()", "$millis, $now"],
-	])("rejects $now, $millis and $random: %s", (_name, text, names) => {
+		["$shuffle", "$shuffle(items)", "$shuffle"],
+		["$shuffle with another", "$shuffle(items)[0] & $random()", "$random, $shuffle"],
+		["a lambda parameter named after one", "$map(items, function($random) { $random })", "$random"],
+		["a variable named after one", "($now := 1; $now + 1)", "$now"],
+	])("rejects $now, $millis, $random and $shuffle: %s", (_name, text, names) => {
 		expect(compileExpression(text)).toEqual({
 			ok: false,
 			problem: `${names} cannot be used: expressions must give the same result on every run`,

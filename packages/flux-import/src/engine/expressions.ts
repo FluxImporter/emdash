@@ -31,8 +31,11 @@ export const EXPRESSION_LIMITS: Readonly<ExpressionLimits> = {
 	sequence: 100_000,
 };
 
-/** Functions that give a different result on every call; re-imports and crash repair need the same. */
-const BANNED_FUNCTIONS: ReadonlySet<string> = new Set(["now", "millis", "random"]);
+/**
+ * Functions that give a different result on every call (`$shuffle` uses `Math.random()`);
+ * re-imports and crash repair need the same.
+ */
+const BANNED_FUNCTIONS: ReadonlySet<string> = new Set(["now", "millis", "random", "shuffle"]);
 
 /** JSONata's codes for its depth, time and sequence limits. */
 const LIMIT_CODES: ReadonlySet<string> = new Set(["D1011", "D1012", "D2015"]);
@@ -76,7 +79,7 @@ function isJsonataFailure(e: unknown): e is JsonataFailure {
 }
 
 /** "JSONata S0207 at character 7: Unexpected end of expression", or the error's own message. */
-function describe(e: unknown): string {
+function describeFailure(e: unknown): string {
 	if (e instanceof StepLimitError) return e.message;
 	if (isJsonataFailure(e)) {
 		const at = typeof e.position === "number" ? ` at character ${e.position}` : "";
@@ -128,8 +131,8 @@ function forbiddenNodes(ast: unknown): { banned: string[]; regex: boolean } {
  * Parses a template expression once and returns a handle that evaluates it with `limits`. Fails
  * for an expression over `EXPRESSION_MAX_BYTES`, a syntax error (the message names the JSONata
  * code and character position), a regular-expression literal, or a reference to `$now`,
- * `$millis` or `$random`. `$eval` is bound
- * to a function that throws. `limits` is for tests; templates always get `EXPRESSION_LIMITS`.
+ * `$millis`, `$random` or `$shuffle`. `$eval` is bound to a function that throws. `limits` is
+ * for tests; templates always get `EXPRESSION_LIMITS`.
  */
 export function compileExpression(
 	text: string,
@@ -150,7 +153,7 @@ export function compileExpression(
 			sequence: limits.sequence,
 		});
 	} catch (e) {
-		return { ok: false, problem: describe(e) };
+		return { ok: false, problem: describeFailure(e) };
 	}
 	const { banned, regex } = forbiddenNodes(expr.ast());
 	if (regex) return { ok: false, problem: REGEX_PROBLEM };
@@ -184,7 +187,7 @@ export function compileExpression(
 				} catch (e) {
 					const limit =
 						e instanceof StepLimitError || (isJsonataFailure(e) && LIMIT_CODES.has(e.code));
-					return { ok: false, limit, message: describe(e) };
+					return { ok: false, limit, message: describeFailure(e) };
 				}
 			},
 		},
