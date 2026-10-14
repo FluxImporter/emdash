@@ -177,11 +177,22 @@ same except as listed:
 - `$replace`, `$split` and `$join` count what they would build first and end as `expr_limit`
   before building more than the steps left allow (`$replace(s, 'x', s)`, `$split(s, '')`).
 
+**Array depth.** A record that nests arrays more than 32 levels deep (counting every array on a
+path from the record to a leaf, with or without objects between them) fails each expression as
+`expr_limit` ("The record nests arrays more than 32 levels deep") before it is evaluated. JSONata
+looks a field name up through nested arrays by recursing and copying at every level, natively:
+99,999 leaves under 997 levels (the reader allows 1,000) took 1.85 s and 99 MB for one `a.k`. The
+depth is computed once per record, without recursion. Arrays an expression nests itself are
+charged level by level, because each level reads the array built so far (`$reduce` wrapping
+`[[$a]]` 1,000 times ends as `expr_limit` in 22 ms).
+
 **What this bounds, and what it does not.** With these rules the worst expressions found in
 testing (loops over `$pad`, `$replace`, `$encodeUrlComponent`, deep `=`, objects, the order-by
-operator, object constructors over arrays) end as `expr_limit` within about 0.33 s on Node 22
-without a clock (worst measured: a `$pad('', 10000)` loop, 304–324 ms), and one evaluation
-can build at most about 25 million characters of strings. That is a measured bound, not a proof:
+operator, object constructors over arrays, field lookups through nested arrays) end as
+`expr_limit` within about 0.33 s on Node 22 without a clock (worst measured: a `$pad('', 10000)`
+loop, 304–324 ms), and one evaluation can build at most about 25 million characters of strings.
+The bound is per evaluation: one record runs its filter, key, slug and each field expression
+separately, so it can cost up to that many times as much. That is a measured bound, not a proof:
 JSONata does other work inside operators, and an operator or built-in found to do more than linear
 work in what is charged needs its own rule. On Node the 1,000 ms timeout remains a backstop, which
 makes `expr_limit` from it depend on machine load.
