@@ -18,7 +18,7 @@ idempotent batches, per-record errors that never fail the job, and no duplicates
 | Expression language | JSONata (`jsonata@2.2.2`, pinned exactly) for both record filters and field transforms, in every format. No JSONPath or XPath engines. The M3a simple paths stay for plain mappings. |
 | Record selection | M3a's `source.records` still locates records. M3b adds a per-record `source.filter`; it does not change how records are found. |
 | Template version | Stays `version: 1`. All additions are optional, so existing templates stay valid and behave exactly as before. |
-| Determinism | Expressions must be deterministic. `$now`, `$millis` and `$random` are rejected at job creation: re-imports report `unchanged` and crash repair compares planned data with stored data, both of which need the same input to give the same output. |
+| Determinism | Expressions must be deterministic. `$now`, `$millis`, `$random` and `$shuffle` are rejected at job creation: re-imports report `unchanged` and crash repair compares planned data with stored data, both of which need the same input to give the same output. |
 | `$eval` | Disabled. |
 | Limits | Fixed in code, not configurable from a template (see Safety). |
 | New dependency | `jsonata` only. MIT, no dependencies, about 80 KB minified, no `eval` or `new Function`, so it runs on workerd. |
@@ -101,7 +101,7 @@ Each evaluation runs with these limits:
 | Input | One record, at most 4 MiB | Existing M3a record cap. |
 
 - `$eval` is bound to a function that throws, so it is never available to a template.
-- `$now`, `$millis` and `$random` are rejected by walking the parsed expression tree for function
+- `$now`, `$millis`, `$random` and `$shuffle` are rejected by walking the parsed expression tree for function
   calls with those names, including inside lambdas and nested blocks. A name inside a string
   literal is not a call and is allowed.
 - Templates cannot define `$` variables or functions for expressions in M3b.
@@ -151,7 +151,7 @@ problems above. Job and record responses include the `filtered` counter and stat
 ## Testing
 
 - Unit, sandbox: the step, time, depth and sequence limits each give `expr_limit`; `$eval`
-  is blocked; `$now`, `$millis` and `$random` are rejected, including inside lambdas, and allowed
+  is blocked; `$now`, `$millis`, `$random` and `$shuffle` are rejected, including inside lambdas, and allowed
   inside string literals; regex literals are rejected in any position and string patterns are
   allowed; the 4 KiB cap; syntax errors report code and position.
 - Unit, template: exactly one of `from` and `expr`; filters allowed for every format; existing
