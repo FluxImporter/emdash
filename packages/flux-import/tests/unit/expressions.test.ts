@@ -483,6 +483,41 @@ describe("compileExpression", () => {
 			expect(compileExpression("n * 2").ok).toBe(true);
 		});
 
+		const GROUP_PROBLEM =
+			"Grouping a sequence (expr{…}) is not supported in templates; an object constructor on its own ({…}) is";
+		const BINDING_PROBLEM =
+			"The focus and index bindings @$x and #$i are not supported in templates";
+		// JSONata copies a group's array for every member it adds (6.7 s for the first on 48,000).
+		it.each([
+			["a sequence grouped", "a{'': 1}", GROUP_PROBLEM],
+			["a range grouped", "[1..30000]{'': 1}", GROUP_PROBLEM],
+			["a variable grouped", "($x := a; $x{'k': $count($)})", GROUP_PROBLEM],
+			["a filtered path grouped", "a.b[0]{'k': 1}", GROUP_PROBLEM],
+			["a sequence grouped with bindings", "a#$i@$x{'': 1}", GROUP_PROBLEM],
+			["a range grouped with bindings", "[1..30000]#$i@$x{'': 1}", GROUP_PROBLEM],
+			["a focus binding", "a@$x.b", BINDING_PROBLEM],
+			["an index binding", "a#$i.b", BINDING_PROBLEM],
+			["an index binding after a sort", "a^(n)#$i.n", BINDING_PROBLEM],
+		])("rejects %s", (_name, text, problem) => {
+			expect(compileExpression(text)).toEqual({ ok: false, problem });
+		});
+
+		it("keeps the object constructor on its own, and charges it for an array context", async () => {
+			expect(await evaluate('{"a": price, "b": {"c": 1}}', { price: 3 })).toEqual({
+				ok: true,
+				value: { a: 3, b: { c: 1 } },
+			});
+			expect(plain(await evaluate("items.{'n': n}", { items: [{ n: 1 }, { n: 2 }] }))).toEqual({
+				ok: true,
+				value: [{ n: 1 }, { n: 2 }],
+			});
+			// Each inner array is the constructor's context: 48,000 members under one key took 1.6 s.
+			const nested = { n: [Array.from({ length: 48_000 }, (_, i) => i)] };
+			const started = performance.now();
+			expect(await evaluate("n.{'': 1}", nested, { timeoutMs: 1_000_000_000 })).toEqual(LIMIT);
+			expect(performance.now() - started).toBeLessThan(500);
+		});
+
 		// Without a clock, as on Workers: the count alone must end these, and the 5 s test timeout
 		// fails the test if it does not.
 		const items = Array.from({ length: 50_000 }, (_, i) => ({ n: i, name: `item ${i}` }));

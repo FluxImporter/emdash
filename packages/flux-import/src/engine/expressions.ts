@@ -32,8 +32,9 @@ export interface ExpressionLimits {
  * never passed around as values: a built-in handed to `$map` or `$reduce`, or partially applied
  * with a large argument fixed, would run once per element without any node charging for it.
  * Regular expressions (which can backtrack for minutes inside one call), the transform operator
- * `|...|` (a deep copy) and the wildcards `*` and `**` (`*` is quadratic over a wide record) are
- * rejected at compile time.
+ * `|...|` (a deep copy), the wildcards `*` and `**`, grouping a sequence (`expr{...}`) and the
+ * `@`/`#` bindings (the last three copy arrays quadratically in one node) are rejected at compile
+ * time; an object constructor whose context is an array is charged for the same worst case.
  */
 export const EXPRESSION_LIMITS: Readonly<ExpressionLimits> = {
 	steps: 100_000,
@@ -250,6 +251,17 @@ function resultWeight(result: unknown): number {
 	return weightOf(sizeOf(result));
 }
 
+/**
+ * An object constructor whose context is an array groups its members, and JSONata adds each
+ * member to its group by copying the group's array: quadratic when the keys repeat (48,000
+ * members under one key took 1.6 s). Charged on entry as that worst case, in steps of about 1,000
+ * copies, which a context of a few hundred members barely notices.
+ */
+function groupWeight(node: { type?: unknown; value?: unknown }, input: unknown): number {
+	if (node.type !== "unary" || node.value !== "{" || !Array.isArray(input)) return 0;
+	return Math.ceil((input.length * input.length) / 1024);
+}
+
 /** A JSONata built-in as `$name` evaluates to it: the implementation and its signature. */
 interface JsonataBuiltin {
 	implementation: (this: jsonata.Focus, ...args: unknown[]) => unknown;
@@ -446,7 +458,8 @@ function names(found: Iterable<string>): string {
  * - any reference to `$now`, `$millis`, `$random` or `$shuffle`, not only a call:
  *   `$x := $now; $x()` and `$map(a, $random)` call them too;
  * - any reference to a JSONata built-in outside `ALLOWED_FUNCTIONS`;
- * - the transform operator `|...|` and the wildcards `*` and `**`;
+ * - grouping a sequence (`expr{...}`), the `@$x` and `#$i` bindings, the transform operator
+ *   `|...|` and the wildcards `*` and `**`;
  * - an allowed built-in that is not called directly (`$string(x)`, `x ~> $string()`): passed as
  *   a value, partially applied, bound to a variable or used as a parameter name.
  * When the expression is allowed, it returns the nodes that call a built-in on the context value
@@ -493,6 +506,8 @@ function checkTemplate(ast: unknown): { problem: string } | { readsContext: Set<
 	let regex = false;
 	let transform = false;
 	let wildcard = false;
+	let groupBy = false;
+	let binding = false;
 	const nondeterministic = new Set<string>();
 	const unavailable = new Set<string>();
 	const uncalled = new Set<string>();
@@ -500,6 +515,10 @@ function checkTemplate(ast: unknown): { problem: string } | { readsContext: Set<
 		if (node.type === "regex") regex = true;
 		if (node.type === "transform") transform = true;
 		if (node.type === "wildcard" || node.type === "descendant") wildcard = true;
+		// `a{…}` puts a `group` on the node it follows; an object constructor on its own
+		// (`{"a": price}`) is a `unary` node with no `group`.
+		if ("group" in node) groupBy = true;
+		if (typeof node.focus === "string" || typeof node.index === "string") binding = true;
 		if (node.type !== "variable" || typeof node.value !== "string") continue;
 		const name = node.value;
 		if (NONDETERMINISTIC_FUNCTIONS.has(name)) nondeterministic.add(name);
@@ -518,6 +537,15 @@ function checkTemplate(ast: unknown): { problem: string } | { readsContext: Set<
 		return { problem: `${names(unavailable)} ${verb} not available in templates` };
 	}
 	if (transform) return { problem: "The transform operator |...| is not supported in templates" };
+	if (groupBy) {
+		return {
+			problem:
+				"Grouping a sequence (expr{…}) is not supported in templates; an object constructor on its own ({…}) is",
+		};
+	}
+	if (binding) {
+		return { problem: "The focus and index bindings @$x and #$i are not supported in templates" };
+	}
 	if (wildcard) {
 		return { problem: "The wildcards * and ** are not supported in templates; name the fields" };
 	}
@@ -581,9 +609,13 @@ export function compileExpression(
 	// which may be the record itself and so was not charged as any node's result: a built-in
 	// call that takes its argument from the context, and a field name looked up on an array
 	// (which reads every member).
-	const onEntry = (node: { type?: unknown }, input: unknown, environment: Frame) => {
+	const onEntry = (
+		node: { type?: unknown; value?: unknown },
+		input: unknown,
+		environment: Frame,
+	) => {
 		const readsInput = readsContext.has(node) || (node.type === "name" && Array.isArray(input));
-		charge(environment, 1 + (readsInput ? resultWeight(input) : 0));
+		charge(environment, 1 + (readsInput ? resultWeight(input) : 0) + groupWeight(node, input));
 	};
 	const onExit = (_node: unknown, _input: unknown, environment: Frame, result: unknown) => {
 		const cost = resultWeight(result);
