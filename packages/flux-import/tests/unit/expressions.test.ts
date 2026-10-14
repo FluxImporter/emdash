@@ -4,6 +4,7 @@ import jsonata from "jsonata";
 import { describe, expect, it } from "vitest";
 import {
 	ALLOWED_FUNCTIONS,
+	ARRAY_MAX_DEPTH,
 	type CompiledExpression,
 	compileExpression,
 	type Evaluation,
@@ -516,6 +517,46 @@ describe("compileExpression", () => {
 			const started = performance.now();
 			expect(await evaluate("n.{'': 1}", nested, { timeoutMs: 1_000_000_000 })).toEqual(LIMIT);
 			expect(performance.now() - started).toBeLessThan(500);
+		});
+
+		/** `leaves` objects `{"k": 1}` inside `depth` nested arrays. */
+		function nested(depth: number, leaves: number): unknown {
+			let value: unknown = Array.from({ length: leaves }, () => ({ k: 1 }));
+			for (let level = 1; level < depth; level++) value = [value];
+			return value;
+		}
+
+		it(`fails a record nesting arrays more than ${ARRAY_MAX_DEPTH} deep, before evaluating`, async () => {
+			// JSONata looks `k` up through every level natively: 1.85 s and 99 MB for this one.
+			const deep = { a: nested(997, 99_999) };
+			const started = performance.now();
+			for (const text of ["a.k", "$lookup(a, 'k')", "1"]) {
+				expect(await evaluate(text, deep, { timeoutMs: 1_000_000_000 })).toEqual({
+					ok: false,
+					limit: true,
+					message: `The record nests arrays more than ${ARRAY_MAX_DEPTH} levels deep`,
+				});
+			}
+			expect(performance.now() - started).toBeLessThan(1000);
+			// Arrays count wherever they sit, objects between them or not.
+			expect(await evaluate("1", { a: [{ b: nested(ARRAY_MAX_DEPTH, 1) }] })).toMatchObject({
+				ok: false,
+				limit: true,
+			});
+			expect(await evaluate("$count(a.k)", { a: nested(ARRAY_MAX_DEPTH, 1000) })).toEqual({
+				ok: true,
+				value: 1000,
+			});
+		});
+
+		it("charges arrays nested by the expression itself, level by level", {
+			timeout: 5000,
+		}, async () => {
+			// Each `[[$a]]` reads the array built so far, charged by its size.
+			const build = (n: number) =>
+				`$count($reduce([1..${n}], function($a, $v) { [[$a]] }, [{'k': 1}]).k)`;
+			expect(await evaluate(build(200))).toEqual({ ok: true, value: 1 });
+			expect(await evaluate(build(2000), {}, { timeoutMs: 1_000_000_000 })).toEqual(LIMIT);
 		});
 
 		// Without a clock, as on Workers: the count alone must end these, and the 5 s test timeout

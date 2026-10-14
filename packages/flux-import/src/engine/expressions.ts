@@ -394,6 +394,38 @@ function checkPicture(picture: string): void {
 	}
 }
 
+/**
+ * Deepest nesting of arrays an expression may read. JSONata looks a field name up through nested
+ * arrays by recursing and copying every level, natively: 99,999 leaves under 997 levels took 1.85 s
+ * and 99 MB for one `a.k`. The reader allows nesting to 1,000, so a deeper record fails every
+ * expression as a limit before evaluation.
+ */
+export const ARRAY_MAX_DEPTH = 32;
+const ARRAY_DEPTH_PROBLEM = `The record nests arrays more than ${ARRAY_MAX_DEPTH} levels deep`;
+
+/** Each record's array depth, computed once for all of its expressions. */
+const arrayDepths = new WeakMap<object, number>();
+
+/** Most arrays on any path from `value` down to a leaf, without recursion. */
+function arrayDepth(value: unknown): number {
+	if (typeof value !== "object" || value === null) return 0;
+	const known = arrayDepths.get(value);
+	if (known !== undefined) return known;
+	let deepest = 0;
+	const stack: [unknown, number][] = [[value, 0]];
+	while (stack.length > 0) {
+		const [node, above] = stack.pop() as [unknown, number];
+		if (typeof node !== "object" || node === null) continue;
+		const depth = Array.isArray(node) ? above + 1 : above;
+		if (depth > deepest) deepest = depth;
+		for (const member of Array.isArray(node) ? node : Object.values(node)) {
+			if (typeof member === "object" && member !== null) stack.push([member, depth]);
+		}
+	}
+	arrayDepths.set(value, deepest);
+	return deepest;
+}
+
 class StepLimitError extends Error {
 	constructor(readonly steps: number) {
 		super(`Expression exceeded ${steps} evaluation steps`);
@@ -772,6 +804,9 @@ export function compileExpression(
 		ok: true,
 		expression: {
 			async evaluate(input) {
+				if (arrayDepth(input) > ARRAY_MAX_DEPTH) {
+					return { ok: false, limit: true, message: ARRAY_DEPTH_PROBLEM };
+				}
 				try {
 					return { ok: true, value: await expr.evaluate(input) };
 				} catch (e) {
