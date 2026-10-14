@@ -2,7 +2,14 @@ import { SourceError, type SourceRecord } from "../sources/reader.js";
 import { dateFieldsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
 import { JobError, jobReader, jobTemplate, updateJob } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
-import { applyTemplate, type MappedRecord, SOURCE_ID_FIELD } from "./template.js";
+import {
+	applyTemplate,
+	type CompiledTemplate,
+	compileTemplate,
+	filterRecord,
+	type MappedRecord,
+	SOURCE_ID_FIELD,
+} from "./template.js";
 import {
 	type Counters,
 	type EngineDeps,
@@ -98,6 +105,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 export async function processRecord(
 	deps: EngineDeps,
 	job: Job,
+	template: CompiledTemplate,
 	rec: SourceRecord,
 	opts: { retry: boolean },
 ): Promise<void> {
@@ -114,7 +122,7 @@ export async function processRecord(
 	const save = (fields: RowFields) =>
 		deps.records.put(key, { ...base, ...fields, updatedAt: iso(deps) });
 
-	const row = await decide(deps, job, rec, existing, save);
+	const row = await decide(deps, job, template, rec, existing, save);
 	await save(row);
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
@@ -196,12 +204,19 @@ async function publishRev(ctx: RecordCtx, id: string, rev: string) {
 async function decide(
 	deps: EngineDeps,
 	job: Job,
+	template: CompiledTemplate,
 	rec: SourceRecord,
 	existing: RecordRow | null,
 	save: (fields: RowFields) => Promise<void>,
 ): Promise<RowFields> {
 	if (rec.error) return { status: "failed", sourceKey: null, entryId: null, errors: [rec.error] };
-	const mapped = applyTemplate(jobTemplate(job), rec.value);
+	const filter = await filterRecord(template, rec.value);
+	if ("error" in filter) {
+		return { status: "failed", sourceKey: null, entryId: null, errors: [filter.error] };
+	}
+	// A filtered record stops here: its key is not read and EmDash is never called.
+	if (!filter.keep) return { status: "filtered", sourceKey: null, entryId: null };
+	const mapped = await applyTemplate(template, rec.value);
 	if (!mapped.ok)
 		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
 
@@ -394,6 +409,7 @@ async function writeRecord(
 async function importPass(
 	deps: EngineDeps,
 	job: Job,
+	template: CompiledTemplate,
 	started: number,
 	limit: number,
 ): Promise<Outcome> {
@@ -403,7 +419,7 @@ async function importPass(
 		startOffset: job.cursor.offset,
 		startSeq: job.cursor.seq,
 	})) {
-		await processRecord(deps, job, rec, { retry: false });
+		await processRecord(deps, job, template, rec, { retry: false });
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
 		if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
@@ -449,6 +465,7 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 async function retryPass(
 	deps: EngineDeps,
 	job: Job,
+	template: CompiledTemplate,
 	started: number,
 	limit: number,
 ): Promise<Outcome> {
@@ -468,7 +485,8 @@ async function retryPass(
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {
-			await processRecord(deps, job, await readOneRecord(deps, job, row), { retry: true });
+			const rec = await readOneRecord(deps, job, row);
+			await processRecord(deps, job, template, rec, { retry: true });
 			job.retryFromSeq = row.seq + 1;
 			processed++;
 			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
@@ -499,10 +517,20 @@ export async function runBatch(
 			await deps.content.ensureSourceIdField(job.template.collection);
 			job.schemaReady = true;
 		}
-		outcome =
-			job.phase === "retry"
-				? await retryPass(deps, job, started, limit)
-				: await importPass(deps, job, started, limit);
+		// Parsed once per batch and reused for every record; job creation already checked them.
+		const compiled = compileTemplate(jobTemplate(job));
+		if (!compiled.ok) {
+			outcome = {
+				done: false,
+				error: { code: "invalid_template", message: compiled.problems.join("; ") },
+			};
+		} else {
+			const template = compiled.compiled;
+			outcome =
+				job.phase === "retry"
+					? await retryPass(deps, job, template, started, limit)
+					: await importPass(deps, job, template, started, limit);
+		}
 	} catch (e) {
 		if (e instanceof SourceMissingError) {
 			outcome = { done: false, error: { code: "source_missing", message: e.message } };

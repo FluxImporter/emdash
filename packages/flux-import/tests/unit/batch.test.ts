@@ -681,6 +681,7 @@ describe("retry pass", () => {
 			locked: 1,
 			conflict: 0,
 			failed: 0,
+			filtered: 0,
 		});
 		const rows = (
 			await deps.records.query({ where: { jobId: second.id }, orderBy: { seq: "asc" } })
@@ -738,7 +739,15 @@ describe("retry pass", () => {
 		expect(deps.content.calls.slice(callsBefore)).toEqual(["find:S2", "create:e4", "publish:e4"]);
 		expect(deps.content.entries.size).toBe(4);
 		const rows = await deps.records.query({ where: { jobId: job.id }, limit: 100 });
-		const tally = { created: 0, updated: 0, unchanged: 0, failed: 0, locked: 0, conflict: 0 };
+		const tally = {
+			created: 0,
+			updated: 0,
+			unchanged: 0,
+			failed: 0,
+			locked: 0,
+			conflict: 0,
+			filtered: 0,
+		};
 		for (const { data } of rows.items) tally[data.status as keyof typeof tally]++;
 		expect(retried.counters).toEqual(tally);
 	});
@@ -767,6 +776,7 @@ describe("retry pass", () => {
 			failed: 0,
 			locked: 0,
 			conflict: 0,
+			filtered: 0,
 		});
 		const ids = [...deps.content.entries.values()].map((e) => e.data.flux_source_id);
 		expect(ids).toHaveLength(3);

@@ -16,6 +16,8 @@ export interface Counters {
 	locked: number;
 	conflict: number;
 	failed: number;
+	/** Records the template's filter skipped. Absent on jobs created before M3b (read as 0). */
+	filtered: number;
 }
 
 export interface Job {
@@ -56,7 +58,8 @@ export type RecordStatus =
 	| "locked"
 	| "conflict"
 	| "failed"
-	| "planned";
+	| "planned"
+	| "filtered";
 
 export interface RecordError {
 	field?: string;
@@ -111,5 +114,5 @@ export function linkKey(collection: string, locale: string, sourceKey: string): 
 }
 
 export function emptyCounters(): Counters {
-	return { created: 0, updated: 0, unchanged: 0, locked: 0, conflict: 0, failed: 0 };
+	return { created: 0, updated: 0, unchanged: 0, locked: 0, conflict: 0, failed: 0, filtered: 0 };
 }

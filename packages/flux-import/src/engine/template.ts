@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import { z } from "zod";
 import { pathProblem, resolvePath } from "../sources/paths.js";
 import { CSV_SOURCE, SOURCE_FORMATS, type SourceFormat } from "../sources/reader.js";
+import { type CompiledExpression, compileExpression } from "./expressions.js";
 
 export const SOURCE_ID_FIELD = "flux_source_id";
 
@@ -11,32 +12,49 @@ const MAX_KEY_LENGTH = 256;
 const MAX_SLUG_LENGTH = 200;
 
 const column = z.string().min(1);
+const expression = z.string().min(1);
 const timezone = z
 	.string()
 	.min(1)
 	.refine((tz) => DateTime.now().setZone(tz).isValid, { message: "Unknown timezone" });
 
+/** Where a key, slug or field value comes from: a source path (`from`) or a JSONata `expr`. */
+const valueSource = { from: column.optional(), expr: expression.optional() };
+const ONE_SOURCE = { message: 'Set exactly one of "from" and "expr"' };
+const hasOneSource = (m: { from?: string | undefined; expr?: string | undefined }) =>
+	(m.from === undefined) !== (m.expr === undefined);
+
 const fieldMapping = z.discriminatedUnion("type", [
-	z.object({ from: column, type: z.literal("text") }).strict(),
-	z.object({ from: column, type: z.literal("number") }).strict(),
+	z
+		.object({ ...valueSource, type: z.literal("text") })
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({ ...valueSource, type: z.literal("number") })
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
 	z
 		.object({
-			from: column,
+			...valueSource,
 			type: z.literal("date"),
 			format: z.string().min(1).optional(),
 			tz: timezone.default("UTC"),
 		})
-		.strict(),
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
 ]);
+const valueMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
 
 /**
  * The template's `source` block. Which formats take `records` is checked by `checkSource`
- * (sources/readers.ts), so a misplaced `records` is reported as `invalid_source`.
+ * (sources/readers.ts), so a misplaced `records` is reported as `invalid_source`. `filter` is a
+ * JSONata expression evaluated per record, for every format.
  */
 export const sourceSchema = z
 	.object({
 		format: z.enum(SOURCE_FORMATS).default("csv"),
 		records: z.string().min(1).optional(),
+		filter: expression.optional(),
 	})
 	.strict();
 
@@ -46,8 +64,8 @@ export const templateSchema = z
 		source: sourceSchema.default(() => ({ ...CSV_SOURCE })),
 		collection: z.string().regex(SLUG_RE),
 		locale: z.string().min(1),
-		key: z.object({ from: column }).strict(),
-		slug: z.object({ from: column }).strict().optional(),
+		key: valueMapping,
+		slug: valueMapping.optional(),
 		fields: z.record(z.string(), fieldMapping).superRefine((fields, ctx) => {
 			const names = Object.keys(fields);
 			if (names.length === 0) ctx.addIssue({ code: "custom", message: "Map at least one field" });
@@ -73,6 +91,10 @@ type FieldMapping = Template["fields"][string];
 export type FieldValue = string | number | null;
 export type MappedRecord = { key: string; slug?: string; data: Record<string, FieldValue> };
 export type ValueErrorCode =
+	| "filter_error"
+	| "filter_not_boolean"
+	| "expr_error"
+	| "expr_limit"
 	| "not_scalar"
 	| "missing_key"
 	| "key_too_long"
@@ -158,44 +180,146 @@ function convert(mapping: FieldMapping, raw: unknown): Converted {
 	return convertText(mapping, text);
 }
 
-/** Applies the template to one record value (a CSV row object, a JSON value, an XML object). */
-export function applyTemplate(
-	t: Template,
-	value: unknown,
-): { ok: true; value: MappedRecord } | { ok: false; errors: ValueError[] } {
-	const errors: ValueError[] = [];
-	const read = (path: string) => resolvePath(value, path, t.source.format);
+/** A template with its expressions parsed once, for every record of a batch. */
+export interface CompiledTemplate {
+	readonly template: Template;
+	readonly filter: CompiledExpression | null;
+	/** The key's `expr`, or null when it reads `from`. */
+	readonly key: CompiledExpression | null;
+	/** The slug's `expr`, or null when there is no slug or it reads `from`. */
+	readonly slug: CompiledExpression | null;
+	/** Each field's `expr`, by field name; fields that read `from` are absent. */
+	readonly fields: ReadonlyMap<string, CompiledExpression>;
+}
 
-	const keyText = scalarText(read(t.key.from));
-	const key = keyText?.trim() ?? "";
-	if (keyText === null) {
-		errors.push({ field: t.key.from, code: "not_scalar", message: NOT_SCALAR_MESSAGE });
-	} else if (key === "") {
-		errors.push({ field: t.key.from, code: "missing_key", message: "The key column is empty" });
-	} else if (key.length > MAX_KEY_LENGTH) {
+/**
+ * Parses every expression of the template (filter, key, slug, fields) once. Problems name the
+ * template location: `source.filter: JSONata S0207 at character 7: Unexpected end of expression`.
+ */
+export function compileTemplate(
+	t: Template,
+): { ok: true; compiled: CompiledTemplate } | { ok: false; problems: string[] } {
+	const problems: string[] = [];
+	const compile = (label: string, text: string | undefined): CompiledExpression | null => {
+		if (text === undefined) return null;
+		const result = compileExpression(text);
+		if (result.ok) return result.expression;
+		problems.push(`${label}: ${result.problem}`);
+		return null;
+	};
+	const filter = compile("source.filter", t.source.filter);
+	const key = compile("key.expr", t.key.expr);
+	const slug = compile("slug.expr", t.slug?.expr);
+	const fields = new Map<string, CompiledExpression>();
+	for (const [name, mapping] of Object.entries(t.fields)) {
+		const expr = compile(`fields.${name}.expr`, mapping.expr);
+		if (expr !== null) fields.set(name, expr);
+	}
+	if (problems.length > 0) return { ok: false, problems };
+	return { ok: true, compiled: { template: t, filter, key, slug, fields } };
+}
+
+function kindOf(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "an array";
+	if (typeof value === "object") return "an object";
+	return `a ${typeof value}`;
+}
+
+/**
+ * Runs the template's `source.filter` on one record value. `true` (or no filter) keeps the record;
+ * `false`, an empty result or `undefined` skips it (`filtered`); anything else, or a failure,
+ * fails it with `filter_not_boolean`, `filter_error` or `expr_limit`.
+ */
+export async function filterRecord(
+	c: CompiledTemplate,
+	value: unknown,
+): Promise<{ keep: boolean } | { error: ValueError }> {
+	if (c.filter === null) return { keep: true };
+	const result = await c.filter.evaluate(value);
+	if (!result.ok) {
+		const code = result.limit ? "expr_limit" : "filter_error";
+		return { error: { field: "filter", code, message: result.message } };
+	}
+	if (result.value === true) return { keep: true };
+	if (result.value === false || result.value === undefined) return { keep: false };
+	const message = `The filter must give true or false; it gave ${kindOf(result.value)}`;
+	return { error: { field: "filter", code: "filter_not_boolean", message } };
+}
+
+/** Marks a value whose expression failed; the failure is already in the record's errors. */
+const FAILED = Symbol("failed");
+
+/**
+ * Applies the template to one record value (a CSV row object, a JSON value, an XML object): reads
+ * the key, the slug and each field from `from` or `expr` and converts them, collecting every
+ * error. An expression result goes through the same conversion as a path value, and `undefined`
+ * reads as a missing path. Run `filterRecord` first.
+ */
+export async function applyTemplate(
+	c: CompiledTemplate,
+	value: unknown,
+): Promise<{ ok: true; value: MappedRecord } | { ok: false; errors: ValueError[] }> {
+	const t = c.template;
+	const errors: ValueError[] = [];
+	const read = async (
+		field: string,
+		from: string | undefined,
+		expr: CompiledExpression | null | undefined,
+	): Promise<unknown> => {
+		if (expr === null || expr === undefined) {
+			return resolvePath(value, from ?? "", t.source.format);
+		}
+		const result = await expr.evaluate(value);
+		if (result.ok) return result.value;
 		errors.push({
-			field: t.key.from,
-			code: "key_too_long",
-			message: `Keys are limited to ${MAX_KEY_LENGTH} characters`,
+			field,
+			code: result.limit ? "expr_limit" : "expr_error",
+			message: result.message,
 		});
+		return FAILED;
+	};
+
+	const keyField = t.key.from ?? "key";
+	const keyRaw = await read(keyField, t.key.from, c.key);
+	let key = "";
+	if (keyRaw !== FAILED) {
+		const keyText = scalarText(keyRaw);
+		key = keyText?.trim() ?? "";
+		if (keyText === null) {
+			errors.push({ field: keyField, code: "not_scalar", message: NOT_SCALAR_MESSAGE });
+		} else if (key === "") {
+			errors.push({ field: keyField, code: "missing_key", message: "The key column is empty" });
+		} else if (key.length > MAX_KEY_LENGTH) {
+			errors.push({
+				field: keyField,
+				code: "key_too_long",
+				message: `Keys are limited to ${MAX_KEY_LENGTH} characters`,
+			});
+		}
 	}
 
 	let slug: string | undefined;
 	if (t.slug) {
-		const slugText = scalarText(read(t.slug.from));
-		if (slugText === null) {
-			errors.push({ field: "slug", code: "not_scalar", message: NOT_SCALAR_MESSAGE });
-		} else {
-			slug = slugify(slugText);
-			if (slug === "") {
-				errors.push({ field: "slug", code: "empty_slug", message: "The slug would be empty" });
+		const slugRaw = await read("slug", t.slug.from, c.slug);
+		if (slugRaw !== FAILED) {
+			const slugText = scalarText(slugRaw);
+			if (slugText === null) {
+				errors.push({ field: "slug", code: "not_scalar", message: NOT_SCALAR_MESSAGE });
+			} else {
+				slug = slugify(slugText);
+				if (slug === "") {
+					errors.push({ field: "slug", code: "empty_slug", message: "The slug would be empty" });
+				}
 			}
 		}
 	}
 
 	const data: Record<string, FieldValue> = {};
 	for (const [field, mapping] of Object.entries(t.fields)) {
-		const result = convert(mapping, read(mapping.from));
+		const raw = await read(field, mapping.from, c.fields.get(field));
+		if (raw === FAILED) continue;
+		const result = convert(mapping, raw);
 		if (result.ok) data[field] = result.value;
 		else errors.push({ field, code: result.code, message: result.message });
 	}
@@ -204,15 +328,13 @@ export function applyTemplate(
 	return { ok: true, value: slug === undefined ? { key, data } : { key, slug, data } };
 }
 
-/** Every source path the template reads: key, slug and field `from`s, without duplicates. */
+/**
+ * Every source path the template reads: key, slug and field `from`s, without duplicates.
+ * Expressions are not analysed for the paths they read.
+ */
 export function templatePaths(t: Template): string[] {
-	return [
-		...new Set([
-			t.key.from,
-			...(t.slug ? [t.slug.from] : []),
-			...Object.values(t.fields).map((m) => m.from),
-		]),
-	];
+	const froms = [t.key.from, t.slug?.from, ...Object.values(t.fields).map((m) => m.from)];
+	return [...new Set(froms.filter((path): path is string => path !== undefined))];
 }
 
 /** The paths of `paths` that do not resolve in one record value. */
