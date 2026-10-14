@@ -105,9 +105,11 @@ Each evaluation runs with these limits:
   calls with those names, including inside lambdas and nested blocks. A name inside a string
   literal is not a call and is allowed.
 - Templates cannot define `$` variables or functions for expressions in M3b.
-- Known gap: one built-in call (a regular expression, `$pad` with a large width) runs as a single
-  step and cannot be interrupted by the step counter. The 4 MiB record cap bounds its input. The
-  plugin documents this.
+- Regular expression literals (`/…/`) are rejected at job creation, wherever they appear in an
+  expression. A regex runs as one step that no limit can interrupt, and a pattern with nested
+  repeats (`/(a+)+$/`) ran for 85 s on a 36-character string in testing; on Workers that would
+  kill the batch and retry it forever. String patterns in `$contains`, `$split` and `$replace`
+  match literal substrings and stay allowed. A linear-time regex engine may come later.
 
 ## Compilation
 
@@ -123,7 +125,7 @@ Each evaluation runs with these limits:
 
 | Level | Code | When |
 | --- | --- | --- |
-| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; a banned function; both or neither of `from` and `expr` |
+| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; a banned function; a regular expression literal; both or neither of `from` and `expr` |
 | Record | `filter_error` | The filter throws |
 | Record | `filter_not_boolean` | The filter returns something other than a boolean, empty or `undefined` |
 | Record | `expr_error` | A key, slug or field expression throws; `field` names the template field (or `key` or `slug`) and the message includes the JSONata code |
@@ -150,7 +152,8 @@ problems above. Job and record responses include the `filtered` counter and stat
 
 - Unit, sandbox: the step, time, depth and sequence limits each give `expr_limit`; `$eval`
   is blocked; `$now`, `$millis` and `$random` are rejected, including inside lambdas, and allowed
-  inside string literals; the 4 KiB cap; syntax errors report code and position.
+  inside string literals; regex literals are rejected in any position and string patterns are
+  allowed; the 4 KiB cap; syntax errors report code and position.
 - Unit, template: exactly one of `from` and `expr`; filters allowed for every format; existing
   templates parse and behave as before.
 - Unit, engine: filter `true`, `false`, empty and non-boolean; filter errors; `expr` on key, slug
@@ -167,5 +170,5 @@ problems above. Job and record responses include the `filtered` counter and stat
 ## Out of scope for M3b
 
 URL sources (M3c); XLSX (M3d); template-defined variables or functions; non-deterministic
-functions (a fixed job timestamp may come later); JSONPath or XPath; analysing expressions for
-missing-path warnings.
+functions (a fixed job timestamp may come later); regular expressions (a linear-time engine may
+come later); JSONPath or XPath; analysing expressions for missing-path warnings.
