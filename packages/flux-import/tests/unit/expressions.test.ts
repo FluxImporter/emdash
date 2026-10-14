@@ -5,6 +5,7 @@ import {
 	EXPRESSION_LIMITS,
 	EXPRESSION_MAX_BYTES,
 	type ExpressionLimits,
+	PAD_MAX_WIDTH,
 } from "../../src/engine/expressions.js";
 
 function compiled(text: string, limits?: Partial<ExpressionLimits>): CompiledExpression {
@@ -153,6 +154,133 @@ describe("compileExpression", () => {
 			limit: true,
 			message: `Expression exceeded ${EXPRESSION_LIMITS.steps} evaluation steps`,
 		});
+	});
+
+	// Each of these ran for seconds to minutes inside a handful of steps before results were
+	// weighted. No time limit here: on Workers the clock does not advance, so the count alone
+	// must end them, and the 5 s test timeout fails the test if it does not.
+	it.each([
+		[
+			"a built-in sum over a range, in a loop",
+			"$sum($map([1..200], function($i){ $sum([1..100000]) }))",
+		],
+		[
+			"a built-in map over a range, in a loop",
+			"$sum($map([1..20], function($i){ $count($map([1..100000], $string)) }))",
+		],
+		[
+			"a padded string, in a loop",
+			`$sum($map([1..20000], function($i){ $length($pad('', ${PAD_MAX_WIDTH})) }))`,
+		],
+		["a long string read over and over", "$sum($map([1..1000], function($i){ $length(s) }))"],
+	])("stops %s at the step limit, without a clock", { timeout: 5000 }, async (_name, text) => {
+		const input = { s: "x".repeat(1024 * 1024) };
+		expect(await evaluate(text, input, { timeoutMs: 1_000_000_000 })).toEqual({
+			ok: false,
+			limit: true,
+			message: `Expression exceeded ${EXPRESSION_LIMITS.steps} evaluation steps`,
+		});
+	});
+
+	it("charges an array result by its length and a string result by its KiB", async () => {
+		// A range is charged twice: once as the range, once as the array constructor around it.
+		expect(await evaluate("$count([1..40000])")).toEqual({ ok: true, value: 40000 });
+		expect(await evaluate("$count([1..50000])")).toEqual({
+			ok: false,
+			limit: true,
+			message: `Expression exceeded ${EXPRESSION_LIMITS.steps} evaluation steps`,
+		});
+		// A 64 KiB string read from the record: 64 for the string, plus a few steps.
+		const kib = { s: "x".repeat(64 * 1024) };
+		expect(await evaluate("$length(s)", kib, { steps: 100 })).toEqual({ ok: true, value: 65536 });
+		expect(await evaluate("$length(s)", kib, { steps: 60 })).toMatchObject({
+			ok: false,
+			limit: true,
+		});
+	});
+
+	it(`caps $pad at ${PAD_MAX_WIDTH} characters, either way`, async () => {
+		expect(await evaluate(`$length($pad('a', ${PAD_MAX_WIDTH}))`)).toEqual({
+			ok: true,
+			value: PAD_MAX_WIDTH,
+		});
+		expect(await evaluate(`$pad('7', -3, '0')`)).toEqual({ ok: true, value: "007" });
+		for (const width of [PAD_MAX_WIDTH + 1, -(PAD_MAX_WIDTH + 1), 10_000_000]) {
+			expect(await evaluate(`$pad('a', ${width})`)).toEqual({
+				ok: false,
+				limit: false,
+				message: `$pad width is limited to ${PAD_MAX_WIDTH} characters`,
+			});
+		}
+		// A width read from the record is checked the same way.
+		expect(await evaluate("$pad(name, w)", { name: "a", w: 20_000 })).toMatchObject({
+			ok: false,
+			limit: false,
+		});
+	});
+
+	it("pads with a long fill string exactly as JSONata does, without repeating all of it", async () => {
+		const fill = "ab".repeat(500_000);
+		expect(await evaluate("$pad('x', 5, fill)", { fill })).toEqual({ ok: true, value: "xabab" });
+		expect(await evaluate("$pad('x', -5, '😀é')")).toEqual({ ok: true, value: "😀é😀éx" });
+		expect(await evaluate("$pad(name, 4)", { name: "ab" })).toEqual({ ok: true, value: "ab  " });
+		expect(await evaluate("name ~> $pad(3)", { name: "ab" })).toEqual({ ok: true, value: "ab " });
+	});
+
+	it("reads an ISO 8601 timestamp with $toMillis", async () => {
+		expect(await evaluate("$toMillis('2024-01-01T10:00:00Z')")).toEqual({
+			ok: true,
+			value: 1704103200000,
+		});
+		expect(await evaluate("$toMillis(d)", { d: "2024-01-01T10:00:00.250+02:00" })).toEqual({
+			ok: true,
+			value: 1704096000250,
+		});
+		expect(await evaluate("d.$toMillis()", { d: "2024-01-01T00:00:00Z" })).toEqual({
+			ok: true,
+			value: 1704067200000,
+		});
+		expect(await evaluate("$toMillis(nope)")).toEqual({ ok: true, value: undefined });
+		expect(await evaluate("$toMillis('soon')")).toMatchObject({
+			ok: false,
+			limit: false,
+			message: expect.stringMatching(/^JSONata D3110 /),
+		});
+	});
+
+	// JSONata turns a picture into a regular expression and runs it on the value: sixteen `[f]`
+	// on this 38-character value backtracked for 107 s in about 6 steps.
+	const PICTURE_PROBLEM =
+		"$toMillis with a picture is not available in templates; use the date field's format option";
+	const SLOW_VALUE = `${"1".repeat(37)}x`;
+	const SLOW_PICTURE = "[f]".repeat(16);
+
+	it("rejects $toMillis with a picture written in the expression", { timeout: 5000 }, async () => {
+		expect(await evaluate(`$toMillis(v, '${SLOW_PICTURE}')`, { v: SLOW_VALUE })).toEqual({
+			ok: false,
+			limit: false,
+			message: PICTURE_PROBLEM,
+		});
+		expect(await evaluate("$toMillis('2024-01-01', '[Y]-[M]-[D]')")).toEqual({
+			ok: false,
+			limit: false,
+			message: PICTURE_PROBLEM,
+		});
+	});
+
+	it("rejects $toMillis with a picture taken from the record", { timeout: 5000 }, async () => {
+		const record = { v: SLOW_VALUE, fmt: SLOW_PICTURE };
+		for (const text of [
+			"$toMillis(v, fmt)",
+			"($t := $toMillis; $t(v, fmt))",
+			"v ~> $toMillis(fmt)",
+		]) {
+			expect(await evaluate(text, record)).toEqual({
+				ok: false,
+				limit: false,
+				message: PICTURE_PROBLEM,
+			});
+		}
 	});
 
 	it("counts steps per evaluation, so one handle evaluates many records", async () => {
