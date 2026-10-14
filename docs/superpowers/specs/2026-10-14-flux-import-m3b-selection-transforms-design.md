@@ -151,7 +151,13 @@ runs as one step that no limit can interrupt, and `/(a+)+$/` ran for 85 s on a 3
 in testing. String patterns in `$contains`, `$split` and `$replace` match literal substrings and
 stay allowed; those three take only string patterns (not matcher functions). The transform
 operator `|…|`, which deep-copies its input. The wildcards `*` and `**`: `*` concatenates arrays
-quadratically and took 7.4 s on a record with 100,000 array-valued keys.
+quadratically and took 7.4 s on a record with 100,000 array-valued keys. Grouping a sequence
+(`items{…}`, a `group` on a path, name, variable or range) and the focus and index bindings
+(`@$x`, `#$i`): JSONata copies a group's array for every member it adds, and repeats that per
+binding (`a#$i@$x{'': 1}` on 48,000 members took 6.7 s; `[1..30000]#$i@$x{'': 1}` took 2.2 s and
+121 MB on any record). An object constructor on its own (`{"a": price}`, `items.{…}`) stays
+allowed; when its context is an array it groups that array the same way, so it is charged
+`n²/1024` steps for an `n`-member context on entry.
 
 **Caps and checks inside allowed built-ins.** These are replaced with versions that behave the
 same except as listed:
@@ -173,7 +179,8 @@ same except as listed:
 
 **What this bounds, and what it does not.** With these rules the worst expressions found in
 testing (loops over `$pad`, `$replace`, `$encodeUrlComponent`, deep `=`, objects, the order-by
-operator) end as `expr_limit` within about 0.35 s on Node 22 without a clock, and one evaluation
+operator, object constructors over arrays) end as `expr_limit` within about 0.33 s on Node 22
+without a clock (worst measured: a `$pad('', 10000)` loop, 304–324 ms), and one evaluation
 can build at most about 25 million characters of strings. That is a measured bound, not a proof:
 JSONata does other work inside operators, and an operator or built-in found to do more than linear
 work in what is charged needs its own rule. On Node the 1,000 ms timeout remains a backstop, which
@@ -193,7 +200,7 @@ makes `expr_limit` from it depend on machine load.
 
 | Level | Code | When |
 | --- | --- | --- |
-| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; `$now`, `$millis`, `$random` or `$shuffle`; a built-in outside the allowlist, or an allowed one not called directly; a regular expression literal; the transform operator; a wildcard; both or neither of `from` and `expr` |
+| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; `$now`, `$millis`, `$random` or `$shuffle`; a built-in outside the allowlist, or an allowed one not called directly; a regular expression literal; the transform operator; a wildcard; grouping a sequence (`expr{…}`); an `@` or `#` binding; both or neither of `from` and `expr` |
 | Record | `filter_error` | The filter throws |
 | Record | `filter_not_boolean` | The filter returns something other than a boolean, empty or `undefined` |
 | Record | `expr_error` | A key, slug or field expression throws; `field` names the template field (or `key` or `slug`) and the message includes the JSONata code |
@@ -222,7 +229,8 @@ problems above. Job and record responses include the `filtered` counter and stat
   `$millis`, `$random` and `$shuffle` are rejected, including inside lambdas, and allowed inside
   string literals; every built-in outside the allowlist (`$eval` included) is rejected in every
   form, every allowed one works, and allowed ones must be called directly; the list of built-ins
-  matches the ones JSONata defines; the transform operator and wildcards are rejected; regex
+  matches the ones JSONata defines; the transform operator, wildcards, grouping a sequence and `@`/`#` bindings are rejected,
+  a plain object constructor works and is charged over an array context; regex
   literals are rejected in any position and string patterns are allowed; the caps on `$pad`,
   `$fromMillis` and `$string`; `$length` and `$substring` match JSONata's results; loops over
   large strings, arrays and objects, deep `=`, and oversized `$replace`, `$split` and `$join` end
