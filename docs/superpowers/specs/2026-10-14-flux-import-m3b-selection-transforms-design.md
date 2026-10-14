@@ -19,7 +19,7 @@ idempotent batches, per-record errors that never fail the job, and no duplicates
 | Record selection | M3a's `source.records` still locates records. M3b adds a per-record `source.filter`; it does not change how records are found. |
 | Template version | Stays `version: 1`. All additions are optional, so existing templates stay valid and behave exactly as before. |
 | Determinism | Expressions must be deterministic. `$now`, `$millis`, `$random` and `$shuffle` are rejected at job creation: re-imports report `unchanged` and crash repair compares planned data with stored data, both of which need the same input to give the same output. |
-| `$eval` | Disabled. |
+| Built-in functions | An allowlist (see Safety). `$eval` and every other built-in outside it fail job creation. |
 | Limits | Fixed in code, not configurable from a template (see Safety). |
 | New dependency | `jsonata` only. MIT, no dependencies, about 80 KB minified, no `eval` or `new Function`, so it runs on workerd. |
 
@@ -93,38 +93,96 @@ Each evaluation runs with these limits:
 
 | Limit | Value | Mechanism |
 | --- | --- | --- |
-| Steps | 100,000 per evaluation | A counter in JSONata's `__evaluate_entry` hook that throws past the limit. This is the bound that holds on Workers, where `Date.now()` does not advance during pure CPU work and so a wall-clock timeout never fires. Each step is weighted by its result (see below). |
+| Steps | 100,000 per evaluation | A counter in JSONata's `__evaluate_entry` and `__evaluate_exit` hooks that throws past the limit. Each step is weighted by the size of what it reads and produces (see below). On Workers, where `Date.now()` does not advance during pure CPU work so a wall-clock timeout never fires, this count is the only bound. |
 | Time | 1,000 ms per evaluation | JSONata's `timeout` option (code `D1012`), a backstop on Node. |
 | Depth | 200 | JSONata's `stack` option (code `D1011`). |
 | Sequence length | 100,000 | JSONata's `sequence` option (code `D2015`). |
 | Expression length | 4 KiB | Checked at job creation. |
 | Input | One record, at most 4 MiB | Existing M3a record cap. |
 
-- `$eval` is bound to a function that throws, so it is never available to a template.
-- `$now`, `$millis`, `$random` and `$shuffle` are rejected by walking the parsed expression tree for function
-  calls with those names, including inside lambdas and nested blocks. A name inside a string
-  literal is not a call and is allowed.
-- Templates cannot define `$` variables or functions for expressions in M3b.
-- Regular expression literals (`/…/`) are rejected at job creation, wherever they appear in an
-  expression. A regex runs as one step that no limit can interrupt, and a pattern with nested
-  repeats (`/(a+)+$/`) ran for 85 s on a 36-character string in testing; on Workers that would
-  kill the batch and retry it forever. String patterns in `$contains`, `$split` and `$replace`
-  match literal substrings and stay allowed. A linear-time regex engine may come later.
-- Steps are weighted by result size: JSONata's `__evaluate_exit` hook adds an array result's
-  length and a string result's length in KiB (rounded up) to the same count, because one built-in
-  call can run a whole native loop (`$map([1..100000], $string)` inside a loop projected to about
-  10 minutes on the plain count). Work linear in arrays and strings is then bounded without a clock.
-- `$pad` is capped at a width of 10,000 characters (`expr_error` past it), so one call cannot build
-  a huge string.
+Work that happens inside JSONata (inside one built-in call or one operator) is not a step, and
+on Workers it runs until the isolate's CPU or memory limit kills the batch, which is then retried
+forever. Every rule below exists to keep that work proportional to something the count charges.
+
+**Step weighting.** Entering a node is one step. When a node finishes, its result adds its length
+if it is an array, plus one step per 256 bytes of its approximate size: a string's length, or the
+summed size of an array's or object's members and keys (cached per object, so reading the same
+large object again is cheap to measure but charged again). Two kinds of node read a value no node
+produced, such as the record itself, and are charged for it when they start: a built-in call that
+takes its argument from the context (`$keys()` inside a lambda) and a field name looked up on an
+array. A loop that reads a large value, compares large objects with `=`, or builds large results
+therefore runs out of steps in proportion to the data. The weighting has a cost: reading an array
+of more than about 40,000 elements, or a string of several MiB more than a few times, ends as
+`expr_limit`.
+
+**Allowlisted built-ins.** Templates may call only these built-ins, each checked to do work about
+linear in its arguments and result:
+
+- Strings: `$string`, `$substring`, `$substringBefore`, `$substringAfter`, `$lowercase`,
+  `$uppercase`, `$length`, `$trim`, `$pad`, `$contains`, `$replace`, `$split`, `$join`,
+  `$encodeUrlComponent`, `$encodeUrl`, `$decodeUrlComponent`, `$decodeUrl`.
+- Numbers: `$number`, `$floor`, `$ceil`, `$round`, `$abs`, `$sqrt`, `$power`, `$formatBase`, `$sum`,
+  `$max`, `$min`, `$average`.
+- Booleans and types: `$boolean`, `$not`, `$exists`, `$type`.
+- Arrays and objects: `$count`, `$map`, `$filter`, `$single`, `$reduce`, `$append`, `$reverse`,
+  `$lookup`, `$keys`.
+- Dates: `$toMillis`, `$fromMillis`.
+
+Any reference to another JSONata built-in (a call, a reference passed as a value, a partial
+application, either side of `~>`, a variable or parameter of that name) fails job creation with
+`invalid_template`: "$sort is not available in templates". That covers `$sort` (a quadratic merge
+that no step counts: 6.7 s on 45,000 numbers), `$distinct` (quadratic deep comparison), `$clone`,
+`$eval`, `$match`, `$formatNumber`, `$formatInteger` and `$parseInteger` (picture analysis
+quadratic in a picture that may come from the record), `$base64encode` and `$base64decode`,
+`$spread`, `$merge`, `$each`, `$sift`, `$zip`, `$error` and `$assert`. `$now`, `$millis`, `$random`
+and `$shuffle` keep their own message (expressions must be deterministic). The order-by operator
+`^(…)` stays: it evaluates its sort key for each comparison, so its work is counted.
+
+**Built-ins are called, not passed around.** An allowed built-in may only appear as a direct call:
+`$string(x)`, `x ~> $string()` or `items.$string()`. Passing one as a value (`$map(xs, $string)`),
+partially applying it (`$substring(s, ?)`), binding it to a variable, or naming a variable or
+parameter after it fails job creation. A built-in handed to `$map` or `$reduce` runs once per
+element natively, and a partial application can fix a 4 MiB argument for every call, with no node
+charging for either. A lambda (`function($v) { $string($v) }`) does the same with every call
+counted. The template's own variables and lambdas, with other names, are allowed.
+
+**Operators rejected at job creation.** Regular expression literals (`/…/`), anywhere: a regex
+runs as one step that no limit can interrupt, and `/(a+)+$/` ran for 85 s on a 36-character string
+in testing. String patterns in `$contains`, `$split` and `$replace` match literal substrings and
+stay allowed; those three take only string patterns (not matcher functions). The transform
+operator `|…|`, which deep-copies its input. The wildcards `*` and `**`: `*` concatenates arrays
+quadratically and took 7.4 s on a record with 100,000 array-valued keys.
+
+**Caps and checks inside allowed built-ins.** These are replaced with versions that behave the
+same except as listed:
+
+- `$pad` widths are capped at 10,000 characters (`expr_error` past it).
+- `$fromMillis` pictures are capped at 256 characters and their width modifiers at 64 (`expr_error`
+  past them): JSONata pads a component to its width in one call (`[Y,100000000]` built 1.65 GB).
+  The picture is scanned without a regular expression.
 - `$toMillis` with a picture string fails with `expr_error`: JSONata turns the picture into a
   regular expression and runs it on the value (16 `[f]` on a 38-character value took 107 s). The
   picture can come from the record, so this is checked at evaluation. The ISO 8601 form stays;
   date fields' `format` option parses other layouts.
+- `$length` and `$substring` count code points without building an array of every character
+  (JSONata's own versions held about 308 MB for a 4 MiB string).
+- `$string` with indentation (`$string(x, true)`) fails with `expr_error`: indenting a value
+  nested a few thousand deep builds a string quadratic in its depth.
+- `$replace`, `$split` and `$join` count what they would build first and end as `expr_limit`
+  before building more than the steps left allow (`$replace(s, 'x', s)`, `$split(s, '')`).
+
+**What this bounds, and what it does not.** With these rules the worst expressions found in
+testing (loops over `$pad`, `$replace`, `$encodeUrlComponent`, deep `=`, objects, the order-by
+operator) end as `expr_limit` within about 0.35 s on Node 22 without a clock, and one evaluation
+can build at most about 25 million characters of strings. That is a measured bound, not a proof:
+JSONata does other work inside operators, and an operator or built-in found to do more than linear
+work in what is charged needs its own rule. On Node the 1,000 ms timeout remains a backstop, which
+makes `expr_limit` from it depend on machine load.
 
 ## Compilation
 
 - `compileTemplate(template)` parses every expression once (filter, key, slug, fields), checks the
-  length cap and banned functions, and returns compiled handles with the limits applied.
+  length cap and the rules in Safety, and returns compiled handles with the limits applied.
 - Job creation calls it to validate the template; any problem fails creation with
   `invalid_template`.
 - Each batch calls it once and reuses the handles for all of its records. There is no cache
@@ -135,7 +193,7 @@ Each evaluation runs with these limits:
 
 | Level | Code | When |
 | --- | --- | --- |
-| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; a banned function; a regular expression literal; both or neither of `from` and `expr` |
+| Job creation | `invalid_template` | Expression syntax error (message names the JSONata code and character position); expression over 4 KiB; `$now`, `$millis`, `$random` or `$shuffle`; a built-in outside the allowlist, or an allowed one not called directly; a regular expression literal; the transform operator; a wildcard; both or neither of `from` and `expr` |
 | Record | `filter_error` | The filter throws |
 | Record | `filter_not_boolean` | The filter returns something other than a boolean, empty or `undefined` |
 | Record | `expr_error` | A key, slug or field expression throws; `field` names the template field (or `key` or `slug`) and the message includes the JSONata code |
@@ -160,10 +218,15 @@ problems above. Job and record responses include the `filtered` counter and stat
 
 ## Testing
 
-- Unit, sandbox: the step, time, depth and sequence limits each give `expr_limit`; `$eval`
-  is blocked; `$now`, `$millis`, `$random` and `$shuffle` are rejected, including inside lambdas, and allowed
-  inside string literals; regex literals are rejected in any position and string patterns are
-  allowed; the 4 KiB cap; syntax errors report code and position.
+- Unit, sandbox: the step, time, depth and sequence limits each give `expr_limit`; `$now`,
+  `$millis`, `$random` and `$shuffle` are rejected, including inside lambdas, and allowed inside
+  string literals; every built-in outside the allowlist (`$eval` included) is rejected in every
+  form, every allowed one works, and allowed ones must be called directly; the list of built-ins
+  matches the ones JSONata defines; the transform operator and wildcards are rejected; regex
+  literals are rejected in any position and string patterns are allowed; the caps on `$pad`,
+  `$fromMillis` and `$string`; `$length` and `$substring` match JSONata's results; loops over
+  large strings, arrays and objects, deep `=`, and oversized `$replace`, `$split` and `$join` end
+  as `expr_limit` without a clock; the 4 KiB cap; syntax errors report code and position.
 - Unit, template: exactly one of `from` and `expr`; filters allowed for every format; existing
   templates parse and behave as before.
 - Unit, engine: filter `true`, `false`, empty and non-boolean; filter errors; `expr` on key, slug
