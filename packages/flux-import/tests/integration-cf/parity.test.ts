@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, inject, it } from "vitest";
-import { jsonTemplate, productsJson } from "../fixtures/formats.js";
+import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
 import { Client } from "../integration/client.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import { CF_SITE_DIR } from "./global-setup.js";
@@ -85,6 +85,58 @@ describe("workerd parity (D1, R2)", () => {
 		const entries = await client.listAll("cf_json");
 		expect(entries).toHaveLength(10);
 		expect(entries.every((e) => e.status === "published")).toBe(true);
+	});
+
+	it("filters and computes JSON records, and stops a runaway expression by its step count", async () => {
+		await client.createProducts("cf_select");
+		const { uploadId } = await client.upload(productsJson(10), "feed.json");
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: withSelection(jsonTemplate("cf_select"), "json"),
+			dryRun: false,
+			batchSize: 4,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done).toMatchObject({
+			status: "completed",
+			counters: { created: 6, filtered: 4, failed: 0 },
+		});
+		const entries = await client.listAll("cf_select");
+		expect(entries.find((e) => e.data.flux_source_id === "SKU-4")?.data.title).toBe(
+			'SKU-4 / Product 4, "quoted" & <tagged> ț',
+		);
+
+		// workerd does not advance Date.now() during pure CPU work, so JSONata's timeout never
+		// fires there; only the step counter can end these expressions. The second builds a range
+		// natively inside each call, so only the weight of its results stops it.
+		const one = await client.upload(productsJson(1), "one.json");
+		for (const expr of [
+			"($f := function($n) { $f($n + 1) }; $f(0))",
+			"$sum($map([1..20], function($i) { $sum([1..100000]) }))",
+		]) {
+			const runaway = jsonTemplate("cf_select");
+			const template = {
+				...runaway,
+				fields: { ...runaway.fields, title: { expr, type: "text" } },
+			};
+			const stuck = await client.plugin("jobs/create", {
+				uploadId: one.uploadId,
+				template,
+				dryRun: false,
+			});
+			expect(await client.runToEnd(stuck.id)).toMatchObject({
+				status: "completed",
+				counters: { failed: 1 },
+			});
+			const [row] = await client.records(stuck.id, "failed");
+			expect(row?.errors).toEqual([
+				{
+					field: "title",
+					code: "expr_limit",
+					message: "Expression exceeded 100000 evaluation steps",
+				},
+			]);
+		}
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {

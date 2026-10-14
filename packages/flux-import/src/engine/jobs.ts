@@ -8,6 +8,7 @@ import { checkSource, readerFor } from "../sources/readers.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
+	compileTemplate,
 	missingPathWarnings,
 	noRecordsWarning,
 	type SchemaField,
@@ -87,6 +88,14 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		);
 	}
 	const template = parsed.data;
+	const compiled = compileTemplate(template);
+	if (!compiled.ok) {
+		throw new JobError(
+			"invalid_template",
+			"The template has invalid expressions",
+			compiled.problems,
+		);
+	}
 
 	const sourceProblems = checkSource(template.source);
 	if (sourceProblems.length > 0) {
@@ -196,6 +205,11 @@ export function jobReader(job: Job): RecordReader {
 	return readerFor(job.source ?? CSV_SOURCE, job.columns ?? job.headers ?? []);
 }
 
+/** A stored job with every counter; jobs created before M3b have no `filtered` counter. */
+export function upgradeJob(job: Job): Job {
+	return { ...job, counters: { ...emptyCounters(), ...job.counters } };
+}
+
 /** A stored job's template; templates stored before M3a have no source block and are CSV. */
 export function jobTemplate(job: Job): Template {
 	return job.template.source ? job.template : { ...job.template, source: CSV_SOURCE };
@@ -209,7 +223,10 @@ export async function updateJob(
 	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
 		const current = await deps.jobs.getVersioned(id);
 		if (!current) throw new JobError("not_found", `Job ${id} not found`);
-		const next = { ...change(current.value), updatedAt: new Date(deps.now()).toISOString() };
+		const next = {
+			...change(upgradeJob(current.value)),
+			updatedAt: new Date(deps.now()).toISOString(),
+		};
 		const result = await deps.jobs.compareAndSet(id, current.revision, next);
 		if (result.applied) return next;
 	}

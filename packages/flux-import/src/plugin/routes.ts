@@ -48,6 +48,7 @@ const RECORD_STATUSES = [
 	"conflict",
 	"failed",
 	"planned",
+	"filtered",
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
@@ -60,7 +61,11 @@ const format = z.enum(SOURCE_FORMATS);
  * than the engine's; definition.test.ts checks both accept and reject the same blocks.
  */
 const source = z
-	.object({ format: format.default("csv"), records: z.string().min(1).optional() })
+	.object({
+		format: format.default("csv"),
+		records: z.string().min(1).optional(),
+		filter: z.string().min(1).optional(),
+	})
 	.strict();
 
 export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {

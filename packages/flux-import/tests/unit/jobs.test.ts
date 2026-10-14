@@ -84,6 +84,50 @@ describe("createJob", () => {
 		);
 	});
 
+	it("rejects bad expressions with invalid_template, naming each one", async () => {
+		const { deps } = setup();
+		const bad = {
+			...template,
+			source: { format: "csv", filter: "Name = " },
+			key: { expr: "$now()" },
+		};
+		await expect(
+			createJob(deps, { uploadId: "u1", template: bad, schemaFields }),
+		).rejects.toMatchObject({
+			code: "invalid_template",
+			message: "The template has invalid expressions",
+			details: [
+				"source.filter: JSONata S0207 at character 7: Unexpected end of expression",
+				"key.expr: $now cannot be used: expressions must give the same result on every run",
+			],
+		});
+		const both = { ...template, key: { from: "sku", expr: "sku" } };
+		await expect(
+			createJob(deps, { uploadId: "u1", template: both, schemaFields }),
+		).rejects.toMatchObject({
+			code: "invalid_template",
+			details: ['key: Set exactly one of "from" and "expr"'],
+		});
+	});
+
+	it("checks only from columns against the CSV header", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: {
+				...template,
+				source: { format: "csv", filter: "Missing = 'x'" },
+				fields: { title: { expr: "Nowhere & Name", type: "text" } },
+			},
+			schemaFields,
+		});
+		expect(job).toMatchObject({
+			status: "created",
+			source: { format: "csv", filter: "Missing = 'x'" },
+			counters: { filtered: 0 },
+		});
+	});
+
 	it("rejects a missing upload or unreadable header", async () => {
 		const { deps } = setup('sku,"Name\n');
 		await expect(
@@ -115,6 +159,20 @@ describe("createJob for JSON, JSON Lines and XML", () => {
 		});
 		expect(job).not.toHaveProperty("columns");
 		expect(job).not.toHaveProperty("headers");
+	});
+
+	it("warns about from paths only, not about paths an expression reads", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", JSON.stringify([{ sku: "S1" }]));
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: jsonT(
+				{ format: "json", filter: "nowhere = 1" },
+				{ title: { expr: "missing.path", type: "text" } },
+			),
+			schemaFields,
+		});
+		expect(job.warnings).toEqual([]);
 	});
 
 	it("stores a warning for each path none of the first 20 records has", async () => {
