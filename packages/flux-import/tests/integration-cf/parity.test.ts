@@ -107,12 +107,12 @@ describe("workerd parity (D1, R2)", () => {
 		);
 
 		// workerd does not advance Date.now() during pure CPU work, so JSONata's timeout never
-		// fires there; only the step counter can end these expressions. The second runs a native
-		// loop inside each call, so only the weight of its results stops it.
+		// fires there; only the step counter can end these expressions. The second builds a range
+		// natively inside each call, so only the weight of its results stops it.
 		const one = await client.upload(productsJson(1), "one.json");
 		for (const expr of [
 			"($f := function($n) { $f($n + 1) }; $f(0))",
-			"$sum($map([1..20], function($i) { $count($map([1..100000], $string)) }))",
+			"$sum($map([1..20], function($i) { $sum([1..100000]) }))",
 		]) {
 			const runaway = jsonTemplate("cf_select");
 			const template = {
