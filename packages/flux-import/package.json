@@ -19,6 +19,7 @@
 	},
 	"dependencies": {
 		"@emdash-cms/auth": "1.2.0",
+		"jsonata": "2.2.2",
 		"kysely": "^0.29.0",
 		"luxon": "^3.7.2",
 		"zod": "4.5.4"
