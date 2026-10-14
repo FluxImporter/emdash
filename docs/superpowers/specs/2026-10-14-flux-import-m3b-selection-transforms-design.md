@@ -26,7 +26,7 @@ idempotent batches, per-record errors that never fail the job, and no duplicates
 ## Template additions
 
 ```json
-"source": { "format": "xml", "records": "rss/channel/item", "filter": "category = 'Desks' and price > 0" },
+"source": { "format": "xml", "records": "rss/channel/item", "filter": "category = 'Desks' and $number(price) > 0" },
 "key":    { "from": "@sku" },
 "slug":   { "expr": "$lowercase($replace(title, ' ', '-'))" },
 "fields": {
@@ -93,7 +93,7 @@ Each evaluation runs with these limits:
 
 | Limit | Value | Mechanism |
 | --- | --- | --- |
-| Steps | 100,000 per evaluation | A counter in JSONata's `__evaluate_entry` hook that throws past the limit. This is the bound that holds on Workers, where `Date.now()` does not advance during pure CPU work and so a wall-clock timeout never fires. |
+| Steps | 100,000 per evaluation | A counter in JSONata's `__evaluate_entry` hook that throws past the limit. This is the bound that holds on Workers, where `Date.now()` does not advance during pure CPU work and so a wall-clock timeout never fires. Each step is weighted by its result (see below). |
 | Time | 1,000 ms per evaluation | JSONata's `timeout` option (code `D1012`), a backstop on Node. |
 | Depth | 200 | JSONata's `stack` option (code `D1011`). |
 | Sequence length | 100,000 | JSONata's `sequence` option (code `D2015`). |
@@ -110,6 +110,16 @@ Each evaluation runs with these limits:
   repeats (`/(a+)+$/`) ran for 85 s on a 36-character string in testing; on Workers that would
   kill the batch and retry it forever. String patterns in `$contains`, `$split` and `$replace`
   match literal substrings and stay allowed. A linear-time regex engine may come later.
+- Steps are weighted by result size: JSONata's `__evaluate_exit` hook adds an array result's
+  length and a string result's length in KiB (rounded up) to the same count, because one built-in
+  call can run a whole native loop (`$map([1..100000], $string)` inside a loop projected to about
+  10 minutes on the plain count). Work linear in arrays and strings is then bounded without a clock.
+- `$pad` is capped at a width of 10,000 characters (`expr_error` past it), so one call cannot build
+  a huge string.
+- `$toMillis` with a picture string fails with `expr_error`: JSONata turns the picture into a
+  regular expression and runs it on the value (16 `[f]` on a 38-character value took 107 s). The
+  picture can come from the record, so this is checked at evaluation. The ISO 8601 form stays;
+  date fields' `format` option parses other layouts.
 
 ## Compilation
 
