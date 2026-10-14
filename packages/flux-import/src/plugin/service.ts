@@ -2,7 +2,13 @@ import type { LocaleResolution } from "../emdash/locale.js";
 import { type StagedUpload, stageUpload, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
-import { type CreateJobInput, createJob, JobError, transitionJob } from "../engine/jobs.js";
+import {
+	type CreateJobInput,
+	createJob,
+	JobError,
+	transitionJob,
+	upgradeJob,
+} from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { SourceMissingError } from "../engine/ports.js";
 import type { SchemaField } from "../engine/template.js";
@@ -157,7 +163,7 @@ export async function startJob(
 export async function getJob(deps: EngineDeps, id: string): Promise<Job> {
 	const job = await deps.jobs.get(id);
 	if (!job) throw new JobError("not_found", `Job ${id} not found`);
-	return job;
+	return upgradeJob(job);
 }
 
 /** Whether a job may still read its staged file (resume, retry, or a real run after a dry run). */
@@ -229,7 +235,7 @@ export async function listJobs(
 	deps: EngineDeps,
 	opts: { status?: JobStatus; cursor?: string },
 ): Promise<Page<Job>> {
-	return page(
+	const jobs = page(
 		await deps.jobs.query({
 			...(opts.status ? { where: { status: opts.status } } : {}),
 			orderBy: { createdAt: "desc" },
@@ -237,6 +243,7 @@ export async function listJobs(
 			...(opts.cursor ? { cursor: opts.cursor } : {}),
 		}),
 	);
+	return { ...jobs, items: jobs.items.map(upgradeJob) };
 }
 
 export async function listRecords(

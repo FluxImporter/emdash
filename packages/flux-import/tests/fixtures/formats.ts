@@ -144,3 +144,32 @@ export const MALFORMED_OUTCOMES = [
 	["failed", "not_scalar"],
 	["created", undefined],
 ] as const;
+
+/**
+ * Per format: a `source.filter` that keeps products 4 and up (price 4.5 and more) and an `expr`
+ * that computes `title` as "<sku> / <name>". Expressions see the record the reader produces: CSV
+ * cells are strings, so the CSV filter converts the price; XML `title` and `price` carry
+ * attributes, so they are objects with `#text`.
+ */
+export const SELECTION = {
+	csv: { filter: "$number(Price) > 4", title: "sku & ' / ' & Name" },
+	json: { filter: "price.amount > 4", title: "sku & ' / ' & name" },
+	jsonl: { filter: "price.amount > 4", title: "sku & ' / ' & name" },
+	xml: {
+		filter: "$number(price.`#text`) > 4",
+		title: "`@sku` & ' / ' & title.`#text`",
+	},
+} as const;
+
+/** `template` with its format's `SELECTION` filter and `title` expression. */
+export function withSelection<T extends { source?: Record<string, string>; fields: object }>(
+	template: T,
+	format: keyof typeof SELECTION,
+) {
+	const { filter, title } = SELECTION[format];
+	return {
+		...template,
+		source: { ...(template.source ?? { format: "csv" }), filter },
+		fields: { ...template.fields, title: { expr: title, type: "text" } },
+	};
+}

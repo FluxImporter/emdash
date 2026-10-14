@@ -90,6 +90,11 @@ describe("createPlugin", () => {
 		expect(
 			plugin.routes["jobs/records"]!.input!.safeParse({ id: "J1", status: "bogus" }).success,
 		).toBe(false);
+		for (const route of ["jobs/records", "jobs/log.csv"]) {
+			expect(plugin.routes[route]!.input!.safeParse({ id: "J1", status: "filtered" }).success).toBe(
+				true,
+			);
+		}
 	});
 
 	it("accepts and rejects the same source blocks as the template schema", () => {
@@ -101,6 +106,10 @@ describe("createPlugin", () => {
 			{ format: "jsonl" },
 			{ format: "xml", records: "feed/item" },
 			{ format: "json", records: "data.items" },
+			{ format: "csv", filter: "Price > 0" },
+			{ format: "xml", records: "feed/item", filter: "`@sku` != ''" },
+			{ format: "json", filter: "" },
+			{ format: "json", filter: 5 },
 			{ format: "yaml" },
 			{ format: "json", records: "" },
 			{ format: "json", records: 5 },

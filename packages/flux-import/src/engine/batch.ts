@@ -1,6 +1,6 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
 import { dateFieldsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
-import { JobError, jobReader, jobTemplate, updateJob } from "./jobs.js";
+import { JobError, jobReader, jobTemplate, updateJob, upgradeJob } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
 import {
 	applyTemplate,
@@ -56,7 +56,7 @@ async function claim(
 ): Promise<{ ok: boolean; job: Job }> {
 	const current = await deps.jobs.getVersioned(jobId);
 	if (!current) throw new JobError("not_found", `Job ${jobId} not found`);
-	const job = current.value;
+	const job = upgradeJob(current.value);
 	const now = deps.now();
 	if (job.status !== "created" && job.status !== "running") return { ok: false, job };
 	// Any live lease blocks the claim, including one held under the same holder name.
@@ -68,7 +68,10 @@ async function claim(
 		updatedAt: iso(deps),
 	};
 	const result = await deps.jobs.compareAndSet(jobId, current.revision, next);
-	if (!result.applied) return { ok: false, job: (await deps.jobs.get(jobId)) ?? job };
+	if (!result.applied) {
+		const stored = await deps.jobs.get(jobId);
+		return { ok: false, job: stored ? upgradeJob(stored) : job };
+	}
 	return { ok: true, job: next };
 }
 
