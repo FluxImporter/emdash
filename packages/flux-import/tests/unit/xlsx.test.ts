@@ -179,7 +179,7 @@ describe("openXlsx cell values", () => {
 			{ d: "1900-02-28", _row: 2 },
 			{ d: "1900-03-01", _row: 4 },
 		]);
-		expect(warnings).toEqual([]);
+		expect(warnings).toEqual(["1 row had only unreadable cells and was skipped (first at row 3)"]);
 	});
 
 	it("counts an unreadable cell only in a row that is imported, including a huge date serial", async () => {
@@ -191,7 +191,10 @@ describe("openXlsx cell values", () => {
 			{ cellXfs: [0, 14] },
 		);
 		expect(records).toEqual([{ sku: "k", Value: null, _row: 3 }]);
-		expect(warnings).toEqual(["1 cell could not be read and was imported as empty"]);
+		expect(warnings).toEqual([
+			"1 row had only unreadable cells and was skipped (first at row 2)",
+			"1 cell could not be read and was imported as empty",
+		]);
 	});
 
 	it("reads a shared-string cell with no value, or an empty one, as an empty cell that is not counted", async () => {

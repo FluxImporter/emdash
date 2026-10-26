@@ -106,6 +106,8 @@ function plural(n: number, one: string, many: string): string {
 class SheetConverter {
 	unreadable = 0;
 	ignored = 0;
+	skipped = 0;
+	firstSkipped = 0;
 
 	constructor(
 		private readonly part: string,
@@ -289,7 +291,13 @@ export async function openXlsx(bytes: Uint8Array, options: XlsxOptions = {}): Pr
 						any = true;
 					}
 				}
-				if (!any) continue;
+				if (!any) {
+					if (unreadable > 0) {
+						if (converter.skipped === 0) converter.firstSkipped = row.number;
+						converter.skipped++;
+					}
+					continue;
+				}
 				converter.unreadable += unreadable;
 				const fields = keys.map((key, i) => key + values[i]).join(",");
 				yield `{${fields}${rowField === "" ? "" : rowField + row.number}}`;
@@ -307,6 +315,11 @@ export async function openXlsx(bytes: Uint8Array, options: XlsxOptions = {}): Pr
 			...(converter.ignored > 0
 				? [
 						`${plural(converter.ignored, "cell", "cells")} right of the last header column (${columnName(width - 1)}) ${converter.ignored === 1 ? "was" : "were"} ignored`,
+					]
+				: []),
+			...(converter.skipped > 0
+				? [
+						`${plural(converter.skipped, "row", "rows")} had only unreadable cells and ${converter.skipped === 1 ? "was" : "were"} skipped (first at row ${converter.firstSkipped})`,
 					]
 				: []),
 			...(converter.unreadable > 0
