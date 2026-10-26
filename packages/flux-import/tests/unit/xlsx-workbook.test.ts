@@ -313,6 +313,29 @@ describe("readDateStyles", () => {
 		]);
 	});
 
+	it("treats the East Asian built-in formats 27-36 and 50-58 as dates, unless a numFmt redefines one", async () => {
+		const ids = [26, 27, 31, 32, 35, 36, 37, 49, 50, 55, 58, 59, 30];
+		const styles =
+			`${DECL}<styleSheet ${NS}>` +
+			'<numFmts count="1"><numFmt numFmtId="30" formatCode="0.00"/></numFmts>' +
+			`<cellXfs count="${ids.length}">${ids.map((id) => `<xf numFmtId="${id}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`).join("")}</cellXfs></styleSheet>`;
+		expect(await readDateStyles(new Parts({ "xl/styles.xml": styles }), "xl/styles.xml")).toEqual([
+			false,
+			true,
+			true,
+			true,
+			true,
+			true,
+			false,
+			false,
+			true,
+			true,
+			true,
+			false,
+			false,
+		]);
+	});
+
 	it("has no date styles when the styles part has no cellXfs", async () => {
 		const parts = new Parts({ "xl/styles.xml": `${DECL}<styleSheet ${NS}><fonts/></styleSheet>` });
 		expect(await readDateStyles(parts, "xl/styles.xml")).toEqual([]);

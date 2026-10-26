@@ -288,7 +288,8 @@ export async function openXlsx(bytes: Uint8Array, options: XlsxOptions = {}): Pr
 						unreadable++;
 					} else {
 						values[column] = cell.json;
-						any = true;
+						// An empty string (a formula returning "") is written, but alone keeps a row empty.
+						if (cell.text !== "") any = true;
 					}
 				}
 				if (!any) {

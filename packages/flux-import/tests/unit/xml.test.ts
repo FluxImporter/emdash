@@ -394,4 +394,21 @@ describe("parseXmlRecordText", () => {
 			{ "@r": "1", t: { "@xml:space": "preserve", "#text": " " }, v: " " },
 		]);
 	});
+
+	it("refuses a duplicate attribute, and checks 100,000 attributes in linear time", () => {
+		expect(() => parseXmlRecordText('<item a="1" b="2" a="3"/>')).toThrow("Duplicate attribute a");
+		// The same name on two elements is not a duplicate.
+		expect(parseXmlRecordText('<item a="1"><b a="2"/></item>')).toEqual({
+			"@a": "1",
+			b: { "@a": "2" },
+		});
+		const attrs = Array.from({ length: 100_000 }, (_, n) => ` a${n}="${n}"`).join("");
+		const started = performance.now();
+		const value = parseXmlRecordText(`<row${attrs}/>`) as Record<string, string>;
+		// A scan of the earlier attributes for each one took about 18 s here; a set takes milliseconds.
+		expect(performance.now() - started).toBeLessThan(2000);
+		expect(Object.keys(value)).toHaveLength(100_000);
+		expect(value["@a99999"]).toBe("99999");
+		expect(() => parseXmlRecordText(`<row${attrs} a0="again"/>`)).toThrow("Duplicate attribute a0");
+	});
 });

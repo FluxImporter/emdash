@@ -6,10 +6,15 @@ const MIB = 1024 * 1024;
 export const SHARED_STRINGS_MAX = 1_000_000;
 export const SHARED_STRINGS_MAX_BYTES = 50 * MIB;
 /**
- * Built-in number formats that are dates or times (ECMA-376 Part 1, 18.8.30). 46 is `[h]:mm:ss`,
- * an elapsed time, which stays a number like any other elapsed-time format.
+ * Built-in number formats that are dates or times (ECMA-376 Part 1, 18.8.30): 14-22, 45 and 47,
+ * plus the East Asian ones that Japanese, Chinese and Korean Excel save without a `<numFmt>`,
+ * 27-36 and 50-58. 46 is `[h]:mm:ss`, an elapsed time, which stays a number like any other
+ * elapsed-time format.
  */
-const DATE_FORMAT_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 47]);
+const DATE_FORMAT_IDS = new Set([
+	14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 45, 47, 50, 51, 52,
+	53, 54, 55, 56, 57, 58,
+]);
 const WORKBOOK = "xl/workbook.xml";
 const WORKBOOK_RELS = "xl/_rels/workbook.xml.rels";
 const SHEETS_LISTED = 10;

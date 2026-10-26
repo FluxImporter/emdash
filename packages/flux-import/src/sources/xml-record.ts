@@ -134,6 +134,7 @@ export function parseXmlRecordText(xml: string, keepBlankText = false): unknown 
 		} else if (src[i] === "<") {
 			i++;
 			const frame: Frame = { name: name(), attrs: [], children: new Map(), text: [] };
+			const seen = new Set<string>();
 			for (;;) {
 				const before = i;
 				space();
@@ -152,7 +153,8 @@ export function parseXmlRecordText(xml: string, keepBlankText = false): unknown 
 				i++;
 				const raw = skipPast(quote as string, `attribute ${quoted}`);
 				if (raw.includes("<")) fail(`"<" is not allowed in attribute ${quoted}`);
-				if (frame.attrs.some(([k]) => k === attr)) fail(`Duplicate attribute ${quoted}`);
+				if (seen.has(attr)) fail(`Duplicate attribute ${quoted}`);
+				seen.add(attr);
 				frame.attrs.push([attr, decodeEntities(raw)]);
 			}
 			if (src[i] === "/") {

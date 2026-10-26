@@ -36,7 +36,9 @@ that never fail the job, and no duplicates after a crash.
    runs concatenated; phonetic runs ignored).
 4. **Styles.** `xl/styles.xml` (optional): `cellXfs` gives each style index a number format ID;
    custom `numFmts` give format codes. A format is a date format when its ID is a built-in date or
-   time ID (14-22, 45 and 47; 46 is elapsed time `[h]:mm:ss`) or its code contains `d`, `m`, `y`, `h` or `s` outside quotes, brackets
+   time ID (14-22, 45 and 47, plus the East Asian 27-36 and 50-58 that Japanese, Chinese and Korean Excel
+   save without a `<numFmt>`; 46 is elapsed time `[h]:mm:ss`; a custom `<numFmt>` with a built-in ID
+   is judged by its code instead) or its code contains `d`, `m`, `y`, `h` or `s` outside quotes, brackets
    and escapes (and is not purely elapsed time like `[h]:mm`, which stays a number).
 5. **Sheet.** The sheet part is inflated and scanned as a stream of `<row>` / `<c>` elements with the
    M3a XML scanner; only the current row is held in memory.

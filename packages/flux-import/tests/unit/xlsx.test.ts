@@ -288,6 +288,28 @@ describe("openXlsx rows and headers", () => {
 		expect(warnings).toEqual(["3 cells right of the last header column (B) were ignored"]);
 	});
 
+	it("skips rows whose cells are all empty strings, and writes an empty string beside a value", async () => {
+		const { records, warnings } = await convert(
+			HEADER +
+				// Formulas filled down below the data, each returning "".
+				row(
+					2,
+					'<c r="A2" t="str"><f>IF(C2="","",C2)</f><v></v></c><c r="B2" t="str"><f>""</f><v/></c>',
+				) +
+				row(3, '<c r="A3" t="inlineStr"><is><t></t></is></c><c r="B3" t="inlineStr"><is/></c>') +
+				row(4, '<c r="A4" t="s"><v>0</v></c><c r="B4" s="0"/>') +
+				row(5, '<c r="A5" t="str"><f>""</f><v></v></c><c r="B5"><v>7</v></c>') +
+				row(6, '<c r="A6" t="inlineStr"><is><t>k</t></is></c><c r="B6" t="s"><v>0</v></c>'),
+			{},
+			{ sharedStrings: [""] },
+		);
+		expect(records).toEqual([
+			{ sku: "", Value: 7, _row: 5 },
+			{ sku: "k", Value: "", _row: 6 },
+		]);
+		expect(warnings).toEqual([]);
+	});
+
 	it("keeps a merged cell's value in its top-left cell only", async () => {
 		const bytes = await workbook({
 			sheets: [
