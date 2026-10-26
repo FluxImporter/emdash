@@ -71,6 +71,8 @@ describe("excelDate", () => {
 		expect(excelDate(-1, false)).toBeNull();
 		expect(excelDate(2_958_466, false)).toBeNull();
 		expect(excelDate(Number.NaN, false)).toBeNull();
+		expect(excelDate(1e9, false)).toBeNull();
+		expect(excelDate(1e9, true)).toBeNull();
 	});
 });
 
@@ -177,7 +179,32 @@ describe("openXlsx cell values", () => {
 			{ d: "1900-02-28", _row: 2 },
 			{ d: "1900-03-01", _row: 4 },
 		]);
+		expect(warnings).toEqual([]);
+	});
+
+	it("counts an unreadable cell only in a row that is imported, including a huge date serial", async () => {
+		const { records, warnings } = await convert(
+			HEADER +
+				row(2, '<c r="A2" s="1"><v>1E+9</v></c>') +
+				row(3, '<c r="A3" t="inlineStr"><is><t>k</t></is></c><c r="B3" s="1"><v>1E+9</v></c>'),
+			{},
+			{ cellXfs: [0, 14] },
+		);
+		expect(records).toEqual([{ sku: "k", Value: null, _row: 3 }]);
 		expect(warnings).toEqual(["1 cell could not be read and was imported as empty"]);
+	});
+
+	it("reads a shared-string cell with no value, or an empty one, as an empty cell that is not counted", async () => {
+		const { records, warnings } = await convert(
+			HEADER +
+				row(2, '<c r="A2" t="inlineStr"><is><t>a</t></is></c><c r="B2" t="s"></c>') +
+				row(3, '<c r="A3" t="inlineStr"><is><t>b</t></is></c><c r="B3" t="s"><v/></c>') +
+				row(4, '<c r="A4" t="inlineStr"><is><t>c</t></is></c><c r="B4" t="s"><v></v></c>'),
+			{},
+			{ sharedStrings: ["zero"] },
+		);
+		expect(records.map((r) => (r as Record<string, unknown>).Value)).toEqual([null, null, null]);
+		expect(warnings).toEqual([]);
 	});
 
 	it("imports unreadable cells as empty and counts them in one warning", async () => {

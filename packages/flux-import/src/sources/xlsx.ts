@@ -83,7 +83,7 @@ export function excelDate(serial: number, date1904: boolean): string | null {
 	}
 	const ms = (date1904 ? EPOCH_1904 : EPOCH_1900) + Math.round(days * DAY_SECONDS) * 1000;
 	const date = new Date(ms);
-	if (date.getUTCFullYear() > YEAR_MAX) return null;
+	if (Number.isNaN(date.getTime()) || date.getUTCFullYear() > YEAR_MAX) return null;
 	const iso = date.toISOString();
 	return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso.slice(0, 19);
 }
@@ -119,7 +119,8 @@ class SheetConverter {
 		const v = textOf(cell.v);
 		switch (attr(cell, "t") ?? "n") {
 			case "s": {
-				const s = v === undefined ? undefined : this.strings[Number(v)];
+				if (v === undefined || v === "") return null;
+				const s = this.strings[Number(v)];
 				return typeof s === "string" ? text(s) : UNREADABLE;
 			}
 			case "inlineStr":
@@ -277,17 +278,19 @@ export async function openXlsx(bytes: Uint8Array, options: XlsxOptions = {}): Pr
 			for await (const row of rows) {
 				const values: string[] = new Array(width).fill("null");
 				let any = false;
+				let unreadable = 0;
 				for (const [column, cell] of row.cells) {
 					if (column >= width) {
 						converter.ignored++;
 					} else if (cell === UNREADABLE) {
-						converter.unreadable++;
+						unreadable++;
 					} else {
 						values[column] = cell.json;
 						any = true;
 					}
 				}
 				if (!any) continue;
+				converter.unreadable += unreadable;
 				const fields = keys.map((key, i) => key + values[i]).join(",");
 				yield `{${fields}${rowField === "" ? "" : rowField + row.number}}`;
 			}
