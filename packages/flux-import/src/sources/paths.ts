@@ -9,12 +9,18 @@ function segments(path: string, format: SourceFormat): string[] {
 	return format === "xml" ? path.split("/") : path.split(".");
 }
 
+/** CSV and XLSX records are flat: a path is a column (header) name, dots and all. */
+function isFlat(format: SourceFormat): boolean {
+	return format === "csv" || format === "xlsx";
+}
+
 /**
- * Why `path` is not a valid field path for `format`, or null. JSON: dot-separated keys, none
- * empty. XML: `/`-separated element names, optionally ending in `@attribute` or `#text`.
+ * Why `path` is not a valid field path for `format`, or null. CSV and XLSX: a column name.
+ * JSON: dot-separated keys, none empty. XML: `/`-separated element names, optionally ending in
+ * `@attribute` or `#text`.
  */
 export function pathProblem(path: string, format: SourceFormat): string | null {
-	if (format === "csv") return path === "" ? "The column name is empty" : null;
+	if (isFlat(format)) return path === "" ? "The column name is empty" : null;
 	const parts = segments(path, format);
 	if (format !== "xml") {
 		return parts.some((p) => p === "") ? `"${path}" has an empty key` : null;
@@ -47,13 +53,13 @@ function isTextElement(v: Record<string, unknown>): boolean {
 }
 
 /**
- * Reads a field value from a record. CSV: the column's cell. JSON: walks own object keys. XML:
+ * Reads a field value from a record. CSV and XLSX: the column's cell. JSON: walks own object keys. XML:
  * walks child elements and `@attributes`; an element without child elements reads as its text.
  * Walking stops at an array, which is the result (M3a has no array indexes). Returns
  * `undefined` when the path does not exist; JSON `null` stays `null`.
  */
 export function resolvePath(value: unknown, path: string, format: SourceFormat): unknown {
-	if (format === "csv") {
+	if (isFlat(format)) {
 		return isPlainObject(value) && Object.hasOwn(value, path) ? value[path] : undefined;
 	}
 	let current: unknown = value;

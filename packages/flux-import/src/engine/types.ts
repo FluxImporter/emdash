@@ -31,12 +31,17 @@ export interface Job {
 	budgetMs: number;
 	/** The template's source block. Absent on jobs created before M3a, which are CSV. */
 	source?: TemplateSource;
-	/** CSV header columns; absent for other formats. */
+	/** CSV and XLSX header columns; absent for other formats. */
 	columns?: string[];
 	/** Pre-M3a name of `columns`, still read for jobs created before M3a. */
 	headers?: string[];
-	/** Template paths missing from the sampled records (JSON, JSON Lines, XML). */
+	/**
+	 * Warnings for the job: template paths missing from the sampled records (JSON, JSON Lines,
+	 * XML), and header renames and skipped cells from an XLSX conversion.
+	 */
 	warnings?: string[];
+	/** XLSX: the uploaded workbook; `uploadId` is the JSON Lines it was converted to. */
+	sourceUploadId?: string;
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

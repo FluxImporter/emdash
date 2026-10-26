@@ -305,6 +305,58 @@ describe("staged upload lifecycle", () => {
 		expect(uploads.deleted).toEqual(["u1"]);
 	});
 
+	it("releases an XLSX job's workbook with its converted file, unless another job needs it", async () => {
+		const { deps } = makeDeps();
+		const uploads = new Uploads();
+		const xlsx = { ...template, source: { format: "xlsx" } };
+		const lines = '{"sku":"S1","Name":"Item 1","Price":1,"_row":2}\n';
+		const start = (converted: string, dryRun: boolean) => {
+			deps.source.add(converted, lines);
+			return startJob(
+				deps,
+				{
+					uploadId: converted,
+					sourceUploadId: "book",
+					columns: ["sku", "Name", "Price"],
+					template: xlsx,
+					dryRun,
+				},
+				fields,
+			);
+		};
+		// A finished dry run keeps its files: the real run converts the workbook again.
+		const dry = await start("c1", true);
+		await drive(deps, uploads, dry.id);
+		expect(uploads.deleted).toEqual([]);
+		const real = await start("c2", false);
+		await drive(deps, uploads, real.id);
+		expect(uploads.deleted).toEqual(["c2"]);
+		// Once nothing needs it, cancelling the dry run releases its copy and the workbook.
+		await deps.jobs.put(dry.id, { ...(await getJob(deps, dry.id)), status: "running" });
+		await changeJob(deps, uploads, dry.id, "cancel");
+		expect(uploads.deleted).toEqual(["c2", "c1", "book"]);
+	});
+
+	it("keeps an XLSX workbook that a URL source still names as its latest fetch", async () => {
+		const { deps } = makeDeps();
+		const uploads = new Uploads();
+		deps.source.add("c1", '{"sku":"S1","Name":"Item 1","Price":1,"_row":2}\n');
+		const job = await startJob(
+			deps,
+			{
+				uploadId: "c1",
+				sourceUploadId: "fetched",
+				columns: ["sku", "Name", "Price"],
+				template: { ...template, source: { format: "xlsx" } },
+				dryRun: false,
+			},
+			fields,
+		);
+		const keep = async (uploadId: string) => uploadId === "fetched";
+		expect((await nextBatch(deps, uploads, job.id, "h", keep)).status).toBe("completed");
+		expect(uploads.deleted).toEqual(["c1"]);
+	});
+
 	it("knows which states still need the file", () => {
 		const base = {
 			dryRun: false,

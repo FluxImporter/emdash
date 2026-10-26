@@ -13,7 +13,7 @@ import { JobError } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { defaultResolver } from "../sources/net.js";
-import { SOURCE_FORMATS } from "../sources/reader.js";
+import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
 import {
 	CREDENTIAL_NAME,
 	deleteCredential,
@@ -103,6 +103,8 @@ const source = z
 	.object({
 		format: format.default("csv"),
 		records: z.string().min(1).optional(),
+		sheet: z.union([z.string().min(1).max(100), z.number().int().min(1)]).optional(),
+		headerRow: z.number().int().min(1).max(XLSX_MAX_ROWS).optional(),
 		filter: z.string().min(1).optional(),
 	})
 	.strict();
@@ -267,10 +269,18 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	// The text is staged like an upload; the template's source block decides how it is parsed.
+	// A workbook is binary, so it can only be uploaded.
 	"sources/paste": {
-		...route(z.object({ format, text: z.string() }), (ctx) =>
-			withServices(ctx, ({ storage }) => stagePaste(storage, ctx.input.text)),
-		),
+		...route(z.object({ format, text: z.string() }), async (ctx) => {
+			if (ctx.input.format === "xlsx") {
+				throw new PluginRouteError(
+					"INVALID_FORMAT",
+					"An XLSX workbook is a binary file and cannot be pasted; upload it instead",
+					400,
+				);
+			}
+			return withServices(ctx, ({ storage }) => stagePaste(storage, ctx.input.text));
+		}),
 		request: { body: "json", maxBytes: PASTE_MAX_BYTES },
 	},
 

@@ -64,12 +64,15 @@ export async function purgeExpired(
 		await deps.jobs.delete(id);
 	}
 
-	// Surviving jobs still read their source file, however old it is.
+	// Surviving jobs still read their source file (and an XLSX job's workbook), however old it is.
 	const keep = new Set<string>(keepUploads);
 	cursor = undefined;
 	do {
 		const page = await deps.jobs.query({ limit: PAGE, ...(cursor ? { cursor } : {}) });
-		for (const { data } of page.items) keep.add(data.uploadId);
+		for (const { data } of page.items) {
+			keep.add(data.uploadId);
+			if (data.sourceUploadId !== undefined) keep.add(data.sourceUploadId);
+		}
 		cursor = page.hasMore ? page.cursor : undefined;
 	} while (cursor);
 	return { jobs: expired.length, records, uploads: await uploads.purgeBefore(cutoff, keep) };

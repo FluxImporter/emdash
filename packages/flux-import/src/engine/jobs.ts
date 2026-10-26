@@ -51,6 +51,12 @@ export type CreateJobInput = {
 	uploadId: string;
 	template: unknown;
 	schemaFields: SchemaField[];
+	/** XLSX: the uploaded workbook that `uploadId` was converted from. */
+	sourceUploadId?: string;
+	/** XLSX: the converted sheet's header names, checked like CSV columns. */
+	columns?: string[];
+	/** XLSX: warnings from the conversion, stored before the job's own. */
+	warnings?: string[];
 	dryRun?: boolean;
 	publish?: boolean;
 	batchSize?: number;
@@ -105,7 +111,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const located = await asJobError(async () =>
 		reader.locate(await deps.source.open(input.uploadId, 0)),
 	);
-	const columns = located.columns ?? null;
+	const columns = located.columns ?? input.columns ?? null;
 
 	const problems = checkTemplate(template, input.schemaFields, columns);
 	if (problems.length > 0) {
@@ -115,18 +121,20 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			problems,
 		);
 	}
-	const warnings =
+	const sampled =
 		template.source.format === "csv"
 			? []
 			: await asJobError(() =>
 					sampleWarnings(deps, reader, template, input.uploadId, located.bodyOffset),
 				);
+	const warnings = [...(input.warnings ?? []), ...sampled];
 
 	const now = new Date(deps.now()).toISOString();
 	const job: Job = {
 		id: deps.newId(),
 		status: "created",
 		uploadId: input.uploadId,
+		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,
 		dryRun: input.dryRun ?? false,
 		publish: input.publish ?? true,

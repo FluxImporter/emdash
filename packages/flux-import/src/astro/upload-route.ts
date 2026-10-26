@@ -2,12 +2,16 @@ import { hasPermission } from "@emdash-cms/auth";
 import type { APIRoute } from "astro";
 import { EmDashUploads, stageUpload, UploadTooLargeError } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
-import { maxSourceBytes } from "./config.js";
+import { maxSourceBytes, maxXlsxBytes } from "./config.js";
 
 export const prerender = false;
 
-/** The extension only gates acceptance; the template's `source.format` decides parsing. */
-const SOURCE_FILENAME = /^(?=.{1,255}$)[^/\\\0]+\.(?:csv|json|jsonl|ndjson|xml)$/i;
+/**
+ * The extension only gates acceptance and the size limit; the template's `source.format` decides
+ * parsing. Other spreadsheet files (.xls, .xlsb, .xlsm, .ods) are refused.
+ */
+const SOURCE_FILENAME = /^(?=.{1,255}$)[^/\\\0]+\.(?:csv|json|jsonl|ndjson|xml|xlsx)$/i;
+const XLSX_FILENAME = /\.xlsx$/i;
 
 /** Same envelope as EmDash's own API errors (`emdash` src/api/error.ts:31-43). */
 function apiError(code: string, message: string, status: number): Response {
@@ -15,11 +19,12 @@ function apiError(code: string, message: string, status: number): Response {
 }
 
 /**
- * POST /_emdash/api/flux-import/uploads?filename=<name>.csv|.json|.jsonl|.ndjson|.xml
+ * POST /_emdash/api/flux-import/uploads?filename=<name>.csv|.json|.jsonl|.ndjson|.xml|.xlsx
  *
  * EmDash's middleware authenticates this path and applies CSRF (`X-EmDash-Request: 1` for
  * session callers; PATs need the `admin` scope), verification report question 5. The route adds
- * the `import:execute` check and the size limit, enforced while the body streams.
+ * the `import:execute` check and the size limit (`maxXlsxBytes` for .xlsx, else `maxSourceBytes`),
+ * enforced while the body streams.
  */
 export const POST: APIRoute = async ({ request, locals, url }) => {
 	if (!hasPermission(locals.user, "import:execute")) {
@@ -32,11 +37,11 @@ export const POST: APIRoute = async ({ request, locals, url }) => {
 	if (!SOURCE_FILENAME.test(filename)) {
 		return apiError(
 			"UNSUPPORTED_SOURCE",
-			"filename must name a .csv, .json, .jsonl, .ndjson or .xml file",
+			"filename must name a .csv, .json, .jsonl, .ndjson, .xml or .xlsx file",
 			415,
 		);
 	}
-	const limit = maxSourceBytes();
+	const limit = XLSX_FILENAME.test(filename) ? maxXlsxBytes() : maxSourceBytes();
 	const header = request.headers.get("content-length");
 	const declared = header === null ? undefined : Number(header);
 	if (declared !== undefined && Number.isFinite(declared) && declared > limit) {

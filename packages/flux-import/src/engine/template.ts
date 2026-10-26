@@ -1,7 +1,13 @@
 import { DateTime } from "luxon";
 import { z } from "zod";
 import { pathProblem, resolvePath } from "../sources/paths.js";
-import { CSV_SOURCE, SOURCE_FORMATS, type SourceFormat } from "../sources/reader.js";
+import {
+	CSV_SOURCE,
+	SOURCE_FORMATS,
+	type SourceFormat,
+	XLSX_MAX_ROWS,
+	XLSX_ROW_FIELD,
+} from "../sources/reader.js";
 import { type CompiledExpression, compileExpression } from "./expressions.js";
 
 export const SOURCE_ID_FIELD = "flux_source_id";
@@ -46,14 +52,16 @@ const fieldMapping = z.discriminatedUnion("type", [
 const valueMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
 
 /**
- * The template's `source` block. Which formats take `records` is checked by `checkSource`
- * (sources/readers.ts), so a misplaced `records` is reported as `invalid_source`. `filter` is a
- * JSONata expression evaluated per record, for every format.
+ * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
+ * by `checkSource` (sources/readers.ts), so a misplaced one is reported as `invalid_source`.
+ * `filter` is a JSONata expression evaluated per record, for every format.
  */
 export const sourceSchema = z
 	.object({
 		format: z.enum(SOURCE_FORMATS).default("csv"),
 		records: z.string().min(1).optional(),
+		sheet: z.union([z.string().min(1).max(100), z.number().int().min(1)]).optional(),
+		headerRow: z.number().int().min(1).max(XLSX_MAX_ROWS).optional(),
 		filter: expression.optional(),
 	})
 	.strict();
@@ -368,9 +376,9 @@ const COMPATIBLE: Record<FieldMapping["type"], string[]> = {
 };
 
 /**
- * Problems that stop a job: CSV columns missing from the header (`columns`, CSV only), field
- * paths that are not valid for the source format, and fields the collection lacks or types it
- * cannot take.
+ * Problems that stop a job: CSV and XLSX columns missing from the header (`columns`; an XLSX
+ * template may also read `_row`), field paths that are not valid for the source format, and
+ * fields the collection lacks or types it cannot take.
  */
 export function checkTemplate(
 	t: Template,
@@ -380,8 +388,9 @@ export function checkTemplate(
 	const errors: string[] = [];
 	const format: SourceFormat = t.source.format;
 	for (const path of templatePaths(t)) {
-		if (format === "csv") {
-			if (columns !== null && !columns.includes(path)) {
+		if (format === "csv" || format === "xlsx") {
+			const implicit = format === "xlsx" && path === XLSX_ROW_FIELD;
+			if (columns !== null && !columns.includes(path) && !implicit) {
 				errors.push(`Column "${path}" not found in the source`);
 			}
 			continue;

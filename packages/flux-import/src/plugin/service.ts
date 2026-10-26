@@ -183,22 +183,29 @@ export function uploadNeeded(job: Job): boolean {
 	}
 }
 
-/** Whether a job other than `exceptJobId` may still read the staged file. */
+/**
+ * Whether a job other than `exceptJobId` may still read the staged file: as its own file, or as
+ * the workbook its file was converted from (a real run after an XLSX dry run converts it again).
+ */
 export async function uploadInUse(
 	jobs: KvCollection<Job>,
 	uploadId: string,
 	exceptJobId?: string,
 ): Promise<boolean> {
-	let cursor: string | undefined;
-	do {
-		const result = await jobs.query({
-			where: { uploadId },
-			limit: 100,
-			...(cursor ? { cursor } : {}),
-		});
-		if (result.items.some(({ id, data }) => id !== exceptJobId && uploadNeeded(data))) return true;
-		cursor = result.hasMore ? result.cursor : undefined;
-	} while (cursor);
+	for (const field of ["uploadId", "sourceUploadId"] as const) {
+		let cursor: string | undefined;
+		do {
+			const result = await jobs.query({
+				where: { [field]: uploadId },
+				limit: 100,
+				...(cursor ? { cursor } : {}),
+			});
+			if (result.items.some(({ id, data }) => id !== exceptJobId && uploadNeeded(data))) {
+				return true;
+			}
+			cursor = result.hasMore ? result.cursor : undefined;
+		} while (cursor);
+	}
 	return false;
 }
 
@@ -207,7 +214,10 @@ export type UploadKeeper = (uploadId: string) => Promise<boolean>;
 
 const keepNone: UploadKeeper = async () => false;
 
-/** Deletes the job's staged file once neither it nor any other job can still read it. */
+/**
+ * Deletes the job's staged file, and the workbook an XLSX job's file was converted from, once
+ * neither it nor any other job can still read them. Returns whether the job's file was deleted.
+ */
 export async function releaseUploadIfUnused(
 	deps: EngineDeps,
 	uploads: UploadStore,
@@ -215,10 +225,15 @@ export async function releaseUploadIfUnused(
 	keep: UploadKeeper = keepNone,
 ): Promise<boolean> {
 	if (uploadNeeded(job)) return false;
-	if (await uploadInUse(deps.jobs, job.uploadId, job.id)) return false;
-	if (await keep(job.uploadId)) return false;
-	await uploads.delete(job.uploadId);
-	return true;
+	let released = false;
+	for (const uploadId of [job.uploadId, job.sourceUploadId]) {
+		if (uploadId === undefined) continue;
+		if (await uploadInUse(deps.jobs, uploadId, job.id)) continue;
+		if (await keep(uploadId)) continue;
+		await uploads.delete(uploadId);
+		if (uploadId === job.uploadId) released = true;
+	}
+	return released;
 }
 
 async function releaseQuietly(

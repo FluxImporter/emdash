@@ -1,5 +1,6 @@
 import type { APIContext } from "astro";
 import { describe, expect, it } from "vitest";
+import { XLSX_MAX_BYTES } from "../../src/astro/config.js";
 import { POST } from "../../src/astro/upload-route.js";
 import { FakeStorage } from "./fakes.js";
 import { streamOf } from "./helpers.js";
@@ -73,6 +74,8 @@ describe("upload route", () => {
 		"feed.JSONL",
 		"feed.ndjson",
 		"feed.xml",
+		"Products 2026.xlsx",
+		"BOOK.XLSX",
 		"a.b.csv",
 		`${"n".repeat(251)}.csv`,
 	])("accepts %s", async (name) => {
@@ -86,6 +89,10 @@ describe("upload route", () => {
 	it.each([
 		"feed.txt",
 		"feed.json.gz",
+		"book.xls",
+		"book.xlsm",
+		"book.xlsb",
+		"book.ods",
 		"../feed.json",
 		"feed",
 		".json",
@@ -98,5 +105,32 @@ describe("upload route", () => {
 		expect(res.status).toBe(415);
 		expect(body).toMatchObject({ error: { code: "UNSUPPORTED_SOURCE" } });
 		expect(storage.files.size).toBe(0);
+	});
+
+	it("limits .xlsx files to 10 MiB, by Content-Length and while streaming", async () => {
+		const declared = await post(
+			{
+				body: streamOf("x"),
+				duplex: "half",
+				headers: { "Content-Length": String(XLSX_MAX_BYTES + 1) },
+			},
+			`${BASE}book.xlsx`,
+		);
+		expect(declared.res.status).toBe(413);
+		expect(declared.body).toMatchObject({
+			error: {
+				code: "TOO_LARGE",
+				message: `The upload exceeds the limit of ${XLSX_MAX_BYTES} bytes`,
+			},
+		});
+		const streamed = await post(
+			{ body: streamOf(new Uint8Array(XLSX_MAX_BYTES + 1)), duplex: "half" },
+			`${BASE}book.xlsx`,
+		);
+		expect(streamed.res.status).toBe(413);
+		expect(streamed.storage.files.size).toBe(0);
+		// The same size is fine for other formats, whose limit is maxSourceBytes (50 MiB).
+		const csv = await post({ body: streamOf(new Uint8Array(XLSX_MAX_BYTES + 1)), duplex: "half" });
+		expect(csv.res.status).toBe(201);
 	});
 });

@@ -47,6 +47,24 @@ describe("templateSchema", () => {
 		]) {
 			expect(templateSchema.parse({ ...base, source, fields }).source).toEqual(source);
 		}
+		for (const source of [
+			{ format: "xlsx" },
+			{ format: "xlsx", sheet: "Prices 2026", headerRow: 3 },
+			{ format: "xlsx", sheet: 2, headerRow: 1_048_576 },
+		]) {
+			expect(templateSchema.parse({ ...base, source, fields }).source).toEqual(source);
+		}
+		for (const source of [
+			{ format: "xlsx", sheet: "" },
+			{ format: "xlsx", sheet: "x".repeat(101) },
+			{ format: "xlsx", sheet: 0 },
+			{ format: "xlsx", sheet: 1.5 },
+			{ format: "xlsx", headerRow: 0 },
+			{ format: "xlsx", headerRow: 1_048_577 },
+			{ format: "xlsx", headerRow: "1" },
+		]) {
+			expect(templateSchema.safeParse({ ...base, source, fields }).success).toBe(false);
+		}
 		expect(templateSchema.safeParse({ ...base, source: { format: "yaml" }, fields }).success).toBe(
 			false,
 		);
@@ -203,6 +221,24 @@ describe("checkTemplate", () => {
 			'Column "handle" not found in the source',
 			'Field "title" has type "number"; a text mapping needs one of string, text, url',
 			'Field "price" does not exist in collection "products"',
+		]);
+	});
+
+	it("checks XLSX columns against the header, and lets a template read _row", () => {
+		const xlsx = templateSchema.parse({
+			version: 1,
+			collection: "products",
+			locale: "en",
+			source: { format: "xlsx" },
+			key: { from: "_row" },
+			fields: {
+				title: { from: "Product name", type: "text" },
+				price: { from: "Unit Price", type: "number" },
+			},
+		});
+		expect(checkTemplate(xlsx, fields, ["Product name", "Unit Price"])).toEqual([]);
+		expect(checkTemplate(xlsx, fields, ["Product name"])).toEqual([
+			'Column "Unit Price" not found in the source',
 		]);
 	});
 });

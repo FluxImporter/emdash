@@ -9,6 +9,19 @@ describe("checkSource", () => {
 		[{ format: "json", records: "data.products" }, []],
 		[{ format: "jsonl" }, []],
 		[{ format: "xml", records: "feed/item" }, []],
+		[{ format: "xlsx" }, []],
+		[{ format: "xlsx", sheet: "Products", headerRow: 3 }, []],
+		[{ format: "xlsx", sheet: 2 }, []],
+		[{ format: "xlsx", records: "x" }, ["source.records is not allowed for xlsx"]],
+		[{ format: "csv", sheet: "Products" }, ["source.sheet is only allowed for xlsx"]],
+		[
+			{ format: "xml", records: "feed/item", sheet: 1, headerRow: 2 },
+			["source.sheet is only allowed for xlsx", "source.headerRow is only allowed for xlsx"],
+		],
+		[
+			{ format: "json", headerRow: 2, records: "a..b" },
+			["source.headerRow is only allowed for xlsx", 'source.records: "a..b" has an empty key'],
+		],
 		[{ format: "csv", records: "x" }, ["source.records is not allowed for csv"]],
 		[{ format: "jsonl", records: "x" }, ["source.records is not allowed for jsonl"]],
 		[{ format: "xml" }, ['source.records is required for xml, as in "feed/item"']],
@@ -37,6 +50,10 @@ describe("readerFor", () => {
 		expect(await read({ format: "jsonl" }, "3\n")).toEqual([3]);
 		expect(await read({ format: "xml", records: "r/i" }, "<r><i>4</i></r>")).toEqual([
 			{ "#text": "4" },
+		]);
+		// An XLSX job reads the JSON Lines its sheet was converted to.
+		expect(await read({ format: "xlsx" }, '{"Name":"Desk","_row":2}\n', ["Name"])).toEqual([
+			{ Name: "Desk", _row: 2 },
 		]);
 	});
 });
