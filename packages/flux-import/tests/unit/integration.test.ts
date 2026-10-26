@@ -24,12 +24,41 @@ describe("fluxImportRoutes", () => {
 			{ pattern: UPLOAD_ROUTE, entrypoint: "flux-import/astro/upload", prerender: false },
 		]);
 		expect(UPLOAD_ROUTE).toBe("/_emdash/api/flux-import/uploads");
-		expect(configs).toEqual([{ vite: { define: { __FLUX_IMPORT_MAX_SOURCE_BYTES__: "1234" } } }]);
+		expect(configs).toEqual([
+			{
+				vite: {
+					define: {
+						__FLUX_IMPORT_MAX_SOURCE_BYTES__: "1234",
+						__FLUX_IMPORT_ALLOW_PRIVATE_NETWORK__: "false",
+					},
+				},
+			},
+		]);
+	});
+
+	it("passes allowPrivateNetwork to the build", () => {
+		expect(runSetup({ allowPrivateNetwork: true }).configs).toEqual([
+			{
+				vite: {
+					define: {
+						__FLUX_IMPORT_MAX_SOURCE_BYTES__: String(MAX_SOURCE_BYTES_DEFAULT),
+						__FLUX_IMPORT_ALLOW_PRIVATE_NETWORK__: "true",
+					},
+				},
+			},
+		]);
 	});
 
 	it("defaults to 50 MiB and rejects a bad limit", () => {
 		expect(runSetup().configs).toEqual([
-			{ vite: { define: { __FLUX_IMPORT_MAX_SOURCE_BYTES__: String(MAX_SOURCE_BYTES_DEFAULT) } } },
+			{
+				vite: {
+					define: {
+						__FLUX_IMPORT_MAX_SOURCE_BYTES__: String(MAX_SOURCE_BYTES_DEFAULT),
+						__FLUX_IMPORT_ALLOW_PRIVATE_NETWORK__: "false",
+					},
+				},
+			},
 		]);
 		expect(() => fluxImportRoutes({ maxSourceBytes: 0 })).toThrow("positive integer");
 		expect(() => fluxImportRoutes({ maxSourceBytes: 1.5 })).toThrow("positive integer");

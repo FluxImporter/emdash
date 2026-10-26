@@ -10,6 +10,7 @@ import {
 	upgradeJob,
 } from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
+import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
 import type { SchemaField } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
@@ -61,7 +62,11 @@ export interface Page<T> {
 	hasMore: boolean;
 }
 
-function page<T>(result: { items: { data: T }[]; cursor?: string; hasMore: boolean }): Page<T> {
+export function page<T>(result: {
+	items: { data: T }[];
+	cursor?: string;
+	hasMore: boolean;
+}): Page<T> {
 	const items = result.items.map((i) => i.data);
 	return result.cursor
 		? { items, cursor: result.cursor, hasMore: result.hasMore }
@@ -178,30 +183,52 @@ export function uploadNeeded(job: Job): boolean {
 	}
 }
 
+/** Whether a job other than `exceptJobId` may still read the staged file. */
+export async function uploadInUse(
+	jobs: KvCollection<Job>,
+	uploadId: string,
+	exceptJobId?: string,
+): Promise<boolean> {
+	let cursor: string | undefined;
+	do {
+		const result = await jobs.query({
+			where: { uploadId },
+			limit: 100,
+			...(cursor ? { cursor } : {}),
+		});
+		if (result.items.some(({ id, data }) => id !== exceptJobId && uploadNeeded(data))) return true;
+		cursor = result.hasMore ? result.cursor : undefined;
+	} while (cursor);
+	return false;
+}
+
+/** Answers whether a staged file must stay although no job needs it (a source's latest fetch). */
+export type UploadKeeper = (uploadId: string) => Promise<boolean>;
+
+const keepNone: UploadKeeper = async () => false;
+
 /** Deletes the job's staged file once neither it nor any other job can still read it. */
 export async function releaseUploadIfUnused(
 	deps: EngineDeps,
 	uploads: UploadStore,
 	job: Job,
+	keep: UploadKeeper = keepNone,
 ): Promise<boolean> {
 	if (uploadNeeded(job)) return false;
-	let cursor: string | undefined;
-	do {
-		const result = await deps.jobs.query({
-			where: { uploadId: job.uploadId },
-			limit: 100,
-			...(cursor ? { cursor } : {}),
-		});
-		if (result.items.some(({ id, data }) => id !== job.id && uploadNeeded(data))) return false;
-		cursor = result.hasMore ? result.cursor : undefined;
-	} while (cursor);
+	if (await uploadInUse(deps.jobs, job.uploadId, job.id)) return false;
+	if (await keep(job.uploadId)) return false;
 	await uploads.delete(job.uploadId);
 	return true;
 }
 
-async function releaseQuietly(deps: EngineDeps, uploads: UploadStore, job: Job): Promise<void> {
+async function releaseQuietly(
+	deps: EngineDeps,
+	uploads: UploadStore,
+	job: Job,
+	keep: UploadKeeper,
+): Promise<void> {
 	// Best effort: a file left behind here is removed by the retention task.
-	await releaseUploadIfUnused(deps, uploads, job).catch(() => false);
+	await releaseUploadIfUnused(deps, uploads, job, keep).catch(() => false);
 }
 
 export async function nextBatch(
@@ -209,6 +236,7 @@ export async function nextBatch(
 	uploads: UploadStore,
 	id: string,
 	holder: string,
+	keep: UploadKeeper = keepNone,
 ): Promise<Job> {
 	const job = await runBatch(
 		deps,
@@ -216,7 +244,7 @@ export async function nextBatch(
 		holder,
 		onWorkers() ? WORKERS_BATCH_CAP : Number.POSITIVE_INFINITY,
 	);
-	await releaseQuietly(deps, uploads, job);
+	await releaseQuietly(deps, uploads, job, keep);
 	return job;
 }
 
@@ -225,9 +253,10 @@ export async function changeJob(
 	uploads: UploadStore,
 	id: string,
 	action: "pause" | "resume" | "cancel" | "retry",
+	keep: UploadKeeper = keepNone,
 ): Promise<Job> {
 	const job = await transitionJob(deps, id, action);
-	if (action === "cancel") await releaseQuietly(deps, uploads, job);
+	if (action === "cancel") await releaseQuietly(deps, uploads, job, keep);
 	return job;
 }
 

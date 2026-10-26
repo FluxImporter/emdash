@@ -46,6 +46,13 @@ describe("purgeExpired", () => {
 		expect(purger.keeps[0]!.has("u1")).toBe(true);
 	});
 
+	it("keeps the staged files it is told to keep, such as each source's latest fetch", async () => {
+		const { deps } = makeDeps();
+		const purger = new Purger();
+		await purgeExpired(deps, purger, 30, new Set(["latest-1", "latest-2"]));
+		expect(purger.keeps[0]).toEqual(new Set(["latest-1", "latest-2"]));
+	});
+
 	it("leaves a job with a live lease for the next run", async () => {
 		const { deps, clock } = makeDeps();
 		deps.source.add("u1", "sku,Name\nA,1\n");

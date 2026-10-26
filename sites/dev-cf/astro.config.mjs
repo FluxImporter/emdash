@@ -16,7 +16,8 @@ export default defineConfig({
 			storage: r2({ binding: "MEDIA" }),
 			plugins: [fluxImport()],
 		}),
-		fluxImportRoutes(),
+		// The parity tests fetch URL sources from a local HTTP server (development only).
+		fluxImportRoutes({ allowPrivateNetwork: true }),
 	],
 	devToolbar: { enabled: false },
 });

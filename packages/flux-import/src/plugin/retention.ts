@@ -32,13 +32,15 @@ async function deleteRecords(deps: Pick<EngineDeps, "records">, jobId: string): 
 
 /**
  * Deletes jobs created before the cutoff with their record rows, and staged files last modified
- * before it. A job with a live lease is left for the next run. Links are kept: they map source
- * keys to entries across runs.
+ * before it, except files in `keepUploads`. A job with a live lease is left for the next run.
+ * Links are kept: they map source keys to entries across runs.
  */
 export async function purgeExpired(
 	deps: Pick<EngineDeps, "jobs" | "records" | "now">,
 	uploads: UploadPurger,
 	retentionDays: number,
+	/** Staged files kept however old they are: each URL source's latest fetch. */
+	keepUploads: ReadonlySet<string> = new Set(),
 ): Promise<PurgeResult> {
 	const now = deps.now();
 	const cutoff = new Date(now - retentionDays * DAY_MS);
@@ -63,7 +65,7 @@ export async function purgeExpired(
 	}
 
 	// Surviving jobs still read their source file, however old it is.
-	const keep = new Set<string>();
+	const keep = new Set<string>(keepUploads);
 	cursor = undefined;
 	do {
 		const page = await deps.jobs.query({ limit: PAGE, ...(cursor ? { cursor } : {}) });

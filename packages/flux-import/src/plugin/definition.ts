@@ -6,6 +6,7 @@ import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "../meta.js";
 import { purgeExpired, RETENTION_DAYS_DEFAULT, RETENTION_TASK } from "./retention.js";
 import { ensureRetentionScheduled, routes } from "./routes.js";
 import { withRuntime } from "./runtime.js";
+import { latestSourceUploads, sourcesCollection } from "./sources.js";
 
 export type FluxImportOptions = Record<string, never>;
 
@@ -20,6 +21,7 @@ export const STORAGE = {
 		indexes: ["jobId", ["jobId", "status"], ["jobId", "seq"], ["jobId", "status", "seq"]],
 	},
 	links: { indexes: ["entryId"] },
+	sources: { indexes: ["name", "createdAt"] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {
@@ -28,12 +30,20 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		version: FLUX_IMPORT_VERSION,
 		// Declared for disclosure on the admin plugins page. The importer reads and writes content
 		// and adds the flux_source_id field through the trusted runtime (withEmDashRuntime), not
-		// through ctx.content, so these do not gate any call it makes.
+		// through ctx.content, so these do not gate any call it makes. URL sources are fetched with
+		// the runtime's own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through
+		// ctx.http, so no network capability is declared.
 		capabilities: ["content:read", "content:write", "content:publish", "schema:read"],
 		storage: STORAGE,
 		routes,
 		admin: {
 			settingsSchema: {
+				credentials: {
+					type: "secret",
+					label: "URL source credentials",
+					description:
+						"Managed through the credentials routes (one encrypted JSON object). Saving other text here removes every credential.",
+				},
 				retentionDays: {
 					type: "number",
 					label: "Keep import logs for (days)",
@@ -61,6 +71,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 							{ jobs, records, now: Date.now },
 							new EmDashUploads(runtime.storage),
 							days,
+							await latestSourceUploads(sourcesCollection(ctx.storage)),
 						);
 					});
 					ctx.log.info("Removed expired import data", result);

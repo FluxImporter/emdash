@@ -9,6 +9,8 @@ import { fluxImport, fluxImportRoutes } from "flux-import";
 const databaseFile = process.env.FLUX_DEV_DB ?? "./data.db";
 const uploadsDir = process.env.FLUX_DEV_UPLOADS ?? "./uploads";
 const maxSourceBytes = Number(process.env.FLUX_DEV_MAX_SOURCE_BYTES) || undefined;
+// URL source tests fetch from a local HTTP server; the option only works under `astro dev`.
+const allowPrivateNetwork = process.env.FLUX_DEV_ALLOW_PRIVATE_NETWORK === "1";
 
 export default defineConfig({
 	output: "server",
@@ -29,7 +31,7 @@ export default defineConfig({
 				baseUrl: "/_emdash/api/media/file",
 			}),
 		}),
-		fluxImportRoutes(maxSourceBytes ? { maxSourceBytes } : {}),
+		fluxImportRoutes({ ...(maxSourceBytes ? { maxSourceBytes } : {}), allowPrivateNetwork }),
 	],
 	fonts: [
 		{

@@ -18,7 +18,7 @@ export const UPLOAD_PREFIX = "flux-import-upload-";
 const UPLOAD_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}[0-9a-f]{32}$/;
 const PAGE = 100;
 
-export type UploadStorage = Pick<Storage, "upload" | "download" | "delete" | "list">;
+export type UploadStorage = Pick<Storage, "upload" | "download" | "delete" | "list" | "exists">;
 
 export function newUploadId(): string {
 	const random = crypto.getRandomValues(new Uint8Array(16));
@@ -110,6 +110,11 @@ export class EmDashUploads implements SourcePort {
 			);
 		}
 		return deferCancel(result.body);
+	}
+
+	/** Whether the staged file is still in storage. */
+	exists(uploadId: string): Promise<boolean> {
+		return this.storage.exists(uploadKey(uploadId));
 	}
 
 	async delete(uploadId: string): Promise<void> {
