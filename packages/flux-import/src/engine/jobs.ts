@@ -112,6 +112,11 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		reader.locate(await deps.source.open(input.uploadId, 0)),
 	);
 	const columns = located.columns ?? input.columns ?? null;
+	if (template.source.format === "xlsx" && columns === null) {
+		// startImport always passes the converted header names; without them checkTemplate would
+		// skip the column and path checks.
+		throw new Error("An XLSX job was created without the converted columns");
+	}
 
 	const problems = checkTemplate(template, input.schemaFields, columns);
 	if (problems.length > 0) {

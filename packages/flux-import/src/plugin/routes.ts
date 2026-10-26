@@ -1,7 +1,7 @@
 import { z } from "astro/zod";
 import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
-import { allowPrivateNetwork, maxSourceBytes } from "../astro/config.js";
+import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/config.js";
 import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
@@ -36,9 +36,7 @@ import {
 	SAMPLE_MAX,
 	ServiceError,
 	type StartJobInput,
-	sampleSource,
 	stagePaste,
-	startJob,
 	type UploadKeeper,
 } from "./service.js";
 import {
@@ -53,6 +51,13 @@ import {
 	sourcesCollection,
 	updateSource,
 } from "./sources.js";
+import {
+	fetchLimitsFor,
+	sampleImport,
+	startImport,
+	XLSX_WORKERS_BUFFER,
+	type XlsxStaging,
+} from "./xlsx.js";
 
 /** Every route requires Admin (`import:execute` is level 50 in @emdash-cms/auth). */
 const PERMISSION = "import:execute";
@@ -126,6 +131,8 @@ interface Services {
 	sources: SourceDeps;
 	/** Keeps each URL source's latest staged file when a finished job releases its file. */
 	keep: UploadKeeper;
+	/** Where an XLSX sheet is staged once converted, and its limits. */
+	xlsx: XlsxStaging;
 }
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
@@ -190,6 +197,13 @@ async function withServices<T>(
 			now: Date.now,
 			newId: () => ulid(),
 		};
+		const xlsx: XlsxStaging = {
+			storage: runtime.storage,
+			maxXlsxBytes: maxXlsxBytes(),
+			maxSourceBytes: maxSourceBytes(),
+			workers: onWorkers(),
+			bufferBytes: XLSX_WORKERS_BUFFER,
+		};
 		try {
 			return await run({
 				deps,
@@ -199,6 +213,7 @@ async function withServices<T>(
 				actor,
 				sources,
 				keep,
+				xlsx,
 			});
 		} catch (e) {
 			throw toRouteError(e);
@@ -263,8 +278,8 @@ export const routes: Record<string, PluginRoute> = {
 			source: source.optional(),
 		}),
 		(ctx) =>
-			withServices(ctx, ({ deps }) =>
-				sampleSource(deps, ctx.input.uploadId, ctx.input.n, ctx.input.source),
+			withServices(ctx, ({ deps, xlsx }) =>
+				sampleImport(deps, xlsx, ctx.input.uploadId, ctx.input.n, ctx.input.source),
 			),
 	),
 
@@ -338,7 +353,7 @@ export const routes: Record<string, PluginRoute> = {
 
 	"jobs/create": route(createInput, async (ctx) => {
 		await ensureRetentionScheduled(ctx);
-		return withServices(ctx, ({ deps, runtime, sources }) => {
+		return withServices(ctx, ({ deps, runtime, sources, xlsx }) => {
 			const { input } = ctx;
 			const start = (upload: string) => {
 				const options: StartJobInput = {
@@ -349,8 +364,9 @@ export const routes: Record<string, PluginRoute> = {
 					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
 					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
 				};
-				return startJob(
+				return startImport(
 					deps,
+					xlsx,
 					options,
 					(collection) => listSchemaFields(runtime.schemaRegistry, collection),
 					(locale) => resolveSiteLocale(locale),
@@ -358,7 +374,9 @@ export const routes: Record<string, PluginRoute> = {
 			};
 			if (input.sourceId !== undefined) {
 				const options = { force: input.force ?? false, dryRun: input.dryRun };
-				return jobFromSource(sources, input.sourceId, options, start);
+				// A workbook is fetched only up to the XLSX file limit.
+				const limits = fetchLimitsFor(input.template, sources.limits, xlsx.maxXlsxBytes);
+				return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
 			}
 			if (input.uploadId === undefined) {
 				throw new PluginRouteError(
