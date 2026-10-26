@@ -21,7 +21,7 @@ changed. M3c triggers runs by hand; M6 adds cron on top of the same pieces.
 | Saved sources | A new plugin storage collection `sources`; each source names a URL and optionally a credential. |
 | Credentials | Named credentials (`name → { header, value }`) kept as JSON in one declared `secret` plugin setting, `credentials`, which EmDash encrypts at rest (AES-GCM, `EMDASH_ENCRYPTION_KEY`). Routes can set or delete a credential but never return its value. |
 | Fetching | Native `fetch()` through the trusted runtime, not `ctx.http.fetch()`, whose 8 MiB buffered limit is below the 50 MiB source limit. The plugin therefore enforces its own SSRF guard. |
-| Change detection | Conditional GET (`If-None-Match`, `If-Modified-Since`) from the last fetch, plus a SHA-256 of the body. A `304` or the same hash is "unchanged" while the previous staged upload still exists. |
+| Change detection | Conditional GET (`If-None-Match`, `If-Modified-Since`) from the last fetch, plus a SHA-256 of the body. A `304` or the same hash is an unchanged fetch (no new copy staged) while the previous staged upload still exists. `jobs/create` skips a run only when the fetched content equals the last real import (`lastImport`), not the last fetch. |
 | Format | The template's `source.format` decides parsing; the response `Content-Type` is ignored. |
 | Capabilities | No new capability: the native plugin does not use `ctx.http`. The plugin's capability comment is updated to say it fetches URLs through the trusted runtime. |
 
@@ -45,13 +45,23 @@ interface SourceRow {
 		uploadId: string;
 	};
 	lastError?: { at: string; code: string; message: string };
+	lastImport?: {
+		sha256: string; // content of the last real (not dry-run) job created from a fetch
+		uploadId: string;
+		jobId: string;
+		at: string;
+	};
 	createdAt: string;
 	updatedAt: string;
 }
 ```
 
 A failed fetch sets `lastError` and keeps `lastFetch` from the last success. A successful fetch
-clears `lastError`.
+clears `lastError`. `lastImport` is written (compare-and-set) only when `jobs/create` creates a job
+that is not a dry run from a source fetch; dry runs and failed creations never write it. Changing
+the URL or credential clears `lastFetch`, `lastError` and `lastImport`. `lastImport.uploadId` has
+no retention protection of its own: its file stays while a job uses it (or while it is also
+`lastFetch.uploadId`).
 
 ## Credentials
 
@@ -78,7 +88,7 @@ All require `import:execute`, like every other route.
 | `sources/get` | `{ id }` | the source |
 | `sources/list` | `{ cursor? }` | a page of sources |
 | `sources/fetch` | `{ id, force? }` | `{ changed, uploadId, bytes, sha256 }` |
-| `jobs/create` | existing input with either `uploadId` or `sourceId` (exactly one), plus optional `force` | the job, or `{ skipped: "unchanged", sourceId, uploadId }` |
+| `jobs/create` | existing input with either `uploadId` or `sourceId` (exactly one), plus optional `force` | the job, or `{ skipped: "unchanged", sourceId, uploadId }` (only for a real run without `force` whose content equals `lastImport`) |
 
 `sources/fetch`:
 
@@ -91,8 +101,16 @@ All require `import:execute`, like every other route.
    report unchanged. Otherwise record the new `lastFetch` and report changed.
 5. Any other status → `HTTP_ERROR`.
 
-`jobs/create` with `sourceId` fetches first. Unchanged and not `force` → `{ skipped: "unchanged" }`,
-no job. Otherwise the job is created from the resulting `uploadId` as today.
+`jobs/create` with `sourceId`:
+
+1. Fetch exactly as `sources/fetch` does (conditional GET and hash decide whether a new copy is
+   staged; `sources/fetch` keeps reporting `changed` relative to `lastFetch`).
+2. If not `force`, not a dry run, and the fetched SHA-256 equals `lastImport.sha256` →
+   `{ skipped: "unchanged", sourceId, uploadId }`, no job.
+3. Otherwise create the job from the resulting `uploadId` as today. Dry runs are never skipped.
+4. Only when a job that is not a dry run was created, record `lastImport { sha256, uploadId,
+   jobId, at }`. A failed creation records nothing, so a retry (and a real run after a dry run)
+   needs no `force`.
 
 ## SSRF guard
 
@@ -160,11 +178,13 @@ latest upload unless a job still references it.
   upload deleted); both timeouts; the Workers buffering path and `LENGTH_REQUIRED`.
 - Unit, routes: credential routes never return values; name and header validation; source
   create, update (clears `lastFetch` on URL change), delete, list, unique names;
-  `jobs/create` with `sourceId` (created, skipped, forced) and exactly one of `uploadId` and
-  `sourceId`; retention keeps each source's latest upload.
+  `jobs/create` with `sourceId` (created; a real run of content already imported skipped; forced;
+  a dry run then a real run on an unchanged feed creates the job without `force`; a failed
+  creation then a retry creates the job) and exactly one of `uploadId` and `sourceId`; retention keeps each source's latest upload.
 - Integration on `sites/dev`: a local HTTP server and `allowPrivateNetwork`: first fetch with a
   bearer credential and a completed job; a re-run skipped through `304` and through the hash
-  (server without validators); a changed body creates a new job; `URL_BLOCKED` with the option
+  (server without validators); a dry run is never skipped and the real run after it is created
+without `force`; a changed body creates a new job; `URL_BLOCKED` with the option
   off; `HTTP_ERROR` for a 404.
 - Cloudflare parity on `sites/dev-cf`: one URL import, including a chunked response that takes the
   buffering path.
