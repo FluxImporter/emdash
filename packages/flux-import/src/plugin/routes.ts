@@ -1,14 +1,18 @@
 import { z } from "astro/zod";
 import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
+import { allowPrivateNetwork, maxSourceBytes } from "../astro/config.js";
 import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
+import { onWorkers } from "../emdash/workers.js";
 import { JobError } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
+import { FETCH_LIMITS } from "../sources/fetcher.js";
+import { defaultResolver } from "../sources/net.js";
 import { SOURCE_FORMATS } from "../sources/reader.js";
 import {
 	CREDENTIAL_NAME,
@@ -35,7 +39,20 @@ import {
 	sampleSource,
 	stagePaste,
 	startJob,
+	type UploadKeeper,
 } from "./service.js";
+import {
+	createSource,
+	deleteSource,
+	fetchSource,
+	getSource,
+	jobFromSource,
+	latestSourceUploads,
+	listSources,
+	type SourceDeps,
+	sourcesCollection,
+	updateSource,
+} from "./sources.js";
 
 /** Every route requires Admin (`import:execute` is level 50 in @emdash-cms/auth). */
 const PERMISSION = "import:execute";
@@ -61,6 +78,9 @@ const RECORD_STATUSES = [
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
+const sourceId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid source ID");
+const sourceName = z.string().min(1).max(100);
+const sourceUrl = z.string().min(1).max(2048);
 const credentialName = z
 	.string()
 	.regex(CREDENTIAL_NAME, "Credential names are 1-64 characters from a-z, 0-9 and -");
@@ -101,6 +121,9 @@ interface Services {
 	storage: UploadStorage;
 	runtime: EmDashRuntime;
 	actor: ActorInfo;
+	sources: SourceDeps;
+	/** Keeps each URL source's latest staged file when a finished job releases its file. */
+	keep: UploadKeeper;
 }
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
@@ -137,6 +160,25 @@ async function withServices<T>(
 			throw new PluginRouteError("NOT_CONFIGURED", "EmDash storage is not configured", 500);
 		}
 		const uploads = new EmDashUploads(runtime.storage);
+		const collection = sourcesCollection(ctx.storage);
+		const sources: SourceDeps = {
+			sources: collection,
+			jobs: pluginCollections(ctx.storage).jobs,
+			settings: ctx.settings,
+			storage: runtime.storage,
+			net: {
+				resolver: defaultResolver(),
+				allowPrivateNetwork: allowPrivateNetwork(),
+				// A plain call: workerd rejects fetch() called as a method of another object.
+				fetch: (input, init) => fetch(input, init),
+			},
+			limits: { ...FETCH_LIMITS, maxBytes: maxSourceBytes() },
+			workers: onWorkers(),
+			now: Date.now,
+			newId: () => ulid(),
+		};
+		const keep: UploadKeeper = async (uploadId) =>
+			(await latestSourceUploads(collection)).has(uploadId);
 		const deps: EngineDeps = {
 			...pluginCollections(ctx.storage),
 			content: new EmDashContent(runtime, actor, (collection, entryId, userId) =>
@@ -147,7 +189,15 @@ async function withServices<T>(
 			newId: () => ulid(),
 		};
 		try {
-			return await run({ deps, uploads, storage: runtime.storage, runtime, actor });
+			return await run({
+				deps,
+				uploads,
+				storage: runtime.storage,
+				runtime,
+				actor,
+				sources,
+				keep,
+			});
 		} catch (e) {
 			throw toRouteError(e);
 		}
@@ -161,18 +211,27 @@ function route<T>(
 	return { input, permission: PERMISSION, methods: ["POST"], handler };
 }
 
-const createInput = z.object({
-	uploadId,
-	template: z.unknown(),
-	dryRun: z.boolean(),
-	publish: z.boolean().optional(),
-	batchSize: z.number().int().optional(),
-	budgetMs: z.number().int().optional(),
-});
+const createInput = z
+	.object({
+		uploadId: uploadId.optional(),
+		sourceId: sourceId.optional(),
+		/** With `sourceId`: fetch without validators and create the job even if nothing changed. */
+		force: z.boolean().optional(),
+		template: z.unknown(),
+		dryRun: z.boolean(),
+		publish: z.boolean().optional(),
+		batchSize: z.number().int().optional(),
+		budgetMs: z.number().int().optional(),
+	})
+	.refine((input) => (input.uploadId === undefined) !== (input.sourceId === undefined), {
+		message: "Set exactly one of uploadId and sourceId",
+	});
 
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads }) => changeJob(deps, uploads, ctx.input.id, action)),
+		withServices(ctx, ({ deps, uploads, keep }) =>
+			changeJob(deps, uploads, ctx.input.id, action, keep),
+		),
 	);
 }
 
@@ -234,31 +293,78 @@ export const routes: Record<string, PluginRoute> = {
 		withServices(ctx, () => listCredentials(ctx.settings)),
 	),
 
+	"sources/create": route(
+		z.object({ name: sourceName, url: sourceUrl, credential: credentialName.optional() }),
+		(ctx) => withServices(ctx, ({ sources }) => createSource(sources, ctx.input)),
+	),
+
+	"sources/update": route(
+		z.object({
+			id: sourceId,
+			name: sourceName.optional(),
+			url: sourceUrl.optional(),
+			credential: credentialName.nullable().optional(),
+		}),
+		(ctx) => withServices(ctx, ({ sources }) => updateSource(sources, ctx.input)),
+	),
+
+	"sources/delete": route(z.object({ id: sourceId }), (ctx) =>
+		withServices(ctx, ({ sources }) => deleteSource(sources, ctx.input.id)),
+	),
+
+	"sources/get": route(z.object({ id: sourceId }), (ctx) =>
+		withServices(ctx, ({ sources }) => getSource(sources, ctx.input.id)),
+	),
+
+	"sources/list": route(z.object({ cursor }), (ctx) =>
+		withServices(ctx, ({ sources }) => listSources(sources, ctx.input.cursor)),
+	),
+
+	"sources/fetch": route(z.object({ id: sourceId, force: z.boolean().optional() }), (ctx) =>
+		withServices(ctx, ({ sources }) =>
+			fetchSource(sources, ctx.input.id, ctx.input.force ?? false),
+		),
+	),
+
 	"jobs/create": route(createInput, async (ctx) => {
 		await ensureRetentionScheduled(ctx);
-		return withServices(ctx, ({ deps, runtime }) => {
+		return withServices(ctx, ({ deps, runtime, sources }) => {
 			const { input } = ctx;
-			const options: StartJobInput = {
-				uploadId: input.uploadId,
-				template: input.template,
-				dryRun: input.dryRun,
-				...(input.publish === undefined ? {} : { publish: input.publish }),
-				...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
-				...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+			const start = (upload: string) => {
+				const options: StartJobInput = {
+					uploadId: upload,
+					template: input.template,
+					dryRun: input.dryRun,
+					...(input.publish === undefined ? {} : { publish: input.publish }),
+					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
+					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+				};
+				return startJob(
+					deps,
+					options,
+					(collection) => listSchemaFields(runtime.schemaRegistry, collection),
+					(locale) => resolveSiteLocale(locale),
+				);
 			};
-			return startJob(
-				deps,
-				options,
-				(collection) => listSchemaFields(runtime.schemaRegistry, collection),
-				(locale) => resolveSiteLocale(locale),
-			);
+			if (input.sourceId !== undefined) {
+				const options = { force: input.force ?? false, dryRun: input.dryRun };
+				return jobFromSource(sources, input.sourceId, options, start);
+			}
+			if (input.uploadId === undefined) {
+				throw new PluginRouteError(
+					"VALIDATION_ERROR",
+					"Set exactly one of uploadId and sourceId",
+					400,
+				);
+			}
+			return start(input.uploadId);
 		});
 	}),
 
 	"jobs/next": route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads, actor }) =>
+		withServices(ctx, ({ deps, uploads, actor, keep }) =>
 			// A unique holder per call: two concurrent calls never share a lease.
-			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`),
+			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`, keep),
 		),
 	),
 

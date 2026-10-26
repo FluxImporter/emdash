@@ -290,6 +290,21 @@ describe("staged upload lifecycle", () => {
 		expect(uploads.deleted).toEqual(["u1"]);
 	});
 
+	it("keeps a file that a URL source still names as its latest fetch", async () => {
+		const { deps } = makeDeps();
+		const uploads = new Uploads();
+		deps.source.add("u1", csv(2));
+		const keep = async (uploadId: string) => uploadId === "u1";
+		const job = await startJob(deps, { uploadId: "u1", template, dryRun: false }, fields);
+		expect((await nextBatch(deps, uploads, job.id, "h", keep)).status).toBe("completed");
+		const other = await startJob(deps, { uploadId: "u1", template, dryRun: false }, fields);
+		const cancelled = await changeJob(deps, uploads, other.id, "cancel", keep);
+		expect(uploads.deleted).toEqual([]);
+		// Without the keeper (the source was deleted), the same release deletes the file.
+		expect(await releaseUploadIfUnused(deps, uploads, cancelled)).toBe(true);
+		expect(uploads.deleted).toEqual(["u1"]);
+	});
+
 	it("knows which states still need the file", () => {
 		const base = {
 			dryRun: false,

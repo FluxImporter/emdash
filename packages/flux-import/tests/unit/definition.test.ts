@@ -11,6 +11,12 @@ import { ServiceError } from "../../src/plugin/service.js";
 const ROUTES = [
 	"sources/sample",
 	"sources/paste",
+	"sources/create",
+	"sources/update",
+	"sources/delete",
+	"sources/get",
+	"sources/list",
+	"sources/fetch",
 	"credentials/set",
 	"credentials/delete",
 	"credentials/list",
@@ -51,6 +57,7 @@ describe("createPlugin", () => {
 		]);
 		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);
+		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 	});
 
 	it("has the retention setting, the activate hook and the cron hook", () => {
@@ -100,6 +107,39 @@ describe("createPlugin", () => {
 				true,
 			);
 		}
+	});
+
+	it("takes exactly one of uploadId and sourceId in jobs/create", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const base = { template: {}, dryRun: false };
+		expect(create.safeParse({ ...base, uploadId: UPLOAD_ID }).success).toBe(true);
+		expect(create.safeParse({ ...base, sourceId: "01JZSRC", force: true }).success).toBe(true);
+		expect(create.safeParse({ ...base }).success).toBe(false);
+		expect(create.safeParse({ ...base, uploadId: UPLOAD_ID, sourceId: "01JZSRC" }).success).toBe(
+			false,
+		);
+		expect(create.safeParse({ ...base, sourceId: "a/b" }).success).toBe(false);
+	});
+
+	it("validates source input", () => {
+		const createSource = plugin.routes["sources/create"]!.input!;
+		expect(createSource.safeParse({ name: "Feed", url: "https://x.example/f.csv" }).success).toBe(
+			true,
+		);
+		expect(createSource.safeParse({ name: "", url: "https://x.example/" }).success).toBe(false);
+		expect(createSource.safeParse({ name: "x".repeat(101), url: "https://x/" }).success).toBe(
+			false,
+		);
+		expect(
+			createSource.safeParse({ name: "Feed", url: `https://x.example/${"a".repeat(2048)}` })
+				.success,
+		).toBe(false);
+		expect(
+			createSource.safeParse({ name: "Feed", url: "https://x/", credential: "Bad Name" }).success,
+		).toBe(false);
+		const update = plugin.routes["sources/update"]!.input!;
+		expect(update.safeParse({ id: "S1", credential: null }).success).toBe(true);
+		expect(update.safeParse({ id: "S1", credential: "supplier" }).success).toBe(true);
 	});
 
 	it("validates credential input", () => {
