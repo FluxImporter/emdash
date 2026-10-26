@@ -9,7 +9,8 @@ export interface FeedRequest {
 }
 
 export interface Feed {
-	body: string;
+	/** Text, or the bytes of a binary file such as a workbook. */
+	body: string | Uint8Array;
 	/** Sends an ETag and answers a matching If-None-Match with 304. */
 	etag?: boolean;
 	/** Answers 401 unless the Authorization header is exactly this. */
@@ -32,7 +33,11 @@ export class FeedServer {
 		const server = createServer((req, res) => {
 			const path = new URL(req.url ?? "/", "http://feed").pathname;
 			const feed = this.feeds.get(path);
-			const send = (status: number, headers: Record<string, string> = {}, body?: string) => {
+			const send = (
+				status: number,
+				headers: Record<string, string> = {},
+				body?: string | Uint8Array,
+			) => {
 				this.requests.push({ path, headers: req.headers, status });
 				if (feed?.chunked && status === 200 && body !== undefined) {
 					res.writeHead(status, headers);

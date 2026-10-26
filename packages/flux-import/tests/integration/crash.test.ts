@@ -1,7 +1,9 @@
 import { rm } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
+import { openXlsx } from "../../src/sources/xlsx.js";
 import { jsonTemplate, productsJson } from "../fixtures/formats.js";
+import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, devBypass } from "./client.js";
 import { productsCsv, template } from "./fixtures.js";
 import { type DevServer, startServer, stopServer } from "./server.js";
@@ -11,6 +13,14 @@ const ROWS = 10_000;
 /** The 10,000-record JSON fixture is about 1.6 MB, over the shared server's 1 MB limit. */
 const MAX_SOURCE_BYTES = 4_000_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** An XLSX job reads the JSON Lines its workbook converts to, so its cursor moves through those. */
+async function sourceSize(body: string | Uint8Array): Promise<number> {
+	if (typeof body === "string") return Buffer.byteLength(body);
+	let bytes = 0;
+	for await (const line of (await openXlsx(body)).lines) bytes += Buffer.byteLength(line) + 1;
+	return bytes;
+}
 
 let server: DevServer;
 let client: Client;
@@ -34,6 +44,7 @@ beforeAll(async () => {
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	await client.createProducts("it_crash");
 	await client.createProducts("it_crash_json");
+	await client.createProducts("it_crash_xlsx");
 });
 
 afterAll(async () => {
@@ -44,9 +55,16 @@ afterAll(async () => {
 describe.each([
 	["CSV", "it_crash", "products.csv", productsCsv(ROWS), template("it_crash")],
 	["JSON", "it_crash_json", "products.json", productsJson(ROWS), jsonTemplate("it_crash_json")],
+	[
+		"XLSX",
+		"it_crash_xlsx",
+		"products.xlsx",
+		await productsXlsx(ROWS),
+		xlsxTemplate("it_crash_xlsx"),
+	],
 ])("kill and resume (%s)", (_format, collection, filename, body, jobTemplate) => {
 	it("leaves no duplicates and reports any entry a crash left unpublished", async () => {
-		const sourceBytes = Buffer.byteLength(body);
+		const sourceBytes = await sourceSize(body);
 		const { uploadId } = await client.upload(body, filename);
 		const created = await client.plugin("jobs/create", {
 			uploadId,
