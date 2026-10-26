@@ -12,11 +12,12 @@ export type FluxImportOptions = Record<string, never>;
 
 /**
  * Every field a query filters or sorts on is indexed (plugin storage rejects others,
- * `emdash` src/plugins/storage-query.ts:113-127). `jobs.uploadId` lets a finished job check
- * whether another job still needs its staged file before deleting it.
+ * `emdash` src/plugins/storage-query.ts:113-127). `jobs.uploadId` and `jobs.sourceUploadId` let a
+ * finished job check whether another job still needs its staged file (or the workbook an XLSX
+ * job was converted from) before deleting it.
  */
 export const STORAGE = {
-	jobs: { indexes: ["status", "createdAt", "uploadId"] },
+	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
 	records: {
 		indexes: ["jobId", ["jobId", "status"], ["jobId", "seq"], ["jobId", "status", "seq"]],
 	},

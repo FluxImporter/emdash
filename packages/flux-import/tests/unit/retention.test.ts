@@ -46,6 +46,21 @@ describe("purgeExpired", () => {
 		expect(purger.keeps[0]!.has("u1")).toBe(true);
 	});
 
+	it("keeps the workbook a surviving XLSX job was converted from", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("converted", '{"sku":"A","Name":"1","_row":2}\n');
+		await createJob(deps, {
+			uploadId: "converted",
+			sourceUploadId: "book",
+			columns: ["sku", "Name"],
+			template: { ...template, source: { format: "xlsx" } },
+			schemaFields,
+		});
+		const purger = new Purger();
+		await purgeExpired(deps, purger, 30);
+		expect(purger.keeps[0]).toEqual(new Set(["converted", "book"]));
+	});
+
 	it("keeps the staged files it is told to keep, such as each source's latest fetch", async () => {
 		const { deps } = makeDeps();
 		const purger = new Purger();

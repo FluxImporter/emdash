@@ -4,6 +4,7 @@ import { describe, expect, inject, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
+import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
@@ -181,6 +182,41 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await feeds.stop();
 		}
+	});
+
+	it("converts an XLSX workbook with DecompressionStream and imports the copy staged in R2", async () => {
+		await client.createProducts("cf_xlsx");
+		const { uploadId } = await client.upload(await productsXlsx(10), "products.xlsx");
+		const sample = await client.plugin<{ records: unknown[]; paths: string[] }>("sources/sample", {
+			uploadId,
+			n: 2,
+			source: { format: "xlsx" },
+		});
+		expect(sample.paths).toEqual(["sku", "Name", "Price", "Released", "Active", "Handle"]);
+		expect(sample.records[1]).toEqual({
+			sku: "SKU-1",
+			Name: 'Product 1, "quoted" & <tagged> ț',
+			Price: 1.5,
+			Released: "2026-03-02",
+			Active: true,
+			Handle: "product-1",
+			_row: 3,
+		});
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: xlsxTemplate("cf_xlsx"),
+			dryRun: false,
+			batchSize: 4,
+		});
+		expect(job).toMatchObject({ sourceUploadId: uploadId, warnings: [] });
+		expect(job.uploadId).not.toBe(uploadId);
+		const done = await client.runToEnd(job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 10, failed: 0 } });
+		const entries = await client.listAll("cf_xlsx");
+		expect(entries.every((e) => e.status === "published")).toBe(true);
+		const first = entries.find((e) => e.data.flux_source_id === "SKU-0")!;
+		expect(first.data).toMatchObject({ title: 'Product 0, "quoted" & <tagged> ț', price: 0.5 });
+		expect(Date.parse(first.data.released as string)).toBe(Date.parse("2026-02-28T22:00:00.000Z"));
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {

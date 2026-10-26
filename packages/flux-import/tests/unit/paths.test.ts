@@ -31,6 +31,16 @@ describe("resolvePath", () => {
 		expect(resolvePath({}, "__proto__", "csv")).toBeUndefined();
 	});
 
+	it("reads XLSX cells by header name, dots and all, keeping typed values", () => {
+		const row = { "Unit Price": 12.5, "v1.2": "x", Active: true, Empty: null, _row: 7 };
+		expect(resolvePath(row, "Unit Price", "xlsx")).toBe(12.5);
+		expect(resolvePath(row, "v1.2", "xlsx")).toBe("x");
+		expect(resolvePath(row, "Active", "xlsx")).toBe(true);
+		expect(resolvePath(row, "Empty", "xlsx")).toBeNull();
+		expect(resolvePath(row, "_row", "xlsx")).toBe(7);
+		expect(resolvePath(row, "Missing", "xlsx")).toBeUndefined();
+	});
+
 	it("walks JSON dot paths, keeping null and stopping at arrays", () => {
 		expect(resolvePath(json, "price.amount", "json")).toBe(12.5);
 		expect(resolvePath(json, "price.tax", "json")).toBeNull();
@@ -118,6 +128,8 @@ describe("path syntax", () => {
 		["xml", "1title", /invalid/],
 		["xml", "title/@1lang", /invalid/],
 		["csv", "Any Column!", null],
+		["xlsx", "Unit Price (EUR.)", null],
+		["xlsx", "", /empty/],
 	] as const)("%s path %s", (format, path, problem) => {
 		const result = pathProblem(path, format);
 		if (problem === null) expect(result).toBeNull();

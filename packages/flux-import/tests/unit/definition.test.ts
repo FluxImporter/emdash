@@ -55,7 +55,7 @@ describe("createPlugin", () => {
 			["jobId", "seq"],
 			["jobId", "status", "seq"],
 		]);
-		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId"]);
+		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 	});
@@ -94,9 +94,13 @@ describe("createPlugin", () => {
 		expect(sample.safeParse({ uploadId: UPLOAD_ID, source: { format: "yaml" } }).success).toBe(
 			false,
 		);
+		expect(
+			sample.safeParse({ uploadId: UPLOAD_ID, source: { format: "xlsx", sheet: 2, headerRow: 3 } })
+				.success,
+		).toBe(true);
 		const paste = plugin.routes["sources/paste"]!.input!;
 		expect(paste.safeParse({ format: "json", text: "[]" }).success).toBe(true);
-		expect(paste.safeParse({ format: "xlsx", text: "x" }).success).toBe(false);
+		expect(paste.safeParse({ format: "yaml", text: "x" }).success).toBe(false);
 		expect(paste.safeParse({ format: "csv" }).success).toBe(false);
 		expect(plugin.routes["jobs/get"]!.input!.safeParse({ id: "a/b" }).success).toBe(false);
 		expect(
@@ -198,6 +202,16 @@ describe("createPlugin", () => {
 			{ format: "json", records: "data.items" },
 			{ format: "csv", filter: "Price > 0" },
 			{ format: "xml", records: "feed/item", filter: "`@sku` != ''" },
+			{ format: "xlsx" },
+			{ format: "xlsx", sheet: "Products", headerRow: 2, filter: "Price > 0" },
+			{ format: "xlsx", sheet: 3 },
+			{ format: "xlsx", sheet: "" },
+			{ format: "xlsx", sheet: "x".repeat(101) },
+			{ format: "xlsx", sheet: 0 },
+			{ format: "xlsx", sheet: 2.5 },
+			{ format: "xlsx", headerRow: 0 },
+			{ format: "xlsx", headerRow: 1_048_577 },
+			{ format: "xlsx", headerRow: "2" },
 			{ format: "json", filter: "" },
 			{ format: "json", filter: 5 },
 			{ format: "yaml" },
@@ -227,6 +241,19 @@ describe("createPlugin", () => {
 			new ServiceError("INVALID_SOURCE", "bad", 400, { code: "csv_syntax" }),
 		);
 		expect(fromService).toMatchObject({ code: "INVALID_SOURCE", details: { code: "csv_syntax" } });
+	});
+
+	it("refuses to stage pasted XLSX before touching the runtime", async () => {
+		const ctx = {
+			input: { format: "xlsx", text: "PK" },
+			user: { id: "u1", role: 50 },
+		} as unknown as RouteContext;
+		await expect(plugin.routes["sources/paste"]!.handler(ctx)).rejects.toMatchObject({
+			name: "PluginRouteError",
+			code: "INVALID_FORMAT",
+			status: 400,
+			message: "An XLSX workbook is a binary file and cannot be pasted; upload it instead",
+		});
 	});
 
 	it("refuses a call without a user before touching the runtime", async () => {

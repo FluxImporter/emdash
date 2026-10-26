@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { UPLOAD_PREFIX } from "../../src/emdash/uploads.js";
 import type { Job } from "../../src/engine/types.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
+import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { ApiError, Client, devBypass } from "./client.js";
 import { withDb } from "./db.js";
 import { FeedServer } from "./feed-server.js";
@@ -147,6 +148,39 @@ describe("URL sources on Node", () => {
 		await client.runToEnd((real as Job).id);
 		expect(await createJob(dry.id)).toMatchObject({ skipped: "unchanged", sourceId: dry.id });
 		expect(feeds.log("/dry.csv").map((r) => r.status)).toEqual([200, 304, 304]);
+	});
+
+	it("imports an XLSX feed through a converted copy, keeping the fetched workbook", async () => {
+		await client.createProducts("it_url_xlsx");
+		feeds.feeds.set("/products.xlsx", { body: await productsXlsx(4), etag: true });
+		const source = await client.plugin<SourceRow>("sources/create", {
+			name: "XLSX feed",
+			url: feeds.url("/products.xlsx"),
+		});
+		const create = () =>
+			client.plugin<Job | Skipped>("jobs/create", {
+				sourceId: source.id,
+				template: xlsxTemplate("it_url_xlsx"),
+				dryRun: false,
+			});
+		const job = await create();
+		if ("skipped" in job) throw new Error(`Expected a job, got ${JSON.stringify(job)}`);
+		const { lastFetch } = await client.plugin<SourceRow>("sources/get", { id: source.id });
+		expect(job.sourceUploadId).toBe(lastFetch?.uploadId);
+		expect(job.uploadId).not.toBe(job.sourceUploadId);
+		expect(await client.runToEnd(job.id)).toMatchObject({
+			status: "completed",
+			counters: { created: 4, failed: 0 },
+		});
+		// The finished job deleted its converted copy; the workbook stays as the source's latest file.
+		expect(await stagedFilesFor(job.uploadId)).toEqual([]);
+		expect(await stagedFilesFor(job.sourceUploadId ?? "")).toHaveLength(1);
+		expect(await create()).toEqual({
+			skipped: "unchanged",
+			sourceId: source.id,
+			uploadId: job.sourceUploadId,
+		});
+		expect(feeds.log("/products.xlsx").map((r) => r.status)).toEqual([200, 304]);
 	});
 
 	it("fails with HTTP_ERROR for a 404 and saves it as the source's lastError", async () => {

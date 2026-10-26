@@ -1,16 +1,27 @@
-export type SourceFormat = "csv" | "json" | "jsonl" | "xml";
+export type SourceFormat = "csv" | "json" | "jsonl" | "xml" | "xlsx";
 
 export const SOURCE_FORMATS = [
 	"csv",
 	"json",
 	"jsonl",
 	"xml",
+	"xlsx",
 ] as const satisfies readonly SourceFormat[];
 
-/** The template's `source` block. `records` is a dot path (json) or a `/` path (xml). */
+/** Excel's last row; `headerRow` and sheet rows are at most this. */
+export const XLSX_MAX_ROWS = 1_048_576;
+/** The field every converted XLSX record carries: the sheet's 1-based row number. */
+export const XLSX_ROW_FIELD = "_row";
+
+/**
+ * The template's `source` block. `records` is a dot path (json) or a `/` path (xml). `sheet` (a
+ * name or a 1-based position) and `headerRow` (1-based) choose what an XLSX import reads.
+ */
 export interface TemplateSource {
 	format: SourceFormat;
 	records?: string | undefined;
+	sheet?: string | number | undefined;
+	headerRow?: number | undefined;
 }
 
 export const CSV_SOURCE: TemplateSource = { format: "csv" };

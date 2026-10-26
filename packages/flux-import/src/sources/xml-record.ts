@@ -46,22 +46,26 @@ interface Frame {
 
 /**
  * An element without attributes or child elements is its text; otherwise an object with
- * `@attributes`, child elements (repeats as arrays) and `#text` when the text is not blank.
- * The record element is always an object. Keys are own properties (`Object.fromEntries`).
+ * `@attributes`, child elements (repeats as arrays) and `#text` when the text is not blank (with
+ * `keepBlankText`, when it is not empty). The record element is always an object. Keys are own
+ * properties (`Object.fromEntries`).
  */
-function finish(frame: Frame, isRecord: boolean): unknown {
+function finish(frame: Frame, isRecord: boolean, keepBlankText: boolean): unknown {
 	const text = frame.text.join("");
 	if (!isRecord && frame.attrs.length === 0 && frame.children.size === 0) return text;
 	const entries: [string, unknown][] = frame.attrs.map(([k, v]) => [`@${k}`, v]);
 	for (const [name, values] of frame.children) {
 		entries.push([name, values.length === 1 ? values[0] : values]);
 	}
-	if (NOT_BLANK.test(text)) entries.push(["#text", text]);
+	if (keepBlankText ? text !== "" : NOT_BLANK.test(text)) entries.push(["#text", text]);
 	return Object.fromEntries(entries);
 }
 
-/** Parses one record element (comments and processing instructions ignored, CDATA as text). */
-export function parseXmlRecordText(xml: string): unknown {
+/**
+ * Parses one record element (comments and processing instructions ignored, CDATA as text).
+ * `keepBlankText` keeps whitespace-only text, as in `<t xml:space="preserve"> </t>`.
+ */
+export function parseXmlRecordText(xml: string, keepBlankText = false): unknown {
 	const src = xml.replace(/\r\n?/g, "\n");
 	const stack: Frame[] = [];
 	let i = 0;
@@ -90,7 +94,7 @@ export function parseXmlRecordText(xml: string): unknown {
 		return body;
 	};
 	const close = (frame: Frame) => {
-		const value = finish(frame, stack.length === 0);
+		const value = finish(frame, stack.length === 0, keepBlankText);
 		const parent = stack.at(-1);
 		if (!parent) return value;
 		const list = parent.children.get(frame.name);
@@ -130,6 +134,7 @@ export function parseXmlRecordText(xml: string): unknown {
 		} else if (src[i] === "<") {
 			i++;
 			const frame: Frame = { name: name(), attrs: [], children: new Map(), text: [] };
+			const seen = new Set<string>();
 			for (;;) {
 				const before = i;
 				space();
@@ -148,13 +153,14 @@ export function parseXmlRecordText(xml: string): unknown {
 				i++;
 				const raw = skipPast(quote as string, `attribute ${quoted}`);
 				if (raw.includes("<")) fail(`"<" is not allowed in attribute ${quoted}`);
-				if (frame.attrs.some(([k]) => k === attr)) fail(`Duplicate attribute ${quoted}`);
+				if (seen.has(attr)) fail(`Duplicate attribute ${quoted}`);
+				seen.add(attr);
 				frame.attrs.push([attr, decodeEntities(raw)]);
 			}
 			if (src[i] === "/") {
 				i += 2;
 				if (stack.length === 0) {
-					const value = finish(frame, true);
+					const value = finish(frame, true, keepBlankText);
 					if (NOT_BLANK.test(src.slice(i))) fail("Content after the record element");
 					return value;
 				}
@@ -175,7 +181,10 @@ export function parseXmlRecordText(xml: string): unknown {
 }
 
 /** Parses one record's bytes; a parse failure is the record's problem, not the job's. */
-export function parseXmlRecord(bytes: Uint8Array): Pick<SourceRecord, "value" | "error"> {
+export function parseXmlRecord(
+	bytes: Uint8Array,
+	keepBlankText = false,
+): Pick<SourceRecord, "value" | "error"> {
 	const text = decodeUtf8(bytes);
 	if (text === null) {
 		return {
@@ -184,7 +193,7 @@ export function parseXmlRecord(bytes: Uint8Array): Pick<SourceRecord, "value" | 
 		};
 	}
 	try {
-		return { value: parseXmlRecordText(text) };
+		return { value: parseXmlRecordText(text, keepBlankText) };
 	} catch (e) {
 		if (!(e instanceof XmlRecordError)) throw e;
 		return { value: null, error: { code: "invalid_record", message: `Invalid XML: ${e.message}` } };

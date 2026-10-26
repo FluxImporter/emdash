@@ -139,6 +139,74 @@ describe("createJob", () => {
 	});
 });
 
+describe("createJob for converted XLSX", () => {
+	const xlsxT = (fields: object, key: object = { from: "sku" }) => ({
+		...template,
+		source: { format: "xlsx", sheet: "Products" },
+		key,
+		fields,
+	});
+	const LINES = '{"sku":"A1","Name":"Desk","_row":2}\n{"sku":"A2","Name":null,"_row":4}\n';
+
+	it("reads the converted JSON Lines, keeping the header columns, warnings and workbook", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("converted", LINES);
+		const job = await createJob(deps, {
+			uploadId: "converted",
+			sourceUploadId: "workbook",
+			columns: ["sku", "Name"],
+			warnings: ['Column C has no header; it is named "column_C"'],
+			template: xlsxT({ title: { from: "Name", type: "text" } }),
+			schemaFields,
+		});
+		expect(job).toMatchObject({
+			uploadId: "converted",
+			sourceUploadId: "workbook",
+			source: { format: "xlsx", sheet: "Products" },
+			columns: ["sku", "Name"],
+			warnings: ['Column C has no header; it is named "column_C"'],
+			cursor: { offset: 0, seq: 0 },
+		});
+		await runBatch(deps, job.id, "driver");
+		expect(
+			[...deps.content.entries.values()].map((e) => [e.data.flux_source_id, e.data.title]),
+		).toEqual([
+			["A1", "Desk"],
+			["A2", null],
+		]);
+	});
+
+	it("fails a from column missing from the header like CSV, but lets the key read _row", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("converted", LINES);
+		const create = (fields: object, key?: object) =>
+			createJob(deps, {
+				uploadId: "converted",
+				columns: ["sku", "Name"],
+				template: xlsxT(fields, key),
+				schemaFields,
+			});
+		await expect(create({ title: { from: "Title", type: "text" } })).rejects.toMatchObject({
+			code: "invalid_template",
+			details: ['Column "Title" not found in the source'],
+		});
+		const byRow = await create({ title: { from: "Name", type: "text" } }, { from: "_row" });
+		expect(byRow.warnings).toEqual([]);
+	});
+
+	it("warns when the converted sheet has no records", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("converted", "");
+		const job = await createJob(deps, {
+			uploadId: "converted",
+			columns: ["sku", "Name"],
+			template: xlsxT({ title: { from: "Name", type: "text" } }),
+			schemaFields,
+		});
+		expect(job.warnings).toEqual(["No records found in the file"]);
+	});
+});
+
 describe("createJob for JSON, JSON Lines and XML", () => {
 	const jsonT = (source: object, fields: object = { title: { from: "name", type: "text" } }) => ({
 		...template,
