@@ -85,6 +85,7 @@ class XmlScanner implements ByteScanner {
 		startOffset: number,
 		startSeq: number,
 		private readonly stopAtBody: boolean,
+		private readonly keepBlankText = false,
 	) {
 		this.parents = path.length - 1;
 		this.resumed = startOffset > 0;
@@ -361,7 +362,7 @@ class XmlScanner implements ByteScanner {
 	}
 
 	private emit(end: number): void {
-		const parsed = parseXmlRecord(this.record.bytes());
+		const parsed = parseXmlRecord(this.record.bytes(), this.keepBlankText);
 		this.record.clear();
 		this.out.push({ seq: this.seq++, start: this.recordStart, end, ...parsed });
 	}
@@ -393,8 +394,11 @@ class XmlScanner implements ByteScanner {
 	}
 }
 
-/** XML: the elements at the `/` path `records` ("feed/item"). */
-export function xmlReader(records: string): RecordReader {
+/**
+ * XML: the elements at the `/` path `records` ("feed/item"). `keepBlankText` keeps
+ * whitespace-only text in elements that have attributes (XLSX cells and strings).
+ */
+export function xmlReader(records: string, keepBlankText = false): RecordReader {
 	const path = records.split("/");
 	const reader: RecordReader = {
 		async locate(stream) {
@@ -405,7 +409,11 @@ export function xmlReader(records: string): RecordReader {
 			return { bodyOffset: scanner.bodyOffset };
 		},
 		read: (stream, { startOffset, startSeq }) =>
-			runScanner(stream, startOffset, new XmlScanner(path, startOffset, startSeq, false)),
+			runScanner(
+				stream,
+				startOffset,
+				new XmlScanner(path, startOffset, startSeq, false, keepBlankText),
+			),
 		sample: (stream, n) => sampleByRead(reader, stream, n, (r) => collectPaths(r, "xml")),
 	};
 	return reader;

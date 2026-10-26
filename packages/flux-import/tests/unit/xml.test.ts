@@ -378,4 +378,20 @@ describe("parseXmlRecordText", () => {
 	it("keeps mixed text and normalises line endings", () => {
 		expect(parseXmlRecordText("<item>a\r\n<b>x</b>c</item>")).toEqual({ b: "x", "#text": "a\nc" });
 	});
+	it("keeps whitespace-only text beside attributes only when asked", async () => {
+		const xml = '<row r="1"><t xml:space="preserve"> </t><v> </v></row>';
+		expect(parseXmlRecordText(xml)).toEqual({ "@r": "1", t: { "@xml:space": "preserve" }, v: " " });
+		expect(parseXmlRecordText(xml, true)).toEqual({
+			"@r": "1",
+			t: { "@xml:space": "preserve", "#text": " " },
+			v: " ",
+		});
+		const doc = `<sheetData>${xml}</sheetData>`;
+		expect(values(await readAll(xmlReader("sheetData/row"), doc))).toEqual([
+			{ "@r": "1", t: { "@xml:space": "preserve" }, v: " " },
+		]);
+		expect(values(await readAll(xmlReader("sheetData/row", true), doc))).toEqual([
+			{ "@r": "1", t: { "@xml:space": "preserve", "#text": " " }, v: " " },
+		]);
+	});
 });
