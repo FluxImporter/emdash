@@ -34,6 +34,12 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		routes,
 		admin: {
 			settingsSchema: {
+				credentials: {
+					type: "secret",
+					label: "URL source credentials",
+					description:
+						"Managed through the credentials routes (one encrypted JSON object). Saving other text here removes every credential.",
+				},
 				retentionDays: {
 					type: "number",
 					label: "Keep import logs for (days)",

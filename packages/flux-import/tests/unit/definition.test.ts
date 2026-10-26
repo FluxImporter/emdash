@@ -1,3 +1,4 @@
+import { z } from "astro/zod";
 import type { RouteContext } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
@@ -10,6 +11,9 @@ import { ServiceError } from "../../src/plugin/service.js";
 const ROUTES = [
 	"sources/sample",
 	"sources/paste",
+	"credentials/set",
+	"credentials/delete",
+	"credentials/list",
 	"jobs/create",
 	"jobs/next",
 	"jobs/get",
@@ -55,6 +59,7 @@ describe("createPlugin", () => {
 			default: 30,
 			min: 0,
 		});
+		expect(plugin.admin.settingsSchema?.credentials).toMatchObject({ type: "secret" });
 		expect(plugin.hooks["plugin:activate"]).toBeDefined();
 		expect(plugin.hooks.cron?.timeout).toBe(60_000);
 		expect(plugin.capabilities).toEqual([
@@ -95,6 +100,51 @@ describe("createPlugin", () => {
 				true,
 			);
 		}
+	});
+
+	it("validates credential input", () => {
+		const set = plugin.routes["credentials/set"]!.input!;
+		const ok = { name: "supplier-1", header: "Authorization", value: "Bearer abc" };
+		expect(set.safeParse(ok).success).toBe(true);
+		expect(set.safeParse({ ...ok, header: "X-Api-Key" }).success).toBe(true);
+		for (const name of ["", "Supplier", "a_b", "a".repeat(65)]) {
+			expect(set.safeParse({ ...ok, name }).success, name).toBe(false);
+		}
+		for (const header of [
+			"Host",
+			"cookie",
+			"Content-Length",
+			"Transfer-Encoding",
+			"Connection",
+			"Keep-Alive",
+			"Upgrade",
+			"TE",
+			"Proxy-Authorization",
+			"If-None-Match",
+			"Bad Header",
+			"X:Y",
+			"",
+		]) {
+			expect(set.safeParse({ ...ok, header }).success, header).toBe(false);
+		}
+		for (const value of ["", "a\r\nX-Injected: 1", "line\nbreak", "a".repeat(4097), "tab\u0000"]) {
+			expect(set.safeParse({ ...ok, value }).success, JSON.stringify(value)).toBe(false);
+		}
+		expect(set.safeParse({ ...ok, value: "a".repeat(4096) }).success).toBe(true);
+	});
+
+	it("never echoes a credential value in a validation error", () => {
+		const set = plugin.routes["credentials/set"]!.input!;
+		const result = set.safeParse({
+			name: "supplier",
+			header: "Authorization",
+			value: "Bearer top-secret\n",
+		});
+		expect(result.success).toBe(false);
+		// EmDash answers an invalid body with z.formatError(error) (emdash src/plugins/routes.ts:247-257).
+		const body = JSON.stringify(z.formatError(result.error!));
+		expect(body).toContain("printable ASCII");
+		expect(body).not.toContain("top-secret");
 	});
 
 	it("accepts and rejects the same source blocks as the template schema", () => {

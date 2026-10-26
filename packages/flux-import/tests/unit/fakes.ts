@@ -10,6 +10,7 @@ import {
 	type WriteResult,
 } from "../../src/engine/ports.js";
 import type { EngineDeps, Job, LinkRow, RecordRow } from "../../src/engine/types.js";
+import type { CredentialSettings } from "../../src/plugin/credentials.js";
 import { dropBytes } from "../../src/sources/csv.js";
 import { streamOf } from "./helpers.js";
 
@@ -302,5 +303,35 @@ export class FakeStorage implements UploadStorage {
 			return { key, size: file.bytes.length, lastModified: file.lastModified };
 		});
 		return start + limit < keys.length ? { files, nextCursor: String(start + limit) } : { files };
+	}
+}
+
+/**
+ * `ctx.settings` for the credential functions: versioned values with compare-and-set, like
+ * EmDash's options table. EmDash encrypts `secret` fields inside `set`/`compareAndSet`; this fake
+ * stores what it is given.
+ */
+export class MemorySettings implements CredentialSettings {
+	readonly values = new Map<string, { value: unknown; revision: number }>();
+	private rev = 0;
+	/** Called before each compareAndSet; use it to simulate a concurrent writer or a failure. */
+	beforeWrite: () => void = () => {};
+
+	async getVersioned<T>(key: string) {
+		const row = this.values.get(key);
+		return row ? { value: structuredClone(row.value) as T, revision: String(row.revision) } : null;
+	}
+
+	async compareAndSet(key: string, expected: string | null, value: unknown) {
+		this.beforeWrite();
+		const row = this.values.get(key);
+		if ((row ? String(row.revision) : null) !== expected) return { applied: false as const };
+		this.values.set(key, { value: structuredClone(value), revision: ++this.rev });
+		return { applied: true as const, revision: String(this.rev) };
+	}
+
+	/** Writes a value directly, as the admin settings page would. */
+	put(key: string, value: unknown) {
+		this.values.set(key, { value, revision: ++this.rev });
 	}
 }

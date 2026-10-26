@@ -10,6 +10,15 @@ import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads
 import { JobError } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { SOURCE_FORMATS } from "../sources/reader.js";
+import {
+	CREDENTIAL_NAME,
+	deleteCredential,
+	FORBIDDEN_HEADERS,
+	HEADER_NAME,
+	HEADER_VALUE,
+	listCredentials,
+	setCredential,
+} from "./credentials.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
 import {
@@ -52,6 +61,16 @@ const RECORD_STATUSES = [
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
+const credentialName = z
+	.string()
+	.regex(CREDENTIAL_NAME, "Credential names are 1-64 characters from a-z, 0-9 and -");
+const headerName = z
+	.string()
+	.regex(HEADER_NAME, "The header must be a valid HTTP header name")
+	.refine((h) => !FORBIDDEN_HEADERS.has(h.toLowerCase()), "This header cannot hold a credential");
+const headerValue = z
+	.string()
+	.regex(HEADER_VALUE, "Header values are 1-4,096 printable ASCII characters, without CR or LF");
 const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
@@ -195,6 +214,25 @@ export const routes: Record<string, PluginRoute> = {
 		),
 		request: { body: "json", maxBytes: PASTE_MAX_BYTES },
 	},
+
+	"credentials/set": route(
+		z.object({ name: credentialName, header: headerName, value: headerValue }),
+		(ctx) =>
+			withServices(ctx, () =>
+				setCredential(ctx.settings, ctx.input.name, {
+					header: ctx.input.header,
+					value: ctx.input.value,
+				}),
+			),
+	),
+
+	"credentials/delete": route(z.object({ name: credentialName }), (ctx) =>
+		withServices(ctx, () => deleteCredential(ctx.settings, ctx.input.name)),
+	),
+
+	"credentials/list": route(z.object({}), (ctx) =>
+		withServices(ctx, () => listCredentials(ctx.settings)),
+	),
 
 	"jobs/create": route(createInput, async (ctx) => {
 		await ensureRetentionScheduled(ctx);
