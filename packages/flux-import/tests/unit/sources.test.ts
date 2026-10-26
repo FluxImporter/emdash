@@ -389,6 +389,110 @@ describe("fetchSource", () => {
 			lastFetch: { sha256: sha(BODY) },
 		});
 	});
+
+	it("keeps the lastFetch of a fetch that ran during an update, and drops the replaced file", async () => {
+		const { deps, routes, files } = setup();
+		let body = BODY;
+		routes.set(FEED, () => new Response(body));
+		await createSource(deps, { name: "A", url: FEED });
+		const first = await fetchSource(deps, "S1");
+		body = "sku,Name\nB,Two\n";
+		routes.set(FEED, () => {
+			void updateSource(deps, { id: "S1", name: "Renamed" });
+			return new Response(body);
+		});
+		const second = await fetchSource(deps, "S1");
+		const row = await getSource(deps, "S1");
+		expect(row.name).toBe("Renamed");
+		expect(row.lastFetch).toMatchObject({ uploadId: second.uploadId, sha256: sha(body) });
+		expect(files()).toEqual([uploadKey(second.uploadId)]);
+		expect(first.uploadId).not.toBe(second.uploadId);
+	});
+
+	it("drops the fetched file with CONFLICT when the URL changes during the fetch", async () => {
+		const { deps, routes, files } = setup();
+		await createSource(deps, { name: "A", url: FEED });
+		routes.set(FEED, () => {
+			void updateSource(deps, { id: "S1", url: "https://mirror.example.com/p.csv" });
+			return new Response(BODY);
+		});
+		await expect(fetchSource(deps, "S1")).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+		expect(await getSource(deps, "S1")).toMatchObject({ url: "https://mirror.example.com/p.csv" });
+		expect(await getSource(deps, "S1")).not.toHaveProperty("lastFetch");
+		expect(files()).toEqual([]);
+	});
+
+	it("resolves two concurrent fetches by retrying the save, leaving one file", async () => {
+		const { deps, routes, files } = setup();
+		let n = 0;
+		routes.set(FEED, () => new Response(`sku,Name\nA,${++n}\n`));
+		await createSource(deps, { name: "A", url: FEED });
+		const [a, b] = await Promise.all([fetchSource(deps, "S1"), fetchSource(deps, "S1")]);
+		expect(a.uploadId).not.toBe(b.uploadId);
+		const row = await getSource(deps, "S1");
+		expect(files()).toEqual([uploadKey(row.lastFetch?.uploadId ?? "")]);
+		expect([a.uploadId, b.uploadId]).toContain(row.lastFetch?.uploadId);
+	});
+});
+
+describe("update and delete races", () => {
+	it("keeps a fetch result saved between the read and the write of an update", async () => {
+		const { deps, routes } = setup();
+		routes.set(FEED, () => new Response(BODY));
+		await createSource(deps, { name: "A", url: FEED });
+		const sources = deps.sources;
+		let injected = false;
+		const original = sources.compareAndSet.bind(sources);
+		sources.compareAndSet = async (id, expected, data) => {
+			if (!injected) {
+				injected = true;
+				await fetchSource(deps, "S1");
+			}
+			return original(id, expected, data);
+		};
+		const updated = await updateSource(deps, { id: "S1", name: "B" });
+		expect(updated.lastFetch).toBeDefined();
+		expect(await getSource(deps, "S1")).toMatchObject({ name: "B", lastFetch: updated.lastFetch });
+	});
+
+	it("does not resurrect a source deleted during an update", async () => {
+		const { deps } = setup();
+		await createSource(deps, { name: "A", url: FEED });
+		const sources = deps.sources;
+		const original = sources.compareAndSet.bind(sources);
+		sources.compareAndSet = async (id, expected, data) => {
+			await sources.delete(id);
+			return original(id, expected, data);
+		};
+		await expect(updateSource(deps, { id: "S1", name: "B" })).rejects.toMatchObject({
+			code: "NOT_FOUND",
+		});
+		expect(await deps.sources.get("S1")).toBeNull();
+	});
+
+	it("clears lastFetch, lastError and lastImport when only the credential is set to null", async () => {
+		const { deps, routes } = setup();
+		routes.set(FEED, () => new Response(BODY));
+		await setCredential(deps.settings, "supplier", { header: "X-Key", value: "k" });
+		await createSource(deps, { name: "A", url: FEED, credential: "supplier" });
+		await jobFromSource(deps, "S1", { force: false, dryRun: false }, async (uploadId) =>
+			jobUsing(uploadId, "created"),
+		);
+		const row = await getSource(deps, "S1");
+		await deps.sources.put("S1", {
+			...row,
+			lastError: { at: "2026-10-26T09:00:00.000Z", code: "HTTP_ERROR", message: "x" },
+		});
+		expect(await getSource(deps, "S1")).toMatchObject({
+			lastFetch: expect.anything(),
+			lastImport: expect.anything(),
+			lastError: expect.anything(),
+		});
+		const cleared = await updateSource(deps, { id: "S1", credential: null });
+		for (const key of ["credential", "lastFetch", "lastError", "lastImport"]) {
+			expect(cleared).not.toHaveProperty(key);
+		}
+	});
 });
 
 describe("jobFromSource", () => {
@@ -476,6 +580,46 @@ describe("jobFromSource", () => {
 		const moved = await updateSource(deps, { id: "S1", url: "https://mirror.example.com/p.csv" });
 		expect(moved).not.toHaveProperty("lastImport");
 		expect(await jobFromSource(deps, "S1", REAL, create)).toMatchObject({ id: "J2" });
+	});
+
+	it("declines to record an import over a deleted or reconfigured source", async () => {
+		const { deps, routes } = setup();
+		routes.set(FEED, () => new Response(BODY));
+		routes.set("https://mirror.example.com/p.csv", () => new Response(BODY));
+		await createSource(deps, { name: "A", url: FEED });
+		await createSource(deps, { name: "B", url: FEED });
+
+		await jobFromSource(deps, "S1", REAL, async (uploadId) => {
+			await updateSource(deps, { id: "S1", url: "https://mirror.example.com/p.csv" });
+			return jobUsing(uploadId, "created");
+		});
+		expect(await getSource(deps, "S1")).not.toHaveProperty("lastImport");
+
+		await jobFromSource(deps, "S2", REAL, async (uploadId) => {
+			await deps.sources.delete("S2");
+			return jobUsing(uploadId, "created");
+		});
+		expect(await deps.sources.get("S2")).toBeNull();
+	});
+
+	it("still returns the job when recording the import fails", async () => {
+		const { deps, routes } = setup();
+		routes.set(FEED, () => new Response(BODY));
+		await createSource(deps, { name: "A", url: FEED });
+		const sources = deps.sources;
+		const original = sources.getVersioned.bind(sources);
+		let broken = false;
+		sources.getVersioned = async (id) => {
+			if (broken) throw new Error("storage down");
+			return original(id);
+		};
+		const job = await jobFromSource(deps, "S1", REAL, async (uploadId) => {
+			broken = true;
+			return jobUsing(uploadId, "created");
+		});
+		expect(job).toMatchObject({ status: "created" });
+		broken = false;
+		expect(await getSource(deps, "S1")).not.toHaveProperty("lastImport");
 	});
 });
 

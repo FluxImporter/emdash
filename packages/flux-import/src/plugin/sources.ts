@@ -172,30 +172,42 @@ export async function createSource(deps: SourceDeps, input: CreateSourceInput): 
  * fetch is full and its content counts as new.
  */
 export async function updateSource(deps: SourceDeps, input: UpdateSourceInput): Promise<SourceRow> {
-	const current = await getSource(deps, input.id);
-	const { credential: _credential, lastFetch, lastError, lastImport, ...base } = current;
-	if (input.name !== undefined && input.name !== current.name) {
-		await assertNameFree(deps, input.name, current.id);
+	const first = await deps.sources.getVersioned(input.id);
+	if (!first) throw new ServiceError("NOT_FOUND", `Source ${input.id} not found`, 404);
+	if (input.name !== undefined && input.name !== first.value.name) {
+		await assertNameFree(deps, input.name, input.id);
 	}
 	const url =
-		input.url === undefined ? current.url : checkedUrl(input.url, deps.net.allowPrivateNetwork);
-	if (typeof input.credential === "string" && input.credential !== current.credential) {
+		input.url === undefined ? undefined : checkedUrl(input.url, deps.net.allowPrivateNetwork);
+	if (typeof input.credential === "string" && input.credential !== first.value.credential) {
 		await assertCredential(deps, input.credential);
 	}
-	const credential = input.credential === undefined ? current.credential : input.credential;
-	const reconfigured = url !== current.url || (credential ?? undefined) !== current.credential;
-	const next: SourceRow = {
-		...base,
-		name: input.name ?? current.name,
-		url,
-		...(credential === null || credential === undefined ? {} : { credential }),
-		...(reconfigured || !lastFetch ? {} : { lastFetch }),
-		...(reconfigured || !lastError ? {} : { lastError }),
-		...(reconfigured || !lastImport ? {} : { lastImport }),
-		updatedAt: iso(deps.now()),
-	};
-	await deps.sources.put(next.id, next);
-	return next;
+	// Each attempt rebuilds the row from the newest one, so a fetch or rename that landed meanwhile
+	// is kept, and a row deleted meanwhile stays deleted.
+	let current: Versioned = first;
+	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+		const row = current.value;
+		const { credential: _credential, lastFetch, lastError, lastImport, ...base } = row;
+		const nextUrl = url ?? row.url;
+		const credential = input.credential === undefined ? row.credential : input.credential;
+		const reconfigured = nextUrl !== row.url || (credential ?? undefined) !== row.credential;
+		const next: SourceRow = {
+			...base,
+			name: input.name ?? row.name,
+			url: nextUrl,
+			...(credential === null || credential === undefined ? {} : { credential }),
+			...(reconfigured || !lastFetch ? {} : { lastFetch }),
+			...(reconfigured || !lastError ? {} : { lastError }),
+			...(reconfigured || !lastImport ? {} : { lastImport }),
+			updatedAt: iso(deps.now()),
+		};
+		const result = await deps.sources.compareAndSet(row.id, current.revision, next);
+		if (result.applied) return next;
+		const again = await deps.sources.getVersioned(row.id);
+		if (!again) throw new ServiceError("NOT_FOUND", `Source ${input.id} not found`, 404);
+		current = again;
+	}
+	throw new ServiceError("CONFLICT", "The source kept changing; try again", 409);
 }
 
 /** Deletes the staged file unless a job may still read it. */
@@ -204,11 +216,18 @@ async function deleteUploadIfUnused(deps: SourceDeps, uploadId: string): Promise
 	await new EmDashUploads(deps.storage).delete(uploadId);
 }
 
-/** Deletes the source and its latest staged file, unless a job still reads that file. */
+/**
+ * Deletes the source and its latest staged file, unless a job still reads that file. The file is
+ * the one named by the newest row read just before the delete; a fetch that lands in between
+ * leaves a file no source names, which retention purges.
+ */
 export async function deleteSource(deps: SourceDeps, id: string): Promise<{ deleted: true }> {
-	const row = await getSource(deps, id);
-	await deps.sources.delete(id);
-	if (row.lastFetch) await deleteUploadIfUnused(deps, row.lastFetch.uploadId);
+	const read = await deps.sources.getVersioned(id);
+	if (!read) throw new ServiceError("NOT_FOUND", `Source ${id} not found`, 404);
+	if (!(await deps.sources.delete(id))) {
+		throw new ServiceError("NOT_FOUND", `Source ${id} not found`, 404);
+	}
+	if (read.value.lastFetch) await deleteUploadIfUnused(deps, read.value.lastFetch.uploadId);
 	return { deleted: true };
 }
 
@@ -378,12 +397,14 @@ export async function jobFromSource(
 	}
 	const job = await create(fetched.uploadId);
 	if (!options.dryRun) {
+		// Best effort: the job exists, so a storage error here must not fail the request (a retry
+		// would create a second job).
 		await recordImport(deps, source, {
 			sha256: fetched.sha256,
 			uploadId: fetched.uploadId,
 			jobId: job.id,
 			at: iso(deps.now()),
-		});
+		}).catch(() => {});
 	}
 	return job;
 }
