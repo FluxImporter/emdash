@@ -16,7 +16,7 @@ import {
 	type SourceRow,
 	updateSource,
 } from "../../src/plugin/sources.js";
-import { FakeStorage, MemoryKv, MemorySettings } from "./fakes.js";
+import { FakeStorage, MemoryKv, MemorySettings, WrappingStorage } from "./fakes.js";
 
 const FEED = "https://feeds.example.com/products.csv";
 const BODY = "sku,Name\nA,One\n";
@@ -282,6 +282,51 @@ describe("fetchSource", () => {
 		routes.set(FEED, () => new Response(BODY));
 		await fetchSource(deps, "S1");
 		expect(await getSource(deps, "S1")).not.toHaveProperty("lastError");
+	});
+
+	it("saves a download broken mid-body as FETCH_FAILED when storage wraps the stream error", async () => {
+		const { deps, routes } = setup();
+		deps.storage = new WrappingStorage();
+		let sent = false;
+		routes.set(
+			FEED,
+			() =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (sent) controller.error(new TypeError("terminated"));
+							else controller.enqueue(new TextEncoder().encode("sku,Name\n"));
+							sent = true;
+						},
+					}),
+				),
+		);
+		await createSource(deps, { name: "A", url: FEED });
+		await expect(fetchSource(deps, "S1")).rejects.toEqual(
+			new ServiceError("FETCH_FAILED", "The download failed: terminated", 502),
+		);
+		expect((await getSource(deps, "S1")).lastError).toMatchObject({
+			code: "FETCH_FAILED",
+			message: "The download failed: terminated",
+		});
+		expect((deps.storage as WrappingStorage).files.size).toBe(0);
+	});
+
+	it("fails with CREDENTIAL_MISSING, never quoting the value, when the stored credential is invalid", async () => {
+		const { deps, routes, sent } = setup();
+		routes.set(FEED, () => new Response(BODY));
+		await setCredential(deps.settings, "supplier", { header: "X-Key", value: "k" });
+		await createSource(deps, { name: "A", url: FEED, credential: "supplier" });
+		(deps.settings as MemorySettings).put(
+			"credentials",
+			JSON.stringify({ supplier: { header: "X-Key", value: "s3cret\r\nX-Evil: 1" } }),
+		);
+		const error = await fetchSource(deps, "S1").catch((e: unknown) => e);
+		expect(error).toEqual(
+			new ServiceError("CREDENTIAL_MISSING", 'Credential "supplier" does not exist', 409),
+		);
+		expect(JSON.stringify(await getSource(deps, "S1"))).not.toContain("s3cret");
+		expect(sent).toEqual([]);
 	});
 
 	it("fails with CREDENTIAL_MISSING once the named credential is deleted", async () => {

@@ -79,12 +79,15 @@ function bodyLength(headers: Headers): number | undefined {
 
 /**
  * Passes `body` through until `signal` aborts. Any failure while reading becomes a
- * `UrlSourceError` (`FETCH_FAILED`, or the timeout that aborted the signal), so the caller can
- * tell a broken download from a storage error.
+ * `UrlSourceError` (`FETCH_FAILED`, or the timeout that aborted the signal), recorded in
+ * `failure.error` because storage adapters wrap stream errors in their own
+ * (`EmDashStorageError` "UPLOAD_FAILED" from LocalStorage and R2), so the caller can still tell
+ * a broken download from a storage error.
  */
 function guardBody(
 	body: ReadableStream<Uint8Array>,
 	signal: AbortSignal,
+	failure: { error?: UrlSourceError },
 ): ReadableStream<Uint8Array> {
 	const reader = body.getReader();
 	const aborted = whenAborted(signal);
@@ -97,7 +100,8 @@ function guardBody(
 					else controller.enqueue(value);
 				} catch (e) {
 					reader.cancel().catch(() => {});
-					controller.error(fetchError(e, signal, "The download failed"));
+					failure.error = fetchError(e, signal, "The download failed");
+					controller.error(failure.error);
 				}
 			},
 			cancel(reason) {
@@ -114,6 +118,8 @@ const tooLarge = (limit: number) =>
 /**
  * Workers, unknown length: reads the body into memory (at most `bufferBytes`), then stages it
  * with its length. Larger bodies fail with `LENGTH_REQUIRED`, or `TOO_LARGE` past `maxBytes`.
+ * Chunks are handed to storage as they are, and dropped as storage reads them, so the body is
+ * held once.
  */
 async function stageBuffered(
 	storage: UploadStorage,
@@ -121,7 +127,7 @@ async function stageBuffered(
 	limits: FetchLimits,
 ): Promise<StagedUpload> {
 	const reader = body.getReader();
-	const chunks: Uint8Array<ArrayBuffer>[] = [];
+	const chunks: Uint8Array[] = [];
 	let total = 0;
 	for (;;) {
 		const { done, value } = await reader.read();
@@ -135,9 +141,22 @@ async function stageBuffered(
 				`The response has no usable Content-Length and is larger than ${limits.bufferBytes} bytes, the most Workers can buffer`,
 			);
 		}
-		chunks.push(new Uint8Array(value));
+		chunks.push(value);
 	}
-	return stageUpload(storage, new Blob(chunks).stream(), limits.maxBytes, total);
+	const buffered = new ReadableStream<Uint8Array>(
+		{
+			pull(controller) {
+				const chunk = chunks.shift();
+				if (chunk) controller.enqueue(chunk);
+				else controller.close();
+			},
+			cancel() {
+				chunks.length = 0;
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+	return stageUpload(storage, buffered, limits.maxBytes, total);
 }
 
 function validators(
@@ -172,7 +191,15 @@ export async function downloadSource(
 	const headers = new Headers();
 	if (previous?.etag !== undefined) headers.set("if-none-match", previous.etag);
 	if (previous?.lastModified !== undefined) headers.set("if-modified-since", previous.lastModified);
-	if (input.credential) headers.set(input.credential.header, input.credential.value);
+	const conditional = headers.has("if-none-match") || headers.has("if-modified-since");
+	if (input.credential) {
+		try {
+			headers.set(input.credential.header, input.credential.value);
+		} catch {
+			// The runtime's message may quote the value.
+			throw new UrlSourceError("FETCH_FAILED", "The credential header could not be sent");
+		}
+	}
 
 	const total = new AbortController();
 	const untilHeaders = new AbortController();
@@ -206,7 +233,7 @@ export async function downloadSource(
 		clearTimeout(headersTimer);
 		const at = new Date(deps.now()).toISOString();
 
-		if (response.status === 304 && previous) {
+		if (response.status === 304 && previous && conditional) {
 			await response.body?.cancel().catch(() => {});
 			return {
 				changed: false,
@@ -223,7 +250,8 @@ export async function downloadSource(
 			await response.body?.cancel().catch(() => {});
 			throw tooLarge(limits.maxBytes);
 		}
-		const body = guardBody(response.body ?? new Blob([]).stream(), total.signal);
+		const failure: { error?: UrlSourceError } = {};
+		const body = guardBody(response.body ?? new Blob([]).stream(), total.signal, failure);
 		let staged: StagedUpload;
 		try {
 			staged =
@@ -231,6 +259,8 @@ export async function downloadSource(
 					? await stageBuffered(deps.storage, body, limits)
 					: await stageUpload(deps.storage, body, limits.maxBytes, length);
 		} catch (e) {
+			if (failure.error) throw failure.error;
+			if (e instanceof Error && e.cause instanceof UrlSourceError) throw e.cause;
 			if (e instanceof UploadTooLargeError) throw tooLarge(limits.maxBytes);
 			throw e;
 		}

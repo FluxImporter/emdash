@@ -9,7 +9,7 @@ import {
 	type LastFetch,
 } from "../../src/sources/fetcher.js";
 import { UrlSourceError } from "../../src/sources/net.js";
-import { FakeStorage } from "./fakes.js";
+import { FakeStorage, WrappingStorage } from "./fakes.js";
 import { streamOf } from "./helpers.js";
 
 const URL_A = "https://feeds.example.com/products.csv";
@@ -19,8 +19,11 @@ const NOW = Date.parse("2026-10-26T09:00:00Z");
 
 type Handler = (request: { headers: Headers; signal: AbortSignal }) => Response | Promise<Response>;
 
-function setup(handler: Handler, opts: { workers?: boolean; limits?: Partial<FetchLimits> } = {}) {
-	const storage = new FakeStorage();
+function setup(
+	handler: Handler,
+	opts: { workers?: boolean; limits?: Partial<FetchLimits>; storage?: FakeStorage } = {},
+) {
+	const storage = opts.storage ?? new FakeStorage();
 	const requests: Headers[] = [];
 	const deps: FetcherDeps = {
 		storage,
@@ -103,6 +106,18 @@ describe("downloadSource", () => {
 		expect(Object.fromEntries(requests[0]!.entries())).toEqual({ authorization: "Bearer t0k" });
 	});
 
+	it("fails with FETCH_FAILED, without the value, when the credential header cannot be set", async () => {
+		const { deps, requests } = setup(() => csv(BODY));
+		const error = await failure(
+			run(deps, { credential: { header: "Authorization", value: "Bearer s3cret\nX: 1" } }),
+		);
+		expect(error).toEqual(
+			new UrlSourceError("FETCH_FAILED", "The credential header could not be sent"),
+		);
+		expect(String(error.cause ?? "")).not.toContain("s3cret");
+		expect(requests).toEqual([]);
+	});
+
 	it("sends the validators of the last fetch and reports a 304 as unchanged", async () => {
 		const { deps, requests, staged } = setup(() => new Response(null, { status: 304 }));
 		const previous = await previousFetch(deps, BODY, {
@@ -159,6 +174,15 @@ describe("downloadSource", () => {
 		expect(Object.fromEntries(requests[0]!.entries())).toEqual({});
 		expect(result.changed).toBe(true);
 		expect(result.fetch.uploadId).not.toBe(previous.uploadId);
+	});
+
+	it("treats a 304 as an HTTP error when the previous fetch had no validators to send", async () => {
+		const { deps, requests } = setup(() => new Response(null, { status: 304 }));
+		const previous = await previousFetch(deps, BODY);
+		expect(await failure(run(deps, { previous }))).toEqual(
+			new UrlSourceError("HTTP_ERROR", "The server answered HTTP 304"),
+		);
+		expect(Object.fromEntries(requests[0]!.entries())).toEqual({});
 	});
 
 	it("treats a 304 to an unconditional request as an HTTP error", async () => {
@@ -261,6 +285,47 @@ describe("downloadSource", () => {
 		expect(await failure(run(deps))).toEqual(
 			new UrlSourceError("FETCH_FAILED", "The download failed: terminated"),
 		);
+		expect(staged()).toEqual([]);
+	});
+});
+
+describe("downloadSource with a storage adapter that wraps stream errors", () => {
+	it("reports a download that times out mid-body as FETCH_FAILED and deletes the partial upload", async () => {
+		const stalled = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("sku,Name\n"));
+			},
+			pull: () => new Promise(() => {}),
+		});
+		const { deps, staged } = setup(() => new Response(stalled), {
+			storage: new WrappingStorage(),
+			limits: { headersMs: 20, totalMs: 60 },
+		});
+		expect(await failure(run(deps))).toEqual(
+			new UrlSourceError("FETCH_FAILED", "The download did not finish within 0.06 s"),
+		);
+		expect(staged()).toEqual([]);
+	});
+
+	it("reports a connection reset mid-body as FETCH_FAILED and deletes the partial upload", async () => {
+		let sent = false;
+		const broken = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent) controller.error(new TypeError("terminated"));
+				else controller.enqueue(new TextEncoder().encode("sku,Name\n"));
+				sent = true;
+			},
+		});
+		const { deps, staged } = setup(() => new Response(broken), { storage: new WrappingStorage() });
+		expect(await failure(run(deps))).toEqual(
+			new UrlSourceError("FETCH_FAILED", "The download failed: terminated"),
+		);
+		expect(staged()).toEqual([]);
+	});
+
+	it("still reports a body over the limit as TOO_LARGE", async () => {
+		const { deps, staged } = setup(() => csv("x".repeat(1001)), { storage: new WrappingStorage() });
+		expect((await failure(run(deps))).code).toBe("TOO_LARGE");
 		expect(staged()).toEqual([]);
 	});
 });

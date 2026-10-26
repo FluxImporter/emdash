@@ -47,6 +47,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * The rules `credentials/set` applies. Stored entries are checked again because the admin
+ * settings page can write any text (Fact S3), and a runtime header error could quote the value.
+ */
+function isValid(
+	name: string,
+	entry: Record<string, unknown>,
+): entry is Record<string, unknown> & Credential {
+	const { header, value } = entry;
+	return (
+		CREDENTIAL_NAME.test(name) &&
+		typeof header === "string" &&
+		HEADER_NAME.test(header) &&
+		!FORBIDDEN_HEADERS.has(header.toLowerCase()) &&
+		typeof value === "string" &&
+		HEADER_VALUE.test(value)
+	);
+}
+
+/**
  * Reads the stored JSON. A value that is not that JSON (the admin settings page can overwrite
  * the field with any text) reads as no credentials, so the next `credentials/set` replaces it.
  */
@@ -61,7 +80,7 @@ function parse(value: unknown): Map<string, Credential> {
 	}
 	if (!isRecord(data)) return out;
 	for (const [name, entry] of Object.entries(data)) {
-		if (isRecord(entry) && typeof entry.header === "string" && typeof entry.value === "string") {
+		if (isRecord(entry) && isValid(name, entry)) {
 			out.set(name, { header: entry.header, value: entry.value });
 		}
 	}

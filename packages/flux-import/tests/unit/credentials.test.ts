@@ -68,6 +68,28 @@ describe("credentials", () => {
 		expect(stored(settings)).toEqual({ supplier: BEARER });
 	});
 
+	it("reads a stored entry that breaks the header rules as missing", async () => {
+		const settings = new MemorySettings();
+		settings.put(
+			CREDENTIALS_SETTING,
+			JSON.stringify({
+				supplier: BEARER,
+				"bad-value": { header: "Authorization", value: "Bearer s3cret\r\nX-Evil: 1" },
+				"bad-header": { header: "Bad Header", value: "s3cret" },
+				"forbidden-header": { header: "Cookie", value: "s3cret" },
+				"empty-value": { header: "X-Api-Key", value: "" },
+				"Bad Name": { header: "X-Api-Key", value: "s3cret" },
+			}),
+		);
+		expect(await listCredentials(settings)).toEqual([
+			{ name: "supplier", header: "Authorization" },
+		]);
+		for (const name of ["bad-value", "bad-header", "forbidden-header", "empty-value", "Bad Name"]) {
+			expect(await getCredential(settings, name)).toBeNull();
+		}
+		expect(await getCredential(settings, "supplier")).toEqual(BEARER);
+	});
+
 	it("retries when another writer changes the setting between read and write", async () => {
 		const settings = new MemorySettings();
 		await setCredential(settings, "first", BEARER);

@@ -1,3 +1,4 @@
+import { EmDashStorageError } from "emdash";
 import type { UploadStorage } from "../../src/emdash/uploads.js";
 import {
 	type ContentPort,
@@ -307,6 +308,17 @@ export class FakeStorage implements UploadStorage {
 			return { key, size: file.bytes.length, lastModified: file.lastModified };
 		});
 		return start + limit < keys.length ? { files, nextCursor: String(start + limit) } : { files };
+	}
+}
+
+/** Wraps stream errors the way EmDash's LocalStorage and R2 adapters do. */
+export class WrappingStorage extends FakeStorage {
+	override async upload(options: Parameters<FakeStorage["upload"]>[0]) {
+		try {
+			return await super.upload(options);
+		} catch (error) {
+			throw new EmDashStorageError(`Failed to upload file: ${options.key}`, "UPLOAD_FAILED", error);
+		}
 	}
 }
 
