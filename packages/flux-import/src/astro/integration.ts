@@ -4,6 +4,11 @@ import { MAX_SOURCE_BYTES_DEFAULT } from "./config.js";
 export interface FluxImportRoutesOptions {
 	/** Largest accepted upload in bytes. Default 50 MiB. */
 	maxSourceBytes?: number;
+	/**
+	 * Lets URL sources reach private and loopback addresses, for development and tests. Honoured
+	 * only when `import.meta.env.DEV` is true; production builds ignore it.
+	 */
+	allowPrivateNetwork?: boolean;
 }
 
 export const UPLOAD_ROUTE = "/_emdash/api/flux-import/uploads";
@@ -23,7 +28,14 @@ export function fluxImportRoutes(options: FluxImportRoutesOptions = {}): AstroIn
 		hooks: {
 			"astro:config:setup": ({ injectRoute, updateConfig }) => {
 				updateConfig({
-					vite: { define: { __FLUX_IMPORT_MAX_SOURCE_BYTES__: JSON.stringify(max) } },
+					vite: {
+						define: {
+							__FLUX_IMPORT_MAX_SOURCE_BYTES__: JSON.stringify(max),
+							__FLUX_IMPORT_ALLOW_PRIVATE_NETWORK__: JSON.stringify(
+								options.allowPrivateNetwork === true,
+							),
+						},
+					},
 				});
 				injectRoute({
 					pattern: UPLOAD_ROUTE,
