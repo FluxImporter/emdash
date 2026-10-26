@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +10,13 @@ export const ENV_DTS = join(SITE_DIR, "emdash-env.d.ts");
 
 /** Small enough that the size-limit test uploads only a little more than 1 MB. */
 export const TEST_MAX_SOURCE_BYTES = 1_000_000;
+
+/**
+ * A throwaway `EMDASH_ENCRYPTION_KEY` for this test process, so credentials (a `secret` plugin
+ * setting) can be stored without the site's own `.env`. Set in the environment, it wins over
+ * `.env` (`emdash` src/astro/integration/dev-env.ts never overwrites a set variable).
+ */
+export const TEST_ENCRYPTION_KEY = `emdash_enc_v1_${randomBytes(32).toString("base64url")}`;
 
 export interface AstroProcess {
 	baseUrl: string;
@@ -117,12 +125,13 @@ export async function startAstroDev(
 
 /**
  * Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted), with
- * an upload limit of `maxSourceBytes`.
+ * an upload limit of `maxSourceBytes`. `allowPrivateNetwork` lets URL sources reach this machine.
  */
 export async function startServer(
 	port: number,
 	dir?: string,
 	maxSourceBytes = TEST_MAX_SOURCE_BYTES,
+	allowPrivateNetwork = false,
 ): Promise<DevServer> {
 	const root = dir ?? (await mkdtemp(join(tmpdir(), "flux-import-it-")));
 	const dbPath = join(root, "test.db");
@@ -133,6 +142,8 @@ export async function startServer(
 			FLUX_DEV_DB: dbPath,
 			FLUX_DEV_UPLOADS: uploadsDir,
 			FLUX_DEV_MAX_SOURCE_BYTES: String(maxSourceBytes),
+			FLUX_DEV_ALLOW_PRIVATE_NETWORK: allowPrivateNetwork ? "1" : "0",
+			EMDASH_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
 		});
 	} catch (e) {
 		if (!dir) await rm(root, { recursive: true, force: true });
