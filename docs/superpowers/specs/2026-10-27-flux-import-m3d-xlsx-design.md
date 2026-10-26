@@ -20,7 +20,7 @@ that never fail the job, and no duplicates after a crash.
 | Template | `source: { format: "xlsx", sheet?, headerRow? }`. `sheet` is a sheet name or a 1-based index (default: the first sheet in workbook order). `headerRow` is 1-based (default 1). `records` is not allowed. `filter` works as in M3b. |
 | Field paths | Header names, like CSV columns (`from: "Unit Price"`; expressions use backticks). |
 | File types | `.xlsx` only (Office Open XML spreadsheet). `.xls`, `.xlsb`, `.ods` and macro-enabled `.xlsm` are refused. Pasted XLSX is refused (binary). |
-| Size | XLSX files at most 10 MiB (`maxXlsxBytes`, enforced by the upload route for `.xlsx` and by the URL fetcher for XLSX sources). Converted JSON Lines at most `maxSourceBytes` (50 MiB). |
+| Size | XLSX files at most 10 MiB (enforced by the upload route for `.xlsx`, by `jobs/create { sourceId }` for XLSX templates through the fetch cap, and before every conversion). `sources/fetch` has no template and keeps the general limit. Converted JSON Lines at most `maxSourceBytes` (50 MiB). |
 
 ## Conversion
 
@@ -80,8 +80,9 @@ their value in the top-left cell only.
 - `sources/sample` with `format: "xlsx"` converts only until the sample is full.
 - A conversion problem fails job creation with `invalid_source` and a message (not a zip, not a
   workbook, sheet not found, encrypted, unsupported compression, ZIP64, part over its cap, header
-  row empty or missing). Per-cell problems never fail the job: an unreadable cell becomes `null`
-  and is counted in a warning.
+  row empty or missing, or a structural sheet problem: a cell past column XFD, a row past 1,048,576,
+  rows out of order, or a `<row>` that is not well-formed XML). Cell value problems never fail the
+  job: an unreadable value becomes `null` and is counted in a warning.
 - On Workers, staging needs a known length: the converted JSON Lines are buffered up to 32 MiB (the
   M3c buffered path); larger fails with `TOO_LARGE` and a message saying the sheet is too large to
   convert on Workers.
@@ -96,6 +97,7 @@ their value in the top-left cell only.
 | Rows | 1,048,576 (Excel's maximum) |
 | Columns | 16,384 (Excel's maximum, `XFD`) |
 | Converted JSON Lines | `maxSourceBytes` (50 MiB); 32 MiB on Workers |
+| Sheet scan | bounded by the 100 MiB part cap; a sheet of many empty cells converts slowly but finishes (known limit) |
 | Compression ratio | an entry whose uncompressed size exceeds 200× its compressed size is refused (`invalid_source`) |
 
 ## Routes and template
