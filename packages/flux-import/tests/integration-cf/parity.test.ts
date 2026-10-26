@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, inject, it } from "vitest";
+import type { Job } from "../../src/engine/types.js";
+import type { SourceRow } from "../../src/plugin/sources.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
 import { Client } from "../integration/client.js";
+import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import { CF_SITE_DIR } from "./global-setup.js";
 
@@ -136,6 +139,47 @@ describe("workerd parity (D1, R2)", () => {
 					message: "Expression exceeded 100000 evaluation steps",
 				},
 			]);
+		}
+	});
+
+	it("imports a chunked URL feed through the Workers buffering path into R2", async () => {
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			// No Content-Length: R2 needs a known length, so the fetcher buffers the body first.
+			feeds.feeds.set("/chunked.csv", { body: productsCsv(10), chunked: true });
+			await client.createProducts("cf_url");
+			const source = await client.plugin<SourceRow>("sources/create", {
+				name: "Chunked feed",
+				url: feeds.url("/chunked.csv"),
+			});
+			const create = () =>
+				client.plugin<Job | { skipped: string }>("jobs/create", {
+					sourceId: source.id,
+					template: template("cf_url"),
+					dryRun: false,
+				});
+			const job = await create();
+			if ("skipped" in job) throw new Error("expected a job");
+			expect(await client.runToEnd(job.id)).toMatchObject({
+				status: "completed",
+				counters: { created: 10, failed: 0 },
+			});
+			const stored = await client.plugin<SourceRow>("sources/get", { id: source.id });
+			expect(stored.lastFetch).toMatchObject({
+				status: 200,
+				bytes: Buffer.byteLength(productsCsv(10)),
+				uploadId: job.uploadId,
+			});
+			// Same body again: unchanged by its hash, and the kept R2 object is reused.
+			expect(await create()).toEqual({
+				skipped: "unchanged",
+				sourceId: source.id,
+				uploadId: job.uploadId,
+			});
+			expect(feeds.log("/chunked.csv").map((r) => r.status)).toEqual([200, 200]);
+		} finally {
+			await feeds.stop();
 		}
 	});
 
