@@ -1,5 +1,6 @@
 import type { PluginContext } from "emdash";
 import { emdashErrorCode } from "../emdash/errors.js";
+import type { Credential } from "../sources/fetcher.js";
 import { ServiceError } from "./service.js";
 
 /**
@@ -7,14 +8,6 @@ import { ServiceError } from "./service.js";
  * `type: "secret"` so EmDash stores it encrypted (AES-GCM, `EMDASH_ENCRYPTION_KEY`; Fact S1).
  * Nothing here returns a value to a caller outside the fetcher.
  */
-/**
- * Same shape as the `Credential` that Task 2's `src/sources/fetcher.ts` exports; import it from
- * there and delete this copy once that file exists.
- */
-export interface Credential {
-	header: string;
-	value: string;
-}
 
 export const CREDENTIALS_SETTING = "credentials";
 export const CREDENTIAL_NAME = /^[a-z0-9-]{1,64}$/;

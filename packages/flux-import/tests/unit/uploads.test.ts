@@ -132,6 +132,14 @@ describe("EmDashUploads", () => {
 		await expect(uploads.open(uploadId, 4)).rejects.toThrow("ignored the byte range");
 	});
 
+	it("tells whether a staged file still exists", async () => {
+		const { uploads, uploadId } = await staged("x");
+		expect(await uploads.exists(uploadId)).toBe(true);
+		await uploads.delete(uploadId);
+		expect(await uploads.exists(uploadId)).toBe(false);
+		expect(() => uploads.exists("../x")).toThrow(SourceMissingError);
+	});
+
 	it("maps a missing file or a malformed ID to SourceMissingError", async () => {
 		const { uploads } = await staged("x");
 		await expect(uploads.open(newUploadId(), 0)).rejects.toBeInstanceOf(SourceMissingError);

@@ -294,6 +294,10 @@ export class FakeStorage implements UploadStorage {
 		this.files.delete(key);
 	}
 
+	async exists(key: string) {
+		return this.files.has(key);
+	}
+
 	async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
 		const keys = [...this.files.keys()].filter((k) => k.startsWith(options?.prefix ?? "")).sort();
 		const start = options?.cursor ? Number(options.cursor) : 0;
