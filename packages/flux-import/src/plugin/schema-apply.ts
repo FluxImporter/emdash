@@ -5,6 +5,7 @@ import {
 } from "emdash";
 import { emdashErrorCode } from "../emdash/errors.js";
 import {
+	COMPATIBLE,
 	type FieldMapping,
 	SOURCE_ID_FIELD,
 	type Template,
@@ -51,6 +52,11 @@ export interface FieldRequest {
 	indexed?: boolean | undefined;
 	searchable?: boolean | undefined;
 	translatable?: boolean | undefined;
+	/**
+	 * Template mode: the existing field types that also satisfy the request (an `unchanged`
+	 * rather than a `conflict`). Absent in explicit `fields` mode, which matches the exact type.
+	 */
+	accepts?: readonly string[] | undefined;
 }
 
 export interface ApplyInput {
@@ -128,6 +134,11 @@ export function invalidateFieldCaches(collection: string): void {
 	invalidateSchemaObjectCache();
 }
 
+/** EmDash's `SchemaError` sets `name` and a string `code` (src/schema/registry.ts:312-320). */
+function isSchemaError(e: unknown): boolean {
+	return e instanceof Error && e.name === "SchemaError" && emdashErrorCode(e) !== undefined;
+}
+
 /** `unit_price` → `Unit price`. */
 export function labelOf(slug: string): string {
 	const words = slug.replace(/_+/g, " ").trim();
@@ -136,6 +147,15 @@ export function labelOf(slug: string): string {
 
 /** The field a template mapping asks for (`date` with `output` is text, so `string`). */
 function requestFor(field: string, mapping: FieldMapping): FieldRequest {
+	const request = baseRequestFor(field, mapping);
+	const accepts =
+		mapping.type === "date" && mapping.output !== undefined
+			? ["string", "text"]
+			: COMPATIBLE[mapping.type];
+	return { ...request, accepts };
+}
+
+function baseRequestFor(field: string, mapping: FieldMapping): FieldRequest {
 	switch (mapping.type) {
 		case "text":
 			return { slug: field, type: "string" };
@@ -171,16 +191,19 @@ export function requestProblems(requests: readonly FieldRequest[]): string[] {
 		}
 		if (seen.has(r.slug)) problems.push(`${name} is requested twice`);
 		seen.add(r.slug);
-		if (r.label !== undefined && (r.label.length < 1 || r.label.length > 200)) {
-			problems.push(`${name}: labels are 1-200 characters`);
+		if (
+			r.label !== undefined &&
+			(r.label.length < 1 || r.label.length > 200 || r.label.trim() !== r.label)
+		) {
+			problems.push(`${name}: labels are 1-200 characters, without leading or trailing spaces`);
 		}
 		if (r.options !== undefined) {
 			if (r.type !== "select" && r.type !== "multiSelect") {
 				problems.push(`${name}: only select and multiSelect fields take options`);
 			} else if (r.options.length < 1 || r.options.length > MAX_OPTIONS) {
 				problems.push(`${name}: give 1-${MAX_OPTIONS} options`);
-			} else if (r.options.some((o) => o.length < 1 || o.length > 200)) {
-				problems.push(`${name}: options are 1-200 characters`);
+			} else if (r.options.some((o) => o.length < 1 || o.length > 200 || o.trim() !== o)) {
+				problems.push(`${name}: options are 1-200 characters, without leading or trailing spaces`);
 			} else if (new Set(r.options).size !== r.options.length) {
 				problems.push(`${name}: options must be distinct`);
 			}
@@ -208,10 +231,11 @@ export function planField(
 		const message = `Field "${field}" has a field type this EmDash version cannot read`;
 		return { change: { field, action: "conflict", type, message } };
 	}
-	if (existing.type !== type) {
+	if (existing.type !== type && !request.accepts?.includes(existing.type)) {
 		const message = `Field "${field}" is "${existing.type}"; requested "${type}"`;
 		return { change: { field, action: "conflict", type, message } };
 	}
+	if (existing.type !== type) return { change: { field, action: "unchanged", type } };
 	const current = existing.validation?.options ?? [];
 	const missing = (request.options ?? []).filter((o) => !current.includes(o));
 	// A field without options accepts any string, so nothing is missing.
@@ -288,6 +312,13 @@ export async function applySchema(
 					existing = await read();
 					plan = planField(request, existing.get(request.slug), addOptions);
 					result.changes[i] = plan.change;
+					if (plan.change.action === "create") {
+						result.error = {
+							code: "FIELD_EXISTS",
+							message: `Field "${request.slug}" already exists but could not be read back`,
+						};
+						break;
+					}
 				}
 			}
 			if (plan.change.action === "add_options" && plan.options !== undefined) {
@@ -299,9 +330,16 @@ export async function applySchema(
 			}
 		}
 	} catch (e) {
-		const code = emdashErrorCode(e);
-		if (code === undefined || e instanceof ServiceError) throw e;
-		result.error = { code, message: e instanceof Error ? e.message : String(e) };
+		if (e instanceof ServiceError) throw e;
+		const message = e instanceof Error ? e.message : String(e);
+		if (isSchemaError(e)) {
+			result.error = { code: emdashErrorCode(e) as string, message };
+		} else if (result.applied.length > 0) {
+			// Report what was applied rather than hiding it behind a 500.
+			result.error = { code: "INTERNAL_ERROR", message };
+		} else {
+			throw e;
+		}
 	} finally {
 		if (result.applied.length > 0) invalidate(collection);
 	}

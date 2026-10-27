@@ -148,8 +148,8 @@ describe("requestProblems", () => {
 			'Field "ok": json fields cannot be indexed',
 			'Field "tags": give 1-500 options',
 			'Field "tags2": options must be distinct',
-			'Field "tags3": options are 1-200 characters',
-			'Field "named": labels are 1-200 characters',
+			'Field "tags3": options are 1-200 characters, without leading or trailing spaces',
+			'Field "named": labels are 1-200 characters, without leading or trailing spaces',
 		]);
 	});
 });
@@ -383,6 +383,103 @@ describe("applySchema", () => {
 			message: 'Field "specs": json fields cannot be indexed',
 		});
 		expect(registry.calls).toEqual([]);
+	});
+});
+
+describe("template mode and error handling", () => {
+	it("treats compatible existing types as unchanged and incompatible ones as conflicts", async () => {
+		const registry = new FakeApplyRegistry([
+			{ slug: "excerpt", type: "text" },
+			{ slug: "qty", type: "integer" },
+			{ slug: "day", type: "string" },
+			{ slug: "handle", type: "string" },
+			{ slug: "released", type: "string" },
+			{ slug: "flag", type: "boolean" },
+		]);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields: {
+				excerpt: { from: "E", type: "text" },
+				qty: { from: "Q", type: "number" },
+				day: { from: "D", type: "date", output: "yyyy-MM-dd" },
+				handle: { from: "H", type: "slug" },
+				released: { from: "R", type: "date" },
+				flag: { from: "F", type: "number" },
+			},
+		};
+		const result = await applySchema(registry, { template }, invalidate);
+		expect(result.changes.map((c) => c.action)).toEqual([
+			"unchanged",
+			"unchanged",
+			"unchanged",
+			"unchanged",
+			"unchanged",
+			"conflict",
+		]);
+		expect(registry.calls).toEqual([]);
+		const exact = await applySchema(
+			registry,
+			{ collection: "products", fields: [{ slug: "qty", type: "number" }] },
+			invalidate,
+		);
+		expect(exact.changes[0]?.action).toBe("conflict");
+	});
+
+	it("returns what was applied after a non-EmDash error, and rethrows when nothing was", async () => {
+		const registry = new FakeApplyRegistry();
+		registry.failOn = { slug: "b", error: new TypeError("boom") };
+		const result = await applySchema(
+			registry,
+			{
+				collection: "products",
+				fields: [
+					{ slug: "a", type: "json" },
+					{ slug: "b", type: "json" },
+				],
+			},
+			invalidate,
+		);
+		expect(result.applied).toEqual(["a"]);
+		expect(result.error).toEqual({ code: "INTERNAL_ERROR", message: "boom" });
+	});
+
+	it("treats an error with a code but not named SchemaError as not EmDash's", async () => {
+		const registry = new FakeApplyRegistry();
+		registry.failOn = { slug: "a", error: Object.assign(new Error("x"), { code: "ENOENT" }) };
+		await expect(
+			applySchema(
+				registry,
+				{ collection: "products", fields: [{ slug: "a", type: "json" }] },
+				invalidate,
+			),
+		).rejects.toThrow("x");
+	});
+
+	it("refuses blank or untrimmed labels and options", () => {
+		expect(
+			requestProblems([
+				{ slug: "a", type: "text", label: " Name" },
+				{ slug: "b", type: "select", options: ["ok", " x"] },
+				{ slug: "c", type: "select", options: ["  "] },
+			]),
+		).toHaveLength(3);
+	});
+
+	it("stops when a re-plan after FIELD_EXISTS still says create", async () => {
+		const registry = new FakeApplyRegistry();
+		registry.createField = async () => {
+			throw schemaError("FIELD_EXISTS", "exists");
+		};
+		const result = await applySchema(
+			registry,
+			{ collection: "products", fields: [{ slug: "a", type: "json" }] },
+			invalidate,
+		);
+		expect(result.applied).toEqual([]);
+		expect(result.error?.code).toBe("FIELD_EXISTS");
 	});
 });
 

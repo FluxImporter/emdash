@@ -504,7 +504,7 @@ export type SchemaField = {
 	storageless?: boolean;
 };
 
-const COMPATIBLE: Record<MappingType, string[]> = {
+export const COMPATIBLE: Record<MappingType, string[]> = {
 	text: ["string", "text", "url", "slug"],
 	number: ["number", "integer"],
 	date: ["datetime", "string", "text"],
