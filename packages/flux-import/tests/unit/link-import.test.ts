@@ -3,7 +3,7 @@ import { runBatch } from "../../src/engine/batch.js";
 import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { ContentWriteError, type LinkWrites } from "../../src/engine/ports.js";
 import type { SchemaField } from "../../src/engine/template.js";
-import { type Job, type RecordRow, recordKey } from "../../src/engine/types.js";
+import { type Job, linkKey, type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
 type Deps = ReturnType<typeof makeDeps>["deps"];
@@ -488,6 +488,65 @@ describe("importing links", () => {
 		expect(deps.content.calls).toContain("find:X1");
 	});
 
+	it("finds, in a dry run, an own-collection key by source ID when the field already exists", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const real = await start(deps, `${HEADER}C1,One,,,,,\n`);
+		await runToEnd(deps, real.id);
+		// The entry exists, but its link row is gone.
+		await deps.links.delete(linkKey("products", "en", "C1"));
+		const field = [{ slug: "flux_source_id", type: "string" }];
+		const csv = `${HEADER}C2,Two,,C1,,,\n`;
+		deps.source.add("d1", csv);
+		const job = await createJob(deps, {
+			uploadId: "d1",
+			template: template(),
+			schemaFields: [...schemaFields, ...field],
+			linkSchema: {
+				targets: { makers: [], products: field },
+				taxonomies: deps.lookups.defs,
+			},
+			dryRun: true,
+		});
+		expect(job.sourceIdField).toBe(true);
+		await runToEnd(deps, job.id);
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({ status: "planned", action: "create" });
+		expect(row?.errors).toBeUndefined();
+		expect(deps.content.calls).toContain("find:C1");
+	});
+
+	it("lets a dry-run retry pass find keys that later rows planned", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const job = await start(deps, `${HEADER}C1,One,,C9,,,\n`, { dryRun: true });
+		await deps.records.put(recordKey(job.id, 5), {
+			jobId: job.id,
+			seq: 5,
+			start: 100,
+			end: 120,
+			status: "planned",
+			action: "create",
+			sourceKey: "C9",
+			entryId: null,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		await deps.jobs.put(job.id, { ...job, status: "running", phase: "retry", retryFromSeq: 0 });
+		await deps.records.put(recordKey(job.id, 0), {
+			jobId: job.id,
+			seq: 0,
+			start: HEADER.length,
+			end: HEADER.length + 20,
+			status: "failed",
+			sourceKey: "C1",
+			entryId: null,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		await runBatch(deps, job.id, "d");
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({ status: "planned", action: "create" });
+	});
+
 	it("ignores a planned row that is not earlier than the record", async () => {
 		const { deps } = makeDeps();
 		await seed(deps);
@@ -518,12 +577,12 @@ describe("importing links", () => {
 			await deps.content.create({ collection: "makers", locale: "en", slug: m, data: {} });
 		}
 		const csv = `${HEADER}A1,a,m1,,,,\nA2,b,m2,,,,\nA3,c,m3,,,,\nA4,d,m4,,,,\n`;
-		// Each maker lookup costs 5 units: a budget of 8 is crossed by the second record.
+		// A record costs 25 and its maker lookup 5: a budget of 40 is crossed by the second record.
 		const job = await start(deps, csv);
-		let after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 8);
+		let after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 40);
 		expect(after.cursor.seq).toBe(2);
 		expect(after.counters.created).toBe(2);
-		after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 8);
+		after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 40);
 		expect(after.cursor.seq).toBe(4);
 		expect(after.status).toBe("running");
 		const done = await runToEnd(deps, job.id);
@@ -546,7 +605,12 @@ describe("importing links", () => {
 		expect(first.plannedTerms).toHaveLength(1);
 		const done = await runToEnd(deps, job.id);
 		expect(done.status).toBe("completed");
-		expect(done).not.toHaveProperty("plannedTerms");
+		// A first pass that completes keeps them, for a retry.
+		expect(done.plannedTerms).toHaveLength(2);
+		await deps.jobs.put(job.id, { ...done, status: "running", phase: "retry", retryFromSeq: 0 });
+		const retried = await runBatch(deps, job.id, "d");
+		expect(retried.status).toBe("completed");
+		expect(retried).not.toHaveProperty("plannedTerms");
 
 		const second = await start(deps, csv, { dryRun: true, extra: nested });
 		const huge = [{ taxonomy: "category", path: ["x".repeat(300 * 1024)], match: "slug" as const }];

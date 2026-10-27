@@ -22,7 +22,15 @@ import {
 	type LinkWrites,
 	SourceMissingError,
 } from "./ports.js";
-import { COST_CALL, COST_READ, LookupCache, loadTerms, resolveLinks, termPath } from "./resolve.js";
+import {
+	COST_CALL,
+	COST_READ,
+	COST_RECORD,
+	LookupCache,
+	loadTerms,
+	resolveLinks,
+	termPath,
+} from "./resolve.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -122,8 +130,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			lease: null,
 			updatedAt: iso(deps),
 		};
-		// A finished dry run has no later batch to need its planned terms.
-		const saved = status === "completed" ? withoutPlannedTerms(next) : next;
+		// A finished retry pass has no later batch to need the dry run's planned terms.
+		const saved = finishedRetry ? withoutPlannedTerms(next) : next;
 		const result = await deps.jobs.compareAndSet(job.id, current.revision, saved);
 		if (result.applied) return saved;
 	}
@@ -273,14 +281,17 @@ async function currentLinks(
 }
 
 /**
+ * Whether the job's collection can be filtered by `flux_source_id`: a dry run does not add the
+ * field, so it needs the collection to have it already (`sourceIdField`, read at job creation).
+ */
+function sourceIdReady(job: Job): boolean {
+	return !job.dryRun || job.schemaReady || job.sourceIdField === true;
+}
+
+/**
  * Whether an earlier record of this dry run planned to create `key`: one indexed lookup of the
  * job's record rows per distinct key and batch (the batch adds its own plans as it makes them).
  */
-/** Whether the job's collection can be filtered by `flux_source_id`: a dry run never adds it. */
-function sourceIdReady(job: Job): boolean {
-	return !job.dryRun || job.schemaReady;
-}
-
 async function plannedKey(
 	deps: EngineDeps,
 	job: Job,
@@ -291,8 +302,14 @@ async function plannedKey(
 	const known = cache.plannedKeys.get(key);
 	if (known !== undefined) return known;
 	const page = await deps.records.query({
-		// Only an earlier record counts: a row left by a crashed batch may be a later one.
-		where: { jobId: job.id, sourceKey: key, status: "planned", seq: { lt: seq } },
+		// In the import pass only an earlier record counts: a row left by a crashed batch may be a
+		// later one. A retry pass has every row of the first pass behind it.
+		where: {
+			jobId: job.id,
+			sourceKey: key,
+			status: "planned",
+			...(job.phase === "import" ? { seq: { lt: seq } } : {}),
+		},
 		limit: 1,
 	});
 	const planned = page.items.some(({ data }) => data.action === "create");
@@ -372,6 +389,7 @@ async function decideRecord(
 	let action: PlanAction | undefined;
 	try {
 		const requests = mapped.value.links;
+		if (requests) cache.spend(COST_RECORD);
 		if (requests) {
 			const resolution = await resolveLinks(
 				deps,

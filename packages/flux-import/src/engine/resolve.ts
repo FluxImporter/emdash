@@ -34,6 +34,8 @@ export const COST_CALL = 1;
 /** A content get or list, or a byline page: a full read with its hydration queries. */
 export const COST_READ = 5;
 export const COST_CREATE_TERM = 6;
+/** Charged for each processed record of a job that maps links: its writes and bookkeeping. */
+export const COST_RECORD = 25;
 
 export type { ResolvedItem, ResolvedLinks };
 

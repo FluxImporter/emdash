@@ -58,6 +58,11 @@ export interface Job {
 	targetFields?: Record<string, TargetField>;
 	/** The site timezone read at job creation, for `tz: "site"`; absent before M4a (UTC). */
 	siteTimezone?: string;
+	/**
+	 * The collection already had the `flux_source_id` field at job creation, so a dry run may
+	 * filter by it. Absent before M4b: such a dry run never does.
+	 */
+	sourceIdField?: boolean;
 	/** The mapped taxonomies as they were at job creation; absent when none are mapped. */
 	taxonomies?: Record<string, TaxonomySnapshot>;
 	/**
