@@ -52,11 +52,8 @@ describe("M4a field types end to end", () => {
 		expect(await client.fieldSlugs(COLLECTION)).toEqual(["title", "stock"]);
 
 		const applied = await client.plugin<ApplyResult>("schema/apply", { template });
-		// A number mapping can fill an integer field, so template mode may plan "stock" as
-		// unchanged or as a conflict; either way it is left alone.
-		expect(applied.changes.find((c) => c.field === "stock")?.action).toMatch(
-			/^(unchanged|conflict)$/,
-		);
+		// A number mapping can fill an integer field, so template mode leaves "stock" alone.
+		expect(applied.changes.find((c) => c.field === "stock")?.action).toBe("unchanged");
 		expect(applied.changes.filter((c) => c.field !== "stock")).toEqual([
 			{ field: "title", action: "unchanged", type: "string" },
 			{ field: "code", action: "create", type: "string" },
@@ -103,9 +100,7 @@ describe("M4a field types end to end", () => {
 
 		const again = await client.plugin<ApplyResult>("schema/apply", { template });
 		expect(again.applied).toEqual([]);
-		expect(again.changes.filter((c) => c.action !== "unchanged").map((c) => c.field)).toEqual([
-			"stock",
-		]);
+		expect(again.changes.filter((c) => c.action !== "unchanged")).toEqual([]);
 	});
 
 	it("imports CSV text into every type, reads it back exactly, and re-runs as unchanged", async () => {
