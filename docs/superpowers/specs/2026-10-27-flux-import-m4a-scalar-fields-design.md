@@ -23,7 +23,7 @@ admin. Template stays `version: 1`; every addition is optional.
 | Field rules | At job creation the importer reads the target fields and stores a snapshot of their type, `required` and the `validation` keys EmDash enforces (`options`, `min`, `max`, `minLength`, `maxLength`, `pattern`) on the job (`targetFields`). Each record is checked against the snapshot. EmDash still validates every write; a failure it reports and the importer did not catch stays `emdash_validation_error`. A schema change after job creation is picked up by a new job, not by `jobs/next` or `jobs/retry`. Jobs created before M4a have no snapshot and keep M2 behaviour. |
 | Site timezone | `tz: "site"` uses the site's timezone setting (`getSiteSetting("timezone")`, fallback `UTC`), read once at job creation and stored on the job (`siteTimezone`), so a resumed or retried job converts the same way. Default `tz` stays `UTC`. |
 | Datetime storage | Into a `datetime` field the value is written as EmDash's canonical form, UTC with three-digit milliseconds (`2025-01-24T12:00:00.000Z`). Into a `string` or `text` field the value is formatted in the mapping's timezone with `output` (default `yyyy-MM-dd`), the calendar-date shape EmDash's docs recommend for non-instants. |
-| DST | A local time that does not exist in the timezone (spring-forward gap) fails with `invalid_date`. An ambiguous local time (fall-back overlap) takes the earlier instant. EmDash rejects both for naive API input; the importer converts before EmDash sees the value, and an overlap is common in real exports, so it is accepted and documented. |
+| DST | A local time that does not exist in the timezone (spring-forward gap) fails with `invalid_date`; a date with no time part whose midnight is skipped takes the day's first instant. An ambiguous local time (fall-back overlap) takes the earlier instant. A format Luxon refuses, or an invalid `tz`, is `invalid_date` for the record, never a job error. EmDash rejects both for naive API input; the importer converts before EmDash sees the value, and an overlap is common in real exports, so it is accepted and documented. |
 | Booleans | Case-insensitive token lists, defaults `true, yes, y, 1, on` / `false, no, n, 0, off`, replaceable per mapping. JSON booleans pass; JSON `1`/`0` map to `true`/`false`. |
 | Select matching | `map` (source value to option) first, then the field's options, case-insensitive by default (`ignoreCase: true`) with the stored value being the option as defined. No match fails with `invalid_option`. A field without options accepts any non-empty string, as EmDash does. |
 | Integers | A `number` mapping into an `integer` field must give a whole number within ±2^53-1; no rounding (`invalid_integer`). Expressions can round (`$round`). |
@@ -105,7 +105,7 @@ Conversion then runs the field rules (next section).
 | `number` | JSON number; text | the number. Text: trimmed; with `thousands`, separators must group the integer part in threes (`1.234.567,5`); a space separator also matches U+00A0 and U+202F; `decimal` is then read as the point; the M2 number grammar applies to what is left | `invalid_number` |
 | | into an `integer` field | the number if it is whole and within ±(2^53-1) | `invalid_integer` |
 | `boolean` | JSON boolean; JSON `1`/`0`; text | `true` or `false`. Text is trimmed and lower-cased (`toLowerCase`) and looked up in the token lists | `invalid_boolean` (message lists the accepted tokens) |
-| `date` | text; JSON number with `unix`/`unixMs` | ISO text is read with `tz` as the zone for values without an offset (a value with `Z` or an offset keeps it); a `format` is read in `tz`; `unix`/`unixMs` read whole or decimal numbers (as JSON numbers or text). Into `datetime`: `toUTC().toISO()` (`…T12:00:00.000Z`). Into `string`/`text`: formatted in `tz` with `output`, default `yyyy-MM-dd` | `invalid_date` (unparseable; outside Luxon's range; a local time in a DST gap, detected by rebuilding the parsed wall-clock time in `tz` and comparing) |
+| `date` | text; JSON number only with `unix`/`unixMs` | without `format`, the text must start with a year (time-only text such as `12:00` fails); ISO text is read with `tz` as the zone for values without an offset (a value with `Z` or an offset keeps it); a `format` is read in `tz`; `unix`/`unixMs` read whole or decimal numbers (as JSON numbers or text). Into `datetime`: `toUTC().toISO()` (`…T12:00:00.000Z`). Into `string`/`text`: formatted in `tz` with `output`, default `yyyy-MM-dd` | `invalid_date` (unparseable; outside Luxon's range; a local time in a DST gap, detected by rebuilding the parsed wall-clock time in `tz` and comparing) |
 | `select` | any scalar | trimmed text, looked up in `map` (exact key first, then case-insensitive when `ignoreCase`), then matched against the field's options: an exact match, else with `ignoreCase` the one option equal ignoring case. The stored value is the option as defined | `invalid_option` (no match, or more than one option matches ignoring case); message lists up to 20 options |
 | `multiSelect` | array of scalars; text | text is split on `separator`; each item is trimmed, empty items dropped, then mapped and matched as for `select`; duplicates after matching are dropped, first occurrence kept. An empty result is `null` | `not_scalar` (an item is an object or array), `invalid_option` (one error naming every bad item), `too_many_items` (more than 1,000) |
 | `json` | anything | objects, arrays, numbers and booleans as they are. Text with `parse: true` is parsed as JSON (`"[1,2]"` gives an array, `"\"x\""` the string `x`). With `parse: false`, text is kept as a JSON string, except text starting with `{` or `[`, which EmDash would read back as JSON | `invalid_json` (unparseable text; or the `parse: false` case above), `value_too_large` (over 1 MiB as JSON) |
@@ -158,7 +158,8 @@ Further problems:
 - A required field of the collection that the template does not map and that has no
   `defaultValue`: every create would fail. (`flux_source_id` is never required. M5's update-only
   mode will relax this check.)
-- A mapped field that is storage-less or has an unsupported type (`Field.unsupportedType`).
+- A mapped field that is storage-less or has an unsupported type (`Field.unsupportedType`), and any
+  unmapped field with an unsupported type (EmDash refuses every write to such a collection).
 - `tz: "site"` when the site timezone setting is not a valid IANA zone.
 
 The snapshot stored on the job, per mapped field:
@@ -187,7 +188,8 @@ type TargetField = {
 - `planRecord` compares by target field type (from the snapshot; jobs without one fall back to the
   M2 mapping-type comparison): `datetime` as instants (M2); `boolean` with `0`/`1` read as
   `false`/`true`; `multiSelect` and `json` by deep equality (object keys in any order, arrays in
-  order; `-0` equals `0`); everything else with `Object.is`. A `date` into a `string` field
+  order; `-0` equals `0`); numbers with `===` (`-0` equals `0`, as the database reads it back);
+  everything else with `Object.is`. A `date` into a `string` field
   compares as text.
 - Known limitation, documented: a `text` value that starts with `{` or `[` and is valid JSON is read
   back by EmDash as parsed JSON, so such a record always plans an update. The engine compares the
@@ -236,7 +238,8 @@ Plan, per field, in request order:
 | same type, no options requested, or all requested options present, or the field has no options (accepts any string) | `unchanged` |
 | same type, some options missing, `addOptions: true` | `add_options` (the existing options followed by the missing ones in request order) |
 | same type, some options missing, `addOptions: false` | `conflict`, message names the missing options |
-| another type | `conflict`, message names both types |
+| another type, from a `template` mapping that can fill it (the compatibility table above; a `date` with `output` only fills `string`/`text`) | `unchanged` |
+| another type otherwise (always, for explicit `fields`) | `conflict`, message names both types |
 
 Apply: when `dryRun` is false the plan runs in order. `create` calls
 `registry.createField(collection, { slug, label, type, indexed, searchable, translatable,
