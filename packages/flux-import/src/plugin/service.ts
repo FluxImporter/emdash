@@ -42,6 +42,12 @@ export const WORKERS_BATCH_CAP = 20;
  */
 export const WORKERS_LINKED_BATCH_CAP = 10;
 
+/**
+ * The lookup cost one jobs/next call may spend on Workers (see `COST_READ`): D1 allows 1,000
+ * queries per invocation, and EmDash's lookups run several queries per call.
+ */
+export const WORKERS_LOOKUP_BUDGET = 600;
+
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
 	return usesLinks(job.template) ? WORKERS_LINKED_BATCH_CAP : WORKERS_BATCH_CAP;
@@ -306,6 +312,7 @@ export async function nextBatch(
 		id,
 		holder,
 		onWorkers() ? workersBatchCap : Number.POSITIVE_INFINITY,
+		onWorkers() ? WORKERS_LOOKUP_BUDGET : Number.POSITIVE_INFINITY,
 	);
 	await releaseQuietly(deps, uploads, job, keep);
 	return job;

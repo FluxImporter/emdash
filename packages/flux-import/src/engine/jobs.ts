@@ -270,6 +270,12 @@ const ALLOWED: Record<"pause" | "resume" | "cancel" | "retry", JobStatus[]> = {
 	retry: ["completed"],
 };
 
+/** The job without the dry run's planned terms, which only its running batches need. */
+export function withoutPlannedTerms(job: Job): Job {
+	const { plannedTerms: _planned, ...rest } = job;
+	return rest;
+}
+
 export function transitionJob(
 	deps: EngineDeps,
 	id: string,
@@ -288,7 +294,7 @@ export function transitionJob(
 			case "resume":
 				return { ...job, status: "running", error: null, failures: 0 };
 			case "cancel":
-				return { ...job, status: "cancelled" };
+				return { ...withoutPlannedTerms(job), status: "cancelled" };
 			case "retry":
 				return { ...job, status: "running", phase: "retry", retryFromSeq: 0, error: null };
 		}

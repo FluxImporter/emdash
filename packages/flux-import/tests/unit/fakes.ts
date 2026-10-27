@@ -119,6 +119,8 @@ export class FakeContent implements ContentPort {
 	readonly locked = new Set<string>();
 	readonly calls: string[] = [];
 	sourceFieldEnsured = false;
+	/** The collection has no `flux_source_id` field yet: EmDash then refuses to filter by it. */
+	sourceIdFieldMissing = false;
 	/** Called after a successful create or update; throw from it to simulate a crash. */
 	afterWrite: (id: string) => void = () => {};
 	/** Return a ContentWriteError to make a write with this data fail. */
@@ -165,6 +167,12 @@ export class FakeContent implements ContentPort {
 	}
 	async findBySourceId(collection: string, locale: string, sourceId: string, options?: GetOptions) {
 		this.calls.push(`find:${sourceId}`);
+		if (this.sourceIdFieldMissing) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				"Cannot filter by field flux_source_id: it is not a field of the collection",
+			);
+		}
 		for (const e of this.entries.values()) {
 			if (
 				e.collection === collection &&

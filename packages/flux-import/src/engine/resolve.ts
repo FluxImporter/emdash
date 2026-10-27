@@ -26,6 +26,14 @@ import { type LinkRow, linkKey, type PlannedTerm } from "./types.js";
 export const MAX_BYLINE_LOOKUP = 5000;
 /** The most planned term paths a dry run keeps on its job. */
 export const MAX_PLANNED_TERMS = 5000;
+/** The serialized size a job's `plannedTerms` may reach, besides the count. */
+export const MAX_PLANNED_BYTES = 256 * 1024;
+
+/** What one port call costs a batch's lookup budget (each EmDash call runs several queries). */
+export const COST_CALL = 1;
+/** A content get or list, or a byline page: a full read with its hydration queries. */
+export const COST_READ = 5;
+export const COST_CREATE_TERM = 6;
 
 export type { ResolvedItem, ResolvedLinks };
 
@@ -47,6 +55,11 @@ export type ResolveContext = {
 	 * this key in the job's collection and locale, as a real run would have by now.
 	 */
 	plannedKey?: (key: string) => Promise<boolean>;
+	/**
+	 * Whether the job's collection has the `flux_source_id` field: a dry run never adds it, so
+	 * a lookup by source ID in the job's own collection would fail. Absent counts as ready.
+	 */
+	sourceIdReady?: boolean;
 };
 
 /** A record error from resolution; EmDash read errors keep their `emdash_` code. */
@@ -120,11 +133,28 @@ export class LookupCache {
 	readonly newPlanned: PlannedTerm[] = [];
 	/** Some planned term was not kept because the job already holds `MAX_PLANNED_TERMS`. */
 	plannedOverflow = false;
+	/** The serialized size of the planned terms kept so far, prior ones included. */
+	plannedBytes = 0;
+	/** The lookup cost spent so far in this batch, in the units above. */
+	spent = 0;
 	bylines: BylineIndex | null = null;
 	readonly entries = new Map<string, { id: string; group: string }>();
 
-	constructor(priorPlanned: readonly PlannedTerm[] = []) {
+	/** `budget`: the batch should end after the record that brings `spent` to this. */
+	constructor(
+		priorPlanned: readonly PlannedTerm[] = [],
+		readonly budget: number = Number.POSITIVE_INFINITY,
+	) {
 		this.priorPlanned = priorPlanned;
+		this.plannedBytes = priorPlanned.length === 0 ? 0 : JSON.stringify(priorPlanned).length;
+	}
+
+	spend(units: number): void {
+		this.spent += units;
+	}
+
+	get exhausted(): boolean {
+		return this.spent >= this.budget;
 	}
 }
 
@@ -232,6 +262,7 @@ async function termIndex(
 ): Promise<TermIndex> {
 	let index = cache.terms.get(taxonomy);
 	if (!index) {
+		cache.spend(COST_CALL);
 		index = new TermIndex(await deps.lookups.terms(taxonomy, locale));
 		cache.terms.set(taxonomy, index);
 		replayPlanned(index, cache, taxonomy);
@@ -288,10 +319,15 @@ function replayPlanned(index: TermIndex, cache: LookupCache, taxonomy: string): 
 
 /** Keeps a planned path for the job's later batches, up to the cap. */
 function keepPlanned(cache: LookupCache, planned: PlannedTerm): void {
-	if (cache.priorPlanned.length + cache.newPlanned.length >= MAX_PLANNED_TERMS) {
+	const size = JSON.stringify(planned).length + 1;
+	if (
+		cache.priorPlanned.length + cache.newPlanned.length >= MAX_PLANNED_TERMS ||
+		cache.plannedBytes + size > MAX_PLANNED_BYTES
+	) {
 		cache.plannedOverflow = true;
 		return;
 	}
+	cache.plannedBytes += size;
 	cache.newPlanned.push(planned);
 }
 
@@ -395,6 +431,7 @@ async function createPath(
 		}
 		if (!term) {
 			try {
+				cache.spend(COST_CREATE_TERM);
 				term = await deps.lookups.createTerm(taxonomy, {
 					label: segment,
 					...(match === "slug" ? { slug: segment } : {}),
@@ -404,6 +441,7 @@ async function createPath(
 				index.add(term);
 				created.push(`${taxonomy}: ${labelPath(index.pathOf(term))}`);
 			} catch (e) {
+				cache.spend(COST_CALL);
 				index = new TermIndex(await deps.lookups.terms(taxonomy, locale));
 				cache.terms.set(taxonomy, index);
 				term = find(index);
@@ -496,6 +534,7 @@ async function findReference(
 	match: "id" | "slug" | "key",
 	value: string,
 	locale: string,
+	sourceIdReady: boolean,
 ): Promise<{ id: string; group: string } | null> {
 	const key = referenceKey(target, match, value);
 	const hit = cache.entries.get(key);
@@ -503,11 +542,19 @@ async function findReference(
 	let found: { id: string; group: string } | null = null;
 	if (match === "key") {
 		// The importer's own link first, verified; then the source ID it wrote into the entry.
+		cache.spend(COST_CALL);
 		const link = await deps.links.get(linkKey(target, locale, value));
+		if (link) cache.spend(COST_READ);
 		const linked = link ? await deps.content.get(target, locale, link.entryId) : null;
-		const entry = linked ?? (await deps.content.findBySourceId(target, locale, value));
+		// A dry run's first batch has not added the source ID field yet; filtering on it fails.
+		let entry = linked;
+		if (!entry && sourceIdReady) {
+			cache.spend(COST_READ);
+			entry = await deps.content.findBySourceId(target, locale, value);
+		}
 		found = entry ? { id: entry.id, group: entry.group ?? entry.id } : null;
 	} else {
+		cache.spend(COST_READ);
 		found = await deps.lookups.findEntry(target, match, value, locale);
 	}
 	if (found) cache.entries.set(key, found);
@@ -545,7 +592,15 @@ async function resolveReferences(
 	const items: ResolvedItem[] = [];
 	for (const value of values) {
 		try {
-			const found = await findReference(deps, cache, target, match, value, locale);
+			const found = await findReference(
+				deps,
+				cache,
+				target,
+				match,
+				value,
+				locale,
+				ctx.sourceIdReady !== false || target !== ctx.template.collection,
+			);
 			const own = match === "key" && target === ctx.template.collection;
 			if (found) items.push({ group: found.group, value: found.id, text: found.id });
 			else if (own && ctx.dryRun && ctx.plannedKey && (await ctx.plannedKey(value))) {
@@ -575,6 +630,7 @@ async function bylineIndex(
 	let cursor: string | undefined;
 	let loaded = 0;
 	do {
+		cache.spend(COST_READ);
 		const page = await deps.lookups.bylines(locale, cursor);
 		for (const byline of page.items) {
 			if (!index.bySlug.has(byline.slug)) index.bySlug.set(byline.slug, byline);

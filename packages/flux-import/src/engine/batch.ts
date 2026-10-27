@@ -7,7 +7,14 @@ import {
 	planRecord,
 	type RecordPlan,
 } from "./diff.js";
-import { JobError, jobReader, jobTemplate, updateJob, upgradeJob } from "./jobs.js";
+import {
+	JobError,
+	jobReader,
+	jobTemplate,
+	updateJob,
+	upgradeJob,
+	withoutPlannedTerms,
+} from "./jobs.js";
 import type { ResolvedLinks } from "./links.js";
 import {
 	ContentWriteError,
@@ -15,7 +22,7 @@ import {
 	type LinkWrites,
 	SourceMissingError,
 } from "./ports.js";
-import { LookupCache, loadTerms, resolveLinks, termPath } from "./resolve.js";
+import { COST_CALL, COST_READ, LookupCache, loadTerms, resolveLinks, termPath } from "./resolve.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -115,8 +122,10 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			lease: null,
 			updatedAt: iso(deps),
 		};
-		const result = await deps.jobs.compareAndSet(job.id, current.revision, next);
-		if (result.applied) return next;
+		// A finished dry run has no later batch to need its planned terms.
+		const saved = status === "completed" ? withoutPlannedTerms(next) : next;
+		const result = await deps.jobs.compareAndSet(job.id, current.revision, saved);
+		if (result.applied) return saved;
 	}
 	throw new Error(`Could not save job ${job.id} after ${CAS_ATTEMPTS} attempts`);
 }
@@ -244,6 +253,7 @@ async function currentLinks(
 		if (entry.referencesTruncated) current.referencesTruncated = entry.referencesTruncated;
 	}
 	if (resolved.taxonomies) {
+		cache.spend(COST_CALL);
 		const assigned = await deps.lookups.entryTerms(job.template.collection, entry.id);
 		current.taxonomies = {};
 		for (const taxonomy of Object.keys(resolved.taxonomies)) {
@@ -266,16 +276,23 @@ async function currentLinks(
  * Whether an earlier record of this dry run planned to create `key`: one indexed lookup of the
  * job's record rows per distinct key and batch (the batch adds its own plans as it makes them).
  */
+/** Whether the job's collection can be filtered by `flux_source_id`: a dry run never adds it. */
+function sourceIdReady(job: Job): boolean {
+	return !job.dryRun || job.schemaReady;
+}
+
 async function plannedKey(
 	deps: EngineDeps,
 	job: Job,
 	cache: LookupCache,
 	key: string,
+	seq: number,
 ): Promise<boolean> {
 	const known = cache.plannedKeys.get(key);
 	if (known !== undefined) return known;
 	const page = await deps.records.query({
-		where: { jobId: job.id, sourceKey: key, status: "planned" },
+		// Only an earlier record counts: a row left by a crashed batch may be a later one.
+		where: { jobId: job.id, sourceKey: key, status: "planned", seq: { lt: seq } },
 		limit: 1,
 	});
 	const planned = page.items.some(({ data }) => data.action === "create");
@@ -364,7 +381,8 @@ async function decideRecord(
 					targets: job.targetFields ?? {},
 					taxonomies: job.taxonomies ?? {},
 					dryRun: job.dryRun,
-					plannedKey: (key) => plannedKey(deps, job, cache, key),
+					plannedKey: (key) => plannedKey(deps, job, cache, key, rec.seq),
+					sourceIdReady: sourceIdReady(job),
 				},
 				requests,
 			);
@@ -377,11 +395,13 @@ async function decideRecord(
 		// Reference selections are read only when the template maps reference fields.
 		const read = { references: requests?.references !== undefined };
 		let link = await deps.links.get(ctx.linkId);
+		if (link && requests) cache.spend(COST_READ);
 		let entry = link ? await deps.content.get(collection, locale, link.entryId, read) : null;
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
 		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
 		let repaired = false;
-		if (!entry && existing !== null) {
+		if (!entry && existing !== null && sourceIdReady(job)) {
+			if (requests) cache.spend(COST_READ);
 			entry = await deps.content.findBySourceId(collection, locale, sourceKey, read);
 			if (entry) {
 				link = { collection, locale, sourceKey, entryId: entry.id };
@@ -626,7 +646,9 @@ async function importPass(
 		await processRecord(deps, job, template, rec, { retry: false, cache });
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
-		if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
+		if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
+			return { done: false };
+		}
 	}
 	return { done: true };
 }
@@ -694,7 +716,9 @@ async function retryPass(
 			await processRecord(deps, job, template, rec, { retry: true, cache });
 			job.retryFromSeq = row.seq + 1;
 			processed++;
-			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
+			if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
+				return { done: false };
+			}
 		}
 	}
 }
@@ -704,13 +728,15 @@ async function retryPass(
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
  * live lease exists, whoever holds it (the same holder name included). A batch is at most
  * `job.batchSize` records, and at most `maxRecords` (or what it gives for the job) when that is
- * smaller; the job is not changed. Link lookups are cached for the batch.
+ * smaller; the job is not changed. Link lookups are cached for the batch, and the batch ends
+ * after the record that brings their cost to `lookupBudget` (that record always completes).
  */
 export async function runBatch(
 	deps: EngineDeps,
 	jobId: string,
 	holder: string,
 	maxRecords: number | ((job: Job) => number) = Number.POSITIVE_INFINITY,
+	lookupBudget = Number.POSITIVE_INFINITY,
 ): Promise<Job> {
 	const claimed = await claim(deps, jobId, holder);
 	if (!claimed.ok) return claimed.job;
@@ -718,7 +744,7 @@ export async function runBatch(
 	const started = deps.now();
 	const cap = typeof maxRecords === "number" ? maxRecords : maxRecords(job);
 	const limit = Math.min(job.batchSize, cap);
-	const cache = new LookupCache(job.dryRun ? (job.plannedTerms ?? []) : []);
+	const cache = new LookupCache(job.dryRun ? (job.plannedTerms ?? []) : [], lookupBudget);
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {

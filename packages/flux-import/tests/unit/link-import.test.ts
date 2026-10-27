@@ -3,7 +3,7 @@ import { runBatch } from "../../src/engine/batch.js";
 import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { ContentWriteError, type LinkWrites } from "../../src/engine/ports.js";
 import type { SchemaField } from "../../src/engine/template.js";
-import type { Job, RecordRow } from "../../src/engine/types.js";
+import { type Job, type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
 type Deps = ReturnType<typeof makeDeps>["deps"];
@@ -175,8 +175,9 @@ describe("importing links", () => {
 				{ field: "bylines", code: "byline_not_found" },
 			],
 		});
-		// Only the seeded maker exists; the dry run looked A9 up but wrote nothing.
-		expect(deps.content.calls).toEqual(["create:e1", "find:A9"]);
+		// Only the seeded maker exists; the dry run wrote nothing, and a dry run never filters by
+		// `flux_source_id`, which it has not added.
+		expect(deps.content.calls).toEqual(["create:e1"]);
 		expect(deps.lookups.calls.filter((c) => c.startsWith("create"))).toEqual([]);
 	});
 
@@ -409,8 +410,9 @@ describe("importing links", () => {
 			match: "slug" as const,
 		}));
 		await deps.jobs.put(job.id, { ...job, batchSize: 1, plannedTerms: full });
+		const first = await runBatch(deps, job.id, "d");
+		expect(first.plannedTerms).toHaveLength(5000);
 		const done = await runToEnd(deps, job.id);
-		expect(done.plannedTerms).toHaveLength(5000);
 		expect(done.warnings?.filter((w) => w.startsWith("The dry run no longer tracks"))).toHaveLength(
 			1,
 		);
@@ -433,6 +435,127 @@ describe("importing links", () => {
 		// Batch 1 (C1, C2): C1 is planned in the batch. Batch 2 (C3, C4): C1 and X9 once each.
 		// Batch 3 (C5): X9 again.
 		expect(keys).toEqual(["C1", "X9", "X9"]);
+	});
+
+	it("finds in a first dry run a key an earlier record plans, before the source ID field exists", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		deps.content.sourceIdFieldMissing = true;
+		const csv = `${HEADER}C1,One,,,,,\nC2,Two,,C1,,,\nC3,Three,,C5,,,\nC5,Five,,,,,\n`;
+		const job = await start(deps, csv, { dryRun: true });
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		const planned = await rows(deps, job.id);
+		expect(planned[1]).toMatchObject({ status: "planned", action: "create" });
+		expect(planned[2]).toMatchObject({
+			status: "failed",
+			errors: [{ field: "related", code: "reference_not_found" }],
+		});
+		expect(deps.content.calls.filter((c) => c.startsWith("find:"))).toEqual([]);
+	});
+
+	it("does not look an entry up by source ID in a dry run that finds an earlier row of its own", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		deps.content.sourceIdFieldMissing = true;
+		const job = await start(deps, `${HEADER}C1,One,,,,,\n`, { dryRun: true });
+		await deps.records.put(recordKey(job.id, 0), {
+			jobId: job.id,
+			seq: 0,
+			start: 0,
+			end: 0,
+			status: "writing",
+			sourceKey: "C1",
+			entryId: null,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(done.error).toBeNull();
+	});
+
+	it("looks a source ID up in a real run", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const csv = `${HEADER}C1,One,,,,,\nC2,Two,,C1,,,\n`;
+		const job = await start(deps, csv);
+		deps.content.sourceIdFieldMissing = false;
+		await runToEnd(deps, job.id);
+		await runToEnd(deps, job.id);
+		expect(deps.content.calls.filter((c) => c.startsWith("find:"))).toEqual([]);
+		const missing = await start(deps, `${HEADER}C7,Seven,,X1,,,\n`);
+		await runToEnd(deps, missing.id);
+		expect(deps.content.calls).toContain("find:X1");
+	});
+
+	it("ignores a planned row that is not earlier than the record", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const job = await start(deps, `${HEADER}C1,One,,C9,,,\n`, { dryRun: true });
+		await deps.records.put(recordKey(job.id, 5), {
+			jobId: job.id,
+			seq: 5,
+			start: 100,
+			end: 120,
+			status: "planned",
+			action: "create",
+			sourceKey: "C9",
+			entryId: null,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		await runToEnd(deps, job.id);
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({
+			status: "failed",
+			errors: [{ field: "related", code: "reference_not_found" }],
+		});
+	});
+
+	it("ends a batch after the record that spends the lookup budget, and resumes there", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		for (const m of ["m1", "m2", "m3", "m4"]) {
+			await deps.content.create({ collection: "makers", locale: "en", slug: m, data: {} });
+		}
+		const csv = `${HEADER}A1,a,m1,,,,\nA2,b,m2,,,,\nA3,c,m3,,,,\nA4,d,m4,,,,\n`;
+		// Each maker lookup costs 5 units: a budget of 8 is crossed by the second record.
+		const job = await start(deps, csv);
+		let after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 8);
+		expect(after.cursor.seq).toBe(2);
+		expect(after.counters.created).toBe(2);
+		after = await runBatch(deps, job.id, "d", Number.POSITIVE_INFINITY, 8);
+		expect(after.cursor.seq).toBe(4);
+		expect(after.status).toBe("running");
+		const done = await runToEnd(deps, job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 4, failed: 0 } });
+		// A record that alone exceeds the budget still completes, and is the whole batch.
+		const lone = await start(deps, csv.replace(/^A/gm, "B"), { dryRun: true });
+		const one = await runBatch(deps, lone.id, "d", Number.POSITIVE_INFINITY, 1);
+		expect(one.cursor.seq).toBe(1);
+		expect(one.counters.created).toBe(1);
+	});
+
+	it("drops a dry run's planned terms when it completes or is cancelled, and caps their size", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const nested = { taxonomies: { category: { from: "Category", hierarchy: "/", create: true } } };
+		const csv = `${HEADER}A1,a,,,a1,,\nA2,b,,,a2,,\n`;
+		const job = await start(deps, csv, { dryRun: true, extra: nested });
+		await deps.jobs.put(job.id, { ...job, batchSize: 1 });
+		const first = await runBatch(deps, job.id, "d");
+		expect(first.plannedTerms).toHaveLength(1);
+		const done = await runToEnd(deps, job.id);
+		expect(done.status).toBe("completed");
+		expect(done).not.toHaveProperty("plannedTerms");
+
+		const second = await start(deps, csv, { dryRun: true, extra: nested });
+		const huge = [{ taxonomy: "category", path: ["x".repeat(300 * 1024)], match: "slug" as const }];
+		await deps.jobs.put(second.id, { ...second, batchSize: 1, plannedTerms: huge });
+		const capped = await runBatch(deps, second.id, "d");
+		expect(capped.plannedTerms).toHaveLength(1);
+		expect(capped.warnings?.some((w) => w.startsWith("The dry run no longer tracks"))).toBe(true);
+		const cancelled = await transitionJob(deps, second.id, "cancel");
+		expect(cancelled).not.toHaveProperty("plannedTerms");
 	});
 
 	it("leaves jobs of templates without links as before", async () => {

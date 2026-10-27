@@ -11,7 +11,7 @@ import { pluginCollections } from "../emdash/storage.js";
 import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
-import { JobError } from "../engine/jobs.js";
+import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { defaultResolver } from "../sources/net.js";
@@ -277,7 +277,7 @@ const applyInput = z
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
 		withServices(ctx, ({ deps, uploads, keep }) =>
-			changeJob(deps, uploads, ctx.input.id, action, keep),
+			changeJob(deps, uploads, ctx.input.id, action, keep).then(withoutPlannedTerms),
 		),
 	);
 }
@@ -425,18 +425,22 @@ export const routes: Record<string, PluginRoute> = {
 	"jobs/next": route(byId, (ctx) =>
 		withServices(ctx, ({ deps, uploads, actor, keep }) =>
 			// A unique holder per call: two concurrent calls never share a lease.
-			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`, keep),
+			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`, keep).then(
+				withoutPlannedTerms,
+			),
 		),
 	),
 
-	"jobs/get": route(byId, (ctx) => withServices(ctx, ({ deps }) => getJob(deps, ctx.input.id))),
+	"jobs/get": route(byId, (ctx) =>
+		withServices(ctx, ({ deps }) => getJob(deps, ctx.input.id).then(withoutPlannedTerms)),
+	),
 
 	"jobs/list": route(z.object({ status: z.enum(JOB_STATUSES).optional(), cursor }), (ctx) =>
 		withServices(ctx, ({ deps }) =>
 			listJobs(deps, {
 				...(ctx.input.status ? { status: ctx.input.status } : {}),
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
-			}),
+			}).then((jobs) => ({ ...jobs, items: jobs.items.map(withoutPlannedTerms) })),
 		),
 	),
 
