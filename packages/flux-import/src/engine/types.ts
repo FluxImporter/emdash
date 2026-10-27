@@ -124,6 +124,11 @@ export interface RecordRow {
 	 * Absent when there are none.
 	 */
 	newTerms?: string[];
+	/**
+	 * Media downloaded for the record (`field: url`), also when the upload found identical bytes
+	 * already stored, or that a dry run would download. Absent when there are none.
+	 */
+	newMedia?: string[];
 	updatedAt: string;
 }
 

@@ -45,9 +45,11 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// gives ctx.taxonomies, which reads taxonomies, terms and entry terms and creates missing
 		// terms (createTerm, the only sanctioned way to create one); bylines:read gives
 		// ctx.bylines, whose list is the only way to look bylines up. Entries are assigned their
-		// terms, references and bylines through the runtime's content writes. URL sources are
-		// fetched with the runtime's own fetch() behind the plugin's SSRF guard
-		// (src/sources/net.ts), not through ctx.http, so no network capability is declared.
+		// terms, references and bylines through the runtime's content writes. media:write is
+		// declared for disclosure too: image and file fields are uploaded through the runtime's
+		// handleMediaUpload, not ctx.media. URL sources and media are fetched with the runtime's
+		// own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through ctx.http,
+		// so no network capability is declared.
 		capabilities: [
 			"content:read",
 			"content:write",
@@ -55,6 +57,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 			"schema:read",
 			"taxonomies:write",
 			"bylines:read",
+			"media:write",
 		],
 		storage: STORAGE,
 		routes,

@@ -531,6 +531,11 @@ describe("workersBatchCap", () => {
 			fields: { ...job.template.fields, maker: { from: "Name", type: "reference" as const } },
 		};
 		expect(workersBatchCap({ ...job, template: referenced })).toBe(WORKERS_LINKED_BATCH_CAP);
+		const pictured = {
+			...job.template,
+			fields: { ...job.template.fields, photo: { from: "Name", type: "image" as const } },
+		};
+		expect(workersBatchCap({ ...job, template: pictured })).toBe(WORKERS_LINKED_BATCH_CAP);
 	});
 });
 

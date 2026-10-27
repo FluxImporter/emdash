@@ -13,7 +13,7 @@ import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "../engine/media.js";
 import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
-import { type LinkSchema, type SchemaField, usesLinks } from "../engine/template.js";
+import { type LinkSchema, type SchemaField, usesLinks, usesMedia } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import { type CsvSample, CsvSyntaxError, readCsvSample } from "../sources/csv.js";
 import {
@@ -38,8 +38,8 @@ export const LOG_MAX_BYTES = 8 * 1024 * 1024;
  */
 export const WORKERS_BATCH_CAP = 20;
 /**
- * `WORKERS_BATCH_CAP` for jobs whose template maps reference fields, taxonomies or bylines: each
- * record also looks its links up and reads them back.
+ * `WORKERS_BATCH_CAP` for jobs whose template maps reference fields, taxonomies, bylines or
+ * media: each record also looks its links and media up, and may download files.
  */
 export const WORKERS_LINKED_BATCH_CAP = 10;
 
@@ -69,7 +69,9 @@ export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolea
 
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
-	return usesLinks(job.template) ? WORKERS_LINKED_BATCH_CAP : WORKERS_BATCH_CAP;
+	return usesLinks(job.template) || usesMedia(job.template)
+		? WORKERS_LINKED_BATCH_CAP
+		: WORKERS_BATCH_CAP;
 }
 
 /** A failure the route layer turns into an HTTP error with this code and status. */
