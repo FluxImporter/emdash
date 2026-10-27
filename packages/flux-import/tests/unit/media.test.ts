@@ -37,7 +37,7 @@ describe("normalizeMediaUrl", () => {
 	it("normalizes host case, default ports and percent-encoding, drops the fragment, keeps the query", () => {
 		expect(
 			normalizeMediaUrl("HTTPS://CDN.Example.com:443/a/../b%7e/Photo.JPG?w=1&W=2#top"),
-		).toEqual({ ok: true, url: "https://cdn.example.com/b%7e/Photo.JPG?w=1&W=2" });
+		).toEqual({ ok: true, url: "https://cdn.example.com/b~/Photo.JPG?w=1&W=2" });
 		expect(normalizeMediaUrl("http://example.com:80")).toEqual({
 			ok: true,
 			url: "http://example.com/",
@@ -45,6 +45,24 @@ describe("normalizeMediaUrl", () => {
 		expect(normalizeMediaUrl("http://example.com:8080/x y")).toEqual({
 			ok: true,
 			url: "http://example.com:8080/x%20y",
+		});
+	});
+
+	it("gives one URL for every spelling of an unreserved character and keeps reserved ones encoded", () => {
+		const urls = ["https://e.com/a%7E", "https://e.com/a%7e", "https://e.com/a~"].map((u) =>
+			normalizeMediaUrl(u),
+		);
+		for (const u of urls) expect(u).toEqual({ ok: true, url: "https://e.com/a~" });
+		expect(normalizeMediaUrl("https://e.com/a%2fb%3f?q=%2f%41%7e")).toEqual({
+			ok: true,
+			url: "https://e.com/a%2Fb%3F?q=%2FA~",
+		});
+	});
+
+	it("drops the fragment before the length check", () => {
+		expect(normalizeMediaUrl(`https://e.com/a.png#${"f".repeat(3000)}`)).toEqual({
+			ok: true,
+			url: "https://e.com/a.png",
 		});
 	});
 
@@ -149,6 +167,7 @@ describe("media type rules", () => {
 			"The field accepts only image/png, not application/pdf",
 		);
 		expect(mediaTypeProblem("video/mp4", "file", [])).toBeNull();
+		expect(mediaTypeProblem("Image/PNG; charset=x", "image", ["image/png"])).toBeNull();
 	});
 });
 

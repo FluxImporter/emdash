@@ -85,28 +85,40 @@ export function mediaTypeProblem(
 	kind: MediaKind,
 	allowed: readonly string[] | undefined,
 ): string | null {
-	if (!matchesMime(mime, UPLOAD_ALLOWLIST)) return `EmDash does not accept ${mime} uploads`;
-	if (kind === "image" && !mime.startsWith("image/")) {
-		return `An image field cannot take ${mime}`;
+	const type = normalizeMime(mime);
+	if (!matchesMime(type, UPLOAD_ALLOWLIST)) return `EmDash does not accept ${type} uploads`;
+	if (kind === "image" && !type.startsWith("image/")) {
+		return `An image field cannot take ${type}`;
 	}
-	if (allowed !== undefined && allowed.length > 0 && !matchesMime(mime, allowed)) {
-		return `The field accepts only ${allowed.join(", ")}, not ${mime}`;
+	if (allowed !== undefined && allowed.length > 0 && !matchesMime(type, allowed)) {
+		return `The field accepts only ${allowed.join(", ")}, not ${type}`;
 	}
 	return null;
 }
 
+/** `%xx` for an unreserved character (RFC 3986: ALPHA, DIGIT, `-`, `.`, `_`, `~`) becomes the character. */
+const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
+
 /**
- * The media map's form of a URL: `parseSourceUrl` (http or https, no user name or password, at
- * most 2,048 characters), then the WHATWG serialization without the fragment. `URL` lower-cases
- * the host, drops a default port and normalizes percent-encoding; the query stays as given.
+ * The media map's form of a URL: the fragment is dropped first (so it never counts toward the
+ * length), then `parseSourceUrl` (http or https, no user name or password, at most 2,048
+ * characters), then the WHATWG serialization. `URL` lower-cases the host and drops a default port;
+ * percent-encoding in the path and query is normalized here: every `%xx` has upper-case hex digits
+ * and one for an unreserved character is decoded, so `%7e`, `%7E` and `~` give one URL. Reserved
+ * characters stay encoded and the query stays as given otherwise.
  */
 export function normalizeMediaUrl(
 	text: string,
 ): { ok: true; url: string } | { ok: false; message: string } {
 	try {
-		const url = parseSourceUrl(text);
+		const hash = text.indexOf("#");
+		const url = parseSourceUrl(hash === -1 ? text : text.slice(0, hash));
 		url.hash = "";
-		return { ok: true, url: url.href };
+		const href = url.href.replace(/%([0-9a-fA-F]{2})/g, (_m, hex: string) => {
+			const char = String.fromCharCode(Number.parseInt(hex, 16));
+			return UNRESERVED.test(char) ? char : `%${hex.toUpperCase()}`;
+		});
+		return { ok: true, url: href };
 	} catch (e) {
 		return { ok: false, message: e instanceof Error ? e.message : String(e) };
 	}
