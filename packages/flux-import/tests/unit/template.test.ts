@@ -1144,6 +1144,18 @@ describe("checkTemplate for links", () => {
 		]);
 	});
 
+	it("does not need imported entries for match key in the job's own collection", () => {
+		const own = templateSchema.parse({
+			...linked,
+			collection: "pages",
+			fields: { parent: { from: "Parent", type: "reference", match: "key" } },
+			taxonomies: undefined,
+		});
+		const parent: SchemaField = bound({ slug: "parent", targetCollection: "pages" });
+		const pages = [parent];
+		expect(checkTemplate(own, pages, null, "UTC", { targets: { pages } })).toEqual([]);
+	});
+
 	it("keeps refusing other mappings into a bound reference field", () => {
 		const text = templateSchema.parse({
 			...linked,

@@ -719,6 +719,7 @@ function referenceProblems(
 	mapping: Extract<FieldMapping, { type: "reference" }>,
 	target: SchemaField,
 	links: LinkSchema,
+	own: string,
 ): string[] {
 	if (target.type !== "reference") {
 		return [
@@ -737,6 +738,8 @@ function referenceProblems(
 	}
 	if (
 		mapping.match === "key" &&
+		// The job adds the import key to its own collection, so it needs no entries yet.
+		collection !== own &&
 		targetFields !== undefined &&
 		!targetFields.some((f) => f.slug === SOURCE_ID_FIELD)
 	) {
@@ -754,11 +757,13 @@ function fieldProblems(
 	target: SchemaField,
 	siteTimezone: string,
 	links: LinkSchema,
+	collection: string,
 ): string[] {
 	if (target.unsupported) {
 		return [`Field "${field}" has a field type this EmDash version cannot read`];
 	}
-	if (mapping.type === "reference") return referenceProblems(field, mapping, target, links);
+	if (mapping.type === "reference")
+		return referenceProblems(field, mapping, target, links, collection);
 	if (target.storageless) {
 		return [`Field "${field}" keeps its values outside the content table and cannot be imported`];
 	}
@@ -831,7 +836,7 @@ export function checkTemplate(
 		if (target === undefined) {
 			errors.push(`Field "${field}" does not exist in collection "${t.collection}"`);
 		} else {
-			errors.push(...fieldProblems(field, mapping, target, siteTimezone, links));
+			errors.push(...fieldProblems(field, mapping, target, siteTimezone, links, t.collection));
 		}
 	}
 	if (links.taxonomies !== undefined) {

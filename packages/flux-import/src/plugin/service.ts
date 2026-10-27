@@ -165,9 +165,12 @@ async function linkSchemaFor(
 	template: unknown,
 	fields: SchemaField[],
 	lookupFields: FieldLookup,
+	collection: string | null,
 ): Promise<LinkSchema> {
 	const mapped = prop(template, "fields");
-	const targets: Record<string, SchemaField[] | null> = {};
+	// The job's own collection is already loaded, so a self-reference does not read it again.
+	const targets: Record<string, SchemaField[] | null> =
+		collection === null ? {} : { [collection]: fields };
 	for (const f of fields) {
 		const target = f.targetCollection;
 		if (target === undefined || Object.hasOwn(targets, target)) continue;
@@ -196,7 +199,7 @@ export async function startJob(
 	if (schemaFields === null) {
 		throw new JobError("invalid_template", `Collection "${collection}" does not exist`);
 	}
-	const linkSchema = await linkSchemaFor(deps, template, schemaFields, lookupFields);
+	const linkSchema = await linkSchemaFor(deps, template, schemaFields, lookupFields, collection);
 	return createJob(deps, { ...input, template, schemaFields, linkSchema });
 }
 
