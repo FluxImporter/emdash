@@ -107,6 +107,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			schemaReady: job.schemaReady,
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
+			...(job.plannedTerms ? { plannedTerms: job.plannedTerms } : {}),
+			...(job.warnings ? { warnings: job.warnings } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
@@ -261,27 +263,24 @@ async function currentLinks(
 }
 
 /**
- * The keys an earlier record of this dry run plans to create, loaded once per batch from the
- * job's record rows; the batch adds its own as it plans them.
+ * Whether an earlier record of this dry run planned to create `key`: one indexed lookup of the
+ * job's record rows per distinct key and batch (the batch adds its own plans as it makes them).
  */
-async function plannedKeys(deps: EngineDeps, job: Job, cache: LookupCache): Promise<Set<string>> {
-	if (cache.plannedKeys) return cache.plannedKeys;
-	const keys = new Set<string>();
-	let cursor: string | undefined;
-	do {
-		const page = await deps.records.query({
-			where: { jobId: job.id, status: "planned" },
-			orderBy: { seq: "asc" },
-			limit: RETRY_PAGE,
-			...(cursor ? { cursor } : {}),
-		});
-		for (const { data } of page.items) {
-			if (data.action === "create" && data.sourceKey !== null) keys.add(data.sourceKey);
-		}
-		cursor = page.hasMore ? page.cursor : undefined;
-	} while (cursor);
-	cache.plannedKeys = keys;
-	return keys;
+async function plannedKey(
+	deps: EngineDeps,
+	job: Job,
+	cache: LookupCache,
+	key: string,
+): Promise<boolean> {
+	const known = cache.plannedKeys.get(key);
+	if (known !== undefined) return known;
+	const page = await deps.records.query({
+		where: { jobId: job.id, sourceKey: key, status: "planned" },
+		limit: 1,
+	});
+	const planned = page.items.some(({ data }) => data.action === "create");
+	cache.plannedKeys.set(key, planned);
+	return planned;
 }
 
 /** The link plan for `planRecord`; child-side reference fields compare as sets. */
@@ -316,7 +315,9 @@ async function decide(
 ): Promise<RowFields> {
 	const found = { newTerms: [] as string[] };
 	const row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
-	return found.newTerms.length > 0 ? { ...row, newTerms: found.newTerms } : row;
+	// A retried record keeps the terms its earlier attempts created.
+	const newTerms = [...new Set([...(existing?.newTerms ?? []), ...found.newTerms])];
+	return newTerms.length > 0 ? { ...row, newTerms } : row;
 }
 
 async function decideRecord(
@@ -363,7 +364,7 @@ async function decideRecord(
 					targets: job.targetFields ?? {},
 					taxonomies: job.taxonomies ?? {},
 					dryRun: job.dryRun,
-					plannedKey: async (key) => (await plannedKeys(deps, job, cache)).has(key),
+					plannedKey: (key) => plannedKey(deps, job, cache, key),
 				},
 				requests,
 			);
@@ -394,7 +395,7 @@ async function decideRecord(
 		const plan = planRecord(entry, mapped.value, comparisons, links);
 		action = plan.action;
 		if (job.dryRun) {
-			if (plan.action === "create") cache.plannedKeys?.add(sourceKey);
+			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		}
 		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
@@ -717,7 +718,7 @@ export async function runBatch(
 	const started = deps.now();
 	const cap = typeof maxRecords === "number" ? maxRecords : maxRecords(job);
 	const limit = Math.min(job.batchSize, cap);
-	const cache = new LookupCache();
+	const cache = new LookupCache(job.dryRun ? (job.plannedTerms ?? []) : []);
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {
@@ -759,7 +760,22 @@ export async function runBatch(
 			throw e;
 		}
 	}
+	keepPlannedTerms(job, cache);
 	return release(deps, job, holder, outcome);
+}
+
+const PLANNED_OVERFLOW_WARNING =
+	"The dry run no longer tracks planned terms across batches: it would create more than 5,000";
+
+/** Adds the terms this dry-run batch planned to the job, which the release saves. */
+function keepPlannedTerms(job: Job, cache: LookupCache): void {
+	if (!job.dryRun) return;
+	if (cache.newPlanned.length > 0) {
+		job.plannedTerms = [...(job.plannedTerms ?? []), ...cache.newPlanned];
+	}
+	if (cache.plannedOverflow && !job.warnings?.includes(PLANNED_OVERFLOW_WARNING)) {
+		job.warnings = [...(job.warnings ?? []), PLANNED_OVERFLOW_WARNING];
+	}
 }
 
 const MAX_FAILURES = 3;

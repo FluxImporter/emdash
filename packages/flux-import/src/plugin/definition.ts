@@ -19,7 +19,13 @@ export type FluxImportOptions = Record<string, never>;
 export const STORAGE = {
 	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
 	records: {
-		indexes: ["jobId", ["jobId", "status"], ["jobId", "seq"], ["jobId", "status", "seq"]],
+		indexes: [
+			"jobId",
+			["jobId", "status"],
+			["jobId", "seq"],
+			["jobId", "status", "seq"],
+			["jobId", "sourceKey"],
+		],
 	},
 	links: { indexes: ["entryId"] },
 	sources: { indexes: ["name", "createdAt"] },

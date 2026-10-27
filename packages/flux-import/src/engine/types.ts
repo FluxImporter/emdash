@@ -21,6 +21,14 @@ export interface Counters {
 	filtered: number;
 }
 
+/** A term a dry run plans to create, kept on the job so later batches see it. */
+export type PlannedTerm = {
+	taxonomy: string;
+	/** The path from the root: slugs in `slug` mode, labels in `label` mode. */
+	path: string[];
+	match: "slug" | "label";
+};
+
 export interface Job {
 	id: string;
 	status: JobStatus;
@@ -52,6 +60,11 @@ export interface Job {
 	siteTimezone?: string;
 	/** The mapped taxonomies as they were at job creation; absent when none are mapped. */
 	taxonomies?: Record<string, TaxonomySnapshot>;
+	/**
+	 * A dry run's terms that earlier batches planned to create, so later batches see them as a
+	 * real run would; capped at `MAX_PLANNED_TERMS`. Absent outside dry runs.
+	 */
+	plannedTerms?: PlannedTerm[];
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

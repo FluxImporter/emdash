@@ -55,6 +55,7 @@ describe("createPlugin", () => {
 			["jobId", "status"],
 			["jobId", "seq"],
 			["jobId", "status", "seq"],
+			["jobId", "sourceKey"],
 		]);
 		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);

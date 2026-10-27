@@ -357,6 +357,84 @@ describe("importing links", () => {
 		expect(ok).not.toHaveProperty("newTerms");
 	});
 
+	it("keeps the terms of every attempt on a retried row", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		deps.content.failWrite = () => new ContentWriteError("emdash_validation_error", "Invalid");
+		const csv = `${HEADER}A1,Desk,acme,,Garden,new,alex\n`;
+		const job = await start(deps, csv);
+		await runToEnd(deps, job.id);
+		deps.content.failWrite = () => null;
+		await transitionJob(deps, job.id, "retry");
+		await runToEnd(deps, job.id);
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({ status: "created", newTerms: ["category: Garden"] });
+	});
+
+	it("carries a dry run's planned terms across batches, so it agrees with a real run", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const nested = { taxonomies: { category: { from: "Category", hierarchy: "/", create: true } } };
+		const csv = `${HEADER}A1,a,,,electronics/phones,,\nA2,b,,,garden/phones,,\nA3,c,,,electronics/phones,,\n`;
+		const run = async (dryRun: boolean) => {
+			const job = await start(deps, csv, { dryRun, extra: nested });
+			await deps.jobs.put(job.id, { ...job, batchSize: 1 });
+			const done = await runToEnd(deps, job.id);
+			return { done, rows: await rows(deps, job.id) };
+		};
+		const dry = await run(true);
+		const real = await run(false);
+		// "electronics" exists; only "phones" is new, and it may sit under one parent.
+		for (const result of [dry, real]) {
+			expect(result.rows.map((r) => r.status)).toEqual([
+				result.rows[0]!.status,
+				"failed",
+				result.rows[2]!.status,
+			]);
+			expect(result.rows[1]?.errors?.[0]?.code).toBe("term_path_mismatch");
+		}
+		expect(dry.rows.map((r) => r.newTerms)).toEqual(real.rows.map((r) => r.newTerms));
+		expect(dry.done.counters).toMatchObject({ created: 2, failed: 1 });
+	});
+
+	it("stops keeping planned terms at the cap and warns once", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const nested = { taxonomies: { category: { from: "Category", hierarchy: "/", create: true } } };
+		const csv = `${HEADER}A1,a,,,a1,,\nA2,b,,,a2,,\n`;
+		const job = await start(deps, csv, { dryRun: true, extra: nested });
+		const full = Array.from({ length: 5000 }, (_, i) => ({
+			taxonomy: "category",
+			path: [`p${i}`],
+			match: "slug" as const,
+		}));
+		await deps.jobs.put(job.id, { ...job, batchSize: 1, plannedTerms: full });
+		const done = await runToEnd(deps, job.id);
+		expect(done.plannedTerms).toHaveLength(5000);
+		expect(done.warnings?.filter((w) => w.startsWith("The dry run no longer tracks"))).toHaveLength(
+			1,
+		);
+	});
+
+	it("looks a planned key up once per distinct key and batch", async () => {
+		const { deps } = makeDeps();
+		await seed(deps);
+		const csv = `${HEADER}C1,One,,,,,\nC2,Two,,C1,,,\nC3,Three,,C1,,,\nC4,Four,,C1|X9,,,\nC5,Five,,X9,,,\n`;
+		const job = await start(deps, csv, { dryRun: true });
+		await deps.jobs.put(job.id, { ...job, batchSize: 2 });
+		const keys: unknown[] = [];
+		const query = deps.records.query.bind(deps.records);
+		deps.records.query = async (opts) => {
+			const key = (opts.where as { sourceKey?: string } | undefined)?.sourceKey;
+			if (key !== undefined) keys.push(key);
+			return query(opts);
+		};
+		await runToEnd(deps, job.id);
+		// Batch 1 (C1, C2): C1 is planned in the batch. Batch 2 (C3, C4): C1 and X9 once each.
+		// Batch 3 (C5): X9 again.
+		expect(keys).toEqual(["C1", "X9", "X9"]);
+	});
+
 	it("leaves jobs of templates without links as before", async () => {
 		const { deps } = makeDeps();
 		deps.source.add("p1", "sku,Name\nA1,Desk\n");

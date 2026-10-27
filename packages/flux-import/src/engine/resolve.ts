@@ -20,10 +20,12 @@ import {
 	type TermInfo,
 } from "./ports.js";
 import { slugify, type TargetField, type Template } from "./template.js";
-import { type LinkRow, linkKey } from "./types.js";
+import { type LinkRow, linkKey, type PlannedTerm } from "./types.js";
 
 /** Bylines loaded per batch at most; a lookup this set cannot answer is `byline_lookup_limit`. */
 export const MAX_BYLINE_LOOKUP = 5000;
+/** The most planned term paths a dry run keeps on its job. */
+export const MAX_PLANNED_TERMS = 5000;
 
 export type { ResolvedItem, ResolvedLinks };
 
@@ -110,10 +112,20 @@ export class LookupCache {
 	readonly terms = new Map<string, TermIndex>();
 	/** Terms a dry run would have created, numbered for their placeholder IDs. */
 	planned = 0;
-	/** A dry run's keys planned for creation in the job's collection, once loaded. */
-	plannedKeys: Set<string> | null = null;
+	/** A dry run's lookups of keys planned for creation in the job's collection, by key. */
+	readonly plannedKeys = new Map<string, boolean>();
+	/** The terms earlier batches of this dry run planned (from the job); replayed on indexing. */
+	readonly priorPlanned: readonly PlannedTerm[];
+	/** The terms this batch planned, for the job to keep. */
+	readonly newPlanned: PlannedTerm[] = [];
+	/** Some planned term was not kept because the job already holds `MAX_PLANNED_TERMS`. */
+	plannedOverflow = false;
 	bylines: BylineIndex | null = null;
 	readonly entries = new Map<string, { id: string; group: string }>();
+
+	constructor(priorPlanned: readonly PlannedTerm[] = []) {
+		this.priorPlanned = priorPlanned;
+	}
 }
 
 /** A matched term, or why there is none; `missing` lists the path's segments still to create. */
@@ -222,8 +234,65 @@ async function termIndex(
 	if (!index) {
 		index = new TermIndex(await deps.lookups.terms(taxonomy, locale));
 		cache.terms.set(taxonomy, index);
+		replayPlanned(index, cache, taxonomy);
 	}
 	return index;
+}
+
+/** The term at `segment` under `parent`, by slug or by label; null when none or ambiguous. */
+function findSegment(
+	index: TermIndex,
+	match: "slug" | "label",
+	parent: TermInfo | null,
+	segment: string,
+): TermInfo | null {
+	if (match === "slug") {
+		const bySlug = index.bySlug.get(segment);
+		return bySlug && bySlug.parentId === (parent?.group ?? null) ? bySlug : null;
+	}
+	const found = byLabel(index.childrenOf(parent), segment);
+	return found === "ambiguous" ? null : found;
+}
+
+/** A dry run's stand-in for a term it would create; never sent to EmDash. */
+function addPlaceholder(
+	index: TermIndex,
+	cache: LookupCache,
+	match: "slug" | "label",
+	parent: TermInfo | null,
+	segment: string,
+): TermInfo {
+	const id = `${PLANNED}${++cache.planned}`;
+	const slug = match === "slug" ? segment : slugify(segment);
+	const term = { id, slug, label: segment, parentId: parent?.group ?? null, group: id };
+	index.add(term);
+	return term;
+}
+
+/** Adds the placeholders for the terms earlier batches of this dry run planned. */
+function replayPlanned(index: TermIndex, cache: LookupCache, taxonomy: string): void {
+	for (const planned of cache.priorPlanned) {
+		if (planned.taxonomy !== taxonomy) continue;
+		let parent: TermInfo | null = null;
+		for (const segment of planned.path) {
+			let term = findSegment(index, planned.match, parent, segment);
+			if (!term) {
+				// A slug that now sits elsewhere is a clash the record itself reports.
+				if (planned.match === "slug" && index.bySlug.has(segment)) break;
+				term = addPlaceholder(index, cache, planned.match, parent, segment);
+			}
+			parent = term;
+		}
+	}
+}
+
+/** Keeps a planned path for the job's later batches, up to the cap. */
+function keepPlanned(cache: LookupCache, planned: PlannedTerm): void {
+	if (cache.priorPlanned.length + cache.newPlanned.length >= MAX_PLANNED_TERMS) {
+		cache.plannedOverflow = true;
+		return;
+	}
+	cache.newPlanned.push(planned);
 }
 
 const labelPath = (terms: readonly { label: string }[]) => terms.map((t) => t.label).join(" > ");
@@ -313,23 +382,15 @@ async function createPath(
 ): Promise<{ ok: true; term: TermInfo } | { ok: false; message: string }> {
 	const locale = ctx.template.locale;
 	let parent = start;
+	let plannedAny = false;
 	for (const segment of missing) {
 		let index = await termIndex(deps, cache, taxonomy, locale);
 		const under = parent;
-		const find = (ix: TermIndex): TermInfo | null => {
-			if (match === "slug") {
-				const bySlug = ix.bySlug.get(segment);
-				return bySlug && bySlug.parentId === (under?.group ?? null) ? bySlug : null;
-			}
-			const byLabelled = byLabel(ix.childrenOf(under), segment);
-			return byLabelled === "ambiguous" ? null : byLabelled;
-		};
+		const find = (ix: TermIndex) => findSegment(ix, match, under, segment);
 		let term = find(index);
 		if (!term && ctx.dryRun) {
-			const id = `${PLANNED}${++cache.planned}`;
-			const slug = match === "slug" ? segment : slugify(segment);
-			term = { id, slug, label: segment, parentId: parent?.group ?? null, group: id };
-			index.add(term);
+			term = addPlaceholder(index, cache, match, parent, segment);
+			plannedAny = true;
 			created.push(`${taxonomy}: ${labelPath(index.pathOf(term))}`);
 		}
 		if (!term) {
@@ -356,6 +417,11 @@ async function createPath(
 			}
 		}
 		parent = term;
+	}
+	if (plannedAny && parent) {
+		const index = cache.terms.get(taxonomy) as TermIndex;
+		const path = index.pathOf(parent).map((t) => (match === "slug" ? t.slug : t.label));
+		keepPlanned(cache, { taxonomy, path, match });
 	}
 	return { ok: true, term: parent as TermInfo };
 }
