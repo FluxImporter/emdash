@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EmDashStorageError } from "emdash";
 import type { UploadStorage } from "../../src/emdash/uploads.js";
 import {
@@ -9,6 +10,9 @@ import {
 	type KvCollection,
 	type LinkWrites,
 	type LookupPort,
+	type MediaInfo,
+	type MediaPort,
+	type MediaUploadError,
 	SourceMissingError,
 	type SourcePort,
 	type TaxonomyDef,
@@ -16,9 +20,15 @@ import {
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
-import type { EngineDeps, Job, LinkRow, RecordRow } from "../../src/engine/types.js";
+import type { EngineDeps, Job, LinkRow, MediaMapRow, RecordRow } from "../../src/engine/types.js";
 import type { CredentialSettings } from "../../src/plugin/credentials.js";
 import { dropBytes } from "../../src/sources/csv.js";
+import {
+	MediaError,
+	type MediaFetcher,
+	type MediaFetchOptions,
+	type MediaFetchResult,
+} from "../../src/sources/media-fetch.js";
 import { streamOf } from "./helpers.js";
 
 function matches(data: Record<string, unknown>, where: Where): boolean {
@@ -405,6 +415,123 @@ export class FakeSource implements SourcePort {
 	}
 }
 
+type StoredMedia = MediaInfo & { status: string; hash: string };
+
+/**
+ * In-memory media library: identical bytes (by SHA-1, as EmDash) give the ready item already
+ * stored, whose alt is left as it was. Images are 4 x 3 with a blurhash.
+ */
+export class FakeMedia implements MediaPort {
+	readonly items = new Map<string, StoredMedia>();
+	readonly calls: string[] = [];
+	/** Return an error to make this upload fail. */
+	failUpload: (input: { filename: string; contentType: string }) => MediaUploadError | null = () =>
+		null;
+	private next = 0;
+
+	async get(id: string) {
+		this.calls.push(`get:${id}`);
+		return this.info(id);
+	}
+
+	private info(id: string): MediaInfo | null {
+		const item = this.items.get(id);
+		if (item?.status !== "ready") return null;
+		const { status: _s, hash: _h, ...info } = item;
+		return structuredClone(info);
+	}
+
+	async upload(input: { filename: string; contentType: string; bytes: Uint8Array; alt?: string }) {
+		this.calls.push(`upload:${input.filename}`);
+		const failure = this.failUpload(input);
+		if (failure) throw failure;
+		const hash = createHash("sha1").update(input.bytes).digest("hex");
+		for (const item of this.items.values()) {
+			if (item.hash === hash && item.status === "ready") {
+				return { item: this.info(item.id) as MediaInfo, deduplicated: true };
+			}
+		}
+		const n = ++this.next;
+		const image = input.contentType.startsWith("image/");
+		const extension = input.filename.slice(input.filename.lastIndexOf("."));
+		this.items.set(`m${n}`, {
+			id: `m${n}`,
+			filename: input.filename,
+			mimeType: input.contentType,
+			size: input.bytes.byteLength,
+			width: image ? 4 : null,
+			height: image ? 3 : null,
+			alt: input.alt ?? null,
+			storageKey: `K${n}${extension}`,
+			blurhash: image ? `bh${n}` : null,
+			dominantColor: image ? "rgb(1,2,3)" : null,
+			status: "ready",
+			hash,
+		});
+		return { item: this.info(`m${n}`) as MediaInfo, deduplicated: false };
+	}
+}
+
+/** What the fake server answers for a URL. */
+export type FakeFile = {
+	body: string | Uint8Array;
+	contentType?: string | null;
+	etag?: string;
+	/** How long the download takes on the test clock. */
+	ms?: number;
+	/** Fail the download with this error instead. */
+	error?: MediaError;
+	/** The URL that answered, after redirects. */
+	finalUrl?: string;
+};
+
+/**
+ * `MediaFetcher` over a map of URLs. A URL not in it answers 404; a matching `etag` answers
+ * 304; `ms` advances the test clock. Hosts in `blocked` fail the host check.
+ */
+export class FakeMediaFetcher implements MediaFetcher {
+	readonly files = new Map<string, FakeFile>();
+	readonly blocked = new Set<string>();
+	readonly calls: { url: string; options: MediaFetchOptions }[] = [];
+
+	constructor(private readonly clock: { t: number }) {}
+
+	checkHost(url: string) {
+		const host = new URL(url).hostname;
+		if (this.blocked.has(host))
+			throw new MediaError("media_blocked", `The host ${host} is not allowed`);
+	}
+
+	async fetch(url: string, options: MediaFetchOptions): Promise<MediaFetchResult> {
+		this.calls.push({ url, options });
+		this.checkHost(url);
+		const file = this.files.get(url);
+		if (!file) throw new MediaError("media_http_error", "The server answered HTTP 404");
+		this.clock.t += file.ms ?? 0;
+		if (file.error) throw file.error;
+		if (options.etag !== undefined && options.etag === file.etag) return { status: 304 };
+		const bytes = typeof file.body === "string" ? new TextEncoder().encode(file.body) : file.body;
+		if (bytes.byteLength > options.maxBytes) {
+			throw new MediaError(
+				"media_too_large",
+				`The file is larger than the limit of ${options.maxBytes} bytes`,
+			);
+		}
+		return {
+			status: 200,
+			bytes,
+			contentType: file.contentType === undefined ? "application/octet-stream" : file.contentType,
+			finalUrl: file.finalUrl ?? url,
+			...(file.etag === undefined ? {} : { etag: file.etag }),
+		};
+	}
+
+	/** The URLs downloaded, in order. */
+	urls(): string[] {
+		return this.calls.map((c) => c.url);
+	}
+}
+
 export function makeDeps(opts: { clock?: { t: number } } = {}) {
 	const clock = opts.clock ?? { t: Date.parse("2026-10-07T10:00:00Z") };
 	let id = 0;
@@ -415,8 +542,11 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 		jobs: new MemoryKv<Job>(),
 		records: new MemoryKv<RecordRow>(),
 		links: new MemoryKv<LinkRow>(),
+		mediaMap: new MemoryKv<MediaMapRow>(),
 		content,
 		lookups,
+		media: new FakeMedia(),
+		mediaFetcher: new FakeMediaFetcher(clock),
 		source: new FakeSource(),
 		now: () => clock.t,
 		newId: () => `id${++id}`,

@@ -60,6 +60,7 @@ describe("createPlugin", () => {
 		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
+		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);
 	});
 
 	it("has the retention setting, the activate hook and the cron hook", () => {

@@ -14,7 +14,8 @@ export type FluxImportOptions = Record<string, never>;
  * Every field a query filters or sorts on is indexed (plugin storage rejects others,
  * `emdash` src/plugins/storage-query.ts:113-127). `jobs.uploadId` and `jobs.sourceUploadId` let a
  * finished job check whether another job still needs its staged file (or the workbook an XLSX
- * job was converted from) before deleting it.
+ * job was converted from) before deleting it. `media` is the site-wide media map; its
+ * `jobId` and `mediaId` indexes let a job's own media be listed (M5 rollback, audit).
  */
 export const STORAGE = {
 	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
@@ -29,6 +30,7 @@ export const STORAGE = {
 	},
 	links: { indexes: ["entryId"] },
 	sources: { indexes: ["name", "createdAt"] },
+	media: { indexes: ["jobId", "mediaId"] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {

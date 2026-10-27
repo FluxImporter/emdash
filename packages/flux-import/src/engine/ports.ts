@@ -180,6 +180,37 @@ export interface LookupPort {
 	): Promise<{ id: string; group: string } | null>;
 }
 
+/** A media library item (`MediaItem`, `emdash` src/database/repositories/media.ts:57-76). */
+export interface MediaInfo {
+	id: string;
+	filename: string;
+	mimeType: string;
+	size: number | null;
+	width: number | null;
+	height: number | null;
+	/** The library's default alt text. */
+	alt: string | null;
+	storageKey: string;
+	blurhash: string | null;
+	dominantColor: string | null;
+}
+
+/** The media library, through the trusted runtime. */
+export interface MediaPort {
+	/** The item when it exists and is ready, else null; throws `ContentWriteError` on read errors. */
+	get(id: string): Promise<MediaInfo | null>;
+	/**
+	 * Stores the bytes, or finds identical bytes already stored (`deduplicated`, whose alt is
+	 * left as it was). Throws `MediaUploadError` with EmDash's code.
+	 */
+	upload(input: {
+		filename: string;
+		contentType: string;
+		bytes: Uint8Array;
+		alt?: string;
+	}): Promise<{ item: MediaInfo; deduplicated: boolean }>;
+}
+
 export interface SourcePort {
 	/**
 	 * An offset at or past the source size yields an empty stream. EmDash's ranged download returns
@@ -195,6 +226,17 @@ export class ContentWriteError extends Error {
 	) {
 		super(message);
 		this.name = "ContentWriteError";
+	}
+}
+
+/** EmDash refused an upload; `code` is EmDash's (`PAYLOAD_TOO_LARGE`, `INVALID_TYPE`, …). */
+export class MediaUploadError extends Error {
+	constructor(
+		readonly code: string,
+		message: string,
+	) {
+		super(message);
+		this.name = "MediaUploadError";
 	}
 }
 

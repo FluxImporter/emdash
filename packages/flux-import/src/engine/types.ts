@@ -1,6 +1,7 @@
+import type { MediaFetcher } from "../sources/media-fetch.js";
 import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
-import type { ContentPort, KvCollection, LookupPort, SourcePort } from "./ports.js";
+import type { ContentPort, KvCollection, LookupPort, MediaPort, SourcePort } from "./ports.js";
 import type { TaxonomySnapshot, Template } from "./template.js";
 import type { TargetField } from "./values.js";
 
@@ -138,12 +139,36 @@ export interface LinkRow {
 	writtenRev?: string;
 }
 
+/**
+ * What a media URL became, in the site-wide media map (plugin storage `media`, keyed by
+ * `mediaMapKey`). Written as soon as an upload succeeds; never purged by retention.
+ */
+export interface MediaMapRow {
+	/** The normalized URL. */
+	url: string;
+	mediaId: string;
+	storageKey: string;
+	mimeType: string;
+	bytes: number;
+	/** Validators of the download, for `refresh`. */
+	etag?: string;
+	lastModified?: string;
+	fetchedAt: string;
+	/** The job that last downloaded it. */
+	jobId: string;
+	/** The upload made a new item rather than finding identical bytes already stored. */
+	created: boolean;
+}
+
 export interface EngineDeps {
 	jobs: KvCollection<Job>;
 	records: KvCollection<RecordRow>;
 	links: KvCollection<LinkRow>;
+	mediaMap: KvCollection<MediaMapRow>;
 	content: ContentPort;
 	lookups: LookupPort;
+	media: MediaPort;
+	mediaFetcher: MediaFetcher;
 	source: SourcePort;
 	now: () => number;
 	newId: () => string;
