@@ -71,6 +71,8 @@ const referencePage = z.object({
 	children: z.array(
 		z.object({ id: z.string(), translationGroup: z.string().nullable().optional() }),
 	),
+	/** Set when more references exist than the page holds. */
+	nextCursor: z.string().nullable().optional(),
 });
 
 /** A byline credit as `hydrateBylines` gives it (src/api/handlers/content.ts:312-353). */
@@ -150,6 +152,14 @@ function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string
 						]),
 					),
 				}),
+		...(item.references !== undefined &&
+		Object.values(item.references).some((page) => page.nextCursor)
+			? {
+					referencesTruncated: Object.entries(item.references)
+						.filter(([, page]) => page.nextCursor)
+						.map(([field]) => field),
+				}
+			: {}),
 		...(item.bylines === undefined
 			? {}
 			: {

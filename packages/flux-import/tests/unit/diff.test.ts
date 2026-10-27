@@ -200,6 +200,17 @@ describe("planRecord with links", () => {
 		return planRecord(entry, record, new Map(), links);
 	};
 
+	it("treats a truncated reference field as changed even when the visible page matches", () => {
+		const current: CurrentLinks = {
+			references: { related: [cur("p1")] },
+			referencesTruncated: ["related"],
+		};
+		expect(plan({ references: { related: [item("p1")] } }, current)).toEqual({
+			action: "update",
+			changes: [{ field: "related", before: ["p1"], after: ["p1"] }],
+		});
+	});
+
 	it("compares taxonomies as sets, parent-side references and bylines in order", () => {
 		const current: CurrentLinks = {
 			taxonomies: { category: [cur("g1", "news"), cur("g2", "tech")] },

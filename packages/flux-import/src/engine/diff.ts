@@ -62,6 +62,8 @@ export type CurrentItem = { group: string; text: string };
 export type CurrentLinks = {
 	taxonomies?: Record<string, CurrentItem[]>;
 	references?: Record<string, CurrentItem[]>;
+	/** Reference fields with more selections than were read: they always compare as changed. */
+	referencesTruncated?: readonly string[];
 	bylines?: CurrentItem[];
 };
 
@@ -104,15 +106,22 @@ function linkChanges(links: LinkPlan, exists: boolean): Change[] {
 		before: readonly CurrentItem[],
 		after: readonly ResolvedItem[],
 		ordered: boolean,
+		truncated = false,
 	) => {
 		if (!exists) {
 			if (after.length > 0) changes.push({ field, before: null, after: texts(after) });
-		} else if (!sameLinks(before, after, ordered)) {
+		} else if (truncated || !sameLinks(before, after, ordered)) {
 			changes.push({ field, before: texts(before), after: texts(after) });
 		}
 	};
 	for (const [field, after] of Object.entries(resolved.references ?? {})) {
-		compare(field, current.references?.[field] ?? [], after, !links.childSide.has(field));
+		compare(
+			field,
+			current.references?.[field] ?? [],
+			after,
+			!links.childSide.has(field),
+			current.referencesTruncated?.includes(field),
+		);
 	}
 	for (const [taxonomy, after] of Object.entries(resolved.taxonomies ?? {})) {
 		compare(`taxonomies.${taxonomy}`, current.taxonomies?.[taxonomy] ?? [], after, false);

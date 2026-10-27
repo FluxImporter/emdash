@@ -57,6 +57,8 @@ export interface EntrySnapshot {
 	 * read with `references`.
 	 */
 	references?: Record<string, LinkedEntry[]>;
+	/** Reference fields holding more than the first page read; absent when none does. */
+	referencesTruncated?: string[];
 	/** The entry's explicit byline credits in its locale (not the author fallback). */
 	bylines?: BylineCredit[];
 }

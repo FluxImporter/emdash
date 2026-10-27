@@ -336,6 +336,22 @@ describe("EmDashContent links", () => {
 		expect(found?.references).toEqual(linked?.references);
 	});
 
+	it("marks reference fields with more selections than the page read", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "posts", locale: "en", data: { title: "A" } });
+		const base = runtime.handleContentGet.bind(runtime);
+		runtime.handleContentGet = async (c: string, id: string) => {
+			const result = await base(c, id);
+			(result.data as { item: Record<string, unknown> }).item.references = {
+				related: { children: [{ id: "p2" }], nextCursor: "c" },
+				other: { children: [{ id: "p3" }] },
+			};
+			return result;
+		};
+		const got = await content.get("posts", "en", "e1", { references: true });
+		expect(got?.referencesTruncated).toEqual(["related"]);
+	});
+
 	it("leaves out an inferred byline, which the entry was not given", async () => {
 		const { runtime, content } = setup();
 		await content.create({ collection: "posts", locale: "en", data: { title: "A" } });
