@@ -1,3 +1,4 @@
+import type { ResolvedItem, ResolvedLinks } from "./links.js";
 import type { FieldValue, MappedRecord, Template } from "./template.js";
 
 export type Change = { field: string; before: unknown; after: FieldValue };
@@ -54,10 +55,83 @@ function same(before: unknown, after: FieldValue, how: Comparison): boolean {
 	}
 }
 
+/** One link the entry holds now: its translation group and how the record shows it. */
+export type CurrentItem = { group: string; text: string };
+
+/** What the entry holds now for the links the template maps; a link not given is empty. */
+export type CurrentLinks = {
+	taxonomies?: Record<string, CurrentItem[]>;
+	references?: Record<string, CurrentItem[]>;
+	bylines?: CurrentItem[];
+};
+
+/** A record's resolved links and the entry's current ones, for `planRecord`. */
+export type LinkPlan = {
+	resolved: ResolvedLinks;
+	current: CurrentLinks;
+	/** Reference fields on the child side of their relation, which keep no order. */
+	childSide: ReadonlySet<string>;
+};
+
+/**
+ * Whether the entry already holds the resolved items: the same translation groups, in order or
+ * as a set. A term not created yet (a dry run) is always a change.
+ */
+function sameLinks(
+	current: readonly CurrentItem[],
+	next: readonly ResolvedItem[],
+	ordered: boolean,
+) {
+	if (next.some((item) => item.group === null) || current.length !== next.length) return false;
+	if (ordered) return current.every((item, i) => item.group === next[i]?.group);
+	const groups = new Set(current.map((item) => item.group));
+	return groups.size === next.length && next.every((item) => groups.has(item.group as string));
+}
+
+const texts = (items: readonly { text: string }[]) =>
+	items.length === 0 ? null : items.map((item) => item.text);
+
+/**
+ * The link changes, in order: reference fields, taxonomies (`taxonomies.<name>`), bylines.
+ * Taxonomies and child-side references compare as sets, the rest in order; an empty value equals
+ * an empty current link. Without a current entry, every non-empty link is a change.
+ */
+function linkChanges(links: LinkPlan, exists: boolean): Change[] {
+	const { resolved, current } = links;
+	const changes: Change[] = [];
+	const compare = (
+		field: string,
+		before: readonly CurrentItem[],
+		after: readonly ResolvedItem[],
+		ordered: boolean,
+	) => {
+		if (!exists) {
+			if (after.length > 0) changes.push({ field, before: null, after: texts(after) });
+		} else if (!sameLinks(before, after, ordered)) {
+			changes.push({ field, before: texts(before), after: texts(after) });
+		}
+	};
+	for (const [field, after] of Object.entries(resolved.references ?? {})) {
+		compare(field, current.references?.[field] ?? [], after, !links.childSide.has(field));
+	}
+	for (const [taxonomy, after] of Object.entries(resolved.taxonomies ?? {})) {
+		compare(`taxonomies.${taxonomy}`, current.taxonomies?.[taxonomy] ?? [], after, false);
+	}
+	if (resolved.bylines !== undefined) {
+		compare("bylines", current.bylines ?? [], resolved.bylines, true);
+	}
+	return changes;
+}
+
+/**
+ * The record's plan: `create` without a current entry, else `update` when the slug, a data
+ * field or a link differs, else `unchanged`. `links` is given when the template maps links.
+ */
 export function planRecord(
 	current: CurrentEntry | null,
 	next: MappedRecord,
 	comparisons: ReadonlyMap<string, Comparison>,
+	links?: LinkPlan,
 ): RecordPlan {
 	const changes: Change[] = [];
 	if (current === null) {
@@ -65,6 +139,7 @@ export function planRecord(
 		for (const [field, after] of Object.entries(next.data)) {
 			if (after !== null) changes.push({ field, before: null, after });
 		}
+		if (links) changes.push(...linkChanges(links, false));
 		return { action: "create", changes };
 	}
 	if (next.slug !== undefined && current.slug !== next.slug) {
@@ -75,6 +150,7 @@ export function planRecord(
 		if (!same(before, after, comparisons.get(field) ?? "plain"))
 			changes.push({ field, before: before ?? null, after });
 	}
+	if (links) changes.push(...linkChanges(links, true));
 	return { action: changes.length === 0 ? "unchanged" : "update", changes };
 }
 
