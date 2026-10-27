@@ -32,6 +32,9 @@ export interface Product {
 	data: Record<string, unknown>;
 	draftRevisionId: string | null;
 	liveRevisionId: string | null;
+	/** Reference selections (the first page), a staged draft selection first. */
+	references?: Record<string, { children: { id: string; translationGroup: string | null }[] }>;
+	bylines?: { byline: { slug: string }; roleLabel: string | null; source: string }[];
 }
 
 /** HTTP client for the dev site with an Admin PAT (Bearer tokens skip the CSRF header). */
@@ -166,6 +169,15 @@ export class Client {
 			"GET",
 			`/_emdash/api/content/${collection}/${id}?locale=en`,
 		);
+	}
+
+	/** The slugs of the entry's terms in one taxonomy. */
+	async entryTerms(collection: string, id: string, taxonomy: string): Promise<string[]> {
+		const data = await this.api<{ terms: { slug: string }[] }>(
+			"GET",
+			`/_emdash/api/content/${collection}/${id}/terms/${taxonomy}`,
+		);
+		return data.terms.map((t) => t.slug);
 	}
 
 	async runToEnd(id: string, maxBatches = 1000): Promise<Job> {
