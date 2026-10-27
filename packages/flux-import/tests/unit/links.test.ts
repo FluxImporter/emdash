@@ -44,6 +44,27 @@ describe("linkItems", () => {
 	});
 });
 
+describe("linkItems at scale", () => {
+	it("dedupes and limits 200k items without quadratic work", () => {
+		const text = Array.from({ length: 200_000 }, (_, i) => `i${i % 150_000}`).join(",");
+		const start = Date.now();
+		expect(referenceConverter({}, multiple)(text)).toEqual({
+			ok: false,
+			code: "too_many_items",
+			message: "150000 items; at most 50 are allowed",
+		});
+		expect(Date.now() - start).toBeLessThan(2000);
+	});
+
+	it("words a too-long flat term without levels", () => {
+		const flat = taxonomyConverter({}, { hierarchical: false })("x".repeat(201));
+		expect(flat).toMatchObject({
+			ok: false,
+			message: expect.stringContaining("is longer than 200"),
+		});
+	});
+});
+
 describe("referenceConverter", () => {
 	it("gives the items, or null when there are none", () => {
 		const convert = referenceConverter({}, multiple);

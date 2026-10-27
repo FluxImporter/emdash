@@ -96,6 +96,7 @@ export function linkItems(
 		parts = text.split(separator);
 	}
 	const items: string[] = [];
+	const seen = new Set<string>();
 	for (const part of parts) {
 		const text = scalarText(part);
 		if (text === null) {
@@ -106,7 +107,10 @@ export function linkItems(
 			};
 		}
 		const trimmed = text.trim();
-		if (trimmed !== "" && !items.includes(trimmed)) items.push(trimmed);
+		if (trimmed !== "" && !seen.has(trimmed)) {
+			seen.add(trimmed);
+			items.push(trimmed);
+		}
 	}
 	return { ok: true, items };
 }
@@ -176,7 +180,7 @@ export function taxonomyConverter(
 					: path.some((s) => s === "")
 						? "has an empty level"
 						: path.some((s) => s.length > MAX_ITEM_LENGTH)
-							? `has a level longer than ${MAX_ITEM_LENGTH} characters`
+							? `${hierarchical ? "has a level" : "is"} longer than ${MAX_ITEM_LENGTH} characters`
 							: null;
 			if (problem !== null) {
 				return {
