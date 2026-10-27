@@ -26,6 +26,7 @@ import {
 } from "./credentials.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
+import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
 import {
 	changeJob,
 	getJob,
@@ -245,6 +246,32 @@ const createInput = z
 		message: "Set exactly one of uploadId and sourceId",
 	});
 
+/** Slugs, label lengths, options and indexing are checked by `applySchema` (one message each). */
+const applyField = z
+	.object({
+		slug: z.string(),
+		type: z.enum(APPLY_FIELD_TYPES),
+		label: z.string().optional(),
+		options: z.array(z.string()).optional(),
+		indexed: z.boolean().optional(),
+		searchable: z.boolean().optional(),
+		translatable: z.boolean().optional(),
+	})
+	.strict();
+
+const applyInput = z
+	.object({
+		collection: z.string().min(1).max(63).optional(),
+		fields: z.array(applyField).min(1).max(MAX_APPLY_FIELDS).optional(),
+		template: z.unknown().optional(),
+		addOptions: z.boolean().optional(),
+		dryRun: z.boolean().optional(),
+	})
+	.strict()
+	.refine((input) => (input.fields === undefined) !== (input.template === undefined), {
+		message: "Set exactly one of fields and template",
+	});
+
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
 		withServices(ctx, ({ deps, uploads, keep }) =>
@@ -429,4 +456,9 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/log.csv": logCsv,
+
+	// Additive only: creates missing fields and adds missing select options.
+	"schema/apply": route(applyInput, (ctx) =>
+		withServices(ctx, ({ runtime }) => applySchema(runtime.schemaRegistry, ctx.input)),
+	),
 };
