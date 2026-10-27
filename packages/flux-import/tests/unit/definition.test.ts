@@ -75,6 +75,10 @@ describe("createPlugin", () => {
 			"content:write",
 			"content:publish",
 			"schema:read",
+			"taxonomies:write",
+			"bylines:read",
+			// definePlugin adds the read capability that taxonomies:write implies.
+			"taxonomies:read",
 		]);
 	});
 

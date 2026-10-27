@@ -5,6 +5,7 @@ import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/conf
 import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
+import { EmDashLookups } from "../emdash/lookups.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
 import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
@@ -195,6 +196,7 @@ async function withServices<T>(
 			content: new EmDashContent(runtime, actor, (collection, entryId, userId) =>
 				isEntryLocked(runtime.db, collection, entryId, userId),
 			),
+			lookups: new EmDashLookups(ctx.taxonomies, ctx.bylines, runtime),
 			source: uploads,
 			now: Date.now,
 			newId: () => ulid(),

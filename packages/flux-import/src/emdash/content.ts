@@ -66,6 +66,7 @@ const itemResult = z.object({
 		slug: z.string().nullable(),
 		status: z.string(),
 		locale: z.string().nullable().optional(),
+		translationGroup: z.string().nullable().optional(),
 		data: z.record(z.string(), z.unknown()),
 		draftRevisionId: z.string().nullable().optional(),
 	}),
@@ -89,7 +90,7 @@ function parse<T>(schema: z.ZodType<T>, data: unknown, op: string): T {
  * handlers, src/api/handlers/content.ts:1006, :1413, :1709) becomes `collection_missing`, which
  * fails the job rather than each record.
  */
-function writeError(op: string, error: HandlerResult["error"]): ContentWriteError {
+export function writeError(op: string, error: HandlerResult["error"]): ContentWriteError {
 	const code = error?.code ?? "UNKNOWN_ERROR";
 	if (code === "COLLECTION_NOT_FOUND") {
 		return new ContentWriteError("collection_missing", `${op} failed: ${error?.message ?? code}`);
@@ -109,6 +110,7 @@ function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string
 		// (hydrateDraftData without includeStagedSlug, src/emdash-runtime.ts:3389-3442).
 		slug: item.slug,
 		data: item.data,
+		...(item.translationGroup ? { group: item.translationGroup } : {}),
 		locale: item.locale ?? null,
 		pendingPublish: item.status !== "published" || (item.draftRevisionId ?? null) !== null,
 	};

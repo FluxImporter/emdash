@@ -1,6 +1,6 @@
 import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
-import type { ContentPort, KvCollection, SourcePort } from "./ports.js";
+import type { ContentPort, KvCollection, LookupPort, SourcePort } from "./ports.js";
 import type { Template } from "./template.js";
 import type { TargetField } from "./values.js";
 
@@ -113,6 +113,7 @@ export interface EngineDeps {
 	records: KvCollection<RecordRow>;
 	links: KvCollection<LinkRow>;
 	content: ContentPort;
+	lookups: LookupPort;
 	source: SourcePort;
 	now: () => number;
 	newId: () => string;

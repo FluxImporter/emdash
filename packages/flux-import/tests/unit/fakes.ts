@@ -1,12 +1,16 @@
 import { EmDashStorageError } from "emdash";
 import type { UploadStorage } from "../../src/emdash/uploads.js";
 import {
+	type BylineRef,
 	type ContentPort,
 	ContentWriteError,
 	type EntrySnapshot,
 	type KvCollection,
+	type LookupPort,
 	SourceMissingError,
 	type SourcePort,
+	type TaxonomyDef,
+	type TermInfo,
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
@@ -125,6 +129,7 @@ export class FakeContent implements ContentPort {
 			rev: String(e.rev),
 			slug: e.slug,
 			data: structuredClone(e.data),
+			group: e.id,
 			pendingPublish: e.pendingPublish,
 		};
 	}
@@ -208,6 +213,115 @@ export class FakeContent implements ContentPort {
 	}
 }
 
+type StoredTerm = TermInfo & { taxonomy: string; locale: string };
+
+/**
+ * In-memory `LookupPort`: terms and bylines added by tests (a term's group is its ID), entries
+ * from the `FakeContent` (an entry's group is its ID), and entry terms set by tests.
+ */
+export class FakeLookups implements LookupPort {
+	readonly defs: TaxonomyDef[] = [];
+	readonly storedTerms: StoredTerm[] = [];
+	readonly storedBylines: (BylineRef & { locale: string })[] = [];
+	/** Entry terms by entry ID: term groups by taxonomy. */
+	readonly assigned = new Map<string, Record<string, string[]>>();
+	readonly calls: string[] = [];
+	/** Return an error to make creating this term fail. */
+	failCreate: (taxonomy: string, input: { label: string; slug?: string }) => Error | null = () =>
+		null;
+	private next = 0;
+
+	constructor(private readonly content: FakeContent) {}
+
+	/** Adds a term; `parent` is the parent's slug in the same taxonomy and locale. */
+	addTerm(taxonomy: string, slug: string, label: string, parent?: string, locale = "en"): TermInfo {
+		const parentTerm =
+			parent === undefined
+				? null
+				: this.storedTerms.find(
+						(t) => t.taxonomy === taxonomy && t.locale === locale && t.slug === parent,
+					);
+		if (parent !== undefined && !parentTerm) throw new Error(`No parent term ${parent}`);
+		const id = `t${++this.next}`;
+		const term = { id, slug, label, parentId: parentTerm?.group ?? null, group: id };
+		this.storedTerms.push({ ...term, taxonomy, locale });
+		return term;
+	}
+
+	addByline(slug: string, displayName: string, locale = "en"): BylineRef {
+		const id = `b${++this.next}`;
+		const byline = { id, slug, displayName, group: id };
+		this.storedBylines.push({ ...byline, locale });
+		return byline;
+	}
+
+	async taxonomyDefs() {
+		this.calls.push("defs");
+		return structuredClone(this.defs);
+	}
+
+	async terms(taxonomy: string, locale: string) {
+		this.calls.push(`terms:${taxonomy}:${locale}`);
+		return this.storedTerms
+			.filter((t) => t.taxonomy === taxonomy && t.locale === locale)
+			.map(({ taxonomy: _t, locale: _l, ...term }) => term);
+	}
+
+	async createTerm(
+		taxonomy: string,
+		input: { label: string; slug?: string; parentId?: string; locale: string },
+	) {
+		this.calls.push(`create:${taxonomy}:${input.slug ?? input.label}`);
+		const failure = this.failCreate(taxonomy, input);
+		if (failure) throw failure;
+		const inLocale = this.storedTerms.filter(
+			(t) => t.taxonomy === taxonomy && t.locale === input.locale,
+		);
+		if (input.slug !== undefined && inLocale.some((t) => t.slug === input.slug)) {
+			throw Object.assign(new Error(`Term '${input.slug}' already exists`), { code: "CONFLICT" });
+		}
+		const parent =
+			input.parentId === undefined ? null : this.storedTerms.find((t) => t.id === input.parentId);
+		if (input.parentId !== undefined && !parent) {
+			throw Object.assign(new Error("Parent term not found"), { code: "VALIDATION_ERROR" });
+		}
+		// EmDash generates a unique slug from the label when none is given.
+		let slug = input.slug ?? input.label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+		for (let n = 1; input.slug === undefined && inLocale.some((t) => t.slug === slug); n++) {
+			slug = `${input.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${n}`;
+		}
+		const parentSlug = parent?.slug;
+		return this.addTerm(taxonomy, slug, input.label, parentSlug, input.locale);
+	}
+
+	async entryTerms(_collection: string, entryId: string) {
+		this.calls.push(`entryTerms:${entryId}`);
+		return structuredClone(this.assigned.get(entryId) ?? {});
+	}
+
+	/** Pages of two, so tests see the cursor. */
+	async bylines(locale: string, cursor?: string) {
+		this.calls.push(`bylines:${locale}:${cursor ?? ""}`);
+		const all = this.storedBylines
+			.filter((b) => b.locale === locale)
+			.map(({ locale: _l, ...b }) => b);
+		const start = cursor === undefined ? 0 : Number(cursor);
+		const items = all.slice(start, start + 2);
+		return start + 2 < all.length ? { items, cursor: String(start + 2) } : { items };
+	}
+
+	async findEntry(collection: string, by: "id" | "slug", value: string, locale: string) {
+		this.calls.push(`find:${collection}:${by}:${value}`);
+		for (const e of this.content.entries.values()) {
+			if (e.collection !== collection) continue;
+			if (by === "id" ? e.id === value : e.locale === locale && e.slug === value) {
+				return { id: e.id, group: e.id };
+			}
+		}
+		return null;
+	}
+}
+
 export class FakeSource implements SourcePort {
 	readonly uploads = new Map<string, Uint8Array>();
 	opens = 0;
@@ -225,11 +339,13 @@ export class FakeSource implements SourcePort {
 export function makeDeps(opts: { clock?: { t: number } } = {}) {
 	const clock = opts.clock ?? { t: Date.parse("2026-10-07T10:00:00Z") };
 	let id = 0;
+	const content = new FakeContent();
 	const deps = {
 		jobs: new MemoryKv<Job>(),
 		records: new MemoryKv<RecordRow>(),
 		links: new MemoryKv<LinkRow>(),
-		content: new FakeContent(),
+		content,
+		lookups: new FakeLookups(content),
 		source: new FakeSource(),
 		now: () => clock.t,
 		newId: () => `id${++id}`,
