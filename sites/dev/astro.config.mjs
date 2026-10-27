@@ -11,6 +11,8 @@ const uploadsDir = process.env.FLUX_DEV_UPLOADS ?? "./uploads";
 const maxSourceBytes = Number(process.env.FLUX_DEV_MAX_SOURCE_BYTES) || undefined;
 // URL source tests fetch from a local HTTP server; the option only works under `astro dev`.
 const allowPrivateNetwork = process.env.FLUX_DEV_ALLOW_PRIVATE_NETWORK === "1";
+// Media tests lower EmDash's upload limit, so a too-large file stays small.
+const maxUploadSize = Number(process.env.FLUX_DEV_MAX_UPLOAD_SIZE) || undefined;
 
 export default defineConfig({
 	output: "server",
@@ -30,6 +32,7 @@ export default defineConfig({
 				directory: uploadsDir,
 				baseUrl: "/_emdash/api/media/file",
 			}),
+			...(maxUploadSize ? { maxUploadSize } : {}),
 		}),
 		fluxImportRoutes({ ...(maxSourceBytes ? { maxSourceBytes } : {}), allowPrivateNetwork }),
 	],

@@ -125,13 +125,15 @@ export async function startAstroDev(
 
 /**
  * Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted), with
- * an upload limit of `maxSourceBytes`. `allowPrivateNetwork` lets URL sources reach this machine.
+ * an upload limit of `maxSourceBytes`. `allowPrivateNetwork` lets URL sources and media reach
+ * this machine; `maxUploadSize` sets EmDash's media upload limit.
  */
 export async function startServer(
 	port: number,
 	dir?: string,
 	maxSourceBytes = TEST_MAX_SOURCE_BYTES,
 	allowPrivateNetwork = false,
+	maxUploadSize?: number,
 ): Promise<DevServer> {
 	const root = dir ?? (await mkdtemp(join(tmpdir(), "flux-import-it-")));
 	const dbPath = join(root, "test.db");
@@ -143,6 +145,7 @@ export async function startServer(
 			FLUX_DEV_UPLOADS: uploadsDir,
 			FLUX_DEV_MAX_SOURCE_BYTES: String(maxSourceBytes),
 			FLUX_DEV_ALLOW_PRIVATE_NETWORK: allowPrivateNetwork ? "1" : "0",
+			...(maxUploadSize === undefined ? {} : { FLUX_DEV_MAX_UPLOAD_SIZE: String(maxUploadSize) }),
 			EMDASH_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
 		});
 	} catch (e) {
