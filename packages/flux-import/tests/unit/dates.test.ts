@@ -106,10 +106,19 @@ describe("dateConverter edge cases", () => {
 		expect(fmt("08/03/2026")).toEqual(ok("2026-03-08T05:00:00.000Z"));
 	});
 
+	it("tells time tokens from week-year tokens in a format", () => {
+		const macro = dateConverter({ format: "D t", tz: "America/Santiago" }, "datetime");
+		expect(macro("9/6/2026 12:30 AM")).toEqual(invalid);
+		const week = dateConverter({ format: "kkkk-'W'WW-c", tz: "America/Santiago" }, "datetime");
+		expect(week("2026-W36-7")).toEqual(ok("2026-09-06T04:00:00.000Z"));
+	});
+
 	it("refuses time-only ISO text, bad zones, and bare numbers without a unix format", () => {
 		const utc = dateConverter({ tz: "UTC" }, "datetime");
 		expect(utc("12:00")).toEqual(invalid);
 		expect(utc("12:00:00")).toEqual(invalid);
+		expect(utc("12")).toEqual(invalid);
+		expect(utc("1200")).toEqual(ok("1200-01-01T00:00:00.000Z"));
 		expect(utc(2025)).toEqual(invalid);
 		expect(utc(2025n)).toEqual(invalid);
 		expect(utc("2025")).toEqual(ok("2025-01-01T00:00:00.000Z"));

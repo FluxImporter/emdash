@@ -15,8 +15,7 @@ export type DateConverted =
 
 const DAY_MS = 86_400_000;
 const UNIX_RE = /^[+-]?(\d+\.?\d*|\.\d+)$/;
-const TIME_ONLY_RE = /^(T\d|\d{2}:\d{2})/;
-const TIME_TOKENS_RE = /[HhmsSauZzXxkK]/;
+const TIME_TOKENS_RE = /[HhmsSauZzXxtTfF]/;
 const NOT_SCALAR_MESSAGE = "Expected a single value, found an object or array";
 
 /**
@@ -88,7 +87,7 @@ export function dateConverter(
 		// Numbers are dates only as Unix times; text such as "2025" is still read as ISO.
 		const isUnix = o.format === "unix" || o.format === "unixMs";
 		if (!isUnix && (typeof raw === "number" || typeof raw === "bigint")) return invalid;
-		if (o.format === undefined && TIME_ONLY_RE.test(text)) return invalid;
+		if (o.format === undefined && !/^([+-]\d{6}|\d{4})/.test(text)) return invalid;
 		if (isUnix) {
 			if (typeof raw === "boolean" || !UNIX_RE.test(text)) return invalid;
 			const n = Number(text);
@@ -103,6 +102,7 @@ export function dateConverter(
 		if (!parsed.isValid) return invalid;
 		// The text carried its own offset (or zone): it names one instant.
 		if (zone.isUniversal || !parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
+		// A time whose text names its zone (format token `z`) follows Luxon's own handling of gaps.
 		// Otherwise take the written fields (read in UTC, where every local time exists, keeping any
 		// zone the text named) and find the instant in `tz` that shows that wall-clock time.
 		const wOptions = { zone: "utc", setZone: true };
