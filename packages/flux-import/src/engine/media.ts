@@ -320,6 +320,8 @@ export async function obtainMedia(
 	lookup: MediaLookup,
 ): Promise<{ ok: true; item: MediaInfo; downloaded: boolean } | { ok: false; error: LinkError }> {
 	const { field, request, item: hit, row } = lookup;
+	const obtained = cache.mediaObtained.get(lookup.key);
+	if (obtained) return { ok: true, item: obtained, downloaded: false };
 	if (hit && !request.refresh) return { ok: true, item: hit, downloaded: false };
 	const now = deps.now();
 	const first = cache.mediaDownloads === 0;
@@ -338,7 +340,10 @@ export async function obtainMedia(
 			...(hit && row?.lastModified !== undefined ? { lastModified: row.lastModified } : {}),
 		});
 		if (fetched.status === 304) {
-			if (hit) return { ok: true, item: hit, downloaded: false };
+			if (hit) {
+				cache.mediaObtained.set(lookup.key, hit);
+				return { ok: true, item: hit, downloaded: false };
+			}
 			return {
 				ok: false,
 				error: fieldError(field, "media_http_error", "The server answered HTTP 304"),
@@ -371,8 +376,22 @@ export async function obtainMedia(
 			...(fetched.lastModified === undefined ? {} : { lastModified: fetched.lastModified }),
 			fetchedAt: new Date(deps.now()).toISOString(),
 			jobId: ctx.jobId,
-			created: !deduplicated,
+			// Sticky: a refresh that stores the same bytes again must not forget that the file was ours.
+			created: !deduplicated || (row?.mediaId === item.id && row.created === true),
 		});
+		cache.mediaObtained.set(lookup.key, item);
+		// A dedupe can return an item stored with another type than the one just checked.
+		const stored = mediaTypeProblem(
+			item.mimeType,
+			request.kind,
+			ctx.targets[field]?.allowedMimeTypes,
+		);
+		if (stored !== null) {
+			return {
+				ok: false,
+				error: fieldError(field, "media_type_not_allowed", `${request.url}: ${stored}`),
+			};
+		}
 		return { ok: true, item, downloaded: true };
 	} catch (e) {
 		if (e instanceof MediaError) return { ok: false, error: fieldError(field, e.code, e.message) };

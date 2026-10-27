@@ -146,6 +146,8 @@ export class LookupCache {
 	readonly entries = new Map<string, { id: string; group: string }>();
 	/** Media items read or stored this batch, by ID; null when missing or not ready. */
 	readonly mediaItems = new Map<string, MediaInfo | null>();
+	/** Items already obtained or refreshed this batch, by media map key: a URL is fetched once. */
+	readonly mediaObtained = new Map<string, MediaInfo>();
 	/** Media downloads started this batch. */
 	mediaDownloads = 0;
 	/** When this batch's downloads must be done by (epoch ms); `runBatch` sets it. */

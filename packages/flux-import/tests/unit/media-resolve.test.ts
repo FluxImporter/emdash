@@ -350,6 +350,59 @@ describe("record media", () => {
 	});
 });
 
+describe("one fetch per URL and batch", () => {
+	it("downloads a URL used by two fields of a record once", async () => {
+		const { deps, ctx, cache } = setup();
+		const { lookups } = await lookupRecordMedia(deps, cache, ctx, {
+			photo: image(A),
+			thumb: image(A),
+		});
+		expect(await obtainRecordMedia(deps, cache, ctx, lookups)).toMatchObject({
+			ok: true,
+			media: { photo: { item: { id: "m1" } }, thumb: { item: { id: "m1" } } },
+			newMedia: [`photo: ${A}`],
+		});
+		expect(deps.mediaFetcher.urls()).toEqual([A]);
+		expect(deps.media.calls).toEqual(["upload:a.png"]);
+		expect(cache.spent).toBe(2 * COST_CALL + COST_MEDIA);
+		expect((await deps.mediaMap.get(mediaMapKey(A)))?.created).toBe(true);
+	});
+
+	it("keeps created when a refresh stores the same bytes again, fetching once per batch", async () => {
+		const { deps, ctx } = setup();
+		deps.mediaFetcher.files.set(B, { body: PNG2, contentType: "image/png" });
+		await resolveMedia(deps, new LookupCache(), ctx, "photo", image(B));
+		const cache = new LookupCache();
+		for (let i = 0; i < 3; i++) {
+			expect(
+				await resolveMedia(deps, cache, ctx, "photo", image(B, { refresh: true })),
+			).toMatchObject({ ok: true, item: { id: "m1" } });
+		}
+		expect(deps.mediaFetcher.urls()).toEqual([B, B]);
+		expect((await deps.mediaMap.get(mediaMapKey(B)))?.created).toBe(true);
+	});
+
+	it("checks the stored type of the item an upload returns, after writing the map row", async () => {
+		const { deps, ctx } = setup({
+			targets: { photo: { type: "image", required: false, allowedMimeTypes: ["image/png"] } },
+		});
+		await resolveMedia(deps, new LookupCache(), ctx, "other", image(A));
+		const stored = deps.media.items.get("m1");
+		if (stored) stored.mimeType = "image/webp";
+		deps.mediaFetcher.files.set("https://mirror.test/a.png", { body: PNG, contentType: null });
+		const url = "https://mirror.test/a.png";
+		expect(await resolveMedia(deps, new LookupCache(), ctx, "photo", image(url))).toEqual({
+			ok: false,
+			error: {
+				field: "photo",
+				code: "media_type_not_allowed",
+				message: `${url}: The field accepts only image/png, not image/webp`,
+			},
+		});
+		expect((await deps.mediaMap.get(mediaMapKey(url)))?.mediaId).toBe("m1");
+	});
+});
+
 describe("mediaFieldValue", () => {
 	const item = {
 		id: "m1",
