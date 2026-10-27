@@ -67,7 +67,7 @@ export interface FetcherDeps {
 }
 
 /** The declared length, or `undefined` when there is none or it does not describe the body. */
-function bodyLength(headers: Headers): number | undefined {
+export function bodyLength(headers: Headers): number | undefined {
 	const encoding = headers.get("content-encoding");
 	// fetch() decodes a compressed body, so its Content-Length no longer matches (Fact W1).
 	if (encoding !== null && encoding.trim().toLowerCase() !== "identity") return undefined;
