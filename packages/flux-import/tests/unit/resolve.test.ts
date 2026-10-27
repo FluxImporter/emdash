@@ -366,6 +366,41 @@ describe("resolveLinks: creating terms", () => {
 		expect(!clash.ok && clash.errors.map((e) => e.code)).toEqual(["term_path_mismatch"]);
 	});
 
+	it.each([true, false])(
+		"refuses one new slug under two parents, or under itself, creating nothing (dryRun %s)",
+		async (dryRun) => {
+			const { deps, resolve } = setup({ category: { create: true }, dryRun });
+			deps.lookups.addTerm("category", "x", "X");
+			deps.lookups.addTerm("category", "y", "Y");
+			const two = await resolve({ taxonomies: { category: paths("x/new", "y/new") } });
+			expect(!two.ok && two.errors.map((e) => e.code)).toEqual(["term_path_mismatch"]);
+			const self = await resolve({ taxonomies: { category: paths("a/a") } });
+			expect(!self.ok && self.errors.map((e) => e.code)).toEqual(["term_path_mismatch"]);
+			expect(two.newTerms).toEqual([]);
+			expect(deps.lookups.calls.filter((c) => c.startsWith("create"))).toEqual([]);
+			const fine = await resolve({ taxonomies: { category: paths("x/new", "x/new/deep") } });
+			expect(fine.ok).toBe(true);
+		},
+	);
+
+	it("keeps two planned terms apart in a dry run, and stops creating after a failure", async () => {
+		const dry = setup({ category: { match: "label", create: true }, dryRun: true });
+		const result = await dry.resolve({ taxonomies: { category: paths("C++", "C") } });
+		expect(result.newTerms).toEqual(["category: C++", "category: C"]);
+		expect(result.ok && result.links.taxonomies?.category).toHaveLength(2);
+		const { deps, resolve } = setup({ category: { match: "label", create: true } });
+		deps.lookups.failCreate = () => new Error("nope");
+		const failed = await resolve({ taxonomies: { category: paths("One", "Two") } });
+		expect(!failed.ok && failed.errors).toHaveLength(1);
+		expect(deps.lookups.calls.filter((c) => c.startsWith("create"))).toHaveLength(1);
+	});
+
+	it("loads no index for empty values", async () => {
+		const { deps, resolve } = setup();
+		await resolve({ taxonomies: { category: null, tag: [] }, bylines: [] });
+		expect(deps.lookups.calls).toEqual([]);
+	});
+
 	it("fails missing terms without create, in a dry run too", async () => {
 		const { resolve } = setup({ dryRun: true });
 		const result = await resolve({ taxonomies: { category: paths("garden") } });

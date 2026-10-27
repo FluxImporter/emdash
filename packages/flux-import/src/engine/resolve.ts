@@ -224,9 +224,12 @@ const labelPath = (terms: readonly { label: string }[]) => terms.map((t) => t.la
 /** A dry run's stand-in for a term it would create; never sent to EmDash. */
 const PLANNED = "planned:";
 
+/** The identity of a dry run's planned item, which has no group to compare. */
+const plannedIds = new WeakMap<ResolvedItem, string>();
+
 function termItem(index: TermIndex, term: TermInfo): ResolvedItem {
 	const planned = term.id.startsWith(PLANNED);
-	return {
+	const item: ResolvedItem = {
 		group: planned ? null : term.group,
 		value: planned ? "" : term.slug,
 		text: index
@@ -234,6 +237,55 @@ function termItem(index: TermIndex, term: TermInfo): ResolvedItem {
 			.map((t) => t.slug)
 			.join("/"),
 	};
+	if (planned) plannedIds.set(item, term.id);
+	return item;
+}
+
+/**
+ * In slug mode a slug is unique per taxonomy, not per parent: a record that would create one
+ * slug under two parents (or under itself) would fail halfway through creating. Checked against
+ * the index alone, before anything is created, so a dry run and a real run agree.
+ */
+function checkSlugClashes(
+	index: TermIndex,
+	taxonomy: string,
+	pending: readonly PendingTerm[],
+	errors: LinkError[],
+): void {
+	const parents = new Map<string, { key: string; shown: string }>();
+	const field = `taxonomies.${taxonomy}`;
+	for (const p of pending) {
+		let parentKey = p.parent?.group ?? "";
+		let chain = p.parent ? index.pathOf(p.parent).map((t) => t.slug) : [];
+		for (const segment of p.missing) {
+			const existing = index.bySlug.get(segment);
+			const seen = parents.get(segment);
+			const here = chain.join("/") || "(top level)";
+			if (existing) {
+				const at = index
+					.pathOf(existing)
+					.map((t) => t.slug)
+					.join("/");
+				errors.push({
+					field,
+					code: "term_path_mismatch",
+					message: `Term "${segment}" in "${taxonomy}" is at "${at}", not under "${here}"`,
+				});
+				break;
+			}
+			if (seen !== undefined && seen.key !== parentKey) {
+				errors.push({
+					field,
+					code: "term_path_mismatch",
+					message: `Term "${segment}" in "${taxonomy}" would be created under both "${seen.shown}" and "${here}"`,
+				});
+				break;
+			}
+			parents.set(segment, { key: parentKey, shown: here });
+			parentKey = `new:${[...chain, segment].join("/")}`;
+			chain = [...chain, segment];
+		}
+	}
 }
 
 /**
@@ -325,8 +377,9 @@ async function resolveTerms(
 	const create = mapping?.create ?? false;
 	const hierarchical = ctx.taxonomies[taxonomy]?.hierarchical ?? false;
 	const field = `taxonomies.${taxonomy}`;
-	const index = await termIndex(deps, cache, taxonomy, ctx.template.locale);
 	const items: ResolvedItem[] = [];
+	if (requests.length === 0) return items;
+	const index = await termIndex(deps, cache, taxonomy, ctx.template.locale);
 	for (const request of requests) {
 		const found = matchTerm(index, taxonomy, request, { match, create, hierarchical });
 		if (found.kind === "error") {
@@ -472,6 +525,7 @@ async function resolveBylines(
 ): Promise<ResolvedItem[]> {
 	const match = ctx.template.bylines?.match ?? "slug";
 	const locale = ctx.template.locale;
+	if (values.length === 0) return [];
 	const index = await bylineIndex(deps, cache, locale);
 	const items: ResolvedItem[] = [];
 	for (const value of values) {
@@ -509,7 +563,7 @@ async function resolveBylines(
 function distinct(items: readonly ResolvedItem[]): ResolvedItem[] {
 	const seen = new Set<string>();
 	return items.filter((item) => {
-		const id = item.group === null ? `new:${item.text}` : item.group;
+		const id = item.group ?? `new:${plannedIds.get(item) ?? item.text}`;
 		if (seen.has(id)) return false;
 		seen.add(id);
 		return true;
@@ -544,6 +598,11 @@ export async function resolveLinks(
 	if (links.bylines !== undefined) {
 		resolved.bylines = await resolveBylines(deps, cache, ctx, links.bylines ?? [], errors);
 	}
+	for (const taxonomy of Object.keys(resolved.taxonomies ?? {})) {
+		const own = pending.filter((p) => p.taxonomy === taxonomy);
+		if (own.length === 0 || own[0]?.match !== "slug") continue;
+		checkSlugClashes(cache.terms.get(taxonomy) as TermIndex, taxonomy, own, errors);
+	}
 	if (errors.length > 0) return { ok: false, errors, newTerms: [] };
 
 	const newTerms: string[] = [];
@@ -565,7 +624,7 @@ export async function resolveLinks(
 				code: "term_create_failed",
 				message: created.message,
 			});
-			continue;
+			break;
 		}
 		const index = cache.terms.get(p.taxonomy) as TermIndex;
 		items[p.position] = termItem(index, created.term);
