@@ -1,9 +1,15 @@
 /**
  * Media from URL (M4c): conversion of `image` and `file` mappings to media requests, the URL
- * normalization the media map is keyed by, and EmDash's upload type rules.
+ * normalization the media map is keyed by, EmDash's upload type rules, and the resolver that
+ * turns a request into a media item: a media map hit, or a download and upload.
  */
 import { createHash } from "node:crypto";
+import { MediaError, mediaFilename, mediaTypeOf } from "../sources/media-fetch.js";
 import { parseSourceUrl } from "../sources/net.js";
+import { ContentWriteError, type MediaInfo, MediaUploadError } from "./ports.js";
+import { COST_CALL, COST_MEDIA, type LinkError, type LookupCache } from "./resolve.js";
+import type { EngineDeps, MediaMapRow } from "./types.js";
+import type { JsonValue, TargetField } from "./values.js";
 
 /** Image and file mappings a template may have, so a record downloads at most this many files. */
 export const MAX_MEDIA_MAPPINGS = 5;
@@ -178,4 +184,302 @@ export function altConverter(raw: unknown): MediaConverted {
 		};
 	}
 	return { ok: true, value: text === "" ? null : text };
+}
+
+/** The least time a download other than the batch's first may start with. */
+export const MEDIA_MIN_LEFT_MS = 5000;
+
+export type MediaDeps = Pick<EngineDeps, "media" | "mediaFetcher" | "mediaMap" | "now">;
+
+/** What the resolver needs from the job. */
+export type MediaContext = {
+	jobId: string;
+	dryRun: boolean;
+	/** The job's `mediaMaxBytes`. */
+	maxBytes: number;
+	/** The job's target field snapshot: each media field's `allowedMimeTypes`. */
+	targets: Readonly<Record<string, TargetField>>;
+};
+
+/** One media field after the map lookup. */
+export type MediaLookup = {
+	field: string;
+	request: MediaRequest;
+	/** `mediaMapKey(request.url)`. */
+	key: string;
+	/** The ready item the URL became, or null when the map has none (a miss). */
+	item: MediaInfo | null;
+	/** The map row of a hit. */
+	row: MediaMapRow | null;
+};
+
+/**
+ * Thrown when the batch has no time left for the record's next download: the batch ends
+ * before the record, which the next batch processes again. Media already stored is in the map.
+ */
+export class MediaDeferred extends Error {
+	constructor() {
+		super("No time left in this batch for the next download");
+		this.name = "MediaDeferred";
+	}
+}
+
+const fieldError = (field: string, code: string, message: string): LinkError => ({
+	field,
+	code,
+	message,
+});
+
+/** A media item by ID, read once per batch; null when it is missing or not ready. */
+async function mediaItem(
+	deps: MediaDeps,
+	cache: LookupCache,
+	id: string,
+): Promise<MediaInfo | null> {
+	if (cache.mediaItems.has(id)) return cache.mediaItems.get(id) ?? null;
+	cache.spend(COST_CALL);
+	const item = await deps.media.get(id);
+	cache.mediaItems.set(id, item);
+	return item;
+}
+
+/**
+ * Looks one request up, without the network: the host check (`media_blocked`), then the media
+ * map and the item it names. A map row whose item is missing or not ready is a miss, and a real
+ * run drops it. A hit must still fit the field (`media_type_not_allowed`).
+ */
+export async function findMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	field: string,
+	request: MediaRequest,
+): Promise<{ ok: true; lookup: MediaLookup } | { ok: false; error: LinkError }> {
+	try {
+		deps.mediaFetcher.checkHost(request.url);
+		const key = mediaMapKey(request.url);
+		cache.spend(COST_CALL);
+		const row = await deps.mediaMap.get(key);
+		const item = row ? await mediaItem(deps, cache, row.mediaId) : null;
+		if (row && !item && !ctx.dryRun) await deps.mediaMap.delete(key);
+		if (item) {
+			const problem = mediaTypeProblem(
+				item.mimeType,
+				request.kind,
+				ctx.targets[field]?.allowedMimeTypes,
+			);
+			if (problem !== null) {
+				return {
+					ok: false,
+					error: fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`),
+				};
+			}
+		}
+		return { ok: true, lookup: { field, request, key, item, row: item ? row : null } };
+	} catch (e) {
+		// A blocked host, or EmDash failing to read the item, fails the record, not the job.
+		if (e instanceof MediaError || e instanceof ContentWriteError) {
+			return { ok: false, error: fieldError(field, e.code, e.message) };
+		}
+		throw e;
+	}
+}
+
+/**
+ * EmDash's upload errors as record errors. A missing storage or an invalid `maxUploadSize`
+ * would fail every upload, so it fails the job (`media_config`).
+ */
+function uploadError(field: string, e: MediaUploadError): LinkError {
+	switch (e.code) {
+		case "CONFIGURATION_ERROR":
+		case "NO_STORAGE":
+			throw new ContentWriteError("media_config", `EmDash cannot store media: ${e.message}`);
+		case "PAYLOAD_TOO_LARGE":
+			return fieldError(field, "media_too_large", `EmDash refused the upload: ${e.message}`);
+		case "INVALID_TYPE":
+			return fieldError(field, "media_type_not_allowed", `EmDash refused the upload: ${e.message}`);
+		default:
+			return fieldError(
+				field,
+				"media_upload_failed",
+				`EmDash refused the upload (${e.code}): ${e.message}`,
+			);
+	}
+}
+
+/**
+ * The item for a looked-up request in a real run: a hit as it is, or a download (a conditional
+ * one for a hit with `refresh`), whose type comes from its bytes, uploaded through EmDash and
+ * written to the media map before anything else. Throws `MediaDeferred` when a download other
+ * than the batch's first would start with less than `MEDIA_MIN_LEFT_MS` left.
+ */
+export async function obtainMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	lookup: MediaLookup,
+): Promise<{ ok: true; item: MediaInfo; downloaded: boolean } | { ok: false; error: LinkError }> {
+	const { field, request, item: hit, row } = lookup;
+	if (hit && !request.refresh) return { ok: true, item: hit, downloaded: false };
+	const now = deps.now();
+	const first = cache.mediaDownloads === 0;
+	if (!first && cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS) throw new MediaDeferred();
+	cache.mediaDownloads++;
+	cache.spend(COST_MEDIA);
+	try {
+		const fetched = await deps.mediaFetcher.fetch(request.url, {
+			kind: request.kind,
+			maxBytes: ctx.maxBytes,
+			// The batch's first download always gets its chance, so every batch makes progress.
+			deadline: first
+				? Math.max(cache.mediaDeadline, now + MEDIA_MIN_LEFT_MS)
+				: cache.mediaDeadline,
+			...(hit && row?.etag !== undefined ? { etag: row.etag } : {}),
+			...(hit && row?.lastModified !== undefined ? { lastModified: row.lastModified } : {}),
+		});
+		if (fetched.status === 304) {
+			if (hit) return { ok: true, item: hit, downloaded: false };
+			return {
+				ok: false,
+				error: fieldError(field, "media_http_error", "The server answered HTTP 304"),
+			};
+		}
+		const type = mediaTypeOf(fetched.bytes, fetched.contentType, fetched.finalUrl);
+		const problem = type.ok
+			? mediaTypeProblem(type.mimeType, request.kind, ctx.targets[field]?.allowedMimeTypes)
+			: type.message;
+		if (!type.ok || problem !== null) {
+			return {
+				ok: false,
+				error: fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`),
+			};
+		}
+		const { item, deduplicated } = await deps.media.upload({
+			filename: mediaFilename(fetched.finalUrl, type.mimeType),
+			contentType: type.mimeType,
+			bytes: fetched.bytes,
+			...(request.alt === null ? {} : { alt: request.alt }),
+		});
+		cache.mediaItems.set(item.id, item);
+		await deps.mediaMap.put(lookup.key, {
+			url: request.url,
+			mediaId: item.id,
+			storageKey: item.storageKey,
+			mimeType: item.mimeType,
+			bytes: fetched.bytes.byteLength,
+			...(fetched.etag === undefined ? {} : { etag: fetched.etag }),
+			...(fetched.lastModified === undefined ? {} : { lastModified: fetched.lastModified }),
+			fetchedAt: new Date(deps.now()).toISOString(),
+			jobId: ctx.jobId,
+			created: !deduplicated,
+		});
+		return { ok: true, item, downloaded: true };
+	} catch (e) {
+		if (e instanceof MediaError) return { ok: false, error: fieldError(field, e.code, e.message) };
+		if (e instanceof MediaUploadError) return { ok: false, error: uploadError(field, e) };
+		throw e;
+	}
+}
+
+/**
+ * Resolves one media request: the map lookup, then in a real run the download and upload when
+ * it is a miss (or a hit with `refresh`). A dry run gives `item: null` for a miss. This is the
+ * resolver M4d calls for each Portable Text image URL; it shares the batch's cache, budget and
+ * deadline.
+ */
+export async function resolveMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	field: string,
+	request: MediaRequest,
+): Promise<
+	{ ok: true; item: MediaInfo | null; downloaded: boolean } | { ok: false; error: LinkError }
+> {
+	const found = await findMedia(deps, cache, ctx, field, request);
+	if (!found.ok) return found;
+	if (ctx.dryRun) return { ok: true, item: found.lookup.item, downloaded: false };
+	return obtainMedia(deps, cache, ctx, found.lookup);
+}
+
+/** Every media field of a record looked up; all errors are collected. */
+export async function lookupRecordMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	requests: Readonly<Record<string, MediaRequest | null>>,
+): Promise<{ lookups: Record<string, MediaLookup | null>; errors: LinkError[] }> {
+	const lookups: Record<string, MediaLookup | null> = {};
+	const errors: LinkError[] = [];
+	for (const [field, request] of Object.entries(requests)) {
+		if (request === null) {
+			lookups[field] = null;
+			continue;
+		}
+		const found = await findMedia(deps, cache, ctx, field, request);
+		if (found.ok) lookups[field] = found.lookup;
+		else errors.push(found.error);
+	}
+	return { lookups, errors };
+}
+
+/** A media field resolved in a real run; null for an empty value. */
+export type ResolvedMedia = { request: MediaRequest; item: MediaInfo } | null;
+
+/**
+ * Obtains every looked-up field's item in a real run, one download at a time, stopping at the
+ * first failure. `newMedia` lists each field and URL downloaded (`photo: https://…`), also when
+ * the upload found identical bytes already stored.
+ */
+export async function obtainRecordMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	lookups: Readonly<Record<string, MediaLookup | null>>,
+): Promise<
+	| { ok: true; media: Record<string, ResolvedMedia>; newMedia: string[] }
+	| { ok: false; errors: LinkError[]; newMedia: string[] }
+> {
+	const media: Record<string, ResolvedMedia> = {};
+	const newMedia: string[] = [];
+	for (const [field, lookup] of Object.entries(lookups)) {
+		if (lookup === null) {
+			media[field] = null;
+			continue;
+		}
+		const obtained = await obtainMedia(deps, cache, ctx, lookup);
+		if (!obtained.ok) return { ok: false, errors: [obtained.error], newMedia };
+		if (obtained.downloaded) newMedia.push(`${field}: ${lookup.request.url}`);
+		media[field] = { request: lookup.request, item: obtained.item };
+	}
+	return { ok: true, media, newMedia };
+}
+
+/**
+ * The value an image or file field stores for a media item (EmDash's documented shape, F1).
+ * Local media keeps its storage key in `meta`; `src` is never sent. A file value has no `size`,
+ * which EmDash 1.2.0 drops on save (Fact V3).
+ */
+export function mediaFieldValue(
+	kind: MediaKind,
+	item: MediaInfo,
+	alt: string | null,
+): { [key: string]: JsonValue } {
+	const base = {
+		id: item.id,
+		provider: "local",
+		filename: item.filename,
+		mimeType: item.mimeType,
+	};
+	const meta = { storageKey: item.storageKey };
+	if (kind === "file") return { ...base, meta };
+	return {
+		...base,
+		...(item.width === null ? {} : { width: item.width }),
+		...(item.height === null ? {} : { height: item.height }),
+		...(item.blurhash === null ? {} : { blurhash: item.blurhash }),
+		...(item.dominantColor === null ? {} : { dominantColor: item.dominantColor }),
+		...(alt === null ? {} : { alt }),
+		meta,
+	};
 }
