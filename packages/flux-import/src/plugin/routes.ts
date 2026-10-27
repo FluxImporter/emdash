@@ -7,6 +7,7 @@ import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
+import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { JobError } from "../engine/jobs.js";
@@ -353,13 +354,16 @@ export const routes: Record<string, PluginRoute> = {
 
 	"jobs/create": route(createInput, async (ctx) => {
 		await ensureRetentionScheduled(ctx);
-		return withServices(ctx, ({ deps, runtime, sources, xlsx }) => {
+		return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
 			const { input } = ctx;
+			// Read once here and stored on the job, so a resumed or retried job converts the same way.
+			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
 			const start = (upload: string) => {
 				const options: StartJobInput = {
 					uploadId: upload,
 					template: input.template,
 					dryRun: input.dryRun,
+					...(siteTimezone === undefined ? {} : { siteTimezone }),
 					...(input.publish === undefined ? {} : { publish: input.publish }),
 					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
 					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),

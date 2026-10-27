@@ -98,8 +98,71 @@ describe("listSchemaFields", () => {
 	it("lists slugs and types, or null for an unknown collection", async () => {
 		const registry = new FakeRegistry();
 		expect(await listSchemaFields(registry, "products")).toEqual([
-			{ slug: "title", type: "string" },
+			{ slug: "title", type: "string", required: false, hasDefault: false, validation: {} },
 		]);
 		expect(await listSchemaFields(registry, "nope")).toBeNull();
+	});
+
+	it("lists required, defaults, the enforced validation keys and unusable fields", async () => {
+		const registry: SchemaRegistryLike = Object.assign(new FakeRegistry(), {
+			getCollectionWithFields: async () => ({
+				fields: [
+					{
+						slug: "sku",
+						type: "string",
+						required: true,
+						defaultValue: "",
+						validation: { minLength: 2, maxLength: 9, pattern: "^[A-Z]", options: [] },
+					},
+					{ slug: "status", type: "select", validation: { options: ["a", "b"] } },
+					{ slug: "qty", type: "integer", required: false, validation: { min: 0, max: 5 } },
+					{ slug: "weird", type: "string", unsupportedType: { type: "geo", path: "type" } },
+					{ slug: "author", type: "reference", validation: { relation: "posts_author" } },
+					{ slug: "legacy", type: "reference", validation: null },
+					{ slug: "loose", type: "text", validation: { pattern: "", min: "1" as never } },
+				],
+			}),
+		});
+		expect(await listSchemaFields(registry, "products")).toEqual([
+			{
+				slug: "sku",
+				type: "string",
+				required: true,
+				hasDefault: true,
+				validation: { options: [], minLength: 2, maxLength: 9, pattern: "^[A-Z]" },
+			},
+			{
+				slug: "status",
+				type: "select",
+				required: false,
+				hasDefault: false,
+				validation: { options: ["a", "b"] },
+			},
+			{
+				slug: "qty",
+				type: "integer",
+				required: false,
+				hasDefault: false,
+				validation: { min: 0, max: 5 },
+			},
+			{
+				slug: "weird",
+				type: "string",
+				required: false,
+				hasDefault: false,
+				validation: {},
+				unsupported: true,
+			},
+			{
+				slug: "author",
+				type: "reference",
+				required: false,
+				hasDefault: false,
+				validation: {},
+				storageless: true,
+			},
+			{ slug: "legacy", type: "reference", required: false, hasDefault: false, validation: {} },
+			{ slug: "loose", type: "text", required: false, hasDefault: false, validation: {} },
+		]);
 	});
 });

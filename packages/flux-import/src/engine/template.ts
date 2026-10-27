@@ -1,4 +1,4 @@
-import { DateTime } from "luxon";
+import { DateTime, IANAZone } from "luxon";
 import { z } from "zod";
 import { pathProblem, resolvePath } from "../sources/paths.js";
 import {
@@ -481,7 +481,28 @@ export function noRecordsWarning(source: { records?: string | undefined }): stri
 		: `No records found at "${source.records}"`;
 }
 
-export type SchemaField = { slug: string; type: string };
+/** The validation keys EmDash enforces on writes (`emdash` src/schema/zod-generator.ts:240-290). */
+export type FieldRules = Pick<
+	TargetField,
+	"options" | "min" | "max" | "minLength" | "maxLength" | "pattern"
+>;
+
+/**
+ * A collection field as `checkTemplate` sees it. Only `slug` and `type` are always known; the
+ * rest comes from `listSchemaFields` and is absent in callers that only check types.
+ */
+export type SchemaField = {
+	slug: string;
+	type: string;
+	required?: boolean;
+	/** The field has a `defaultValue`, which EmDash fills in when a create leaves it out. */
+	hasDefault?: boolean;
+	validation?: FieldRules;
+	/** The stored type is one this EmDash cannot interpret (`Field.unsupportedType`). */
+	unsupported?: boolean;
+	/** The field keeps its values outside the content table (a bound reference). */
+	storageless?: boolean;
+};
 
 const COMPATIBLE: Record<MappingType, string[]> = {
 	text: ["string", "text", "url", "slug"],
@@ -494,15 +515,71 @@ const COMPATIBLE: Record<MappingType, string[]> = {
 	slug: ["slug", "string"],
 };
 
+/** Whether `value` names one of `options`, as the select matching would find it. */
+function matchesOption(value: string, options: readonly string[], ignoreCase: boolean): boolean {
+	if (options.includes(value)) return true;
+	return ignoreCase && options.some((o) => o.toLowerCase() === value.toLowerCase());
+}
+
+/** Problems with one mapping against its existing collection field. */
+function fieldProblems(
+	field: string,
+	mapping: FieldMapping,
+	target: SchemaField,
+	siteTimezone: string,
+): string[] {
+	if (target.unsupported) {
+		return [`Field "${field}" has a field type this EmDash version cannot read`];
+	}
+	if (target.storageless) {
+		return [`Field "${field}" keeps its values outside the content table and cannot be imported`];
+	}
+	const compatible = COMPATIBLE[mapping.type];
+	if (!compatible.includes(target.type)) {
+		return [
+			`Field "${field}" has type "${target.type}"; a ${mapping.type} mapping needs one of ${compatible.join(", ")}`,
+		];
+	}
+	const problems: string[] = [];
+	if (mapping.type === "date") {
+		if (mapping.output !== undefined && target.type === "datetime") {
+			problems.push(`Field "${field}" is a datetime field; "output" only formats text fields`);
+		}
+		if (mapping.tz === SITE_TIMEZONE && !IANAZone.isValidZone(siteTimezone)) {
+			problems.push(
+				`Field "${field}" reads dates in the site timezone, but "${siteTimezone}" is not a valid IANA timezone`,
+			);
+		}
+	}
+	if ((mapping.type === "select" || mapping.type === "multiSelect") && mapping.map) {
+		const options = target.validation?.options ?? [];
+		if (options.length > 0) {
+			const ignoreCase = mapping.ignoreCase ?? true;
+			const bad = [...new Set(Object.values(mapping.map))].filter(
+				(v) => !matchesOption(v, options, ignoreCase),
+			);
+			for (const value of bad) {
+				problems.push(
+					`Field "${field}" maps to "${value}", which is not one of its options (${options.join(", ")})`,
+				);
+			}
+		}
+	}
+	return problems;
+}
+
 /**
  * Problems that stop a job: CSV and XLSX columns missing from the header (`columns`; an XLSX
- * template may also read `_row`), field paths that are not valid for the source format, and
- * fields the collection lacks or types it cannot take.
+ * template may also read `_row`), field paths that are not valid for the source format, fields
+ * the collection lacks or types it cannot take, `output` into a datetime field, `map` values
+ * that are not options, `tz: "site"` without a valid site timezone, and required fields with no
+ * default that the template does not map (every create would fail).
  */
 export function checkTemplate(
 	t: Template,
 	fields: SchemaField[],
 	columns: readonly string[] | null,
+	siteTimezone = "UTC",
 ): string[] {
 	const errors: string[] = [];
 	const format: SourceFormat = t.source.format;
@@ -517,16 +594,56 @@ export function checkTemplate(
 		const problem = pathProblem(path, format);
 		if (problem !== null) errors.push(problem);
 	}
-	const byslug = new Map(fields.map((f) => [f.slug, f.type]));
+	const byslug = new Map(fields.map((f) => [f.slug, f]));
 	for (const [field, mapping] of Object.entries(t.fields)) {
-		const type = byslug.get(field);
-		if (type === undefined) {
+		const target = byslug.get(field);
+		if (target === undefined) {
 			errors.push(`Field "${field}" does not exist in collection "${t.collection}"`);
-		} else if (!COMPATIBLE[mapping.type].includes(type)) {
+		} else {
+			errors.push(...fieldProblems(field, mapping, target, siteTimezone));
+		}
+	}
+	for (const f of fields) {
+		if (
+			f.required &&
+			!f.hasDefault &&
+			!Object.hasOwn(t.fields, f.slug) &&
+			f.slug !== SOURCE_ID_FIELD
+		) {
 			errors.push(
-				`Field "${field}" has type "${type}"; a ${mapping.type} mapping needs one of ${COMPATIBLE[mapping.type].join(", ")}`,
+				`Field "${f.slug}" is required and has no default, but the template does not map it`,
 			);
 		}
 	}
 	return errors;
+}
+
+/**
+ * The snapshot of each mapped field stored on the job (`Job.targetFields`): its type, `required`,
+ * and the validation keys EmDash enforces. Run `checkTemplate` first; unknown fields are skipped.
+ */
+export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<string, TargetField> {
+	const byslug = new Map(fields.map((f) => [f.slug, f]));
+	const targets: Record<string, TargetField> = {};
+	for (const field of Object.keys(t.fields)) {
+		const f = byslug.get(field);
+		if (f === undefined) continue;
+		const v = f.validation ?? {};
+		targets[field] = {
+			type: f.type,
+			required: f.required ?? false,
+			...(v.options && v.options.length > 0 ? { options: v.options } : {}),
+			...(v.min === undefined ? {} : { min: v.min }),
+			...(v.max === undefined ? {} : { max: v.max }),
+			...(v.minLength === undefined ? {} : { minLength: v.minLength }),
+			...(v.maxLength === undefined ? {} : { maxLength: v.maxLength }),
+			...(v.pattern ? { pattern: v.pattern } : {}),
+		};
+	}
+	return targets;
+}
+
+/** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */
+export function usesSiteTimezone(t: Template): boolean {
+	return Object.values(t.fields).some((m) => m.type === "date" && m.tz === SITE_TIMEZONE);
 }

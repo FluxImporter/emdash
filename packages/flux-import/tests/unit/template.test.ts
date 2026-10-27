@@ -7,8 +7,10 @@ import {
 	compileTemplate,
 	filterRecord,
 	missingPathWarnings,
+	type SchemaField,
 	slugify,
 	type Template,
+	targetFieldsOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
@@ -921,6 +923,125 @@ describe("applyTemplate with M4a field types", () => {
 			stock: 2.5,
 			status: "anything",
 			launch_day: "2025-01-24T23:30:00.000Z",
+		});
+	});
+});
+
+describe("checkTemplate for M4a field types", () => {
+	const t = templateSchema.parse(typed);
+	const columns = Object.keys(typedRow);
+	const fields: SchemaField[] = [
+		{ slug: "title", type: "string", required: true },
+		{ slug: "price", type: "number" },
+		{ slug: "stock", type: "integer" },
+		{ slug: "featured", type: "boolean" },
+		{ slug: "status", type: "select", validation: { options: ["draft", "Published"] } },
+		{ slug: "colours", type: "multiSelect" },
+		{ slug: "released", type: "datetime" },
+		{ slug: "sold_on", type: "datetime" },
+		{ slug: "launch_day", type: "text" },
+		{ slug: "specs", type: "json" },
+		{ slug: "legacy_slug", type: "slug" },
+		{ slug: "flux_source_id", type: "string", required: true },
+		{ slug: "sku_code", type: "string", required: true, hasDefault: true },
+		{ slug: "notes", type: "text", required: false },
+	];
+	const check = (patch: Partial<Record<string, Partial<SchemaField>>>, tz = "Europe/Chisinau") =>
+		checkTemplate(
+			t,
+			fields.map((f) => ({ ...f, ...patch[f.slug] })),
+			columns,
+			tz,
+		);
+
+	it("accepts the spec template on fitting fields (map values match options ignoring case)", () => {
+		expect(check({})).toEqual([]);
+	});
+
+	it.each([
+		["text", ["string", "text", "url", "slug"], ["number", "select", "json"]],
+		["number", ["number", "integer"], ["string", "boolean"]],
+		["date", ["datetime", "string", "text"], ["url", "slug", "number"]],
+		["boolean", ["boolean"], ["integer", "string"]],
+		["select", ["select"], ["multiSelect", "string"]],
+		["multiSelect", ["multiSelect"], ["select", "json"]],
+		["json", ["json"], ["text", "multiSelect"]],
+		["slug", ["slug", "string"], ["text", "url"]],
+	])("lets a %s mapping fill %j and not %j", (type, good, bad) => {
+		const one = templateSchema.parse({ ...typed, fields: { f: { from: "x", type } } });
+		for (const fieldType of good) {
+			expect(checkTemplate(one, [{ slug: "f", type: fieldType }], null)).toEqual([]);
+		}
+		for (const fieldType of bad) {
+			expect(checkTemplate(one, [{ slug: "f", type: fieldType }], null)).toEqual([
+				expect.stringMatching(
+					`^Field "f" has type "${fieldType}"; a ${type} mapping needs one of `,
+				),
+			]);
+		}
+	});
+
+	it("refuses output into a datetime field and map values that are not options", () => {
+		const bad = templateSchema.parse({
+			...typed,
+			fields: {
+				...typed.fields,
+				launch_day: { from: "Launch", type: "date", output: "yyyy" },
+				status: { from: "Status", type: "select", map: { a: "draft", b: "gone", c: "PUBLISHED" } },
+				colours: { from: "Colours", type: "multiSelect", map: { r: "Red" }, ignoreCase: false },
+			},
+		});
+		const patched = fields.map((f) =>
+			f.slug === "launch_day"
+				? { ...f, type: "datetime" }
+				: f.slug === "colours"
+					? { ...f, validation: { options: ["red"] } }
+					: f,
+		);
+		expect(checkTemplate(bad, patched, columns, "UTC")).toEqual([
+			'Field "status" maps to "gone", which is not one of its options (draft, Published)',
+			'Field "colours" maps to "Red", which is not one of its options (red)',
+			'Field "launch_day" is a datetime field; "output" only formats text fields',
+		]);
+	});
+
+	it("reports an unmapped required field without a default", () => {
+		expect(check({ notes: { required: true } })).toEqual([
+			'Field "notes" is required and has no default, but the template does not map it',
+		]);
+		expect(check({ notes: { required: true, hasDefault: true } })).toEqual([]);
+	});
+
+	it("refuses unsupported and storage-less fields", () => {
+		expect(check({ title: { unsupported: true }, specs: { storageless: true } })).toEqual([
+			'Field "title" has a field type this EmDash version cannot read',
+			'Field "specs" keeps its values outside the content table and cannot be imported',
+		]);
+	});
+
+	it("refuses tz: site when the site timezone is not a valid IANA zone", () => {
+		expect(check({}, "Mars/Base")).toEqual([
+			'Field "released" reads dates in the site timezone, but "Mars/Base" is not a valid IANA timezone',
+		]);
+		expect(check({}, "UTC")).toEqual([]);
+	});
+});
+
+describe("targetFieldsOf", () => {
+	it("snapshots type, required and the enforced validation keys of mapped fields", () => {
+		const t = templateSchema.parse(typed);
+		const snapshot = targetFieldsOf(t, [
+			{ slug: "title", type: "string", required: true, validation: { maxLength: 20, pattern: "" } },
+			{ slug: "price", type: "number", validation: { min: 0, max: 1e6 } },
+			{ slug: "status", type: "select", validation: { options: ["draft"] } },
+			{ slug: "colours", type: "multiSelect", validation: { options: [] } },
+			{ slug: "notes", type: "text", required: true },
+		]);
+		expect(snapshot).toEqual({
+			title: { type: "string", required: true, maxLength: 20 },
+			price: { type: "number", required: false, min: 0, max: 1e6 },
+			status: { type: "select", required: false, options: ["draft"] },
+			colours: { type: "multiSelect", required: false },
 		});
 	});
 });
