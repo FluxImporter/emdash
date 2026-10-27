@@ -112,6 +112,11 @@ describe("planRecord", () => {
 		expect(plan({ a: [1, 2] }, '{ "a": [1, 2] }')).toBe("update");
 		expect(plan("{x", "{x")).toBe("unchanged");
 		expect(plan(5, "5")).toBe("update");
+		const num = (before: unknown, after: number) =>
+			planRecord({ slug: null, data: { n: before } }, { key: "k", data: { n: after } }, plain)
+				.action;
+		expect(num(0, -0)).toBe("unchanged");
+		expect(num(1, 2)).toBe("update");
 	});
 });
 

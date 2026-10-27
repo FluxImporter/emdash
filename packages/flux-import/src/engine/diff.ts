@@ -48,6 +48,8 @@ function same(before: unknown, after: FieldValue, how: Comparison): boolean {
 			// EmDash reads stored text that starts with { or [ and parses as JSON back parsed: such
 			// text is unchanged when it is exactly the parsed value's canonical JSON.
 			if (typeof after === "string" && typeof b === "object") return JSON.stringify(b) === after;
+			// -0 and 0 are the same number: EmDash reads a stored -0 back as 0.
+			if (typeof b === "number" && typeof after === "number") return b === after;
 			return Object.is(b, after);
 	}
 }
