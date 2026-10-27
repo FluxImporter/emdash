@@ -19,6 +19,8 @@ import {
 	startJob,
 	uploadNeeded,
 	WORKERS_BATCH_CAP,
+	WORKERS_LINKED_BATCH_CAP,
+	workersBatchCap,
 } from "../../src/plugin/service.js";
 import { FakeStorage, makeDeps } from "./fakes.js";
 
@@ -511,6 +513,22 @@ describe("reads", () => {
 			status: 413,
 		});
 		expect(queries).toBe(1);
+	});
+});
+
+describe("workersBatchCap", () => {
+	it(`caps jobs that map links at ${WORKERS_LINKED_BATCH_CAP} records`, async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(1));
+		const job = await startJob(deps, { uploadId: "u1", template, dryRun: true }, fields);
+		expect(workersBatchCap(job)).toBe(WORKERS_BATCH_CAP);
+		const tagged = { ...job.template, bylines: { from: "Name" } };
+		expect(workersBatchCap({ ...job, template: tagged })).toBe(WORKERS_LINKED_BATCH_CAP);
+		const referenced = {
+			...job.template,
+			fields: { ...job.template.fields, maker: { from: "Name", type: "reference" as const } },
+		};
+		expect(workersBatchCap({ ...job, template: referenced })).toBe(WORKERS_LINKED_BATCH_CAP);
 	});
 });
 

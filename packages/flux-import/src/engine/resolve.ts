@@ -40,6 +40,11 @@ export type ResolveContext = {
 	/** The job's taxonomy snapshot; a taxonomy missing from it is flat. */
 	taxonomies: Readonly<Record<string, TaxonomySnapshot>>;
 	dryRun: boolean;
+	/**
+	 * A dry run's own plans: whether an earlier record of the job would create an entry with
+	 * this key in the job's collection and locale, as a real run would have by now.
+	 */
+	plannedKey?: (key: string) => Promise<boolean>;
 };
 
 /** A record error from resolution; EmDash read errors keep their `emdash_` code. */
@@ -105,6 +110,8 @@ export class LookupCache {
 	readonly terms = new Map<string, TermIndex>();
 	/** Terms a dry run would have created, numbered for their placeholder IDs. */
 	planned = 0;
+	/** A dry run's keys planned for creation in the job's collection, once loaded. */
+	plannedKeys: Set<string> | null = null;
 	bylines: BylineIndex | null = null;
 	readonly entries = new Map<string, { id: string; group: string }>();
 }
@@ -473,8 +480,11 @@ async function resolveReferences(
 	for (const value of values) {
 		try {
 			const found = await findReference(deps, cache, target, match, value, locale);
+			const own = match === "key" && target === ctx.template.collection;
 			if (found) items.push({ group: found.group, value: found.id, text: found.id });
-			else {
+			else if (own && ctx.dryRun && ctx.plannedKey && (await ctx.plannedKey(value))) {
+				items.push({ group: null, value: "", text: value });
+			} else {
 				const message = NOT_FOUND_BY[match](target, value, locale);
 				errors.push({ field, code: "reference_not_found", message });
 			}
@@ -640,4 +650,28 @@ export async function resolveLinks(
 	}
 	if (resolved.bylines) resolved.bylines = distinct(resolved.bylines);
 	return { ok: true, links: resolved, newTerms };
+}
+
+/** Loads a taxonomy's terms into the batch cache when no lookup of the batch has yet. */
+export async function loadTerms(
+	deps: ResolveDeps,
+	cache: LookupCache,
+	taxonomy: string,
+	locale: string,
+): Promise<void> {
+	await termIndex(deps, cache, taxonomy, locale);
+}
+
+/**
+ * How the record log shows an assigned term: its slug path when the batch loaded it (the
+ * template's locale), else its translation group.
+ */
+export function termPath(cache: LookupCache, taxonomy: string, group: string): string {
+	const index = cache.terms.get(taxonomy);
+	const term = index?.byGroup.get(group);
+	if (!index || !term) return group;
+	return index
+		.pathOf(term)
+		.map((t) => t.slug)
+		.join("/");
 }

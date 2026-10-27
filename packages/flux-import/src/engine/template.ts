@@ -933,6 +933,15 @@ export function linkWarnings(t: Template, defs: readonly TaxonomyDef[]): string[
 	return warnings;
 }
 
+/** Whether the template maps reference fields, taxonomies or bylines. */
+export function usesLinks(t: Template): boolean {
+	return (
+		t.taxonomies !== undefined ||
+		t.bylines !== undefined ||
+		Object.values(t.fields).some((m) => m.type === "reference")
+	);
+}
+
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */
 export function usesSiteTimezone(t: Template): boolean {
 	return Object.values(t.fields).some((m) => m.type === "date" && m.tz === SITE_TIMEZONE);

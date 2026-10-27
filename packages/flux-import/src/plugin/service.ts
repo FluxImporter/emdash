@@ -12,7 +12,7 @@ import {
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
-import type { LinkSchema, SchemaField } from "../engine/template.js";
+import { type LinkSchema, type SchemaField, usesLinks } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import { type CsvSample, CsvSyntaxError, readCsvSample } from "../sources/csv.js";
 import {
@@ -36,6 +36,16 @@ export const LOG_MAX_BYTES = 8 * 1024 * 1024;
  * and each record costs about nine plugin storage calls plus EmDash's own content queries.
  */
 export const WORKERS_BATCH_CAP = 20;
+/**
+ * `WORKERS_BATCH_CAP` for jobs whose template maps reference fields, taxonomies or bylines: each
+ * record also looks its links up and reads them back.
+ */
+export const WORKERS_LINKED_BATCH_CAP = 10;
+
+/** The records one jobs/next call processes on Workers for this job. */
+export function workersBatchCap(job: Job): number {
+	return usesLinks(job.template) ? WORKERS_LINKED_BATCH_CAP : WORKERS_BATCH_CAP;
+}
 
 /** A failure the route layer turns into an HTTP error with this code and status. */
 export class ServiceError extends Error {
@@ -295,7 +305,7 @@ export async function nextBatch(
 		deps,
 		id,
 		holder,
-		onWorkers() ? WORKERS_BATCH_CAP : Number.POSITIVE_INFINITY,
+		onWorkers() ? workersBatchCap : Number.POSITIVE_INFINITY,
 	);
 	await releaseQuietly(deps, uploads, job, keep);
 	return job;

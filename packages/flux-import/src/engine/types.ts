@@ -95,6 +95,11 @@ export interface RecordRow {
 	errors?: RecordError[];
 	/** The content revision this job wrote, saved before publishing so crash repair publishes only it. */
 	writtenRev?: string;
+	/**
+	 * Terms created for the record (`taxonomy: Parent > Child`), or that a dry run would create.
+	 * Absent when there are none.
+	 */
+	newTerms?: string[];
 	updatedAt: string;
 }
 

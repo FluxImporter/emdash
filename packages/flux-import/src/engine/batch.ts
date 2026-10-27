@@ -1,7 +1,21 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
-import { comparisonsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
+import {
+	type CurrentLinks,
+	comparisonsOf,
+	type LinkPlan,
+	type PlanAction,
+	planRecord,
+	type RecordPlan,
+} from "./diff.js";
 import { JobError, jobReader, jobTemplate, updateJob, upgradeJob } from "./jobs.js";
-import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
+import type { ResolvedLinks } from "./links.js";
+import {
+	ContentWriteError,
+	type EntrySnapshot,
+	type LinkWrites,
+	SourceMissingError,
+} from "./ports.js";
+import { LookupCache, loadTerms, resolveLinks, termPath } from "./resolve.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -110,7 +124,7 @@ export async function processRecord(
 	job: Job,
 	template: CompiledTemplate,
 	rec: SourceRecord,
-	opts: { retry: boolean },
+	opts: { retry: boolean; cache?: LookupCache },
 ): Promise<void> {
 	const key = recordKey(job.id, rec.seq);
 	const existing = await deps.records.get(key);
@@ -125,7 +139,8 @@ export async function processRecord(
 	const save = (fields: RowFields) =>
 		deps.records.put(key, { ...base, ...fields, updatedAt: iso(deps) });
 
-	const row = await decide(deps, job, template, rec, existing, save);
+	const cache = opts.cache ?? new LookupCache();
+	const row = await decide(deps, job, template, rec, existing, save, cache);
 	await save(row);
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
@@ -142,6 +157,8 @@ type RecordCtx = {
 	sourceKey: string;
 	linkId: string;
 	save: (fields: RowFields) => Promise<void>;
+	/** The record's resolved links; absent when the template maps none. */
+	links?: ResolvedLinks;
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -204,6 +221,90 @@ async function publishRev(ctx: RecordCtx, id: string, rev: string) {
 	return published;
 }
 
+/**
+ * What the entry holds now for the mapped links: reference selections and explicit bylines from
+ * the snapshot, and the assigned terms, each shown as the record log shows resolved ones.
+ */
+async function currentLinks(
+	deps: EngineDeps,
+	cache: LookupCache,
+	job: Job,
+	entry: EntrySnapshot,
+	resolved: ResolvedLinks,
+): Promise<CurrentLinks> {
+	const current: CurrentLinks = {};
+	if (resolved.references) {
+		current.references = {};
+		for (const field of Object.keys(resolved.references)) {
+			const refs = entry.references?.[field] ?? [];
+			current.references[field] = refs.map((r) => ({ group: r.group, text: r.id }));
+		}
+		if (entry.referencesTruncated) current.referencesTruncated = entry.referencesTruncated;
+	}
+	if (resolved.taxonomies) {
+		const assigned = await deps.lookups.entryTerms(job.template.collection, entry.id);
+		current.taxonomies = {};
+		for (const taxonomy of Object.keys(resolved.taxonomies)) {
+			const groups = assigned[taxonomy] ?? [];
+			// A taxonomy given no value was not looked up; load it to show its terms as paths.
+			if (groups.length > 0) await loadTerms(deps, cache, taxonomy, job.template.locale);
+			current.taxonomies[taxonomy] = groups.map((group) => ({
+				group,
+				text: termPath(cache, taxonomy, group),
+			}));
+		}
+	}
+	if (resolved.bylines) {
+		current.bylines = (entry.bylines ?? []).map((b) => ({ group: b.group, text: b.slug }));
+	}
+	return current;
+}
+
+/**
+ * The keys an earlier record of this dry run plans to create, loaded once per batch from the
+ * job's record rows; the batch adds its own as it plans them.
+ */
+async function plannedKeys(deps: EngineDeps, job: Job, cache: LookupCache): Promise<Set<string>> {
+	if (cache.plannedKeys) return cache.plannedKeys;
+	const keys = new Set<string>();
+	let cursor: string | undefined;
+	do {
+		const page = await deps.records.query({
+			where: { jobId: job.id, status: "planned" },
+			orderBy: { seq: "asc" },
+			limit: RETRY_PAGE,
+			...(cursor ? { cursor } : {}),
+		});
+		for (const { data } of page.items) {
+			if (data.action === "create" && data.sourceKey !== null) keys.add(data.sourceKey);
+		}
+		cursor = page.hasMore ? page.cursor : undefined;
+	} while (cursor);
+	cache.plannedKeys = keys;
+	return keys;
+}
+
+/** The link plan for `planRecord`; child-side reference fields compare as sets. */
+async function linkPlan(
+	deps: EngineDeps,
+	cache: LookupCache,
+	job: Job,
+	entry: EntrySnapshot | null,
+	resolved: ResolvedLinks,
+): Promise<LinkPlan> {
+	const childSide = new Set(
+		Object.keys(resolved.references ?? {}).filter(
+			(field) => job.targetFields?.[field]?.relationSide === "child",
+		),
+	);
+	const current = entry ? await currentLinks(deps, cache, job, entry, resolved) : {};
+	return { resolved, current, childSide };
+}
+
+/**
+ * Decides and writes one record. Terms that resolution creates (or, in a dry run, would create)
+ * are listed on the row as `newTerms`, whatever happens to the record afterwards.
+ */
 async function decide(
 	deps: EngineDeps,
 	job: Job,
@@ -211,6 +312,22 @@ async function decide(
 	rec: SourceRecord,
 	existing: RecordRow | null,
 	save: (fields: RowFields) => Promise<void>,
+	cache: LookupCache,
+): Promise<RowFields> {
+	const found = { newTerms: [] as string[] };
+	const row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
+	return found.newTerms.length > 0 ? { ...row, newTerms: found.newTerms } : row;
+}
+
+async function decideRecord(
+	deps: EngineDeps,
+	job: Job,
+	template: CompiledTemplate,
+	rec: SourceRecord,
+	existing: RecordRow | null,
+	save: (fields: RowFields) => Promise<void>,
+	cache: LookupCache,
+	found: { newTerms: string[] },
 ): Promise<RowFields> {
 	if (rec.error) return { status: "failed", sourceKey: null, entryId: null, errors: [rec.error] };
 	const filter = await filterRecord(template, rec.value);
@@ -236,13 +353,35 @@ async function decide(
 	let entryId: string | null = null;
 	let action: PlanAction | undefined;
 	try {
+		const requests = mapped.value.links;
+		if (requests) {
+			const resolution = await resolveLinks(
+				deps,
+				cache,
+				{
+					template: job.template,
+					targets: job.targetFields ?? {},
+					taxonomies: job.taxonomies ?? {},
+					dryRun: job.dryRun,
+					plannedKey: async (key) => (await plannedKeys(deps, job, cache)).has(key),
+				},
+				requests,
+			);
+			found.newTerms = resolution.newTerms;
+			if (!resolution.ok) {
+				return { status: "failed", sourceKey, entryId: null, errors: resolution.errors };
+			}
+			ctx.links = resolution.links;
+		}
+		// Reference selections are read only when the template maps reference fields.
+		const read = { references: requests?.references !== undefined };
 		let link = await deps.links.get(ctx.linkId);
-		let entry = link ? await deps.content.get(collection, locale, link.entryId) : null;
+		let entry = link ? await deps.content.get(collection, locale, link.entryId, read) : null;
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
 		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
 		let repaired = false;
 		if (!entry && existing !== null) {
-			entry = await deps.content.findBySourceId(collection, locale, sourceKey);
+			entry = await deps.content.findBySourceId(collection, locale, sourceKey, read);
 			if (entry) {
 				link = { collection, locale, sourceKey, entryId: entry.id };
 				await deps.links.put(ctx.linkId, link);
@@ -250,10 +389,14 @@ async function decide(
 			}
 		}
 		entryId = entry?.id ?? null;
-		const plan = planRecord(entry, mapped.value, comparisonsOf(job.template, job.targetFields));
+		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
+		const comparisons = comparisonsOf(job.template, job.targetFields);
+		const plan = planRecord(entry, mapped.value, comparisons, links);
 		action = plan.action;
-		if (job.dryRun)
+		if (job.dryRun) {
+			if (plan.action === "create") cache.plannedKeys?.add(sourceKey);
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
+		}
 		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
 		if (plan.action === "unchanged")
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
@@ -344,6 +487,56 @@ async function finishUnchanged(
 	};
 }
 
+/** A create's links: every non-empty one. New byline credits have no role label. */
+function createLinks(resolved: ResolvedLinks | undefined): LinkWrites {
+	const writes: LinkWrites = {};
+	for (const [taxonomy, items] of Object.entries(resolved?.taxonomies ?? {})) {
+		if (items.length === 0) continue;
+		writes.taxonomies ??= {};
+		writes.taxonomies[taxonomy] = items.map((i) => i.value);
+	}
+	for (const [field, items] of Object.entries(resolved?.references ?? {})) {
+		if (items.length === 0) continue;
+		writes.references ??= {};
+		writes.references[field] = items.map((i) => i.value);
+	}
+	if (resolved?.bylines && resolved.bylines.length > 0) {
+		writes.bylines = resolved.bylines.map((b) => ({ bylineId: b.value, roleLabel: null }));
+	}
+	return writes;
+}
+
+/**
+ * An update's links: only the changed ones, each replacing the entry's (an empty list clears
+ * it). A byline the entry is already credited with keeps its role label.
+ */
+function updateLinks(
+	resolved: ResolvedLinks | undefined,
+	plan: RecordPlan,
+	entry: EntrySnapshot,
+): LinkWrites {
+	const changed = new Set(plan.changes.map((c) => c.field));
+	const writes: LinkWrites = {};
+	for (const [taxonomy, items] of Object.entries(resolved?.taxonomies ?? {})) {
+		if (!changed.has(`taxonomies.${taxonomy}`)) continue;
+		writes.taxonomies ??= {};
+		writes.taxonomies[taxonomy] = items.map((i) => i.value);
+	}
+	for (const [field, items] of Object.entries(resolved?.references ?? {})) {
+		if (!changed.has(field)) continue;
+		writes.references ??= {};
+		writes.references[field] = items.map((i) => i.value);
+	}
+	if (resolved?.bylines && changed.has("bylines")) {
+		const roles = new Map((entry.bylines ?? []).map((b) => [b.group, b.roleLabel]));
+		writes.bylines = resolved.bylines.map((b) => ({
+			bylineId: b.value,
+			roleLabel: roles.get(b.group as string) ?? null,
+		}));
+	}
+	return writes;
+}
+
 async function writeRecord(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
@@ -361,15 +554,21 @@ async function writeRecord(
 			locale,
 			...slugPart,
 			data: { ...mapped.data, [SOURCE_ID_FIELD]: sourceKey },
+			...createLinks(ctx.links),
 		});
 	} else {
+		// When only links changed, data and slug stay out: on a collection with revisions that
+		// would stage a draft identical to the live entry.
+		const dataChanged = plan.changes.some(
+			(c) => c.field === "slug" || Object.hasOwn(mapped.data, c.field),
+		);
 		const result = await deps.content.update({
 			collection,
 			locale,
 			id: entry.id,
 			rev: entry.rev,
-			...slugPart,
-			data: mapped.data,
+			...(dataChanged ? { ...slugPart, data: mapped.data } : {}),
+			...updateLinks(ctx.links, plan, entry),
 		});
 		if (!result.ok) {
 			return result.reason === "conflict"
@@ -415,6 +614,7 @@ async function importPass(
 	template: CompiledTemplate,
 	started: number,
 	limit: number,
+	cache: LookupCache,
 ): Promise<Outcome> {
 	const stream = await deps.source.open(job.uploadId, job.cursor.offset);
 	let processed = 0;
@@ -422,7 +622,7 @@ async function importPass(
 		startOffset: job.cursor.offset,
 		startSeq: job.cursor.seq,
 	})) {
-		await processRecord(deps, job, template, rec, { retry: false });
+		await processRecord(deps, job, template, rec, { retry: false, cache });
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
 		if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
@@ -471,6 +671,7 @@ async function retryPass(
 	template: CompiledTemplate,
 	started: number,
 	limit: number,
+	cache: LookupCache,
 ): Promise<Outcome> {
 	let processed = 0;
 	for (;;) {
@@ -489,7 +690,7 @@ async function retryPass(
 		}
 		for (const { data: row } of page.items) {
 			const rec = await readOneRecord(deps, job, row);
-			await processRecord(deps, job, template, rec, { retry: true });
+			await processRecord(deps, job, template, rec, { retry: true, cache });
 			job.retryFromSeq = row.seq + 1;
 			processed++;
 			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
@@ -501,19 +702,22 @@ async function retryPass(
  * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
  * live lease exists, whoever holds it (the same holder name included). A batch is at most
- * `job.batchSize` records, and at most `maxRecords` when that is smaller; the job is not changed.
+ * `job.batchSize` records, and at most `maxRecords` (or what it gives for the job) when that is
+ * smaller; the job is not changed. Link lookups are cached for the batch.
  */
 export async function runBatch(
 	deps: EngineDeps,
 	jobId: string,
 	holder: string,
-	maxRecords = Number.POSITIVE_INFINITY,
+	maxRecords: number | ((job: Job) => number) = Number.POSITIVE_INFINITY,
 ): Promise<Job> {
 	const claimed = await claim(deps, jobId, holder);
 	if (!claimed.ok) return claimed.job;
 	const job = claimed.job;
 	const started = deps.now();
-	const limit = Math.min(job.batchSize, maxRecords);
+	const cap = typeof maxRecords === "number" ? maxRecords : maxRecords(job);
+	const limit = Math.min(job.batchSize, cap);
+	const cache = new LookupCache();
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {
@@ -524,6 +728,7 @@ export async function runBatch(
 		const compiled = compileTemplate(jobTemplate(job), {
 			targets: job.targetFields,
 			siteTimezone: job.siteTimezone,
+			taxonomies: job.taxonomies,
 		});
 		if (!compiled.ok) {
 			outcome = {
@@ -534,8 +739,8 @@ export async function runBatch(
 			const template = compiled.compiled;
 			outcome =
 				job.phase === "retry"
-					? await retryPass(deps, job, template, started, limit)
-					: await importPass(deps, job, template, started, limit);
+					? await retryPass(deps, job, template, started, limit, cache)
+					: await importPass(deps, job, template, started, limit, cache);
 		}
 	} catch (e) {
 		if (e instanceof SourceMissingError) {
