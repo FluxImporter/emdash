@@ -149,9 +149,6 @@ export function createMediaFetcher(
 		},
 		async fetch(url, o) {
 			const totalMs = Math.max(0, Math.min(limits.totalMs, o.deadline - now()));
-			const headers = new Headers({ accept: ACCEPT[o.kind] });
-			if (o.etag !== undefined) headers.set("if-none-match", o.etag);
-			if (o.lastModified !== undefined) headers.set("if-modified-since", o.lastModified);
 			const conditional = o.etag !== undefined || o.lastModified !== undefined;
 			const total = new AbortController();
 			const untilHeaders = new AbortController();
@@ -175,6 +172,9 @@ export function createMediaFetcher(
 			);
 			const signal = AbortSignal.any([total.signal, untilHeaders.signal]);
 			try {
+				const headers = new Headers({ accept: ACCEPT[o.kind] });
+				if (o.etag !== undefined) headers.set("if-none-match", o.etag);
+				if (o.lastModified !== undefined) headers.set("if-modified-since", o.lastModified);
 				let finalUrl = url;
 				const response = await guardedFetch(
 					url,
@@ -206,6 +206,9 @@ export function createMediaFetcher(
 					o.maxBytes,
 					total.signal,
 				);
+				if (bytes.length === 0) {
+					throw new MediaError("media_fetch_failed", "The server sent an empty file");
+				}
 				const etag = response.headers.get("etag");
 				const lastModified = response.headers.get("last-modified");
 				return {
@@ -262,6 +265,16 @@ export function sniffMime(bytes: Uint8Array): string | null {
 	if (ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WAVE")) return "audio/wav";
 	if (ascii(bytes, 4, "ftyp")) {
 		const brand = textOf(bytes, 8, 12);
+		// Compatible brands follow the minor version (byte 12); `avif` among them makes an AVIF.
+		const size = Math.min(
+			((bytes[0] ?? 0) << 24) | ((bytes[1] ?? 0) << 16) | ((bytes[2] ?? 0) << 8) | (bytes[3] ?? 0),
+			64,
+			bytes.length,
+		);
+		for (let at = 16; at + 4 <= size; at += 4) {
+			const compatible = textOf(bytes, at, at + 4);
+			if (compatible === "avif" || compatible === "avis") return "image/avif";
+		}
 		if (IMAGE_BRANDS[brand]) return IMAGE_BRANDS[brand];
 		if (brand === "qt  ") return "video/quicktime";
 		if (brand === "M4A " || brand === "M4B ") return "audio/mp4";
@@ -275,23 +288,30 @@ export function sniffMime(bytes: Uint8Array): string | null {
 	if (startsWith(bytes, 0, [0x1a, 0x45, 0xdf, 0xa3])) {
 		return textOf(bytes, 4, 64).includes("webm") ? "video/webm" : "video/x-matroska";
 	}
-	if (ascii(bytes, 0, "OggS")) return "audio/ogg";
+	if (ascii(bytes, 0, "OggS")) {
+		// Only a first page that carries a Theora header is video.
+		return textOf(bytes, 0, 128).includes("\x80theora") ? "video/ogg" : "audio/ogg";
+	}
 	if (ascii(bytes, 0, "ID3")) return "audio/mpeg";
 	// An MPEG audio frame: 11 sync bits, then layer III.
 	if (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe6) === 0xe2) return "audio/mpeg";
 	return null;
 }
 
-/** Whether the bytes start with `<` after a byte order mark and whitespace (HTML, SVG, XML). */
+/**
+ * Whether the bytes start with `<` after a byte order mark and whitespace (HTML, SVG, XML), or
+ * hold nothing but whitespace.
+ */
 export function looksLikeMarkup(bytes: Uint8Array): boolean {
 	let at = 0;
 	if (startsWith(bytes, 0, [0xef, 0xbb, 0xbf])) at = 3;
 	else if (startsWith(bytes, 0, [0xfe, 0xff]) || startsWith(bytes, 0, [0xff, 0xfe])) at = 2;
 	// UTF-16 text has a zero byte beside each ASCII character.
 	const skip = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
-	const end = Math.min(bytes.length, 1024);
-	while (at < end && skip.has(bytes[at] as number)) at++;
-	return bytes[at] === 0x3c;
+	// The whole buffer (already capped by the size limit): padding must not hide markup.
+	while (at < bytes.length && skip.has(bytes[at] as number)) at++;
+	// A file of nothing but whitespace is refused as well.
+	return at >= bytes.length ? bytes.length > 0 : bytes[at] === 0x3c;
 }
 
 /** Audio and video types by URL extension, for a response that names no type. */
@@ -316,6 +336,8 @@ function extensionOf(url: string): string {
 	return dot < 0 ? "" : last.slice(dot + 1).toLowerCase();
 }
 
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
+
 /**
  * The file's type, decided by its bytes. Markup is refused whatever the header says. A type the
  * bytes show wins. Otherwise a `video/*` or `audio/*` `Content-Type` is taken, an image or PDF
@@ -333,18 +355,21 @@ export function mediaTypeOf(
 	const sniffed = sniffMime(bytes);
 	if (sniffed !== null) return { ok: true, mimeType: sniffed };
 	const header = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+	if (header !== "" && !MEDIA_TYPE.test(header)) {
+		return { ok: false, message: "The server sent a content type that is not valid" };
+	}
 	if (header.startsWith("video/") || header.startsWith("audio/")) {
 		return { ok: true, mimeType: header };
 	}
 	if (header.startsWith("image/") || header === "application/pdf") {
-		return { ok: false, message: `The server says ${header}, but the file is not one` };
+		return { ok: false, message: "The type the server declared does not match the file" };
 	}
 	if (header === "" || header === "application/octet-stream") {
 		const byExtension = EXTENSION_TYPES[extensionOf(url)];
 		if (byExtension !== undefined) return { ok: true, mimeType: byExtension };
 		return { ok: false, message: "The file's type could not be recognized" };
 	}
-	return { ok: false, message: `EmDash does not accept ${header} uploads` };
+	return { ok: false, message: "EmDash does not accept the type the server declared" };
 }
 
 /**

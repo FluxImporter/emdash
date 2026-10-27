@@ -39,6 +39,8 @@ describe("sniffMime", () => {
 			[bytes([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x82, 0x84], "webm"), "video/webm"],
 			[bytes([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x82, 0x88], "matroska"), "video/x-matroska"],
 			[bytes("OggS", [0]), "audio/ogg"],
+			[bytes("OggS", [0, 2], "\x80theora"), "video/ogg"],
+			[bytes([0, 0, 0, 0x1c], "ftyp", "isom", [0, 0, 0, 0], "isom", "avif", "mif1"), "image/avif"],
 			[bytes("ID3", [4, 0]), "audio/mpeg"],
 			[bytes([0xff, 0xfb, 0x90, 0x64]), "audio/mpeg"],
 			[bytes("hello"), null],
@@ -53,6 +55,11 @@ describe("sniffMime", () => {
 		expect(looksLikeMarkup(bytes([0xff, 0xfe, 0x3c, 0x00, 0x73, 0x00]))).toBe(true);
 		expect(looksLikeMarkup(bytes("not < markup"))).toBe(false);
 		expect(looksLikeMarkup(PNG)).toBe(false);
+		for (const tag of ["<svg onload=alert(1)>", "<html>"]) {
+			expect(looksLikeMarkup(bytes(" ".repeat(2000), tag)), tag).toBe(true);
+		}
+		expect(looksLikeMarkup(bytes(" ".repeat(2000)))).toBe(true);
+		expect(looksLikeMarkup(bytes())).toBe(false);
 	});
 });
 
@@ -79,13 +86,22 @@ describe("mediaTypeOf", () => {
 		});
 		expect(mediaTypeOf(bytes("garbage"), "image/png", url)).toEqual({
 			ok: false,
-			message: "The server says image/png, but the file is not one",
+			message: "The type the server declared does not match the file",
 		});
 		expect(mediaTypeOf(bytes("garbage"), "application/pdf", url).ok).toBe(false);
 		expect(mediaTypeOf(bytes("garbage"), "text/plain", url)).toEqual({
 			ok: false,
-			message: "EmDash does not accept text/plain uploads",
+			message: "EmDash does not accept the type the server declared",
 		});
+	});
+
+	it("refuses a content type that is not a plain type/subtype, without echoing it", () => {
+		for (const header of ["audio/mp3 evil", "video/<x>", "bogus", "audio/"]) {
+			expect(mediaTypeOf(bytes("unknown"), header, url), header).toEqual({
+				ok: false,
+				message: "The server sent a content type that is not valid",
+			});
+		}
 	});
 
 	it("uses the URL's extension only when the header says nothing, and only for audio and video", () => {
@@ -216,6 +232,16 @@ describe("createMediaFetcher", () => {
 			code: "media_fetch_failed",
 			message: "Could not fetch from cdn.test: fetch failed: ECONNRESET",
 		});
+	});
+
+	it("refuses an empty body, and a stored validator that is not a valid header value", async () => {
+		const { media } = fetcher(async () => new Response(new Uint8Array(0)));
+		expect(await failure(media.fetch("https://cdn.test/a.png", options()))).toEqual({
+			code: "media_fetch_failed",
+			message: "The server sent an empty file",
+		});
+		const bad = await failure(media.fetch("https://cdn.test/a.png", options({ etag: "a\nb" })));
+		expect(bad.code).toBe("media_fetch_failed");
 	});
 
 	it("checks host names and IP literals without the network", () => {
