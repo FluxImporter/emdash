@@ -105,12 +105,7 @@ export class Client {
 
 	/** Creates a revisioned collection with edit locking and the fields the template maps. */
 	async createProducts(slug: string): Promise<void> {
-		await this.api("POST", "/_emdash/api/schema/collections", {
-			slug,
-			label: slug,
-			supports: ["drafts", "revisions"],
-			editLocking: true,
-		});
+		await this.createCollection(slug);
 		for (const field of [
 			{ slug: "title", label: "Title", type: "string" },
 			{ slug: "price", label: "Price", type: "number" },
@@ -120,12 +115,36 @@ export class Client {
 		}
 	}
 
+	/** Creates a revisioned collection with edit locking and no fields. */
+	async createCollection(slug: string): Promise<void> {
+		await this.api("POST", "/_emdash/api/schema/collections", {
+			slug,
+			label: slug,
+			supports: ["drafts", "revisions"],
+			editLocking: true,
+		});
+	}
+
+	async fields(
+		collection: string,
+	): Promise<{ slug: string; type: string; required: boolean; validation?: unknown }[]> {
+		const data = await this.api<{
+			item: { fields: { slug: string; type: string; required: boolean; validation?: unknown }[] };
+		}>("GET", `/_emdash/api/schema/collections/${collection}?includeFields=true`);
+		return data.item.fields;
+	}
+
 	async fieldSlugs(collection: string): Promise<string[]> {
-		const data = await this.api<{ item: { fields: { slug: string }[] } }>(
-			"GET",
-			`/_emdash/api/schema/collections/${collection}?includeFields=true`,
-		);
-		return data.item.fields.map((f) => f.slug);
+		return (await this.fields(collection)).map((f) => f.slug);
+	}
+
+	/** Changes a field through the admin API (`PUT …/fields/:field`; `validation` is required). */
+	async updateField(
+		collection: string,
+		field: string,
+		body: { required?: boolean; validation: Record<string, unknown> | null },
+	): Promise<void> {
+		await this.api("PUT", `/_emdash/api/schema/collections/${collection}/fields/${field}`, body);
 	}
 
 	async listAll(collection: string): Promise<Product[]> {

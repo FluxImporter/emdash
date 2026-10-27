@@ -2,6 +2,7 @@ import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
 import type { ContentPort, KvCollection, SourcePort } from "./ports.js";
 import type { Template } from "./template.js";
+import type { TargetField } from "./values.js";
 
 export const BATCH_SIZE_DEFAULT = 50;
 export const BATCH_SIZE_MAX = 500;
@@ -42,6 +43,13 @@ export interface Job {
 	warnings?: string[];
 	/** XLSX: the uploaded workbook; `uploadId` is the JSON Lines it was converted to. */
 	sourceUploadId?: string;
+	/**
+	 * The mapped fields as they were at job creation (type, `required`, validation), checked
+	 * before every write. Absent on jobs created before M4a, which keep M2 behaviour.
+	 */
+	targetFields?: Record<string, TargetField>;
+	/** The site timezone read at job creation, for `tz: "site"`; absent before M4a (UTC). */
+	siteTimezone?: string;
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

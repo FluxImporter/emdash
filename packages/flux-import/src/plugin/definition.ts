@@ -29,9 +29,10 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 	return definePlugin({
 		id: FLUX_IMPORT_ID,
 		version: FLUX_IMPORT_VERSION,
-		// Declared for disclosure on the admin plugins page. The importer reads and writes content
-		// and adds the flux_source_id field through the trusted runtime (withEmDashRuntime), not
-		// through ctx.content, so these do not gate any call it makes. URL sources are fetched with
+		// Declared for disclosure on the admin plugins page. The importer reads and writes content,
+		// adds the flux_source_id field and creates fields for schema/apply through the trusted
+		// runtime (withEmDashRuntime), not through ctx.content, so these do not gate any call it
+		// makes; plugins have no schema-writing capability to declare. URL sources are fetched with
 		// the runtime's own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through
 		// ctx.http, so no network capability is declared.
 		capabilities: ["content:read", "content:write", "content:publish", "schema:read"],

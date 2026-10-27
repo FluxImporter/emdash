@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
 	applyTemplate,
+	type CompileContext,
 	type CompiledTemplate,
 	checkTemplate,
 	compileTemplate,
 	filterRecord,
 	missingPathWarnings,
+	type SchemaField,
 	slugify,
 	type Template,
+	targetFieldsOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
@@ -219,7 +222,7 @@ describe("checkTemplate", () => {
 		);
 		expect(errors).toEqual([
 			'Column "handle" not found in the source',
-			'Field "title" has type "number"; a text mapping needs one of string, text, url',
+			'Field "title" has type "number"; a text mapping needs one of string, text, url, slug',
 			'Field "price" does not exist in collection "products"',
 		]);
 	});
@@ -661,5 +664,411 @@ describe("applyTemplate with expressions", () => {
 			fields: { title: { expr: "name", type: "text" }, price: { from: "price", type: "number" } },
 		});
 		expect(templatePaths(t)).toEqual(["handle", "price"]);
+	});
+});
+
+/** The products template from the M4a spec: every new mapping type and option. */
+const typed = {
+	version: 1,
+	collection: "products",
+	locale: "en",
+	key: { from: "sku" },
+	fields: {
+		title: { from: "Name", type: "text" },
+		price: { from: "Price", type: "number", decimal: ",", thousands: "." },
+		stock: { from: "Stock", type: "number" },
+		featured: { from: "Featured", type: "boolean", true: ["ja"], false: ["nein"] },
+		status: { from: "Status", type: "select", map: { Live: "published" } },
+		colours: { from: "Colours", type: "multiSelect", separator: "|" },
+		released: { from: "Date", type: "date", format: "dd/MM/yyyy HH:mm", tz: "site" },
+		sold_on: { from: "SoldAt", type: "date", format: "unix" },
+		launch_day: { from: "Launch", type: "date", output: "yyyy-MM-dd" },
+		specs: { from: "Specs", type: "json" },
+		legacy_slug: { from: "Handle", type: "slug" },
+	},
+};
+
+const targets: CompileContext["targets"] = {
+	title: { type: "string", required: true, maxLength: 20 },
+	price: { type: "number", required: false, min: 0 },
+	stock: { type: "integer", required: false },
+	featured: { type: "boolean", required: false },
+	status: { type: "select", required: false, options: ["draft", "published"] },
+	colours: { type: "multiSelect", required: false, options: ["red", "green", "blue"] },
+	released: { type: "datetime", required: false },
+	sold_on: { type: "datetime", required: false },
+	launch_day: { type: "string", required: false, pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+	specs: { type: "json", required: false },
+	legacy_slug: { type: "slug", required: false },
+};
+
+const typedRow = {
+	sku: "A1",
+	Name: "Desk",
+	Price: "1.234,50",
+	Stock: "12",
+	Featured: "JA",
+	Status: "live",
+	Colours: "Red | blue",
+	Date: "24/01/2025 14:00",
+	SoldAt: "1737720000",
+	Launch: "2025-01-24T23:30:00Z",
+	Specs: '{"w": 120, "tags": ["oak"]}',
+	Handle: "Old Desk №1",
+};
+
+/** Compiles `typed` with the target snapshot (Europe/Chisinau as the site timezone). */
+function typedCompiled(
+	patch: object = {},
+	context: CompileContext = { targets, siteTimezone: "Europe/Chisinau" },
+) {
+	const compiled = compileTemplate(templateSchema.parse({ ...typed, ...patch }), context);
+	if (!compiled.ok) throw new Error(compiled.problems.join("; "));
+	return compiled.compiled;
+}
+
+describe("templateSchema for M4a field types", () => {
+	const issues = (fields: object) => {
+		const result = templateSchema.safeParse({ ...typed, fields });
+		return result.success ? [] : result.error.issues.map((i) => i.message);
+	};
+
+	it("accepts every type with its options, keeping them as written", () => {
+		const t = templateSchema.parse(typed);
+		expect(t.fields.price).toEqual({ from: "Price", type: "number", decimal: ",", thousands: "." });
+		expect(t.fields.released).toMatchObject({ tz: "site" });
+		expect(t.fields.launch_day).toEqual({
+			from: "Launch",
+			type: "date",
+			output: "yyyy-MM-dd",
+			tz: "UTC",
+		});
+		expect(t.fields.status).toEqual({ from: "Status", type: "select", map: { Live: "published" } });
+		expect(
+			issues({
+				a: { expr: "x", type: "multiSelect", map: { x: "y" }, ignoreCase: false, separator: ";" },
+				b: { from: "b", type: "json", parse: false },
+				c: { from: "c", type: "boolean" },
+				d: { from: "d", type: "number", decimal: ",", thousands: " " },
+			}),
+		).toEqual([]);
+	});
+
+	it.each([
+		["an option of another type", { a: { from: "a", type: "text", decimal: "," } }],
+		["slug options", { a: { from: "a", type: "slug", parse: true } }],
+		["thousands equal to decimal", { a: { from: "a", type: "number", thousands: "." } }],
+		[
+			"thousands equal to a comma decimal",
+			{ a: { from: "a", type: "number", decimal: ",", thousands: "," } },
+		],
+		["an unknown decimal", { a: { from: "a", type: "number", decimal: ";" } }],
+		["a token in both lists", { a: { from: "a", type: "boolean", true: ["Ja"], false: [" ja "] } }],
+		["a token in a default list", { a: { from: "a", type: "boolean", true: ["no"] } }],
+		["a blank token", { a: { from: "a", type: "boolean", true: [" "] } }],
+		["an empty token list", { a: { from: "a", type: "boolean", false: [] } }],
+		[
+			"51 tokens",
+			{ a: { from: "a", type: "boolean", true: Array.from({ length: 51 }, (_, i) => `t${i}`) } },
+		],
+		["a token over 100 characters", { a: { from: "a", type: "boolean", true: ["t".repeat(101)] } }],
+		["an empty map value", { a: { from: "a", type: "select", map: { x: "" } } }],
+		[
+			"a map key over 200 characters",
+			{ a: { from: "a", type: "select", map: { ["k".repeat(201)]: "v" } } },
+		],
+		[
+			"a map of 1,001 entries",
+			{
+				a: {
+					from: "a",
+					type: "multiSelect",
+					map: Object.fromEntries(Array.from({ length: 1001 }, (_, i) => [`k${i}`, "v"])),
+				},
+			},
+		],
+		["a non-boolean ignoreCase", { a: { from: "a", type: "select", ignoreCase: "yes" } }],
+		[
+			"a separator over 10 characters",
+			{ a: { from: "a", type: "multiSelect", separator: "x".repeat(11) } },
+		],
+		["an empty output", { a: { from: "a", type: "date", output: "" } }],
+		["an output over 100 characters", { a: { from: "a", type: "date", output: "y".repeat(101) } }],
+		["an unknown timezone", { a: { from: "a", type: "date", tz: "Site" } }],
+		["an unknown type", { a: { from: "a", type: "portableText" } }],
+	])("refuses %s", (_name, fields) => {
+		expect(issues(fields)).not.toEqual([]);
+	});
+
+	it("names the shared boolean token and the separator clash", () => {
+		expect(issues({ a: { from: "a", type: "boolean", true: ["Ja"], false: ["JA"] } })).toEqual([
+			'"ja" is both a true and a false token',
+		]);
+		expect(issues({ a: { from: "a", type: "number", thousands: "." } })).toEqual([
+			"thousands must differ from decimal",
+		]);
+	});
+});
+
+describe("applyTemplate with M4a field types", () => {
+	it("converts every type against the target snapshot", async () => {
+		const result = await applyTemplate(typedCompiled(), typedRow);
+		expect(result).toEqual({
+			ok: true,
+			value: {
+				key: "A1",
+				data: {
+					title: "Desk",
+					price: 1234.5,
+					stock: 12,
+					featured: true,
+					status: "published",
+					colours: ["red", "blue"],
+					released: "2025-01-24T12:00:00.000Z",
+					sold_on: "2025-01-24T12:00:00.000Z",
+					launch_day: "2025-01-24",
+					specs: { w: 120, tags: ["oak"] },
+					legacy_slug: "old-desk-no1",
+				},
+			},
+		});
+	});
+
+	it("takes typed JSON values", async () => {
+		const result = await applyTemplate(typedCompiled(), {
+			...typedRow,
+			Price: 9.5,
+			Stock: 3,
+			Featured: false,
+			Colours: ["GREEN", "green"],
+			SoldAt: 1737720000,
+			Specs: [1, 2],
+		});
+		expect(result.ok && result.value.data).toMatchObject({
+			price: 9.5,
+			stock: 3,
+			featured: false,
+			colours: ["green"],
+			sold_on: "2025-01-24T12:00:00.000Z",
+			specs: [1, 2],
+		});
+	});
+
+	it("reads tz: site in the job's site timezone, and UTC without one", async () => {
+		const plain = typedCompiled({}, { targets });
+		const result = await applyTemplate(plain, typedRow);
+		expect(result.ok && result.value.data.released).toBe("2025-01-24T14:00:00.000Z");
+	});
+
+	it("collects conversion and rule errors from every field", async () => {
+		const result = await applyTemplate(typedCompiled(), {
+			...typedRow,
+			Name: "",
+			Price: "-1",
+			Stock: "2,5",
+			Featured: "maybe",
+			Status: "gone",
+			Colours: "red|pink",
+			Date: "29/03/2026 03:30",
+			Launch: "2025-01-24",
+			Specs: "{",
+			Handle: "!!!",
+		});
+		expect(!result.ok && result.errors.map((e) => [e.field, e.code])).toEqual([
+			["title", "required"],
+			["price", "out_of_range"],
+			["stock", "invalid_number"],
+			["featured", "invalid_boolean"],
+			["status", "invalid_option"],
+			["colours", "invalid_option"],
+			["released", "invalid_date"],
+			["specs", "invalid_json"],
+			["legacy_slug", "empty_slug"],
+		]);
+		const integer = await applyTemplate(typedCompiled(), { ...typedRow, Stock: "2.5" });
+		expect(!integer.ok && integer.errors).toEqual([
+			{ field: "stock", code: "invalid_integer", message: "2.5 is not a whole number" },
+		]);
+		const long = await applyTemplate(typedCompiled(), { ...typedRow, Name: "x".repeat(21) });
+		expect(!long.ok && long.errors.map((e) => e.code)).toEqual(["too_long"]);
+	});
+
+	it("checks the rules on expression results too", async () => {
+		const c = typedCompiled({
+			fields: { ...typed.fields, stock: { expr: "$number(Stock) / 5", type: "number" } },
+		});
+		const result = await applyTemplate(c, typedRow);
+		expect(!result.ok && result.errors.map((e) => [e.field, e.code])).toEqual([
+			["stock", "invalid_integer"],
+		]);
+		const rounded = typedCompiled({
+			fields: { ...typed.fields, stock: { expr: "$round($number(Stock) / 5)", type: "number" } },
+		});
+		expect(await applyTemplate(rounded, typedRow)).toMatchObject({
+			ok: true,
+			value: { data: { stock: 2 } },
+		});
+	});
+
+	it("keeps M2 behaviour for jobs without a target snapshot", async () => {
+		const m2 = typedCompiled({}, {});
+		const result = await applyTemplate(m2, {
+			...typedRow,
+			Name: "",
+			Stock: "2.5",
+			Status: "anything",
+		});
+		expect(result.ok && result.value.data).toMatchObject({
+			title: null,
+			stock: 2.5,
+			status: "anything",
+			launch_day: "2025-01-24T23:30:00.000Z",
+		});
+	});
+});
+
+describe("checkTemplate for M4a field types", () => {
+	const t = templateSchema.parse(typed);
+	const columns = Object.keys(typedRow);
+	const fields: SchemaField[] = [
+		{ slug: "title", type: "string", required: true },
+		{ slug: "price", type: "number" },
+		{ slug: "stock", type: "integer" },
+		{ slug: "featured", type: "boolean" },
+		{ slug: "status", type: "select", validation: { options: ["draft", "Published"] } },
+		{ slug: "colours", type: "multiSelect" },
+		{ slug: "released", type: "datetime" },
+		{ slug: "sold_on", type: "datetime" },
+		{ slug: "launch_day", type: "text" },
+		{ slug: "specs", type: "json" },
+		{ slug: "legacy_slug", type: "slug" },
+		{ slug: "flux_source_id", type: "string", required: true },
+		{ slug: "sku_code", type: "string", required: true, hasDefault: true },
+		{ slug: "notes", type: "text", required: false },
+	];
+	const check = (patch: Partial<Record<string, Partial<SchemaField>>>, tz = "Europe/Chisinau") =>
+		checkTemplate(
+			t,
+			fields.map((f) => ({ ...f, ...patch[f.slug] })),
+			columns,
+			tz,
+		);
+
+	it("accepts the spec template on fitting fields (map values match options ignoring case)", () => {
+		expect(check({})).toEqual([]);
+	});
+
+	it.each([
+		["text", ["string", "text", "url", "slug"], ["number", "select", "json"]],
+		["number", ["number", "integer"], ["string", "boolean"]],
+		["date", ["datetime", "string", "text"], ["url", "slug", "number"]],
+		["boolean", ["boolean"], ["integer", "string"]],
+		["select", ["select"], ["multiSelect", "string"]],
+		["multiSelect", ["multiSelect"], ["select", "json"]],
+		["json", ["json"], ["text", "multiSelect"]],
+		["slug", ["slug", "string"], ["text", "url"]],
+	])("lets a %s mapping fill %j and not %j", (type, good, bad) => {
+		const one = templateSchema.parse({ ...typed, fields: { f: { from: "x", type } } });
+		for (const fieldType of good) {
+			expect(checkTemplate(one, [{ slug: "f", type: fieldType }], null)).toEqual([]);
+		}
+		for (const fieldType of bad) {
+			expect(checkTemplate(one, [{ slug: "f", type: fieldType }], null)).toEqual([
+				expect.stringMatching(
+					`^Field "f" has type "${fieldType}"; a ${type} mapping needs one of `,
+				),
+			]);
+		}
+	});
+
+	it("refuses output into a datetime field and map values that are not options", () => {
+		const bad = templateSchema.parse({
+			...typed,
+			fields: {
+				...typed.fields,
+				launch_day: { from: "Launch", type: "date", output: "yyyy" },
+				status: { from: "Status", type: "select", map: { a: "draft", b: "gone", c: "PUBLISHED" } },
+				colours: { from: "Colours", type: "multiSelect", map: { r: "Red" }, ignoreCase: false },
+			},
+		});
+		const patched = fields.map((f) =>
+			f.slug === "launch_day"
+				? { ...f, type: "datetime" }
+				: f.slug === "colours"
+					? { ...f, validation: { options: ["red"] } }
+					: f,
+		);
+		expect(checkTemplate(bad, patched, columns, "UTC")).toEqual([
+			'Field "status" maps to "gone", which is not one of its options (draft, Published)',
+			'Field "colours" maps to "Red", which is not one of its options (red)',
+			'Field "launch_day" is a datetime field; "output" only formats text fields',
+		]);
+	});
+
+	it("reports an unmapped required field without a default", () => {
+		expect(check({ notes: { required: true } })).toEqual([
+			'Field "notes" is required and has no default, but the template does not map it',
+		]);
+		expect(check({ notes: { required: true, hasDefault: true } })).toEqual([]);
+	});
+
+	it("refuses unsupported and storage-less fields", () => {
+		expect(check({ title: { unsupported: true }, specs: { storageless: true } })).toEqual([
+			'Field "title" has a field type this EmDash version cannot read',
+			'Field "specs" keeps its values outside the content table and cannot be imported',
+		]);
+	});
+
+	it("refuses an unmapped field this EmDash cannot read", () => {
+		const one = templateSchema.parse({ ...typed, fields: { title: { from: "x", type: "text" } } });
+		expect(
+			checkTemplate(
+				one,
+				[
+					{ slug: "title", type: "string" },
+					{ slug: "weird", type: "string", unsupported: true },
+				],
+				null,
+			),
+		).toEqual(['Field "weird" has a field type this EmDash version cannot read']);
+	});
+
+	it("treats a map value as ambiguous when two options differ only in case", () => {
+		const one = templateSchema.parse({
+			...typed,
+			fields: { f: { from: "x", type: "select", map: { x: "RED" } } },
+		});
+		const field = (options: string[]) => [{ slug: "f", type: "select", validation: { options } }];
+		expect(checkTemplate(one, field(["Red", "red"]), null)).toEqual([
+			'Field "f" maps to "RED", which is not one of its options (Red, red)',
+		]);
+		expect(checkTemplate(one, field(["Red", "blue"]), null)).toEqual([]);
+		expect(checkTemplate(one, field(["Red", "RED"]), null)).toEqual([]);
+	});
+
+	it("refuses tz: site when the site timezone is not a valid IANA zone", () => {
+		expect(check({}, "Mars/Base")).toEqual([
+			'Field "released" reads dates in the site timezone, but "Mars/Base" is not a valid IANA timezone',
+		]);
+		expect(check({}, "UTC")).toEqual([]);
+	});
+});
+
+describe("targetFieldsOf", () => {
+	it("snapshots type, required and the enforced validation keys of mapped fields", () => {
+		const t = templateSchema.parse(typed);
+		const snapshot = targetFieldsOf(t, [
+			{ slug: "title", type: "string", required: true, validation: { maxLength: 20, pattern: "" } },
+			{ slug: "price", type: "number", validation: { min: 0, max: 1e6 } },
+			{ slug: "status", type: "select", validation: { options: ["draft"] } },
+			{ slug: "colours", type: "multiSelect", validation: { options: [] } },
+			{ slug: "notes", type: "text", required: true },
+		]);
+		expect(snapshot).toEqual({
+			title: { type: "string", required: true, maxLength: 20 },
+			price: { type: "number", required: false, min: 0, max: 1e6 },
+			status: { type: "select", required: false, options: ["draft"] },
+			colours: { type: "multiSelect", required: false },
+		});
 	});
 });

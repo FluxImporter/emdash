@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, inject, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
+import type { ApplyResult } from "../../src/plugin/schema-apply.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
+import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client } from "../integration/client.js";
@@ -217,6 +219,52 @@ describe("workerd parity (D1, R2)", () => {
 		const first = entries.find((e) => e.data.flux_source_id === "SKU-0")!;
 		expect(first.data).toMatchObject({ title: 'Product 0, "quoted" & <tagged> ț', price: 0.5 });
 		expect(Date.parse(first.data.released as string)).toBe(Date.parse("2026-02-28T22:00:00.000Z"));
+	});
+
+	it("creates fields with schema/apply and imports every M4a type on D1, in the site timezone", async () => {
+		const settings = await client.api<{ timezone?: string }>("GET", "/_emdash/api/settings");
+		await client.api("POST", "/_emdash/api/settings", { timezone: "Europe/Chisinau" });
+		try {
+			await client.api("POST", "/_emdash/api/schema/collections", {
+				slug: "cf_types",
+				label: "cf_types",
+				supports: ["drafts", "revisions"],
+			});
+			await client.api("POST", "/_emdash/api/schema/collections/cf_types/fields", {
+				slug: "stock",
+				label: "Stock",
+				type: "integer",
+				validation: null,
+			});
+			const template = typesTemplate("cf_types");
+			const applied = await client.plugin<ApplyResult>("schema/apply", { template });
+			expect(applied).toMatchObject({ applied: expect.any(Array), error: null });
+			expect(applied.changes.filter((c) => c.action !== "create")).toEqual([
+				{
+					field: "stock",
+					action: "unchanged",
+					type: "number",
+				},
+			]);
+			const { uploadId } = await client.upload(TYPES_CSV, "types.csv");
+			const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
+			expect(job.siteTimezone).toBe("Europe/Chisinau");
+			const done = await client.runToEnd(job.id);
+			expect(done).toMatchObject({ status: "completed", counters: { created: 3, failed: 0 } });
+			const stored = await byKey("cf_types");
+			for (const [key, expected] of Object.entries(TYPES_CSV_STORED)) {
+				expect(stored.get(key)?.data, key).toMatchObject(expected);
+			}
+			const { uploadId: again } = await client.upload(TYPES_CSV, "types.csv");
+			const rerun = await client.plugin("jobs/create", {
+				uploadId: again,
+				template,
+				dryRun: false,
+			});
+			expect((await client.runToEnd(rerun.id)).counters).toMatchObject({ unchanged: 3 });
+		} finally {
+			await client.api("POST", "/_emdash/api/settings", { timezone: settings.timezone ?? "UTC" });
+		}
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {

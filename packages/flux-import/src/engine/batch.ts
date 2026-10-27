@@ -1,5 +1,5 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
-import { dateFieldsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
+import { comparisonsOf, type PlanAction, planRecord, type RecordPlan } from "./diff.js";
 import { JobError, jobReader, jobTemplate, updateJob, upgradeJob } from "./jobs.js";
 import { ContentWriteError, type EntrySnapshot, SourceMissingError } from "./ports.js";
 import {
@@ -250,7 +250,7 @@ async function decide(
 			}
 		}
 		entryId = entry?.id ?? null;
-		const plan = planRecord(entry, mapped.value, dateFieldsOf(job.template));
+		const plan = planRecord(entry, mapped.value, comparisonsOf(job.template, job.targetFields));
 		action = plan.action;
 		if (job.dryRun)
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
@@ -521,7 +521,10 @@ export async function runBatch(
 			job.schemaReady = true;
 		}
 		// Parsed once per batch and reused for every record; job creation already checked them.
-		const compiled = compileTemplate(jobTemplate(job));
+		const compiled = compileTemplate(jobTemplate(job), {
+			targets: job.targetFields,
+			siteTimezone: job.siteTimezone,
+		});
 		if (!compiled.ok) {
 			outcome = {
 				done: false,

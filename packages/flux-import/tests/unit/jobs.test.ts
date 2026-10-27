@@ -84,6 +84,66 @@ describe("createJob", () => {
 		);
 	});
 
+	it("stores the target field snapshot, and the site timezone only for tz: site", async () => {
+		const { deps } = setup("sku,Name,Day\nA1,Desk,2026-03-01\n");
+		const fields = [
+			{ slug: "title", type: "string", required: true, validation: { maxLength: 40 } },
+			{ slug: "day", type: "datetime" },
+			{ slug: "body", type: "text" },
+		];
+		const dated = (tz: string) => ({
+			...template,
+			fields: { ...template.fields, day: { from: "Day", type: "date", tz } },
+		});
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: dated("site"),
+			schemaFields: fields,
+			siteTimezone: "Europe/Chisinau",
+		});
+		expect(job).toMatchObject({
+			targetFields: {
+				title: { type: "string", required: true, maxLength: 40 },
+				day: { type: "datetime", required: false },
+			},
+			siteTimezone: "Europe/Chisinau",
+		});
+		expect(job.targetFields).not.toHaveProperty("body");
+		const fixed = await createJob(deps, {
+			uploadId: "u1",
+			template: dated("Asia/Tokyo"),
+			schemaFields: fields,
+			siteTimezone: "Europe/Chisinau",
+		});
+		expect(fixed).not.toHaveProperty("siteTimezone");
+		const unset = await createJob(deps, {
+			uploadId: "u1",
+			template: dated("site"),
+			schemaFields: fields,
+		});
+		expect(unset.siteTimezone).toBe("UTC");
+	});
+
+	it("refuses tz: site with an invalid site timezone, and unmapped required fields", async () => {
+		const { deps } = setup("sku,Name,Day\nA1,Desk,2026-03-01\n");
+		const err = await createJob(deps, {
+			uploadId: "u1",
+			template: { ...template, fields: { day: { from: "Day", type: "date", tz: "site" } } },
+			schemaFields: [
+				{ slug: "title", type: "string", required: true },
+				{ slug: "day", type: "datetime" },
+			],
+			siteTimezone: "Moon/Base",
+		}).catch((e: unknown) => e);
+		expect(err).toMatchObject({
+			code: "invalid_template",
+			details: [
+				'Field "day" reads dates in the site timezone, but "Moon/Base" is not a valid IANA timezone',
+				'Field "title" is required and has no default, but the template does not map it',
+			],
+		});
+	});
+
 	it("rejects bad expressions with invalid_template, naming each one", async () => {
 		const { deps } = setup();
 		const bad = {

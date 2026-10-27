@@ -13,9 +13,11 @@ import {
 	noRecordsWarning,
 	type SchemaField,
 	type Template,
+	targetFieldsOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
+	usesSiteTimezone,
 } from "./template.js";
 import {
 	BATCH_SIZE_DEFAULT,
@@ -57,6 +59,8 @@ export type CreateJobInput = {
 	columns?: string[];
 	/** XLSX: warnings from the conversion, stored before the job's own. */
 	warnings?: string[];
+	/** The site's timezone setting, for templates with `tz: "site"`; UTC when absent. */
+	siteTimezone?: string;
 	dryRun?: boolean;
 	publish?: boolean;
 	batchSize?: number;
@@ -118,7 +122,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		throw new Error("An XLSX job was created without the converted columns");
 	}
 
-	const problems = checkTemplate(template, input.schemaFields, columns);
+	const siteTimezone = usesSiteTimezone(template) ? (input.siteTimezone ?? "UTC") : undefined;
+	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone);
 	if (problems.length > 0) {
 		throw new JobError(
 			"invalid_template",
@@ -148,6 +153,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		source: template.source,
 		...(columns === null ? {} : { columns }),
 		warnings,
+		targetFields: targetFieldsOf(template, input.schemaFields),
+		...(siteTimezone === undefined ? {} : { siteTimezone }),
 		cursor: { offset: located.bodyOffset, seq: 0 },
 		counters: emptyCounters(),
 		lease: null,

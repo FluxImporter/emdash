@@ -40,7 +40,7 @@ plus a run against the local EmDash site (`sites/dev`), reported with results.
 | 1 | Phase 0 | Report and architecture | Done (commit `95ec14f`) |
 | 2 | Engine MVP | Workspace and dev site, CSV upload, template v1 (text, number, date, slug), create/update by source key, publish option, job engine, lock skip, record log and CSV export, dry-run diff, `jobs/retry`, a `sites/dev-cf` Cloudflare site for parity | 10,000 rows import; kill-and-resume gives no duplicates, and any entry a crash leaves unpublished is reported as `publish_unverified`; locked entries skipped; dry-run writes nothing; Node and `workerd` pass |
 | 3 | Sources (split into M3a–M3d, see [M3a spec](./2026-10-12-flux-import-m3a-formats-design.md)) | JSON, XML, URL (auth headers, SSRF guard, ETag/Last-Modified), pasted snippets, record selection (XPath, JSONPath, row filters), JSONata transforms, then XLSX | Valid, large and malformed fixtures per format |
-| 4 | Field types and schema | Boolean, select, date with timezone, taxonomy paths, media from URL (hash dedupe, `maxUploadSize`, URL rewriting in Portable Text), HTML and Markdown to Portable Text with unknown markup reported, references, bylines (existing only), locales and translation links, additive `schema/apply` route | Each field type has unit and integration tests |
+| 4 | Field types and schema (split into M4a–M4e, see [Milestone 4 split](#milestone-4-split)) | Boolean, select, date with timezone, taxonomy paths, media from URL (hash dedupe, `maxUploadSize`, URL rewriting in Portable Text), HTML and Markdown to Portable Text with unknown markup reported, references, bylines (existing only), locales and translation links, additive `schema/apply` route | Each field type has unit and integration tests |
 | 5 | Record rules and safety | Create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" via revisions; delete, trash or unpublish missing entries; publish, draft or schedule; rollback as a resumable job | A finished run rolls back to its pre-run state |
 | 6 | Automation | Template CRUD and JSON export/import, cron-scheduled URL imports, MCP tools `list_templates`, `dry_run`, `start_import`, `import_status`, AI mapping suggestion route | A scheduled import runs unattended; an agent completes an import over MCP |
 | 7 | React admin wizard | Source, Target, Map, Options, Preview, Run on the M2 to M6 API; drag-and-drop mapping; schema diff confirmation; AI suggestions; live progress, pause, cancel, log download | Manual end-to-end run in `pnpm dev` |
@@ -193,3 +193,16 @@ Answered on 2026-10-08 against `emdash@1.2.0`; details and evidence in
 - `workerd`: a `sites/dev-cf` site (`@astrojs/cloudflare`, `@emdash-cms/cloudflare`, D1, R2) runs
   the upload and batch flow on the same fixtures and proves `withEmDashRuntime()`, ranged reads on
   R2 and the lock query on D1.
+
+## Milestone 4 split
+
+Added 2026-10-27. Milestone 4 is delivered in five parts, each with its own spec, plan and review,
+in dependency order. Each part ends with unit and integration tests for its field types.
+
+| Part | Scope | Status |
+| --- | --- | --- |
+| **M4a** ([spec](./2026-10-27-flux-import-m4a-scalar-fields-design.md)) | Scalar field types with no external objects: boolean, select and multiSelect, date with site or IANA timezone (and calendar dates into text fields), number and integer with locale separators, json, custom slug fields; field-rule checks before write; type-aware diff; additive `schema/apply` route | Done ([review](../notes/2026-10-27-m4a-review.md)) |
+| M4b | Taxonomy paths, references and bylines: term lookup by slug or `parent/child` path with optional creation, assigned through the content write's `taxonomies`; reference fields by entry ID, slug or source key (`references` for relation-bound fields); existing bylines only, by slug or exact name, through `bylines` | Planned |
+| M4c | Media from URL into image and file fields: fetch through the M3c fetcher and SSRF guard, `maxUploadSize`, content-hash dedupe via `handleMediaUpload`, alt text, per-job URL-to-media map | Planned |
+| M4d | HTML and Markdown to Portable Text, with unknown markup reported per record, and image URLs in Portable Text rewritten to media from M4c | Planned |
+| M4e | Locales and translation links: one template per locale, `translationOf` resolved from another locale's source key, non-translatable fields left to EmDash's sync | Planned |

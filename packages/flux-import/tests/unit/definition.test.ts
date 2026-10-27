@@ -30,6 +30,7 @@ const ROUTES = [
 	"jobs/retry",
 	"jobs/records",
 	"jobs/log.csv",
+	"schema/apply",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -123,6 +124,38 @@ describe("createPlugin", () => {
 			false,
 		);
 		expect(create.safeParse({ ...base, sourceId: "a/b" }).success).toBe(false);
+	});
+
+	it("validates schema/apply input, refusing required, unique, defaults and validation", () => {
+		const apply = plugin.routes["schema/apply"]!.input!;
+		const field = { slug: "stage", type: "select", options: ["draft"], label: "Stage" };
+		expect(apply.safeParse({ collection: "products", fields: [field] }).success).toBe(true);
+		expect(apply.safeParse({ template: {}, addOptions: true, dryRun: true }).success).toBe(true);
+		expect(apply.safeParse({ collection: "products" }).success).toBe(false);
+		expect(apply.safeParse({ fields: [field], template: {} }).success).toBe(false);
+		expect(apply.safeParse({ collection: "products", fields: [] }).success).toBe(false);
+		expect(
+			apply.safeParse({ collection: "products", fields: Array.from({ length: 101 }, () => field) })
+				.success,
+		).toBe(false);
+		for (const extra of [
+			{ required: true },
+			{ unique: true },
+			{ defaultValue: "draft" },
+			{ validation: { options: ["x"] } },
+		]) {
+			expect(
+				apply.safeParse({ collection: "products", fields: [{ ...field, ...extra }] }).success,
+			).toBe(false);
+		}
+		for (const type of ["portableText", "image", "file", "reference", "repeater", "blocks"]) {
+			expect(
+				apply.safeParse({ collection: "products", fields: [{ slug: "x", type }] }).success,
+			).toBe(false);
+		}
+		expect(apply.safeParse({ collection: "products", fields: [field], extra: 1 }).success).toBe(
+			false,
+		);
 	});
 
 	it("validates source input", () => {
