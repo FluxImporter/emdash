@@ -1019,6 +1019,33 @@ describe("checkTemplate for M4a field types", () => {
 		]);
 	});
 
+	it("refuses an unmapped field this EmDash cannot read", () => {
+		const one = templateSchema.parse({ ...typed, fields: { title: { from: "x", type: "text" } } });
+		expect(
+			checkTemplate(
+				one,
+				[
+					{ slug: "title", type: "string" },
+					{ slug: "weird", type: "string", unsupported: true },
+				],
+				null,
+			),
+		).toEqual(['Field "weird" has a field type this EmDash version cannot read']);
+	});
+
+	it("treats a map value as ambiguous when two options differ only in case", () => {
+		const one = templateSchema.parse({
+			...typed,
+			fields: { f: { from: "x", type: "select", map: { x: "RED" } } },
+		});
+		const field = (options: string[]) => [{ slug: "f", type: "select", validation: { options } }];
+		expect(checkTemplate(one, field(["Red", "red"]), null)).toEqual([
+			'Field "f" maps to "RED", which is not one of its options (Red, red)',
+		]);
+		expect(checkTemplate(one, field(["Red", "blue"]), null)).toEqual([]);
+		expect(checkTemplate(one, field(["Red", "RED"]), null)).toEqual([]);
+	});
+
 	it("refuses tz: site when the site timezone is not a valid IANA zone", () => {
 		expect(check({}, "Mars/Base")).toEqual([
 			'Field "released" reads dates in the site timezone, but "Mars/Base" is not a valid IANA timezone',

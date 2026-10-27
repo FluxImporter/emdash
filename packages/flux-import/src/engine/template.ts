@@ -518,7 +518,10 @@ const COMPATIBLE: Record<MappingType, string[]> = {
 /** Whether `value` names one of `options`, as the select matching would find it. */
 function matchesOption(value: string, options: readonly string[], ignoreCase: boolean): boolean {
 	if (options.includes(value)) return true;
-	return ignoreCase && options.some((o) => o.toLowerCase() === value.toLowerCase());
+	if (!ignoreCase) return false;
+	// As the converters match: ignoring case needs exactly one distinct option, else it is ambiguous.
+	const lower = value.toLowerCase();
+	return new Set(options.filter((o) => o.toLowerCase() === lower)).size === 1;
 }
 
 /** Problems with one mapping against its existing collection field. */
@@ -604,6 +607,10 @@ export function checkTemplate(
 		}
 	}
 	for (const f of fields) {
+		// EmDash refuses every write to a collection with a field it cannot read, mapped or not.
+		if (f.unsupported && !Object.hasOwn(t.fields, f.slug)) {
+			errors.push(`Field "${f.slug}" has a field type this EmDash version cannot read`);
+		}
 		if (
 			f.required &&
 			!f.hasDefault &&
