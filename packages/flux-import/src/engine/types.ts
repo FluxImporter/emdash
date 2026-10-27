@@ -76,6 +76,11 @@ export interface Job {
 	 * `maxUploadSize`, at most 5 MiB on Workers. Absent when the template maps no media.
 	 */
 	mediaMaxBytes?: number;
+	/**
+	 * Terms and media a record created before a batch left it for the next one (a download that
+	 * would start too late), merged into its row when it completes. Absent otherwise.
+	 */
+	deferred?: { seq: number; newTerms: string[]; newMedia: string[] };
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

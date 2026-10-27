@@ -143,6 +143,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
 			...(job.plannedTerms ? { plannedTerms: job.plannedTerms } : {}),
+			...(job.deferred ? { deferred: job.deferred } : {}),
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
@@ -151,6 +152,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			updatedAt: iso(deps),
 		};
 		// A finished retry pass has no later batch to need the dry run's planned terms.
+		if (!job.deferred) delete next.deferred;
 		const saved = finishedRetry ? withoutPlannedTerms(next) : next;
 		const result = await deps.jobs.compareAndSet(job.id, current.revision, saved);
 		if (result.applied) return saved;
@@ -374,10 +376,31 @@ async function decide(
 	cache: LookupCache,
 ): Promise<RowFields> {
 	const found: Found = { newTerms: [], newMedia: [] };
-	const row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
-	// A retried record keeps the terms and media its earlier attempts created.
-	const newTerms = [...new Set([...(existing?.newTerms ?? []), ...found.newTerms])];
-	const newMedia = [...new Set([...(existing?.newMedia ?? []), ...found.newMedia])];
+	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
+	let row: RowFields;
+	try {
+		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
+	} catch (e) {
+		if (e instanceof MediaDeferred) {
+			// Keep what this attempt created for the record's row in the next batch.
+			const newTerms = [...new Set([...(carried?.newTerms ?? []), ...found.newTerms])];
+			const newMedia = [
+				...new Set([...(carried?.newMedia ?? []), ...found.newMedia, ...e.newMedia]),
+			];
+			if (newTerms.length > 0 || newMedia.length > 0) {
+				job.deferred = { seq: rec.seq, newTerms, newMedia };
+			}
+		}
+		throw e;
+	}
+	// A retried or deferred record keeps the terms and media its earlier attempts created.
+	const newTerms = [
+		...new Set([...(existing?.newTerms ?? []), ...(carried?.newTerms ?? []), ...found.newTerms]),
+	];
+	const newMedia = [
+		...new Set([...(existing?.newMedia ?? []), ...(carried?.newMedia ?? []), ...found.newMedia]),
+	];
+	if (carried) delete job.deferred;
 	return {
 		...row,
 		...(newTerms.length > 0 ? { newTerms } : {}),
@@ -410,10 +433,12 @@ function mediaItem(request: MediaRequest, item: MediaInfo | null): MediaPlanItem
 function lookedUpMedia(
 	lookups: Readonly<Record<string, MediaLookup | null>>,
 	dryRun: boolean,
+	jobId: string,
 ): Record<string, MediaPlanItem | null> {
 	const plan: Record<string, MediaPlanItem | null> = {};
 	for (const [field, lookup] of Object.entries(lookups)) {
-		const stays = lookup?.item && (dryRun || !lookup.request.refresh);
+		const stays =
+			lookup?.item && (dryRun || !lookup.request.refresh || lookup.row?.jobId === jobId);
 		plan[field] = lookup === null ? null : mediaItem(lookup.request, stays ? lookup.item : null);
 	}
 	return plan;
@@ -512,7 +537,7 @@ async function decideRecord(
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file not stored yet counts as a change.
-		const media = lookups ? lookedUpMedia(lookups, job.dryRun) : undefined;
+		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
 		const plan = planRecord(entry, mapped.value, comparisons, links, media);
 		action = plan.action;
 		if (job.dryRun) {

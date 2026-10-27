@@ -289,4 +289,22 @@ describe("importing media", () => {
 		expect(deps.media.calls).toEqual([]);
 		expect((await rows(deps, job.id)).every((r) => r.newMedia === undefined)).toBe(true);
 	});
+
+	it("refreshes a URL once per job, so a slow refresh cannot defer a record forever", async () => {
+		const { deps } = makeDeps();
+		serve(deps);
+		deps.mediaFetcher.files.get(url("a.png"))!.ms = 21_000;
+		const tpl = template({
+			photo: { from: "Img", type: "image", refresh: true },
+		});
+		const csv = `${HEADER}A1,Chair,${url("a.png")},,${url("a.pdf")}\n`;
+		const created = await start(deps, csv, { tpl });
+		const job = await runToEnd(deps, created.id);
+		expect(job).toMatchObject({ status: "completed", counters: { created: 1 } });
+		expect(deps.mediaFetcher.urls().filter((u) => u === url("a.png"))).toHaveLength(1);
+		const [row] = await rows(deps, created.id);
+		// The first download ran in the batch that deferred the record; it is still listed.
+		expect(row?.newMedia).toEqual([`photo: ${url("a.png")}`, `manual: ${url("a.pdf")}`]);
+		expect(job.deferred).toBeUndefined();
+	});
 });

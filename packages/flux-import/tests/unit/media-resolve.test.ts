@@ -121,17 +121,19 @@ describe("resolveMedia", () => {
 		const kept = await resolveMedia(
 			deps,
 			new LookupCache(),
-			ctx,
+			{ ...ctx, jobId: "j2" },
 			"photo",
 			image(A, { refresh: true }),
 		);
 		expect(kept).toMatchObject({ ok: true, downloaded: false, item: { id: "m1" } });
+		// The 304 marks the row as refreshed by this job.
+		expect((await deps.mediaMap.get(mediaMapKey(A)))?.jobId).toBe("j2");
 		expect(deps.mediaFetcher.calls[1]?.options.etag).toBe('"a1"');
 		deps.mediaFetcher.files.set(A, { body: PNG2, contentType: "image/png", etag: '"a2"' });
 		const changed = await resolveMedia(
 			deps,
 			new LookupCache(),
-			ctx,
+			{ ...ctx, jobId: "j3" },
 			"photo",
 			image(A, { refresh: true }),
 		);
@@ -375,7 +377,13 @@ describe("one fetch per URL and batch", () => {
 		const cache = new LookupCache();
 		for (let i = 0; i < 3; i++) {
 			expect(
-				await resolveMedia(deps, cache, ctx, "photo", image(B, { refresh: true })),
+				await resolveMedia(
+					deps,
+					cache,
+					{ ...ctx, jobId: "j2" },
+					"photo",
+					image(B, { refresh: true }),
+				),
 			).toMatchObject({ ok: true, item: { id: "m1" } });
 		}
 		expect(deps.mediaFetcher.urls()).toEqual([B, B]);

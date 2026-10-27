@@ -218,6 +218,8 @@ export type MediaLookup = {
  * before the record, which the next batch processes again. Media already stored is in the map.
  */
 export class MediaDeferred extends Error {
+	/** The record's media (`field: url`) downloaded before the deferral. */
+	newMedia: string[] = [];
 	constructor() {
 		super("No time left in this batch for the next download");
 		this.name = "MediaDeferred";
@@ -322,7 +324,11 @@ export async function obtainMedia(
 	const { field, request, item: hit, row } = lookup;
 	const obtained = cache.mediaObtained.get(lookup.key);
 	if (obtained) return { ok: true, item: obtained, downloaded: false };
-	if (hit && !request.refresh) return { ok: true, item: hit, downloaded: false };
+	// A file is refreshed at most once per job: a batch that defers the record's next download
+	// would otherwise download it again, and never get past it.
+	if (hit && (!request.refresh || row?.jobId === ctx.jobId)) {
+		return { ok: true, item: hit, downloaded: false };
+	}
 	const now = deps.now();
 	const first = cache.mediaDownloads === 0;
 	if (!first && cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS) throw new MediaDeferred();
@@ -341,6 +347,13 @@ export async function obtainMedia(
 		});
 		if (fetched.status === 304) {
 			if (hit) {
+				if (row) {
+					await deps.mediaMap.put(lookup.key, {
+						...row,
+						fetchedAt: new Date(deps.now()).toISOString(),
+						jobId: ctx.jobId,
+					});
+				}
 				cache.mediaObtained.set(lookup.key, hit);
 				return { ok: true, item: hit, downloaded: false };
 			}
@@ -466,7 +479,13 @@ export async function obtainRecordMedia(
 			media[field] = null;
 			continue;
 		}
-		const obtained = await obtainMedia(deps, cache, ctx, lookup);
+		let obtained: Awaited<ReturnType<typeof obtainMedia>>;
+		try {
+			obtained = await obtainMedia(deps, cache, ctx, lookup);
+		} catch (e) {
+			if (e instanceof MediaDeferred) e.newMedia = newMedia;
+			throw e;
+		}
 		if (!obtained.ok) return { ok: false, errors: [obtained.error], newMedia };
 		if (obtained.downloaded) newMedia.push(`${field}: ${lookup.request.url}`);
 		media[field] = { request: lookup.request, item: obtained.item };
