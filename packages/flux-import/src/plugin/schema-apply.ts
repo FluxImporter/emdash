@@ -7,6 +7,7 @@ import { emdashErrorCode } from "../emdash/errors.js";
 import {
 	COMPATIBLE,
 	type FieldMapping,
+	matchesOption,
 	SOURCE_ID_FIELD,
 	type Template,
 	templateSchema,
@@ -57,6 +58,8 @@ export interface FieldRequest {
 	 * rather than a `conflict`). Absent in explicit `fields` mode, which matches the exact type.
 	 */
 	accepts?: readonly string[] | undefined;
+	/** Template mode: how the converters match a mapped value to an option (default true). */
+	ignoreCase?: boolean | undefined;
 }
 
 export interface ApplyInput {
@@ -152,7 +155,11 @@ function requestFor(field: string, mapping: FieldMapping): FieldRequest {
 		mapping.type === "date" && mapping.output !== undefined
 			? ["string", "text"]
 			: COMPATIBLE[mapping.type];
-	return { ...request, accepts };
+	const ignoreCase =
+		mapping.type === "select" || mapping.type === "multiSelect"
+			? { ignoreCase: mapping.ignoreCase ?? true }
+			: {};
+	return { ...request, accepts, ...ignoreCase };
 }
 
 function baseRequestFor(field: string, mapping: FieldMapping): FieldRequest {
@@ -176,6 +183,22 @@ export function requestsFromTemplate(t: Template): FieldRequest[] {
 	return Object.entries(t.fields).map(([field, mapping]) => requestFor(field, mapping));
 }
 
+/** What is wrong with a request's options, if anything. */
+function optionProblem(r: FieldRequest): string | undefined {
+	if (r.options === undefined) return undefined;
+	if (r.type !== "select" && r.type !== "multiSelect") {
+		return "only select and multiSelect fields take options";
+	}
+	if (r.options.length < 1 || r.options.length > MAX_OPTIONS) {
+		return `give 1-${MAX_OPTIONS} options`;
+	}
+	if (r.options.some((o) => o.length < 1 || o.length > 200 || o.trim() !== o)) {
+		return "options are 1-200 characters, without leading or trailing spaces";
+	}
+	if (new Set(r.options).size !== r.options.length) return "options must be distinct";
+	return undefined;
+}
+
 /** Problems with the requested fields, each naming its field. */
 export function requestProblems(requests: readonly FieldRequest[]): string[] {
 	const problems: string[] = [];
@@ -197,17 +220,8 @@ export function requestProblems(requests: readonly FieldRequest[]): string[] {
 		) {
 			problems.push(`${name}: labels are 1-200 characters, without leading or trailing spaces`);
 		}
-		if (r.options !== undefined) {
-			if (r.type !== "select" && r.type !== "multiSelect") {
-				problems.push(`${name}: only select and multiSelect fields take options`);
-			} else if (r.options.length < 1 || r.options.length > MAX_OPTIONS) {
-				problems.push(`${name}: give 1-${MAX_OPTIONS} options`);
-			} else if (r.options.some((o) => o.length < 1 || o.length > 200 || o.trim() !== o)) {
-				problems.push(`${name}: options are 1-200 characters, without leading or trailing spaces`);
-			} else if (new Set(r.options).size !== r.options.length) {
-				problems.push(`${name}: options must be distinct`);
-			}
-		}
+		const optionIssue = optionProblem(r);
+		if (optionIssue !== undefined) problems.push(`${name}: ${optionIssue}`);
 		if (r.indexed && !INDEXABLE.has(r.type)) {
 			problems.push(`${name}: ${r.type} fields cannot be indexed`);
 		}
@@ -237,7 +251,12 @@ export function planField(
 	}
 	if (existing.type !== type) return { change: { field, action: "unchanged", type } };
 	const current = existing.validation?.options ?? [];
-	const missing = (request.options ?? []).filter((o) => !current.includes(o));
+	// Template mode matches as the converters do; explicit fields match exactly.
+	const present = (o: string) =>
+		request.ignoreCase === undefined
+			? current.includes(o)
+			: matchesOption(o, current, request.ignoreCase);
+	const missing = (request.options ?? []).filter((o) => !present(o));
 	// A field without options accepts any string, so nothing is missing.
 	if (missing.length === 0 || current.length === 0) {
 		return { change: { field, action: "unchanged", type } };
@@ -265,8 +284,13 @@ export async function applySchema(
 	input: ApplyInput,
 	invalidate: (collection: string) => void = invalidateFieldCaches,
 ): Promise<ApplyResult> {
-	const { collection, requests } = resolveRequests(input);
-	const problems = requestProblems(requests);
+	const { collection, requests, fromTemplate } = resolveRequests(input);
+	// A template's map values are not the caller's to correct here: a field whose options EmDash
+	// would refuse is reported as a conflict and the others are still planned.
+	const blocked = requests.map((r) => (fromTemplate ? optionProblem(r) : undefined));
+	const problems = requestProblems(
+		requests.map((r, i) => (blocked[i] === undefined ? r : { ...r, options: undefined })),
+	);
 	if (problems.length > 0) throw new ServiceError("VALIDATION_ERROR", problems.join("; "), 400);
 	const read = async () => {
 		const found = await registry.getCollectionWithFields(collection);
@@ -282,7 +306,12 @@ export async function applySchema(
 	const addOptions = input.addOptions ?? false;
 	const dryRun = input.dryRun ?? false;
 	let existing = await read();
-	const plans = requests.map((r) => planField(r, existing.get(r.slug), addOptions));
+	const plans = requests.map((r, i): ReturnType<typeof planField> => {
+		const issue = blocked[i];
+		if (issue === undefined) return planField(r, existing.get(r.slug), addOptions);
+		const message = `Field "${r.slug}": ${issue}`;
+		return { change: { field: r.slug, action: "conflict", type: r.type, message } };
+	});
 	const result: ApplyResult = {
 		collection,
 		dryRun,
@@ -321,6 +350,11 @@ export async function applySchema(
 					}
 				}
 			}
+			if (plan.change.action === "add_options") {
+				// The registry may have changed since the plan (a re-read after FIELD_EXISTS).
+				plan = planField(request, existing.get(request.slug), addOptions);
+				result.changes[i] = plan.change;
+			}
 			if (plan.change.action === "add_options" && plan.options !== undefined) {
 				const field = existing.get(request.slug);
 				await registry.updateField(collection, request.slug, {
@@ -347,7 +381,11 @@ export async function applySchema(
 }
 
 /** The collection and field requests: from `fields`, or from a template's mappings. */
-function resolveRequests(input: ApplyInput): { collection: string; requests: FieldRequest[] } {
+function resolveRequests(input: ApplyInput): {
+	collection: string;
+	requests: FieldRequest[];
+	fromTemplate: boolean;
+} {
 	if ((input.fields === undefined) === (input.template === undefined)) {
 		throw new ServiceError("VALIDATION_ERROR", "Set exactly one of fields and template", 400);
 	}
@@ -355,7 +393,7 @@ function resolveRequests(input: ApplyInput): { collection: string; requests: Fie
 		if (input.collection === undefined) {
 			throw new ServiceError("VALIDATION_ERROR", "collection is required with fields", 400);
 		}
-		return { collection: input.collection, requests: input.fields };
+		return { collection: input.collection, requests: input.fields, fromTemplate: false };
 	}
 	const parsed = templateSchema.safeParse(input.template);
 	if (!parsed.success) {
@@ -376,5 +414,5 @@ function resolveRequests(input: ApplyInput): { collection: string; requests: Fie
 			400,
 		);
 	}
-	return { collection: t.collection, requests: requestsFromTemplate(t) };
+	return { collection: t.collection, requests: requestsFromTemplate(t), fromTemplate: true };
 }

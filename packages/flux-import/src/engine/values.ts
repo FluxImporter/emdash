@@ -366,7 +366,11 @@ export function checkRules(
 			});
 		}
 	}
-	if (TEXT_TYPES.has(target.type) && typeof value === "string") {
+	// A select without options is a plain string to EmDash, with the text rules.
+	const textRules =
+		TEXT_TYPES.has(target.type) ||
+		(target.type === "select" && (target.options === undefined || target.options.length === 0));
+	if (textRules && typeof value === "string") {
 		if (target.minLength !== undefined && value.length < target.minLength) {
 			errors.push({
 				code: "too_short",

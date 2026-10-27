@@ -483,6 +483,88 @@ describe("template mode and error handling", () => {
 	});
 });
 
+describe("template option handling", () => {
+	const base = {
+		version: 1,
+		collection: "products",
+		locale: "en",
+		key: { from: "sku" },
+	};
+
+	it("matches mapped values to existing options as the converters do", async () => {
+		const registry = new FakeApplyRegistry([
+			{ slug: "stage", type: "select", validation: { options: ["draft", "published"] } },
+		]);
+		const template = {
+			...base,
+			fields: { stage: { from: "S", type: "select", map: { Live: "PUBLISHED" } } },
+		};
+		for (const addOptions of [false, true]) {
+			const result = await applySchema(registry, { template, addOptions }, invalidate);
+			expect(result.changes[0]?.action).toBe("unchanged");
+		}
+		expect(registry.calls).toEqual([]);
+		const exact = await applySchema(
+			registry,
+			{
+				collection: "products",
+				fields: [{ slug: "stage", type: "select", options: ["PUBLISHED"] }],
+			},
+			invalidate,
+		);
+		expect(exact.changes[0]?.action).toBe("conflict");
+	});
+
+	it("reports a field whose map values EmDash would refuse and plans the others", async () => {
+		const registry = new FakeApplyRegistry();
+		const template = {
+			...base,
+			fields: {
+				stage: { from: "S", type: "select", map: { A: " live" } },
+				featured: { from: "F", type: "boolean" },
+			},
+		};
+		const result = await applySchema(registry, { template }, invalidate);
+		expect(result.changes).toEqual([
+			{
+				field: "stage",
+				action: "conflict",
+				type: "select",
+				message: 'Field "stage": options are 1-200 characters, without leading or trailing spaces',
+			},
+			{ field: "featured", action: "create", type: "boolean" },
+		]);
+		expect(result.applied).toEqual(["featured"]);
+	});
+
+	it("re-plans add_options against the registry after a re-read", async () => {
+		const registry = new FakeApplyRegistry([
+			{ slug: "stage", type: "select", validation: { options: ["draft"] } },
+		]);
+		registry.raced.set("specs", { slug: "specs", type: "json" });
+		const original = registry.createField.bind(registry);
+		registry.createField = async (collection, input) => {
+			// Another request adds "live" while we create specs.
+			registry.collections.get(collection)![0]!.validation = { options: ["draft", "live"] };
+			return original(collection, input);
+		};
+		const result = await applySchema(
+			registry,
+			{
+				collection: "products",
+				fields: [
+					{ slug: "specs", type: "json" },
+					{ slug: "stage", type: "select", options: ["draft", "live"] },
+				],
+				addOptions: true,
+			},
+			invalidate,
+		);
+		expect(result.changes[1]?.action).toBe("unchanged");
+		expect(registry.calls.filter((c) => c.startsWith("update"))).toEqual([]);
+	});
+});
+
 describe("labelOf", () => {
 	it("turns a slug into a label", () => {
 		expect(labelOf("unit_price")).toBe("Unit price");

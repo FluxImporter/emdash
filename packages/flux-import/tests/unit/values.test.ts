@@ -271,6 +271,14 @@ describe("jsonConverter", () => {
 	});
 });
 
+describe("checkRules on a select without options", () => {
+	it("applies the text rules, and not when the select has options", () => {
+		const free = { type: "select", required: false, maxLength: 3, pattern: "^a" };
+		expect(checkRules("bcde", free).map((e) => e.code)).toEqual(["too_long", "pattern_mismatch"]);
+		expect(checkRules("bcde", { ...free, options: ["bcde"] })).toEqual([]);
+	});
+});
+
 describe("checkRules", () => {
 	const target = (t: Partial<TargetField>): TargetField => ({
 		type: "string",
@@ -319,7 +327,9 @@ describe("checkRules", () => {
 
 	it("ignores a pattern that does not compile, and rules for other types", () => {
 		expect(codes("abc", { pattern: "([" })).toEqual([]);
-		expect(codes("abc", { type: "select", maxLength: 1, pattern: "^x$" })).toEqual([]);
+		expect(
+			codes("abc", { type: "select", options: ["abc"], maxLength: 1, pattern: "^x$" }),
+		).toEqual([]);
 		expect(codes(["a"], { type: "multiSelect", min: 3 })).toEqual([]);
 	});
 });

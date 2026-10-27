@@ -516,7 +516,11 @@ export const COMPATIBLE: Record<MappingType, string[]> = {
 };
 
 /** Whether `value` names one of `options`, as the select matching would find it. */
-function matchesOption(value: string, options: readonly string[], ignoreCase: boolean): boolean {
+export function matchesOption(
+	value: string,
+	options: readonly string[],
+	ignoreCase: boolean,
+): boolean {
 	if (options.includes(value)) return true;
 	if (!ignoreCase) return false;
 	// As the converters match: ignoring case needs exactly one distinct option, else it is ambiguous.
