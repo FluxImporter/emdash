@@ -84,6 +84,41 @@ describe("dateConverter", () => {
 	});
 });
 
+describe("dateConverter edge cases", () => {
+	it("applies an explicit offset or zone in the text once", () => {
+		const fixed = dateConverter({ tz: "UTC+2" }, "datetime");
+		expect(fixed("2026-01-01T00:00+02:00")).toEqual(ok("2025-12-31T22:00:00.000Z"));
+		const named = dateConverter(
+			{ format: "yyyy-MM-dd HH:mm z", tz: "America/New_York" },
+			"datetime",
+		);
+		expect(named("2026-11-01 01:30 America/New_York")).toEqual(ok("2026-11-01T05:30:00.000Z"));
+	});
+
+	it("takes a date's first instant when midnight falls in a DST gap", () => {
+		const cl = dateConverter({ tz: "America/Santiago" }, "datetime");
+		expect(cl("2026-09-06")).toEqual(ok("2026-09-06T04:00:00.000Z"));
+		expect(cl("2026-09-06T00:30")).toEqual(invalid);
+		expect(dateConverter({ tz: "America/Santiago" }, "text")("2026-09-06")).toEqual(
+			ok("2026-09-06"),
+		);
+		const fmt = dateConverter({ format: "dd/MM/yyyy", tz: "America/Havana" }, "datetime");
+		expect(fmt("08/03/2026")).toEqual(ok("2026-03-08T05:00:00.000Z"));
+	});
+
+	it("refuses time-only ISO text, bad zones, and bare numbers without a unix format", () => {
+		const utc = dateConverter({ tz: "UTC" }, "datetime");
+		expect(utc("12:00")).toEqual(invalid);
+		expect(utc("12:00:00")).toEqual(invalid);
+		expect(utc(2025)).toEqual(invalid);
+		expect(utc(2025n)).toEqual(invalid);
+		expect(utc("2025")).toEqual(ok("2025-01-01T00:00:00.000Z"));
+		const bad = dateConverter({ tz: "Mars/X" }, "datetime")("2026-01-01");
+		expect(bad).toEqual(expect.objectContaining({ ok: false, code: "invalid_date" }));
+		expect((bad as { message: string }).message).toContain("Mars/X");
+	});
+});
+
 describe("localInstant", () => {
 	it("finds the earliest instant showing a wall-clock time, or none in a gap", () => {
 		const zone = DateTime.utc().setZone("America/New_York").zone;

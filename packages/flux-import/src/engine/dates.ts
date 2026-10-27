@@ -15,6 +15,8 @@ export type DateConverted =
 
 const DAY_MS = 86_400_000;
 const UNIX_RE = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+const TIME_ONLY_RE = /^(T\d|\d{2}:\d{2})/;
+const TIME_TOKENS_RE = /[HhmsSauZzXxkK]/;
 const NOT_SCALAR_MESSAGE = "Expected a single value, found an object or array";
 
 /**
@@ -48,7 +50,8 @@ export function dateConverter(
 	o: DateOptions,
 	targetType: string | null,
 ): (raw: unknown) => DateConverted {
-	const zone = DateTime.utc().setZone(o.tz).zone;
+	const zoneProbe = DateTime.utc().setZone(o.tz);
+	const zone = zoneProbe.zone;
 	const asText = targetType === "string" || targetType === "text";
 	const output = o.output ?? "yyyy-MM-dd";
 	const expected = o.format ?? "ISO 8601";
@@ -70,12 +73,23 @@ export function dateConverter(
 			return { ok: false, code: "not_scalar", message: NOT_SCALAR_MESSAGE };
 		const text = String(raw).trim();
 		if (text === "") return { ok: true, value: null };
+		if (!zoneProbe.isValid) {
+			return {
+				ok: false,
+				code: "invalid_date",
+				message: `"${o.tz}" is not a valid time zone`,
+			};
+		}
 		const invalid: DateConverted = {
 			ok: false,
 			code: "invalid_date",
 			message: `"${text}" is not a ${expected} date`,
 		};
-		if (o.format === "unix" || o.format === "unixMs") {
+		// Numbers are dates only as Unix times; text such as "2025" is still read as ISO.
+		const isUnix = o.format === "unix" || o.format === "unixMs";
+		if (!isUnix && (typeof raw === "number" || typeof raw === "bigint")) return invalid;
+		if (o.format === undefined && TIME_ONLY_RE.test(text)) return invalid;
+		if (isUnix) {
 			if (typeof raw === "boolean" || !UNIX_RE.test(text)) return invalid;
 			const n = Number(text);
 			const ms = Math.round(o.format === "unix" ? n * 1000 : n);
@@ -88,14 +102,26 @@ export function dateConverter(
 				: DateTime.fromFormat(text, o.format, options);
 		if (!parsed.isValid) return invalid;
 		// The text carried its own offset (or zone): it names one instant.
-		if (!parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
-		// Otherwise read the written wall-clock time in UTC, where every local time exists, and
-		// find the instant in `tz` that shows it.
-		const written =
+		if (zone.isUniversal || !parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
+		// Otherwise take the written fields (read in UTC, where every local time exists, keeping any
+		// zone the text named) and find the instant in `tz` that shows that wall-clock time.
+		const wOptions = { zone: "utc", setZone: true };
+		const w =
 			o.format === undefined
-				? DateTime.fromISO(text, { zone: "utc" })
-				: DateTime.fromFormat(text, o.format, { zone: "utc" });
-		const instant = localInstant(written.toMillis(), zone);
+				? DateTime.fromISO(text, wOptions)
+				: DateTime.fromFormat(text, o.format, wOptions);
+		let instant = localInstant(w.toMillis() + w.offset * 60_000, zone);
+		const dateOnly =
+			o.format === undefined
+				? !/[Tt:]/.test(text)
+				: !TIME_TOKENS_RE.test(o.format.replace(/'[^']*'/g, ""));
+		if (instant === null && dateOnly) {
+			// Midnight does not exist that day (a DST start at 00:00): use the day's first instant.
+			instant = DateTime.fromObject(
+				{ year: w.year, month: w.month, day: w.day },
+				{ zone },
+			).toMillis();
+		}
 		if (instant === null) {
 			return {
 				ok: false,
