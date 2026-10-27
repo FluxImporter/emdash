@@ -199,6 +199,17 @@ describe("EmDashLookups", () => {
 		expect(error).toMatchObject({ code: "emdash_content_get_error" });
 	});
 
+	it("fails on a success response without an item rather than finding nothing", async () => {
+		const lookups = new EmDashLookups(
+			undefined,
+			undefined,
+			new Reader(() => ({ success: true, data: {} })),
+		);
+		const error = await lookups.findEntry("products", "id", "x", "en").catch((e) => e);
+		expect(error).toBeInstanceOf(ContentWriteError);
+		expect(error).toMatchObject({ code: "emdash_bad_response" });
+	});
+
 	it("says which capability is missing", async () => {
 		const lookups = new EmDashLookups(undefined, undefined, new Reader(() => found("x", "x")));
 		await expect(lookups.terms("tag", "en")).rejects.toThrow("declare taxonomies:write");

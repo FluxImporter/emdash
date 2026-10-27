@@ -4,7 +4,13 @@ import type {
 	TaxonomyAccessWithWrite,
 	TaxonomyTermInfo,
 } from "emdash";
-import type { BylineRef, LookupPort, TaxonomyDef, TermInfo } from "../engine/ports.js";
+import {
+	type BylineRef,
+	ContentWriteError,
+	type LookupPort,
+	type TaxonomyDef,
+	type TermInfo,
+} from "../engine/ports.js";
 import { type HandlerResult, writeError } from "./content.js";
 
 /** The runtime's content read (`emdash` src/emdash-runtime.ts:3364); the runtime is assignable. */
@@ -128,7 +134,12 @@ export class EmDashLookups implements LookupPort {
 			throw writeError("Looking up a referenced entry", result.error);
 		}
 		const item = itemOf(result.data);
-		if (item === null) return null;
+		if (item === null) {
+			throw new ContentWriteError(
+				"emdash_bad_response",
+				"Looking up a referenced entry: unexpected response from EmDash",
+			);
+		}
 		const matches = by === "id" ? item.id === value : item.slug === value;
 		return matches ? { id: item.id, group: item.group } : null;
 	}
