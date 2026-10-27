@@ -94,41 +94,49 @@ export function dateConverter(
 			const ms = Math.round(o.format === "unix" ? n * 1000 : n);
 			return Number.isFinite(ms) ? finish(ms, text) : invalid;
 		}
-		const options = { zone, setZone: true };
-		const parsed =
-			o.format === undefined
-				? DateTime.fromISO(text, options)
-				: DateTime.fromFormat(text, o.format, options);
-		if (!parsed.isValid) return invalid;
-		// The text carried its own offset (or zone): it names one instant.
-		if (zone.isUniversal || !parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
-		// A time whose text names its zone (format token `z`) follows Luxon's own handling of gaps.
-		// Otherwise take the written fields (read in UTC, where every local time exists, keeping any
-		// zone the text named) and find the instant in `tz` that shows that wall-clock time.
-		const wOptions = { zone: "utc", setZone: true };
-		const w =
-			o.format === undefined
-				? DateTime.fromISO(text, wOptions)
-				: DateTime.fromFormat(text, o.format, wOptions);
-		let instant = localInstant(w.toMillis() + w.offset * 60_000, zone);
-		const dateOnly =
-			o.format === undefined
-				? !/[Tt:]/.test(text)
-				: !TIME_TOKENS_RE.test(o.format.replace(/'[^']*'/g, ""));
-		if (instant === null && dateOnly) {
-			// Midnight does not exist that day (a DST start at 00:00): use the day's first instant.
-			instant = DateTime.fromObject(
-				{ year: w.year, month: w.month, day: w.day },
-				{ zone },
-			).toMillis();
-		}
-		if (instant === null) {
+		try {
+			const options = { zone, setZone: true };
+			const parsed =
+				o.format === undefined
+					? DateTime.fromISO(text, options)
+					: DateTime.fromFormat(text, o.format, options);
+			if (!parsed.isValid) return invalid;
+			// The text carried its own offset (or zone): it names one instant.
+			if (zone.isUniversal || !parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
+			// A time whose text names its zone (format token `z`) follows Luxon's own handling of gaps.
+			// Otherwise take the written fields (read in UTC, where every local time exists, keeping any
+			// zone the text named) and find the instant in `tz` that shows that wall-clock time.
+			const wOptions = { zone: "utc", setZone: true };
+			const w =
+				o.format === undefined
+					? DateTime.fromISO(text, wOptions)
+					: DateTime.fromFormat(text, o.format, wOptions);
+			let instant = localInstant(w.toMillis() + w.offset * 60_000, zone);
+			const dateOnly =
+				o.format === undefined
+					? !/[Tt:]/.test(text)
+					: !TIME_TOKENS_RE.test(o.format.replace(/'[^']*'/g, ""));
+			if (instant === null && dateOnly) {
+				// Midnight does not exist that day (a DST start at 00:00): use the day's first instant.
+				instant = DateTime.fromObject(
+					{ year: w.year, month: w.month, day: w.day },
+					{ zone },
+				).toMillis();
+			}
+			if (instant === null) {
+				return {
+					ok: false,
+					code: "invalid_date",
+					message: `"${text}" does not exist in ${o.tz} (the clocks skip it)`,
+				};
+			}
+			return finish(instant, text);
+		} catch (e) {
 			return {
 				ok: false,
 				code: "invalid_date",
-				message: `"${text}" does not exist in ${o.tz} (the clocks skip it)`,
+				message: `"${o.format ?? "ISO 8601"}" is not a usable date format: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
-		return finish(instant, text);
 	};
 }

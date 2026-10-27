@@ -136,3 +136,14 @@ describe("localInstant", () => {
 		expect(localInstant(Date.UTC(2026, 0, 1), zone)).toBe(Date.UTC(2026, 0, 1, 5));
 	});
 });
+
+describe("dateConverter with formats Luxon refuses to parse", () => {
+	it.each([
+		["kkkk-MM-dd", "2026-10-27"],
+		["HH a", "08 AM"],
+	])("returns invalid_date for format %s instead of throwing", (format, text) => {
+		const result = dateConverter({ format, tz: "UTC" }, "datetime")(text);
+		expect(result).toMatchObject({ ok: false, code: "invalid_date" });
+		expect(!result.ok && result.message).toContain(`"${format}" is not a usable date format: `);
+	});
+});
