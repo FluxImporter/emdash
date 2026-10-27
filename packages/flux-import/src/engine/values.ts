@@ -291,7 +291,11 @@ export function jsonConverter(o: JsonOptions): (raw: unknown) => Converted {
 			if (raw.trim() === "") return NULL;
 			if (parse) {
 				try {
-					value = JSON.parse(raw);
+					value = JSON.parse(raw, (_key, v) => {
+						// An overflowing literal such as 1e999 parses to Infinity, which is not JSON.
+						if (typeof v === "number" && !Number.isFinite(v)) throw new RangeError("not finite");
+						return v;
+					});
 				} catch {
 					return fail("invalid_json", "The text is not valid JSON");
 				}
@@ -311,9 +315,13 @@ export function jsonConverter(o: JsonOptions): (raw: unknown) => Converted {
 		} else if (typeof raw === "number" && !Number.isFinite(raw)) {
 			return fail("invalid_json", `${raw} is not a JSON number`);
 		}
-		const text = JSON.stringify(value);
-		if (new TextEncoder().encode(text).length > MAX_JSON_BYTES) {
-			return fail("value_too_large", `The JSON value is larger than ${MAX_JSON_BYTES} bytes`);
+		try {
+			const text = JSON.stringify(value);
+			if (new TextEncoder().encode(text).length > MAX_JSON_BYTES) {
+				return fail("value_too_large", `The JSON value is larger than ${MAX_JSON_BYTES} bytes`);
+			}
+		} catch {
+			return fail("invalid_json", "The JSON value is nested too deeply");
 		}
 		return { ok: true, value: value as JsonValue };
 	};

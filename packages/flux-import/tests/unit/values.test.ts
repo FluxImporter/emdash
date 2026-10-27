@@ -41,6 +41,8 @@ describe("numberConverter", () => {
 		expect(us("1,234e2")).toEqual(ok(123400));
 		expect(spaced("1 234,5")).toEqual(ok(1234.5));
 		expect(spaced("1 234 567,5")).toEqual(ok(1234567.5));
+		expect(spaced("1 234,5")).toEqual(ok(1234.5));
+		expect(spaced("1 234")).toEqual(ok(1234));
 		expect(numberConverter({ thousands: "'" })("1'000'000")).toEqual(ok(1000000));
 		expect(numberConverter({ thousands: "_" })("1_000")).toEqual(ok(1000));
 		for (const bad of ["1.23", "12.34.567", "1.234.56", "1.5", ".234", "1..234", "1.234,5,6"]) {
@@ -120,6 +122,12 @@ describe("selectConverter", () => {
 		expect(select("live")).toEqual(ok("published"));
 		expect(select("hidden")).toEqual(ok("draft"));
 		expect(select("draft")).toEqual(ok("draft"));
+	});
+
+	it("lets the first map key in template order win a case-insensitive match", () => {
+		const select = selectConverter({ map: { live: "x", Live: "published" } }, ["x", "published"]);
+		expect(select("LIVE")).toEqual(ok("x"));
+		expect(select("Live")).toEqual(ok("published"));
 	});
 
 	it("matches exactly only with ignoreCase off", () => {
@@ -235,6 +243,24 @@ describe("jsonConverter", () => {
 		expect(raw("0x10")).toEqual(ok("0x10"));
 		expect(raw("12 apples")).toEqual(ok("12 apples"));
 		expect(json("7")).toEqual(ok(7));
+	});
+
+	it("refuses numbers that overflow to Infinity", () => {
+		for (const text of ["1e999", '{"a":1e999}', "[-1e400]"]) {
+			expect(json(text)).toEqual(err("invalid_json"));
+		}
+	});
+
+	it("refuses values nested too deeply", () => {
+		const deep = "[".repeat(10000) + "]".repeat(10000);
+		expect(json(deep)).toEqual(err("invalid_json"));
+		let nested: unknown[] = [];
+		for (let i = 0; i < 10000; i++) nested = [nested];
+		expect(json(nested)).toEqual({
+			ok: false,
+			code: "invalid_json",
+			message: "The JSON value is nested too deeply",
+		});
 	});
 
 	it("refuses values over 1 MiB", () => {
