@@ -1,7 +1,7 @@
 import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
 import type { ContentPort, KvCollection, LookupPort, SourcePort } from "./ports.js";
-import type { Template } from "./template.js";
+import type { TaxonomySnapshot, Template } from "./template.js";
 import type { TargetField } from "./values.js";
 
 export const BATCH_SIZE_DEFAULT = 50;
@@ -50,6 +50,8 @@ export interface Job {
 	targetFields?: Record<string, TargetField>;
 	/** The site timezone read at job creation, for `tz: "site"`; absent before M4a (UTC). */
 	siteTimezone?: string;
+	/** The mapped taxonomies as they were at job creation; absent when none are mapped. */
+	taxonomies?: Record<string, TaxonomySnapshot>;
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

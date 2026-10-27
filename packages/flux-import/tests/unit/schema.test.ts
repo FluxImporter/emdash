@@ -103,7 +103,7 @@ describe("listSchemaFields", () => {
 		expect(await listSchemaFields(registry, "nope")).toBeNull();
 	});
 
-	it("lists required, defaults, the enforced validation keys and unusable fields", async () => {
+	it("lists required, defaults, the enforced validation keys, unusable fields and relations", async () => {
 		const registry: SchemaRegistryLike = Object.assign(new FakeRegistry(), {
 			getCollectionWithFields: async () => ({
 				fields: [
@@ -118,6 +118,16 @@ describe("listSchemaFields", () => {
 					{ slug: "qty", type: "integer", required: false, validation: { min: 0, max: 5 } },
 					{ slug: "weird", type: "string", unsupportedType: { type: "geo", path: "type" } },
 					{ slug: "author", type: "reference", validation: { relation: "posts_author" } },
+					{
+						slug: "related",
+						type: "reference",
+						validation: {
+							relation: "posts_related",
+							relationSide: "child",
+							targetCollection: "posts",
+							multiple: true,
+						},
+					},
 					{ slug: "legacy", type: "reference", validation: null },
 					{ slug: "loose", type: "text", validation: { pattern: "", min: "1" as never } },
 				],
@@ -160,6 +170,17 @@ describe("listSchemaFields", () => {
 				hasDefault: false,
 				validation: {},
 				storageless: true,
+			},
+			{
+				slug: "related",
+				type: "reference",
+				required: false,
+				hasDefault: false,
+				validation: {},
+				storageless: true,
+				relationSide: "child",
+				targetCollection: "posts",
+				multiple: true,
 			},
 			{ slug: "legacy", type: "reference", required: false, hasDefault: false, validation: {} },
 			{ slug: "loose", type: "text", required: false, hasDefault: false, validation: {} },

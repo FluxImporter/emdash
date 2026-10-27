@@ -251,6 +251,48 @@ describe("startJob", () => {
 		});
 		expect(deps.jobs.rows.size).toBe(0);
 	});
+
+	it("reads each reference target's fields once, and taxonomy definitions only when mapped", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", "sku,Name,Maker,Brand,Cat\nS1,A,m,b,c\n");
+		deps.lookups.defs.push({
+			name: "category",
+			hierarchical: true,
+			collections: ["products"],
+			locale: "en",
+		});
+		const looked: string[] = [];
+		const lookup = async (collection: string) => {
+			looked.push(collection);
+			const ref = { type: "reference", storageless: true, relationSide: "parent" as const };
+			if (collection === "products") {
+				return [
+					{ slug: "title", type: "string" },
+					{ ...ref, slug: "maker", targetCollection: "makers" },
+					{ ...ref, slug: "brand", targetCollection: "makers" },
+					{ ...ref, slug: "unmapped", targetCollection: "others" },
+				];
+			}
+			return collection === "makers" ? [{ slug: "flux_source_id", type: "string" }] : null;
+		};
+		const linked = {
+			...template,
+			fields: {
+				title: { from: "Name", type: "text" },
+				maker: { from: "Maker", type: "reference", match: "key" },
+				brand: { from: "Brand", type: "reference" },
+			},
+			taxonomies: { category: { from: "Cat" } },
+		};
+		const job = await startJob(deps, { uploadId: "u1", template: linked, dryRun: true }, lookup);
+		expect(looked).toEqual(["products", "makers"]);
+		expect(deps.lookups.calls).toEqual(["defs"]);
+		expect(job.taxonomies).toEqual({ category: { hierarchical: true } });
+		deps.lookups.calls.length = 0;
+		deps.source.add("u2", csv(1));
+		await startJob(deps, { uploadId: "u2", template, dryRun: true }, fields);
+		expect(deps.lookups.calls).toEqual([]);
+	});
 });
 
 describe("staged upload lifecycle", () => {

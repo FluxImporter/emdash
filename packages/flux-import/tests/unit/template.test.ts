@@ -6,11 +6,14 @@ import {
 	checkTemplate,
 	compileTemplate,
 	filterRecord,
+	type LinkSchema,
+	linkWarnings,
 	missingPathWarnings,
 	type SchemaField,
 	slugify,
 	type Template,
 	targetFieldsOf,
+	taxonomiesOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
@@ -1069,6 +1072,143 @@ describe("targetFieldsOf", () => {
 			price: { type: "number", required: false, min: 0, max: 1e6 },
 			status: { type: "select", required: false, options: ["draft"] },
 			colours: { type: "multiSelect", required: false },
+		});
+	});
+});
+
+describe("checkTemplate for links", () => {
+	const linked = templateSchema.parse({
+		version: 1,
+		collection: "posts",
+		locale: "en",
+		key: { from: "id" },
+		fields: {
+			title: { from: "Title", type: "text" },
+			author: { from: "Author", type: "reference", match: "key" },
+			related: { from: "Related", type: "reference", match: "slug" },
+		},
+		taxonomies: { category: { from: "Categories" }, tag: { from: "Tags", hierarchy: ">" } },
+		bylines: { from: "Authors" },
+	});
+	const bound = (over: Partial<SchemaField> = {}): SchemaField => ({
+		slug: "author",
+		type: "reference",
+		storageless: true,
+		relationSide: "parent",
+		targetCollection: "people",
+		...over,
+	});
+	const fields: SchemaField[] = [
+		{ slug: "title", type: "string" },
+		bound(),
+		bound({ slug: "related", targetCollection: "posts", multiple: true }),
+	];
+	const defs = [
+		{ name: "category", hierarchical: true, collections: ["posts"], locale: "en" },
+		{ name: "tag", hierarchical: false, collections: ["pages", "posts"], locale: "en" },
+	];
+	const targets = {
+		people: [
+			{ slug: "name", type: "string" },
+			{ slug: "flux_source_id", type: "string" },
+		],
+		posts: fields,
+	};
+	const check = (f: SchemaField[] = fields, links: LinkSchema = { targets, taxonomies: defs }) =>
+		checkTemplate(linked, f, null, "UTC", links);
+
+	it("accepts bound reference fields and attached taxonomies", () => {
+		expect(check()).toEqual([]);
+	});
+
+	it("refuses reference mappings into other types, unbound fields and missing targets", () => {
+		expect(
+			check([
+				{ slug: "title", type: "string" },
+				{ slug: "author", type: "string" },
+				{ slug: "related", type: "reference", validation: {} },
+			]),
+		).toEqual([
+			'Field "author" has type "string"; a reference mapping needs one of reference',
+			'Field "related" is a reference field without a relation; bind it first (https://docs.emdashcms.com/guides/relations/#bind-a-field-that-has-no-relation)',
+		]);
+		expect(check(fields, { targets: { ...targets, people: null }, taxonomies: defs })).toEqual([
+			'Field "author" links to collection "people", which does not exist',
+		]);
+	});
+
+	it("needs imported entries in the target for match key", () => {
+		const people = [{ slug: "name", type: "string" }];
+		expect(check(fields, { targets: { ...targets, people }, taxonomies: defs })).toEqual([
+			'Field "author" finds entries by import key, but no entries were imported into "people"',
+		]);
+	});
+
+	it("keeps refusing other mappings into a bound reference field", () => {
+		const text = templateSchema.parse({
+			...linked,
+			fields: { author: { from: "Author", type: "text" } },
+			taxonomies: undefined,
+		});
+		expect(checkTemplate(text, fields, null)).toEqual([
+			'Field "author" keeps its values outside the content table and cannot be imported',
+		]);
+	});
+
+	it("refuses unknown taxonomies and ones the collection does not use", () => {
+		expect(
+			check(fields, {
+				targets,
+				taxonomies: [{ name: "tag", hierarchical: false, collections: ["pages"], locale: "en" }],
+			}),
+		).toEqual([
+			'Taxonomy "category" does not exist',
+			'Taxonomy "tag" is not attached to collection "posts"',
+		]);
+		const attachedInFrench = [
+			defs[0]!,
+			{ name: "tag", hierarchical: false, collections: ["pages"], locale: "en" },
+			{ name: "tag", hierarchical: false, collections: ["posts"], locale: "fr" },
+		];
+		expect(check(fields, { targets, taxonomies: attachedInFrench })).toEqual([]);
+	});
+
+	it("skips the link checks it is given nothing for", () => {
+		expect(checkTemplate(linked, fields, null)).toEqual([]);
+	});
+
+	it("snapshots reference fields and taxonomies, and warns about hierarchy on a flat one", () => {
+		expect(targetFieldsOf(linked, fields)).toEqual({
+			title: { type: "string", required: false },
+			author: {
+				type: "reference",
+				required: false,
+				relationSide: "parent",
+				targetCollection: "people",
+			},
+			related: {
+				type: "reference",
+				required: false,
+				relationSide: "parent",
+				targetCollection: "posts",
+				multiple: true,
+			},
+		});
+		const twoLocales = [
+			{ name: "category", hierarchical: false, collections: ["posts"], locale: "fr" },
+			...defs,
+		];
+		expect(taxonomiesOf(linked, twoLocales)).toEqual({
+			category: { hierarchical: true },
+			tag: { hierarchical: false },
+		});
+		expect(linkWarnings(linked, defs)).toEqual([
+			'Taxonomy "tag" is flat; its "hierarchy" separator is ignored',
+		]);
+		const french = templateSchema.parse({ ...linked, locale: "de" });
+		expect(taxonomiesOf(french, twoLocales)).toEqual({
+			category: { hierarchical: false },
+			tag: { hierarchical: false },
 		});
 	});
 });

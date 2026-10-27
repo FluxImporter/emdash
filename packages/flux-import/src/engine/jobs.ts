@@ -9,11 +9,14 @@ import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
 	compileTemplate,
+	type LinkSchema,
+	linkWarnings,
 	missingPathWarnings,
 	noRecordsWarning,
 	type SchemaField,
 	type Template,
 	targetFieldsOf,
+	taxonomiesOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
@@ -61,6 +64,8 @@ export type CreateJobInput = {
 	warnings?: string[];
 	/** The site's timezone setting, for templates with `tz: "site"`; UTC when absent. */
 	siteTimezone?: string;
+	/** Reference targets' fields and the taxonomy definitions, for the link checks. */
+	linkSchema?: LinkSchema;
 	dryRun?: boolean;
 	publish?: boolean;
 	batchSize?: number;
@@ -123,7 +128,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	}
 
 	const siteTimezone = usesSiteTimezone(template) ? (input.siteTimezone ?? "UTC") : undefined;
-	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone);
+	const linkSchema = input.linkSchema ?? {};
+	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone, linkSchema);
 	if (problems.length > 0) {
 		throw new JobError(
 			"invalid_template",
@@ -137,7 +143,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			: await asJobError(() =>
 					sampleWarnings(deps, reader, template, input.uploadId, located.bodyOffset),
 				);
-	const warnings = [...(input.warnings ?? []), ...sampled];
+	const taxonomyDefs = linkSchema.taxonomies ?? [];
+	const warnings = [...(input.warnings ?? []), ...sampled, ...linkWarnings(template, taxonomyDefs)];
 
 	const now = new Date(deps.now()).toISOString();
 	const job: Job = {
@@ -155,6 +162,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		warnings,
 		targetFields: targetFieldsOf(template, input.schemaFields),
 		...(siteTimezone === undefined ? {} : { siteTimezone }),
+		...(template.taxonomies === undefined
+			? {}
+			: { taxonomies: taxonomiesOf(template, taxonomyDefs) }),
 		cursor: { offset: located.bodyOffset, seq: 0 },
 		counters: emptyCounters(),
 		lease: null,

@@ -22,6 +22,7 @@ import {
 	type TermRequest,
 	taxonomyConverter,
 } from "./links.js";
+import type { TaxonomyDef } from "./ports.js";
 import {
 	booleanConverter,
 	type ConversionCode,
@@ -664,7 +665,25 @@ export type SchemaField = {
 	unsupported?: boolean;
 	/** The field keeps its values outside the content table (a bound reference). */
 	storageless?: boolean;
+	/** Reference fields: the end of the relation the field sits on. */
+	relationSide?: "parent" | "child";
+	/** Reference fields: the collection the field links to. */
+	targetCollection?: string;
+	/** Reference fields: the parent side takes more than one entry. */
+	multiple?: boolean;
 };
+
+/** What job creation reads besides the collection's fields, for links (M4b). */
+export type LinkSchema = {
+	/** The fields of each reference field's target collection; null when it does not exist. */
+	targets?: Readonly<Record<string, SchemaField[] | null>>;
+	/** Every taxonomy definition, in every locale. */
+	taxonomies?: readonly TaxonomyDef[];
+};
+
+/** EmDash's guide to binding a reference field that predates relations. */
+export const BIND_REFERENCE_DOCS =
+	"https://docs.emdashcms.com/guides/relations/#bind-a-field-that-has-no-relation";
 
 export const COMPATIBLE: Record<MappingType, string[]> = {
 	text: ["string", "text", "url", "slug"],
@@ -691,16 +710,55 @@ export function matchesOption(
 	return new Set(options.filter((o) => o.toLowerCase() === lower)).size === 1;
 }
 
+/**
+ * Problems with a reference mapping: the field must be a reference bound to a relation, its
+ * target collection must exist, and `match: "key"` needs entries imported into the target.
+ */
+function referenceProblems(
+	field: string,
+	mapping: Extract<FieldMapping, { type: "reference" }>,
+	target: SchemaField,
+	links: LinkSchema,
+): string[] {
+	if (target.type !== "reference") {
+		return [
+			`Field "${field}" has type "${target.type}"; a reference mapping needs one of reference`,
+		];
+	}
+	const collection = target.targetCollection;
+	if (!target.storageless || collection === undefined) {
+		return [
+			`Field "${field}" is a reference field without a relation; bind it first (${BIND_REFERENCE_DOCS})`,
+		];
+	}
+	const targetFields = links.targets?.[collection];
+	if (targetFields === null) {
+		return [`Field "${field}" links to collection "${collection}", which does not exist`];
+	}
+	if (
+		mapping.match === "key" &&
+		targetFields !== undefined &&
+		!targetFields.some((f) => f.slug === SOURCE_ID_FIELD)
+	) {
+		return [
+			`Field "${field}" finds entries by import key, but no entries were imported into "${collection}"`,
+		];
+	}
+	return [];
+}
+
 /** Problems with one mapping against its existing collection field. */
 function fieldProblems(
 	field: string,
 	mapping: FieldMapping,
 	target: SchemaField,
 	siteTimezone: string,
+	links: LinkSchema,
 ): string[] {
 	if (target.unsupported) {
 		return [`Field "${field}" has a field type this EmDash version cannot read`];
 	}
+	if (mapping.type === "reference") return referenceProblems(field, mapping, target, links);
 	if (target.storageless) {
 		return [`Field "${field}" keeps its values outside the content table and cannot be imported`];
 	}
@@ -742,14 +800,17 @@ function fieldProblems(
  * Problems that stop a job: CSV and XLSX columns missing from the header (`columns`; an XLSX
  * template may also read `_row`), field paths that are not valid for the source format, fields
  * the collection lacks or types it cannot take, `output` into a datetime field, `map` values
- * that are not options, `tz: "site"` without a valid site timezone, and required fields with no
- * default that the template does not map (every create would fail).
+ * that are not options, `tz: "site"` without a valid site timezone, required fields with no
+ * default that the template does not map (every create would fail), reference fields that are
+ * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
+ * to the collection. The link checks run only on what `links` carries.
  */
 export function checkTemplate(
 	t: Template,
 	fields: SchemaField[],
 	columns: readonly string[] | null,
 	siteTimezone = "UTC",
+	links: LinkSchema = {},
 ): string[] {
 	const errors: string[] = [];
 	const format: SourceFormat = t.source.format;
@@ -770,7 +831,17 @@ export function checkTemplate(
 		if (target === undefined) {
 			errors.push(`Field "${field}" does not exist in collection "${t.collection}"`);
 		} else {
-			errors.push(...fieldProblems(field, mapping, target, siteTimezone));
+			errors.push(...fieldProblems(field, mapping, target, siteTimezone, links));
+		}
+	}
+	if (links.taxonomies !== undefined) {
+		for (const name of Object.keys(t.taxonomies ?? {})) {
+			// EmDash does not check attachment when it assigns terms, so the importer does.
+			const defs = links.taxonomies.filter((d) => d.name === name);
+			if (defs.length === 0) errors.push(`Taxonomy "${name}" does not exist`);
+			else if (!defs.some((d) => d.collections.includes(t.collection))) {
+				errors.push(`Taxonomy "${name}" is not attached to collection "${t.collection}"`);
+			}
 		}
 	}
 	for (const f of fields) {
@@ -812,9 +883,49 @@ export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<strin
 			...(v.minLength === undefined ? {} : { minLength: v.minLength }),
 			...(v.maxLength === undefined ? {} : { maxLength: v.maxLength }),
 			...(v.pattern ? { pattern: v.pattern } : {}),
+			...(f.relationSide === undefined ? {} : { relationSide: f.relationSide }),
+			...(f.targetCollection === undefined ? {} : { targetCollection: f.targetCollection }),
+			...(f.multiple === undefined ? {} : { multiple: f.multiple }),
 		};
 	}
 	return targets;
+}
+
+/**
+ * The definition of each mapped taxonomy that applies to the template: the one in its locale,
+ * else the first. Run `checkTemplate` first; unknown taxonomies are skipped.
+ */
+function taxonomyDefsOf(t: Template, defs: readonly TaxonomyDef[]): Map<string, TaxonomyDef> {
+	const found = new Map<string, TaxonomyDef>();
+	for (const name of Object.keys(t.taxonomies ?? {})) {
+		const named = defs.filter((d) => d.name === name);
+		const def = named.find((d) => d.locale === t.locale) ?? named[0];
+		if (def !== undefined) found.set(name, def);
+	}
+	return found;
+}
+
+/** The snapshot of each mapped taxonomy stored on the job (`Job.taxonomies`). */
+export function taxonomiesOf(
+	t: Template,
+	defs: readonly TaxonomyDef[],
+): Record<string, TaxonomySnapshot> {
+	const snapshot: Record<string, TaxonomySnapshot> = {};
+	for (const [name, def] of taxonomyDefsOf(t, defs)) {
+		snapshot[name] = { hierarchical: def.hierarchical };
+	}
+	return snapshot;
+}
+
+/** Warnings for link mappings that work but do less than they say: `hierarchy` on a flat taxonomy. */
+export function linkWarnings(t: Template, defs: readonly TaxonomyDef[]): string[] {
+	const warnings: string[] = [];
+	for (const [name, def] of taxonomyDefsOf(t, defs)) {
+		if (!def.hierarchical && t.taxonomies?.[name]?.hierarchy !== undefined) {
+			warnings.push(`Taxonomy "${name}" is flat; its "hierarchy" separator is ignored`);
+		}
+	}
+	return warnings;
 }
 
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */

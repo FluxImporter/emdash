@@ -459,6 +459,69 @@ describe("createJob for JSON, JSON Lines and XML", () => {
 	});
 });
 
+describe("createJob with links", () => {
+	const linked = {
+		...template,
+		fields: { title: { from: "Name", type: "text" }, maker: { from: "Maker", type: "reference" } },
+		taxonomies: { category: { from: "Cat" }, tag: { from: "Tag", hierarchy: ">" } },
+	};
+	const linkedFields = [
+		{ slug: "title", type: "string" },
+		{
+			slug: "maker",
+			type: "reference",
+			storageless: true,
+			relationSide: "parent" as const,
+			targetCollection: "makers",
+		},
+	];
+	const taxonomies = [
+		{ name: "category", hierarchical: true, collections: ["products"], locale: "en" },
+		{ name: "tag", hierarchical: false, collections: ["products"], locale: "en" },
+	];
+
+	it("stores the taxonomy snapshot, the reference snapshot and the link warnings", async () => {
+		const { deps } = setup("sku,Name,Maker,Cat,Tag\n");
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: linked,
+			schemaFields: linkedFields,
+			linkSchema: { targets: { makers: [] }, taxonomies },
+		});
+		expect(job.taxonomies).toEqual({
+			category: { hierarchical: true },
+			tag: { hierarchical: false },
+		});
+		expect(job.targetFields?.maker).toEqual({
+			type: "reference",
+			required: false,
+			relationSide: "parent",
+			targetCollection: "makers",
+		});
+		expect(job.warnings).toEqual(['Taxonomy "tag" is flat; its "hierarchy" separator is ignored']);
+		const plain = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(plain).not.toHaveProperty("taxonomies");
+	});
+
+	it("refuses a missing target collection and an unattached taxonomy", async () => {
+		const { deps } = setup("sku,Name,Maker,Cat,Tag\n");
+		await expect(
+			createJob(deps, {
+				uploadId: "u1",
+				template: linked,
+				schemaFields: linkedFields,
+				linkSchema: { targets: { makers: null }, taxonomies: taxonomies.slice(1) },
+			}),
+		).rejects.toMatchObject({
+			code: "invalid_template",
+			details: [
+				'Field "maker" links to collection "makers", which does not exist',
+				'Taxonomy "category" does not exist',
+			],
+		});
+	});
+});
+
 describe("transitionJob", () => {
 	it("pauses, resumes and cancels", async () => {
 		const { deps } = setup();
