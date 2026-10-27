@@ -521,7 +521,10 @@ export async function runBatch(
 			job.schemaReady = true;
 		}
 		// Parsed once per batch and reused for every record; job creation already checked them.
-		const compiled = compileTemplate(jobTemplate(job));
+		const compiled = compileTemplate(jobTemplate(job), {
+			targets: job.targetFields,
+			siteTimezone: job.siteTimezone,
+		});
 		if (!compiled.ok) {
 			outcome = {
 				done: false,

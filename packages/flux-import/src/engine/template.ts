@@ -8,12 +8,29 @@ import {
 	XLSX_MAX_ROWS,
 	XLSX_ROW_FIELD,
 } from "../sources/reader.js";
+import { dateConverter } from "./dates.js";
 import { type CompiledExpression, compileExpression } from "./expressions.js";
+import {
+	booleanConverter,
+	type ConversionCode,
+	checkRules,
+	FALSE_TOKENS,
+	type JsonValue,
+	jsonConverter,
+	multiSelectConverter,
+	NOT_SCALAR_MESSAGE,
+	numberConverter,
+	type RuleCode,
+	selectConverter,
+	type TargetField,
+	TRUE_TOKENS,
+} from "./values.js";
 
 export const SOURCE_ID_FIELD = "flux_source_id";
+/** `tz: "site"` reads dates in the site's timezone setting, stored on the job at creation. */
+export const SITE_TIMEZONE = "site";
 
 const SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
-const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const MAX_KEY_LENGTH = 256;
 const MAX_SLUG_LENGTH = 200;
 
@@ -22,7 +39,22 @@ const expression = z.string().min(1);
 const timezone = z
 	.string()
 	.min(1)
-	.refine((tz) => DateTime.now().setZone(tz).isValid, { message: "Unknown timezone" });
+	.refine((tz) => tz === SITE_TIMEZONE || DateTime.now().setZone(tz).isValid, {
+		message: "Unknown timezone",
+	});
+const tokens = z
+	.array(
+		z
+			.string()
+			.min(1)
+			.max(100)
+			.refine((t) => t.trim() !== "", { message: "Tokens cannot be blank" }),
+	)
+	.min(1)
+	.max(50);
+const optionMap = z
+	.record(z.string().min(1).max(200), z.string().min(1).max(200))
+	.refine((m) => Object.keys(m).length <= 1000, { message: "map takes at most 1,000 entries" });
 
 /** Where a key, slug or field value comes from: a source path (`from`) or a JSONata `expr`. */
 const valueSource = { from: column.optional(), expr: expression.optional() };
@@ -30,22 +62,81 @@ const ONE_SOURCE = { message: 'Set exactly one of "from" and "expr"' };
 const hasOneSource = (m: { from?: string | undefined; expr?: string | undefined }) =>
 	(m.from === undefined) !== (m.expr === undefined);
 
+const token = (t: string) => t.trim().toLowerCase();
+
+/** The token both effective boolean lists share, if any (a list not set is the default). */
+function sharedToken(m: { true?: string[] | undefined; false?: string[] | undefined }) {
+	const trues = new Set((m.true ?? TRUE_TOKENS).map(token));
+	return (m.false ?? FALSE_TOKENS).map(token).find((t) => trues.has(t));
+}
+
 const fieldMapping = z.discriminatedUnion("type", [
 	z
 		.object({ ...valueSource, type: z.literal("text") })
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
 	z
-		.object({ ...valueSource, type: z.literal("number") })
+		.object({
+			...valueSource,
+			type: z.literal("number"),
+			decimal: z.enum([".", ","]).optional(),
+			thousands: z.enum([",", ".", " ", "'", "_"]).optional(),
+		})
 		.strict()
-		.refine(hasOneSource, ONE_SOURCE),
+		.refine(hasOneSource, ONE_SOURCE)
+		.refine((m) => m.thousands === undefined || m.thousands !== (m.decimal ?? "."), {
+			message: "thousands must differ from decimal",
+		}),
 	z
 		.object({
 			...valueSource,
 			type: z.literal("date"),
 			format: z.string().min(1).optional(),
 			tz: timezone.default("UTC"),
+			output: z.string().min(1).max(100).optional(),
 		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("boolean"),
+			true: tokens.optional(),
+			false: tokens.optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE)
+		.superRefine((m, ctx) => {
+			const shared = sharedToken(m);
+			if (shared !== undefined) {
+				ctx.addIssue({ code: "custom", message: `"${shared}" is both a true and a false token` });
+			}
+		}),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("select"),
+			map: optionMap.optional(),
+			ignoreCase: z.boolean().optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("multiSelect"),
+			map: optionMap.optional(),
+			ignoreCase: z.boolean().optional(),
+			separator: z.string().min(1).max(10).optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({ ...valueSource, type: z.literal("json"), parse: z.boolean().optional() })
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({ ...valueSource, type: z.literal("slug") })
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
 ]);
@@ -94,21 +185,23 @@ export const templateSchema = z
 	.strict();
 
 export type Template = z.infer<typeof templateSchema>;
-type FieldMapping = Template["fields"][string];
+export type FieldMapping = Template["fields"][string];
+export type MappingType = FieldMapping["type"];
 
-export type FieldValue = string | number | null;
+export type { JsonValue, TargetField };
+export type FieldValue = string | number | boolean | string[] | JsonValue | null;
 export type MappedRecord = { key: string; slug?: string; data: Record<string, FieldValue> };
 export type ValueErrorCode =
 	| "filter_error"
 	| "filter_not_boolean"
 	| "expr_error"
 	| "expr_limit"
-	| "not_scalar"
 	| "missing_key"
 	| "key_too_long"
-	| "invalid_number"
 	| "invalid_date"
-	| "empty_slug";
+	| "empty_slug"
+	| ConversionCode
+	| RuleCode;
 export type ValueError = { field: string; code: ValueErrorCode; message: string };
 
 export function slugify(s: string): string {
@@ -125,8 +218,7 @@ export function slugify(s: string): string {
 type Converted =
 	| { ok: true; value: FieldValue }
 	| { ok: false; code: ValueErrorCode; message: string };
-
-const NOT_SCALAR_MESSAGE = "Expected a single value, found an object or array";
+export type FieldConverter = (raw: unknown) => Converted;
 
 /** A source value as text (numbers and booleans as their string), or null for an object or array. */
 function scalarText(raw: unknown): string | null {
@@ -136,56 +228,54 @@ function scalarText(raw: unknown): string | null {
 	return null;
 }
 
-function convertText(mapping: FieldMapping, raw: string): Converted {
-	const trimmed = raw.trim();
-	if (trimmed === "") return { ok: true, value: null };
-	switch (mapping.type) {
-		case "text":
-			return { ok: true, value: raw };
-		case "number": {
-			if (!NUMBER_RE.test(trimmed)) {
-				return { ok: false, code: "invalid_number", message: `"${trimmed}" is not a number` };
-			}
-			const n = Number(trimmed);
-			if (!Number.isFinite(n)) {
-				return { ok: false, code: "invalid_number", message: `"${trimmed}" is not a number` };
-			}
-			return { ok: true, value: n };
-		}
-		case "date": {
-			const dt = mapping.format
-				? DateTime.fromFormat(trimmed, mapping.format, { zone: mapping.tz })
-				: DateTime.fromISO(trimmed, { zone: mapping.tz });
-			if (!dt.isValid) {
-				const expected = mapping.format ?? "ISO 8601";
-				return {
-					ok: false,
-					code: "invalid_date",
-					message: `"${trimmed}" is not a ${expected} date`,
-				};
-			}
-			return { ok: true, value: dt.toUTC().toISO() };
-		}
-	}
+/** Text as given (untrimmed); `slug` through `slugify`, failing `empty_slug` if nothing is left. */
+function textConverter(slug: boolean): FieldConverter {
+	return (raw) => {
+		const text = scalarText(raw);
+		if (text === null) return { ok: false, code: "not_scalar", message: NOT_SCALAR_MESSAGE };
+		if (text.trim() === "") return { ok: true, value: null };
+		if (!slug) return { ok: true, value: text };
+		const value = slugify(text);
+		if (value === "") return { ok: false, code: "empty_slug", message: "The slug would be empty" };
+		return { ok: true, value };
+	};
 }
 
 /**
- * Converts a typed source value. A JSON number goes into a number field as it is; numbers and
- * booleans become their string for text and date fields; `true`/`false` are not numbers; an
- * object or array fails with `not_scalar`; a missing path or `null` is `null`.
+ * The conversion for one mapping (values.ts, dates.ts): a missing path or `null` is empty, an
+ * object or array fails `not_scalar` except for `multiSelect` and `json`, and empty text is
+ * `null`. `target` is the field from the job's snapshot (null for jobs created before M4a): it
+ * gives select options and whether a date goes into a text field. `tz: "site"` reads
+ * `siteTimezone`.
  */
-function convert(mapping: FieldMapping, raw: unknown): Converted {
-	if (mapping.type === "number" && typeof raw === "number") {
-		return Number.isFinite(raw)
-			? { ok: true, value: raw }
-			: { ok: false, code: "invalid_number", message: `${raw} is not a number` };
+export function fieldConverter(
+	mapping: FieldMapping,
+	target: TargetField | null,
+	siteTimezone: string,
+): FieldConverter {
+	switch (mapping.type) {
+		case "text":
+			return textConverter(false);
+		case "slug":
+			return textConverter(true);
+		case "number":
+			return numberConverter(mapping);
+		case "boolean":
+			return booleanConverter(mapping);
+		case "select":
+			return selectConverter(mapping, target?.options);
+		case "multiSelect":
+			return multiSelectConverter(mapping, target?.options);
+		case "json":
+			return jsonConverter(mapping);
+		case "date": {
+			const tz = mapping.tz === SITE_TIMEZONE ? siteTimezone : mapping.tz;
+			return dateConverter(
+				{ format: mapping.format, tz, output: mapping.output },
+				target?.type ?? null,
+			);
+		}
 	}
-	if (mapping.type === "number" && typeof raw === "boolean") {
-		return { ok: false, code: "invalid_number", message: `${raw} is not a number` };
-	}
-	const text = scalarText(raw);
-	if (text === null) return { ok: false, code: "not_scalar", message: NOT_SCALAR_MESSAGE };
-	return convertText(mapping, text);
 }
 
 /** A template with its expressions parsed once, for every record of a batch. */
@@ -198,6 +288,17 @@ export interface CompiledTemplate {
 	readonly slug: CompiledExpression | null;
 	/** Each field's `expr`, by field name; fields that read `from` are absent. */
 	readonly fields: ReadonlyMap<string, CompiledExpression>;
+	/** Each field's conversion, by field name. */
+	readonly converters: ReadonlyMap<string, FieldConverter>;
+	/** The job's target field snapshot; null for jobs created before M4a (no field rules). */
+	readonly targets: Readonly<Record<string, TargetField>> | null;
+}
+
+/** What a job knows about its target fields; absent on jobs created before M4a. */
+export interface CompileContext {
+	targets?: Readonly<Record<string, TargetField>> | undefined;
+	/** The site timezone stored on the job; `UTC` when absent. */
+	siteTimezone?: string | undefined;
 }
 
 /**
@@ -206,6 +307,7 @@ export interface CompiledTemplate {
  */
 export function compileTemplate(
 	t: Template,
+	context: CompileContext = {},
 ): { ok: true; compiled: CompiledTemplate } | { ok: false; problems: string[] } {
 	const problems: string[] = [];
 	const compile = (label: string, text: string | undefined): CompiledExpression | null => {
@@ -219,12 +321,18 @@ export function compileTemplate(
 	const key = compile("key.expr", t.key.expr);
 	const slug = compile("slug.expr", t.slug?.expr);
 	const fields = new Map<string, CompiledExpression>();
+	const converters = new Map<string, FieldConverter>();
+	const targets = context.targets ?? null;
 	for (const [name, mapping] of Object.entries(t.fields)) {
 		const expr = compile(`fields.${name}.expr`, mapping.expr);
 		if (expr !== null) fields.set(name, expr);
+		converters.set(
+			name,
+			fieldConverter(mapping, targets?.[name] ?? null, context.siteTimezone ?? "UTC"),
+		);
 	}
 	if (problems.length > 0) return { ok: false, problems };
-	return { ok: true, compiled: { template: t, filter, key, slug, fields } };
+	return { ok: true, compiled: { template: t, filter, key, slug, fields, converters, targets } };
 }
 
 function kindOf(value: unknown): string {
@@ -327,9 +435,15 @@ export async function applyTemplate(
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
-		const result = convert(mapping, raw);
-		if (result.ok) data[field] = result.value;
-		else errors.push({ field, code: result.code, message: result.message });
+		const result = (c.converters.get(field) as FieldConverter)(raw);
+		if (!result.ok) {
+			errors.push({ field, code: result.code, message: result.message });
+			continue;
+		}
+		const target = c.targets?.[field];
+		const broken = target === undefined ? [] : checkRules(result.value, target);
+		for (const e of broken) errors.push({ field, ...e });
+		if (broken.length === 0) data[field] = result.value;
 	}
 
 	if (errors.length > 0) return { ok: false, errors };
@@ -369,10 +483,15 @@ export function noRecordsWarning(source: { records?: string | undefined }): stri
 
 export type SchemaField = { slug: string; type: string };
 
-const COMPATIBLE: Record<FieldMapping["type"], string[]> = {
-	text: ["string", "text", "url"],
+const COMPATIBLE: Record<MappingType, string[]> = {
+	text: ["string", "text", "url", "slug"],
 	number: ["number", "integer"],
-	date: ["datetime"],
+	date: ["datetime", "string", "text"],
+	boolean: ["boolean"],
+	select: ["select"],
+	multiSelect: ["multiSelect"],
+	json: ["json"],
+	slug: ["slug", "string"],
 };
 
 /**

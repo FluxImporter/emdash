@@ -117,6 +117,49 @@ describe("runBatch", () => {
 		]);
 	});
 
+	it("checks records against the job's target snapshot and reads tz: site in its timezone", async () => {
+		const { deps } = makeDeps();
+		deps.source.add(
+			"u1",
+			"sku,Name,Price,Day\nS0,Desk,2,2026-03-01 10:00\nS1,,2.5,2026-03-01 10:00\n",
+		);
+		const typed = {
+			...template,
+			fields: {
+				...template.fields,
+				day: { from: "Day", type: "date", format: "yyyy-MM-dd HH:mm", tz: "site" },
+			},
+		};
+		const created = await createJob(deps, {
+			uploadId: "u1",
+			template: typed,
+			schemaFields: [...schemaFields, { slug: "day", type: "datetime" }],
+		});
+		await deps.jobs.put(created.id, {
+			...created,
+			targetFields: {
+				title: { type: "string", required: true },
+				price: { type: "integer", required: false },
+				day: { type: "datetime", required: false },
+			},
+			siteTimezone: "Europe/Chisinau",
+		});
+		const done = await runToEnd(deps, created.id);
+		expect(done.counters).toMatchObject({ created: 1, failed: 1 });
+		expect([...deps.content.entries.values()][0]?.data).toMatchObject({
+			title: "Desk",
+			price: 2,
+			day: "2026-03-01T08:00:00.000Z",
+		});
+		const rows = (await deps.records.query({ where: { jobId: created.id, status: "failed" } }))
+			.items;
+		expect(rows[0]?.data.errors?.map((e) => [e.field, e.code])).toEqual([
+			["slug", "empty_slug"],
+			["title", "required"],
+			["price", "invalid_integer"],
+		]);
+	});
+
 	it("skips locked entries and records rev conflicts", async () => {
 		const { deps, job } = await setup(csv(2));
 		await runToEnd(deps, job.id);
