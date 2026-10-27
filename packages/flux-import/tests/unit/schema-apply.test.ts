@@ -607,6 +607,49 @@ describe("template links", () => {
 	});
 });
 
+describe("template media", () => {
+	it("creates image and file fields without allowed types, and keeps existing ones", async () => {
+		const registry = new FakeApplyRegistry([
+			{ slug: "photo", type: "image" },
+			{ slug: "cover", type: "string" },
+		]);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields: {
+				photo: { from: "P", type: "image", alt: { from: "A" } },
+				cover: { from: "C", type: "image" },
+				manual: { from: "M", type: "file" },
+				thumb: { from: "T", type: "image" },
+			},
+		};
+		const result = await applySchema(registry, { template }, invalidate);
+		expect(result.changes).toEqual([
+			{ field: "photo", action: "unchanged", type: "image" },
+			{
+				field: "cover",
+				action: "conflict",
+				type: "image",
+				message: 'Field "cover" is "string"; requested "image"',
+			},
+			{ field: "manual", action: "create", type: "file" },
+			{ field: "thumb", action: "create", type: "image" },
+		]);
+		expect(registry.calls).toEqual([
+			'create:manual:{"slug":"manual","label":"Manual","type":"file","indexed":false,"searchable":false,"translatable":true}',
+			'create:thumb:{"slug":"thumb","label":"Thumb","type":"image","indexed":false,"searchable":false,"translatable":true}',
+		]);
+	});
+
+	it("refuses to index image and file fields", () => {
+		expect(requestProblems([{ slug: "photo", type: "image", indexed: true }])).toEqual([
+			'Field "photo": image fields cannot be indexed',
+		]);
+	});
+});
+
 describe("labelOf", () => {
 	it("turns a slug into a label", () => {
 		expect(labelOf("unit_price")).toBe("Unit price");
