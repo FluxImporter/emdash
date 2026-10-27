@@ -10,6 +10,7 @@ import {
 	upgradeJob,
 } from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
+import { DEFAULT_MAX_UPLOAD_SIZE } from "../engine/media.js";
 import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
 import { type LinkSchema, type SchemaField, usesLinks } from "../engine/template.js";
@@ -47,6 +48,24 @@ export const WORKERS_LINKED_BATCH_CAP = 10;
  * queries per invocation, and EmDash's lookups run several queries per call.
  */
 export const WORKERS_LOOKUP_BUDGET = 600;
+
+/**
+ * The largest media file a job downloads on Workers. `handleMediaUpload` takes base64, so one
+ * file is held about five times over, and EmDash's placeholder decode of a JPEG or PNG adds
+ * memory by pixel count, inside a 128 MB isolate (Fact V5).
+ */
+export const WORKERS_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * A job's `mediaMaxBytes`: the site's `maxUploadSize`, and at most `WORKERS_MEDIA_MAX_BYTES` on
+ * Workers. EmDash's default stands in for a setting that is unset or not a positive number;
+ * EmDash refuses such a setting itself, so the job's first upload fails it with `media_config`.
+ */
+export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolean): number {
+	const valid = maxUploadSize !== undefined && Number.isFinite(maxUploadSize) && maxUploadSize > 0;
+	const site = valid ? maxUploadSize : DEFAULT_MAX_UPLOAD_SIZE;
+	return workers ? Math.min(site, WORKERS_MEDIA_MAX_BYTES) : site;
+}
 
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {

@@ -10,6 +10,7 @@ import {
 	LOG_MAX_BYTES,
 	listJobs,
 	listRecords,
+	mediaMaxBytes,
 	nextBatch,
 	PASTE_MAX_BYTES,
 	releaseUploadIfUnused,
@@ -20,6 +21,7 @@ import {
 	uploadNeeded,
 	WORKERS_BATCH_CAP,
 	WORKERS_LINKED_BATCH_CAP,
+	WORKERS_MEDIA_MAX_BYTES,
 	workersBatchCap,
 } from "../../src/plugin/service.js";
 import { FakeStorage, makeDeps } from "./fakes.js";
@@ -529,6 +531,19 @@ describe("workersBatchCap", () => {
 			fields: { ...job.template.fields, maker: { from: "Name", type: "reference" as const } },
 		};
 		expect(workersBatchCap({ ...job, template: referenced })).toBe(WORKERS_LINKED_BATCH_CAP);
+	});
+});
+
+describe("mediaMaxBytes", () => {
+	it("is the site's upload limit, at most 5 MiB on Workers", () => {
+		const MiB = 1024 * 1024;
+		expect(WORKERS_MEDIA_MAX_BYTES).toBe(5 * MiB);
+		expect(mediaMaxBytes(undefined, false)).toBe(50 * MiB);
+		expect(mediaMaxBytes(undefined, true)).toBe(5 * MiB);
+		expect(mediaMaxBytes(2 * MiB, true)).toBe(2 * MiB);
+		expect(mediaMaxBytes(80 * MiB, false)).toBe(80 * MiB);
+		expect(mediaMaxBytes(Number.NaN, false)).toBe(50 * MiB);
+		expect(mediaMaxBytes(-1, true)).toBe(5 * MiB);
 	});
 });
 

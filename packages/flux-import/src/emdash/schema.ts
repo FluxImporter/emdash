@@ -85,7 +85,10 @@ export async function ensureSourceIdField(
 	if (!field.indexed) await registry.updateField(collection, SOURCE_ID_FIELD, { indexed: true });
 }
 
-/** The validation keys the importer checks, as numbers, strings and string arrays only. */
+/**
+ * The validation keys the importer checks, as numbers, strings and string arrays only; an empty
+ * `allowedMimeTypes` means no constraint, as in EmDash (`parseAllowedMimeTypes`).
+ */
 function rulesOf(validation: RegistryField["validation"]): FieldRules {
 	const v = validation ?? {};
 	const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? n : undefined);
@@ -98,6 +101,10 @@ function rulesOf(validation: RegistryField["validation"]): FieldRules {
 		if (n !== undefined) rules[key] = n;
 	}
 	if (typeof v.pattern === "string" && v.pattern !== "") rules.pattern = v.pattern;
+	const allowed = v.allowedMimeTypes;
+	if (Array.isArray(allowed) && allowed.length > 0 && allowed.every((t) => typeof t === "string")) {
+		rules.allowedMimeTypes = [...allowed];
+	}
 	return rules;
 }
 

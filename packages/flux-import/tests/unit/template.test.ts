@@ -1076,6 +1076,83 @@ describe("targetFieldsOf", () => {
 	});
 });
 
+describe("checkTemplate for media", () => {
+	const t = (fields: Record<string, unknown>) =>
+		templateSchema.parse({
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields,
+		});
+	const media = t({
+		photo: { from: "Img", type: "image", alt: { from: "Alt" } },
+		manual: { from: "Pdf", type: "file" },
+	});
+
+	it("needs image and file fields for image and file mappings", () => {
+		expect(
+			checkTemplate(
+				media,
+				[
+					{ slug: "photo", type: "image" },
+					{ slug: "manual", type: "file" },
+				],
+				null,
+			),
+		).toEqual([]);
+		expect(
+			checkTemplate(
+				media,
+				[
+					{ slug: "photo", type: "string" },
+					{ slug: "manual", type: "image" },
+				],
+				null,
+			),
+		).toEqual([
+			'Field "photo" has type "string"; an image mapping needs one of image',
+			'Field "manual" has type "image"; a file mapping needs one of file',
+		]);
+	});
+
+	it("refuses a field whose allowed types EmDash's upload never accepts", () => {
+		const fields: SchemaField[] = [
+			{ slug: "photo", type: "image", validation: { allowedMimeTypes: ["image/svg+xml"] } },
+			{ slug: "manual", type: "file", validation: { allowedMimeTypes: ["application/pdf"] } },
+		];
+		expect(checkTemplate(media, fields, null)).toEqual([
+			`Field "photo": EmDash's upload refuses every type this field accepts (image/svg+xml)`,
+		]);
+		const photo = { slug: "photo", type: "image", validation: { allowedMimeTypes: ["image/"] } };
+		expect(checkTemplate(media, [photo, fields[1]!], null)).toEqual([]);
+	});
+
+	it("allows at most five image and file mappings", () => {
+		const six = Object.fromEntries(
+			Array.from({ length: 6 }, (_, i) => [`m${i}`, { from: `U${i}`, type: "file" }]),
+		);
+		const fields = Object.keys(six).map((slug) => ({ slug, type: "file" }));
+		expect(checkTemplate(t(six), fields, null)).toEqual([
+			"The template maps 6 image and file fields; at most 5 are allowed",
+		]);
+		const five = Object.fromEntries(Object.entries(six).slice(0, 5));
+		expect(checkTemplate(t(five), fields.slice(0, 5), null)).toEqual([]);
+	});
+
+	it("snapshots allowed types", () => {
+		expect(
+			targetFieldsOf(media, [
+				{ slug: "photo", type: "image", validation: { allowedMimeTypes: ["image/png"] } },
+				{ slug: "manual", type: "file", required: true, validation: {} },
+			]),
+		).toEqual({
+			photo: { type: "image", required: false, allowedMimeTypes: ["image/png"] },
+			manual: { type: "file", required: true },
+		});
+	});
+});
+
 describe("checkTemplate for links", () => {
 	const linked = templateSchema.parse({
 		version: 1,

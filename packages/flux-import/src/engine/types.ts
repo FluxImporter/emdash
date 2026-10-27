@@ -70,6 +70,11 @@ export interface Job {
 	 * real run would; capped at `MAX_PLANNED_TERMS`. Absent outside dry runs.
 	 */
 	plannedTerms?: PlannedTerm[];
+	/**
+	 * The largest file an image or file field downloads, read at job creation: the site's
+	 * `maxUploadSize`, at most 5 MiB on Workers. Absent when the template maps no media.
+	 */
+	mediaMaxBytes?: number;
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

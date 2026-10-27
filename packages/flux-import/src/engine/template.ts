@@ -23,7 +23,9 @@ import {
 	taxonomyConverter,
 } from "./links.js";
 import {
+	acceptsUploadable,
 	altConverter,
+	MAX_MEDIA_MAPPINGS,
 	type MediaConversionCode,
 	type MediaKind,
 	type MediaRequest,
@@ -722,10 +724,13 @@ export function noRecordsWarning(source: { records?: string | undefined }): stri
 		: `No records found at "${source.records}"`;
 }
 
-/** The validation keys EmDash enforces on writes (`emdash` src/schema/zod-generator.ts:240-290). */
+/**
+ * The validation keys EmDash enforces on writes (`emdash` src/schema/zod-generator.ts:240-290),
+ * and the media types an image or file field accepts (src/api/handlers/validate-media-fields.ts).
+ */
 export type FieldRules = Pick<
 	TargetField,
-	"options" | "min" | "max" | "minLength" | "maxLength" | "pattern"
+	"options" | "min" | "max" | "minLength" | "maxLength" | "pattern" | "allowedMimeTypes"
 >;
 
 /**
@@ -849,11 +854,22 @@ function fieldProblems(
 	}
 	const compatible = COMPATIBLE[mapping.type];
 	if (!compatible.includes(target.type)) {
+		const article = mapping.type === "image" ? "an" : "a";
 		return [
-			`Field "${field}" has type "${target.type}"; a ${mapping.type} mapping needs one of ${compatible.join(", ")}`,
+			`Field "${field}" has type "${target.type}"; ${article} ${mapping.type} mapping needs one of ${compatible.join(", ")}`,
 		];
 	}
 	const problems: string[] = [];
+	const allowed = target.validation?.allowedMimeTypes ?? [];
+	if (
+		(mapping.type === "image" || mapping.type === "file") &&
+		allowed.length > 0 &&
+		!acceptsUploadable(allowed, mapping.type)
+	) {
+		problems.push(
+			`Field "${field}": EmDash's upload refuses every type this field accepts (${allowed.join(", ")})`,
+		);
+	}
 	if (mapping.type === "date") {
 		if (mapping.output !== undefined && target.type === "datetime") {
 			problems.push(`Field "${field}" is a datetime field; "output" only formats text fields`);
@@ -888,7 +904,9 @@ function fieldProblems(
  * that are not options, `tz: "site"` without a valid site timezone, required fields with no
  * default that the template does not map (every create would fail), reference fields that are
  * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
- * to the collection. The link checks run only on what `links` carries.
+ * to the collection, more than five image and file mappings, and image or file fields whose
+ * `allowedMimeTypes` EmDash's upload can never satisfy. The link checks run only on what `links`
+ * carries.
  */
 export function checkTemplate(
 	t: Template,
@@ -909,6 +927,12 @@ export function checkTemplate(
 		}
 		const problem = pathProblem(path, format);
 		if (problem !== null) errors.push(problem);
+	}
+	const media = Object.values(t.fields).filter((m) => m.type === "image" || m.type === "file");
+	if (media.length > MAX_MEDIA_MAPPINGS) {
+		errors.push(
+			`The template maps ${media.length} image and file fields; at most ${MAX_MEDIA_MAPPINGS} are allowed`,
+		);
 	}
 	const byslug = new Map(fields.map((f) => [f.slug, f]));
 	for (const [field, mapping] of Object.entries(t.fields)) {
@@ -971,6 +995,9 @@ export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<strin
 			...(f.relationSide === undefined ? {} : { relationSide: f.relationSide }),
 			...(f.targetCollection === undefined ? {} : { targetCollection: f.targetCollection }),
 			...(f.multiple === undefined ? {} : { multiple: f.multiple }),
+			...(v.allowedMimeTypes && v.allowedMimeTypes.length > 0
+				? { allowedMimeTypes: v.allowedMimeTypes }
+				: {}),
 		};
 	}
 	return targets;
