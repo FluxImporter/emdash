@@ -11,6 +11,19 @@ import {
 import { dateConverter } from "./dates.js";
 import { type CompiledExpression, compileExpression } from "./expressions.js";
 import {
+	bylinesConverter,
+	DEFAULT_HIERARCHY,
+	DEFAULT_SEPARATOR,
+	type LinkConverted,
+	type LinkErrorCode,
+	type LinkRequests,
+	referenceConverter,
+	type TaxonomySnapshot,
+	type TermRequest,
+	taxonomyConverter,
+} from "./links.js";
+import type { TaxonomyDef } from "./ports.js";
+import {
 	booleanConverter,
 	type ConversionCode,
 	checkRules,
@@ -31,6 +44,9 @@ export const SOURCE_ID_FIELD = "flux_source_id";
 export const SITE_TIMEZONE = "site";
 
 const SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
+/** EmDash's taxonomy name rule (`createTaxonomyDefBody`, src/api/schemas/taxonomies.ts:18-31). */
+const TAXONOMY_NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
+const MAX_TAXONOMIES = 20;
 const MAX_KEY_LENGTH = 256;
 const MAX_SLUG_LENGTH = 200;
 
@@ -52,6 +68,7 @@ const tokens = z
 	)
 	.min(1)
 	.max(50);
+const separator = z.string().min(1).max(10);
 const optionMap = z
 	.record(z.string().min(1).max(200), z.string().min(1).max(200))
 	.refine((m) => Object.keys(m).length <= 1000, { message: "map takes at most 1,000 entries" });
@@ -127,7 +144,7 @@ const fieldMapping = z.discriminatedUnion("type", [
 			type: z.literal("multiSelect"),
 			map: optionMap.optional(),
 			ignoreCase: z.boolean().optional(),
-			separator: z.string().min(1).max(10).optional(),
+			separator: separator.optional(),
 		})
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
@@ -139,8 +156,40 @@ const fieldMapping = z.discriminatedUnion("type", [
 		.object({ ...valueSource, type: z.literal("slug") })
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("reference"),
+			match: z.enum(["id", "slug", "key"]).optional(),
+			separator: separator.optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
 ]);
 const valueMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
+
+const taxonomyMapping = z
+	.object({
+		...valueSource,
+		match: z.enum(["slug", "label"]).optional(),
+		separator: separator.optional(),
+		hierarchy: separator.optional(),
+		create: z.boolean().optional(),
+	})
+	.strict()
+	.refine(hasOneSource, ONE_SOURCE)
+	.refine((m) => (m.hierarchy ?? DEFAULT_HIERARCHY) !== (m.separator ?? DEFAULT_SEPARATOR), {
+		message: "hierarchy must differ from separator",
+	});
+
+const bylinesMapping = z
+	.object({
+		...valueSource,
+		match: z.enum(["slug", "name"]).optional(),
+		separator: separator.optional(),
+	})
+	.strict()
+	.refine(hasOneSource, ONE_SOURCE);
 
 /**
  * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
@@ -181,16 +230,52 @@ export const templateSchema = z
 				}
 			}
 		}),
+		/** Terms to assign, by taxonomy name; each replaces the entry's terms of that taxonomy. */
+		taxonomies: z
+			.record(z.string(), taxonomyMapping)
+			.superRefine((taxonomies, ctx) => {
+				const names = Object.keys(taxonomies);
+				if (names.length > MAX_TAXONOMIES) {
+					ctx.addIssue({
+						code: "custom",
+						message: `Map at most ${MAX_TAXONOMIES} taxonomies`,
+					});
+				}
+				for (const name of names) {
+					if (!TAXONOMY_NAME_RE.test(name)) {
+						ctx.addIssue({
+							code: "custom",
+							message: `Invalid taxonomy name "${name}"`,
+							path: [name],
+						});
+					}
+				}
+			})
+			.optional(),
+		/** Existing bylines to credit, in order; replaces the entry's bylines. */
+		bylines: bylinesMapping.optional(),
 	})
 	.strict();
 
 export type Template = z.infer<typeof templateSchema>;
 export type FieldMapping = Template["fields"][string];
 export type MappingType = FieldMapping["type"];
+export type TaxonomyMapping = NonNullable<Template["taxonomies"]>[string];
+export type BylinesMapping = NonNullable<Template["bylines"]>;
 
-export type { JsonValue, TargetField };
+export type { JsonValue, LinkRequests, TargetField, TaxonomySnapshot, TermRequest };
 export type FieldValue = string | number | boolean | string[] | JsonValue | null;
-export type MappedRecord = { key: string; slug?: string; data: Record<string, FieldValue> };
+/**
+ * One record after the template: the key, the slug, the field values, and the link requests
+ * (reference fields, taxonomies, bylines) when the template maps any. Reference fields are kept
+ * out of `data`.
+ */
+export type MappedRecord = {
+	key: string;
+	slug?: string;
+	data: Record<string, FieldValue>;
+	links?: LinkRequests;
+};
 export type ValueErrorCode =
 	| "filter_error"
 	| "filter_not_boolean"
@@ -201,7 +286,8 @@ export type ValueErrorCode =
 	| "invalid_date"
 	| "empty_slug"
 	| ConversionCode
-	| RuleCode;
+	| RuleCode
+	| LinkErrorCode;
 export type ValueError = { field: string; code: ValueErrorCode; message: string };
 
 export function slugify(s: string): string {
@@ -275,7 +361,16 @@ export function fieldConverter(
 				target?.type ?? null,
 			);
 		}
+		case "reference":
+			return referenceConverter(mapping, target);
 	}
+}
+
+/** A link mapping read from `from` or `expr` and converted to lookup requests. */
+export interface LinkReader<T> {
+	readonly from: string | undefined;
+	readonly expr: CompiledExpression | null;
+	readonly convert: (raw: unknown) => LinkConverted<T>;
 }
 
 /** A template with its expressions parsed once, for every record of a batch. */
@@ -292,6 +387,10 @@ export interface CompiledTemplate {
 	readonly converters: ReadonlyMap<string, FieldConverter>;
 	/** The job's target field snapshot; null for jobs created before M4a (no field rules). */
 	readonly targets: Readonly<Record<string, TargetField>> | null;
+	/** Each mapped taxonomy's reader, by taxonomy name. */
+	readonly taxonomies: ReadonlyMap<string, LinkReader<TermRequest>>;
+	/** The bylines reader, or null when the template maps no bylines. */
+	readonly bylines: LinkReader<string> | null;
 }
 
 /** What a job knows about its target fields; absent on jobs created before M4a. */
@@ -299,6 +398,8 @@ export interface CompileContext {
 	targets?: Readonly<Record<string, TargetField>> | undefined;
 	/** The site timezone stored on the job; `UTC` when absent. */
 	siteTimezone?: string | undefined;
+	/** The mapped taxonomies as they were at job creation (M4b); flat when absent. */
+	taxonomies?: Readonly<Record<string, TaxonomySnapshot>> | undefined;
 }
 
 /**
@@ -331,8 +432,37 @@ export function compileTemplate(
 			fieldConverter(mapping, targets?.[name] ?? null, context.siteTimezone ?? "UTC"),
 		);
 	}
+	const taxonomies = new Map<string, LinkReader<TermRequest>>();
+	for (const [name, mapping] of Object.entries(t.taxonomies ?? {})) {
+		taxonomies.set(name, {
+			from: mapping.from,
+			expr: compile(`taxonomies.${name}.expr`, mapping.expr),
+			convert: taxonomyConverter(mapping, context.taxonomies?.[name] ?? null),
+		});
+	}
+	const bylines =
+		t.bylines === undefined
+			? null
+			: {
+					from: t.bylines.from,
+					expr: compile("bylines.expr", t.bylines.expr),
+					convert: bylinesConverter(t.bylines),
+				};
 	if (problems.length > 0) return { ok: false, problems };
-	return { ok: true, compiled: { template: t, filter, key, slug, fields, converters, targets } };
+	return {
+		ok: true,
+		compiled: {
+			template: t,
+			filter,
+			key,
+			slug,
+			fields,
+			converters,
+			targets,
+			taxonomies,
+			bylines,
+		},
+	};
 }
 
 function kindOf(value: unknown): string {
@@ -368,9 +498,10 @@ const FAILED = Symbol("failed");
 
 /**
  * Applies the template to one record value (a CSV row object, a JSON value, an XML object): reads
- * the key, the slug and each field from `from` or `expr` and converts them, collecting every
- * error. An expression result goes through the same conversion as a path value, and `undefined`
- * reads as a missing path. Run `filterRecord` first.
+ * the key, the slug, each field, each taxonomy and the bylines from `from` or `expr` and converts
+ * them, collecting every error. An expression result goes through the same conversion as a path
+ * value, and `undefined` reads as a missing path. Reference fields and the other links go into
+ * `links`, as lookup requests. Run `filterRecord` first.
  */
 export async function applyTemplate(
 	c: CompiledTemplate,
@@ -432,6 +563,7 @@ export async function applyTemplate(
 	}
 
 	const data: Record<string, FieldValue> = {};
+	const links: LinkRequests = {};
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
@@ -443,19 +575,50 @@ export async function applyTemplate(
 		const target = c.targets?.[field];
 		const broken = target === undefined ? [] : checkRules(result.value, target);
 		for (const e of broken) errors.push({ field, ...e });
-		if (broken.length === 0) data[field] = result.value;
+		if (broken.length > 0) continue;
+		if (mapping.type === "reference") {
+			links.references ??= {};
+			links.references[field] = result.value as string[] | null;
+		} else data[field] = result.value;
+	}
+	for (const [name, reader] of c.taxonomies) {
+		const field = `taxonomies.${name}`;
+		const raw = await read(field, reader.from, reader.expr);
+		if (raw === FAILED) continue;
+		const result = reader.convert(raw);
+		if (!result.ok) errors.push({ field, code: result.code, message: result.message });
+		else {
+			links.taxonomies ??= {};
+			links.taxonomies[name] = result.value;
+		}
+	}
+	if (c.bylines !== null) {
+		const raw = await read("bylines", c.bylines.from, c.bylines.expr);
+		if (raw !== FAILED) {
+			const result = c.bylines.convert(raw);
+			if (!result.ok) errors.push({ field: "bylines", code: result.code, message: result.message });
+			else links.bylines = result.value;
+		}
 	}
 
 	if (errors.length > 0) return { ok: false, errors };
-	return { ok: true, value: slug === undefined ? { key, data } : { key, slug, data } };
+	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
+	if (Object.keys(links).length > 0) mapped.links = links;
+	return { ok: true, value: mapped };
 }
 
 /**
- * Every source path the template reads: key, slug and field `from`s, without duplicates.
- * Expressions are not analysed for the paths they read.
+ * Every source path the template reads: key, slug, field, taxonomy and bylines `from`s, without
+ * duplicates. Expressions are not analysed for the paths they read.
  */
 export function templatePaths(t: Template): string[] {
-	const froms = [t.key.from, t.slug?.from, ...Object.values(t.fields).map((m) => m.from)];
+	const froms = [
+		t.key.from,
+		t.slug?.from,
+		...Object.values(t.fields).map((m) => m.from),
+		...Object.values(t.taxonomies ?? {}).map((m) => m.from),
+		t.bylines?.from,
+	];
 	return [...new Set(froms.filter((path): path is string => path !== undefined))];
 }
 
@@ -502,7 +665,25 @@ export type SchemaField = {
 	unsupported?: boolean;
 	/** The field keeps its values outside the content table (a bound reference). */
 	storageless?: boolean;
+	/** Reference fields: the end of the relation the field sits on. */
+	relationSide?: "parent" | "child";
+	/** Reference fields: the collection the field links to. */
+	targetCollection?: string;
+	/** Reference fields: the parent side takes more than one entry. */
+	multiple?: boolean;
 };
+
+/** What job creation reads besides the collection's fields, for links (M4b). */
+export type LinkSchema = {
+	/** The fields of each reference field's target collection; null when it does not exist. */
+	targets?: Readonly<Record<string, SchemaField[] | null>>;
+	/** Every taxonomy definition, in every locale. */
+	taxonomies?: readonly TaxonomyDef[];
+};
+
+/** EmDash's guide to binding a reference field that predates relations. */
+export const BIND_REFERENCE_DOCS =
+	"https://docs.emdashcms.com/guides/relations/#bind-a-field-that-has-no-relation";
 
 export const COMPATIBLE: Record<MappingType, string[]> = {
 	text: ["string", "text", "url", "slug"],
@@ -513,6 +694,7 @@ export const COMPATIBLE: Record<MappingType, string[]> = {
 	multiSelect: ["multiSelect"],
 	json: ["json"],
 	slug: ["slug", "string"],
+	reference: ["reference"],
 };
 
 /** Whether `value` names one of `options`, as the select matching would find it. */
@@ -528,16 +710,60 @@ export function matchesOption(
 	return new Set(options.filter((o) => o.toLowerCase() === lower)).size === 1;
 }
 
+/**
+ * Problems with a reference mapping: the field must be a reference bound to a relation, its
+ * target collection must exist, and `match: "key"` needs entries imported into the target.
+ */
+function referenceProblems(
+	field: string,
+	mapping: Extract<FieldMapping, { type: "reference" }>,
+	target: SchemaField,
+	links: LinkSchema,
+	own: string,
+): string[] {
+	if (target.type !== "reference") {
+		return [
+			`Field "${field}" has type "${target.type}"; a reference mapping needs one of reference`,
+		];
+	}
+	const collection = target.targetCollection;
+	if (!target.storageless || collection === undefined) {
+		return [
+			`Field "${field}" is a reference field without a relation; bind it first (${BIND_REFERENCE_DOCS})`,
+		];
+	}
+	const targetFields = links.targets?.[collection];
+	if (targetFields === null) {
+		return [`Field "${field}" links to collection "${collection}", which does not exist`];
+	}
+	if (
+		mapping.match === "key" &&
+		// The job adds the import key to its own collection, so it needs no entries yet.
+		collection !== own &&
+		targetFields !== undefined &&
+		!targetFields.some((f) => f.slug === SOURCE_ID_FIELD)
+	) {
+		return [
+			`Field "${field}" finds entries by import key, but no entries were imported into "${collection}"`,
+		];
+	}
+	return [];
+}
+
 /** Problems with one mapping against its existing collection field. */
 function fieldProblems(
 	field: string,
 	mapping: FieldMapping,
 	target: SchemaField,
 	siteTimezone: string,
+	links: LinkSchema,
+	collection: string,
 ): string[] {
 	if (target.unsupported) {
 		return [`Field "${field}" has a field type this EmDash version cannot read`];
 	}
+	if (mapping.type === "reference")
+		return referenceProblems(field, mapping, target, links, collection);
 	if (target.storageless) {
 		return [`Field "${field}" keeps its values outside the content table and cannot be imported`];
 	}
@@ -579,14 +805,17 @@ function fieldProblems(
  * Problems that stop a job: CSV and XLSX columns missing from the header (`columns`; an XLSX
  * template may also read `_row`), field paths that are not valid for the source format, fields
  * the collection lacks or types it cannot take, `output` into a datetime field, `map` values
- * that are not options, `tz: "site"` without a valid site timezone, and required fields with no
- * default that the template does not map (every create would fail).
+ * that are not options, `tz: "site"` without a valid site timezone, required fields with no
+ * default that the template does not map (every create would fail), reference fields that are
+ * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
+ * to the collection. The link checks run only on what `links` carries.
  */
 export function checkTemplate(
 	t: Template,
 	fields: SchemaField[],
 	columns: readonly string[] | null,
 	siteTimezone = "UTC",
+	links: LinkSchema = {},
 ): string[] {
 	const errors: string[] = [];
 	const format: SourceFormat = t.source.format;
@@ -607,7 +836,17 @@ export function checkTemplate(
 		if (target === undefined) {
 			errors.push(`Field "${field}" does not exist in collection "${t.collection}"`);
 		} else {
-			errors.push(...fieldProblems(field, mapping, target, siteTimezone));
+			errors.push(...fieldProblems(field, mapping, target, siteTimezone, links, t.collection));
+		}
+	}
+	if (links.taxonomies !== undefined) {
+		for (const name of Object.keys(t.taxonomies ?? {})) {
+			// EmDash does not check attachment when it assigns terms, so the importer does.
+			const defs = links.taxonomies.filter((d) => d.name === name);
+			if (defs.length === 0) errors.push(`Taxonomy "${name}" does not exist`);
+			else if (!defs.some((d) => d.collections.includes(t.collection))) {
+				errors.push(`Taxonomy "${name}" is not attached to collection "${t.collection}"`);
+			}
 		}
 	}
 	for (const f of fields) {
@@ -649,9 +888,58 @@ export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<strin
 			...(v.minLength === undefined ? {} : { minLength: v.minLength }),
 			...(v.maxLength === undefined ? {} : { maxLength: v.maxLength }),
 			...(v.pattern ? { pattern: v.pattern } : {}),
+			...(f.relationSide === undefined ? {} : { relationSide: f.relationSide }),
+			...(f.targetCollection === undefined ? {} : { targetCollection: f.targetCollection }),
+			...(f.multiple === undefined ? {} : { multiple: f.multiple }),
 		};
 	}
 	return targets;
+}
+
+/**
+ * The definition of each mapped taxonomy that applies to the template: the one in its locale,
+ * else the first. Run `checkTemplate` first; unknown taxonomies are skipped.
+ */
+function taxonomyDefsOf(t: Template, defs: readonly TaxonomyDef[]): Map<string, TaxonomyDef> {
+	const found = new Map<string, TaxonomyDef>();
+	for (const name of Object.keys(t.taxonomies ?? {})) {
+		const named = defs.filter((d) => d.name === name);
+		const def = named.find((d) => d.locale === t.locale) ?? named[0];
+		if (def !== undefined) found.set(name, def);
+	}
+	return found;
+}
+
+/** The snapshot of each mapped taxonomy stored on the job (`Job.taxonomies`). */
+export function taxonomiesOf(
+	t: Template,
+	defs: readonly TaxonomyDef[],
+): Record<string, TaxonomySnapshot> {
+	const snapshot: Record<string, TaxonomySnapshot> = {};
+	for (const [name, def] of taxonomyDefsOf(t, defs)) {
+		snapshot[name] = { hierarchical: def.hierarchical };
+	}
+	return snapshot;
+}
+
+/** Warnings for link mappings that work but do less than they say: `hierarchy` on a flat taxonomy. */
+export function linkWarnings(t: Template, defs: readonly TaxonomyDef[]): string[] {
+	const warnings: string[] = [];
+	for (const [name, def] of taxonomyDefsOf(t, defs)) {
+		if (!def.hierarchical && t.taxonomies?.[name]?.hierarchy !== undefined) {
+			warnings.push(`Taxonomy "${name}" is flat; its "hierarchy" separator is ignored`);
+		}
+	}
+	return warnings;
+}
+
+/** Whether the template maps reference fields, taxonomies or bylines. */
+export function usesLinks(t: Template): boolean {
+	return (
+		t.taxonomies !== undefined ||
+		t.bylines !== undefined ||
+		Object.values(t.fields).some((m) => m.type === "reference")
+	);
 }
 
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */

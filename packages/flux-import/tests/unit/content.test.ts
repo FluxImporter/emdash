@@ -282,3 +282,125 @@ describe("EmDashContent", () => {
 		});
 	});
 });
+
+describe("EmDashContent links", () => {
+	const credit = (id: string, slug: string, source: string, roleLabel: string | null = null) => ({
+		byline: { id, slug, displayName: slug, translationGroup: `g-${id}` },
+		sortOrder: 0,
+		roleLabel,
+		source,
+	});
+
+	it("reads reference selections with drafts only when asked, and explicit bylines always", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "posts", locale: "en", data: { title: "A" } });
+		const gets: unknown[][] = [];
+		const base = runtime.handleContentGet.bind(runtime);
+		runtime.handleContentGet = async (c: string, id: string, ...rest: unknown[]) => {
+			gets.push([c, id, ...rest]);
+			const result = await base(c, id);
+			const item = (result.data as { item: Record<string, unknown> }).item;
+			item.bylines = [credit("b1", "alex", "explicit", "Editor"), credit("b2", "sam", "explicit")];
+			if (rest[1]) {
+				item.references = {
+					related: {
+						children: [
+							{ id: "p2", slug: "two", translationGroup: "g2" },
+							{ id: "p3", slug: "three", translationGroup: null },
+						],
+						nextCursor: "c",
+					},
+				};
+			}
+			return result;
+		};
+		const plain = await content.get("posts", "en", "e1");
+		expect(plain).not.toHaveProperty("references");
+		expect(plain?.bylines).toEqual([
+			{ group: "g-b1", id: "b1", slug: "alex", roleLabel: "Editor" },
+			{ group: "g-b2", id: "b2", slug: "sam", roleLabel: null },
+		]);
+		const linked = await content.get("posts", "en", "e1", { references: true });
+		expect(linked?.references).toEqual({
+			related: [
+				{ group: "g2", id: "p2" },
+				{ group: "p3", id: "p3" },
+			],
+		});
+		expect(gets).toEqual([
+			["posts", "e1", "en"],
+			["posts", "e1", "en", { includeDrafts: true }],
+		]);
+		await content.create({ collection: "posts", locale: "en", data: { flux_source_id: "S1" } });
+		const found = await content.findBySourceId("posts", "en", "S1", { references: true });
+		expect(found?.references).toEqual(linked?.references);
+	});
+
+	it("marks reference fields with more selections than the page read", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "posts", locale: "en", data: { title: "A" } });
+		const base = runtime.handleContentGet.bind(runtime);
+		runtime.handleContentGet = async (c: string, id: string) => {
+			const result = await base(c, id);
+			(result.data as { item: Record<string, unknown> }).item.references = {
+				related: { children: [{ id: "p2" }], nextCursor: "c" },
+				other: { children: [{ id: "p3" }] },
+			};
+			return result;
+		};
+		const got = await content.get("posts", "en", "e1", { references: true });
+		expect(got?.referencesTruncated).toEqual(["related"]);
+	});
+
+	it("leaves out an inferred byline, which the entry was not given", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "posts", locale: "en", data: { title: "A" } });
+		const base = runtime.handleContentGet.bind(runtime);
+		runtime.handleContentGet = async (c: string, id: string) => {
+			const result = await base(c, id);
+			(result.data as { item: Record<string, unknown> }).item.bylines = [
+				credit("b9", "owner", "inferred"),
+			];
+			return result;
+		};
+		expect((await content.get("posts", "en", "e1"))?.bylines).toEqual([]);
+	});
+
+	it("sends links on create and update, and leaves data out of an update without it", async () => {
+		const { runtime, content } = setup();
+		await content.create({
+			collection: "posts",
+			locale: "en",
+			data: { title: "A" },
+			taxonomies: { category: ["news"] },
+			references: { related: ["p2"] },
+			bylines: [{ bylineId: "b1", roleLabel: null }],
+		});
+		expect(runtime.calls[0]).toEqual([
+			"create",
+			"posts",
+			{
+				data: { title: "A" },
+				locale: "en",
+				authorId: "u1",
+				actor,
+				taxonomies: { category: ["news"] },
+				references: { related: ["p2"] },
+				bylines: [{ bylineId: "b1", roleLabel: null }],
+			},
+		]);
+		await content.update({
+			collection: "posts",
+			locale: "en",
+			id: "e1",
+			rev: "rev-1",
+			taxonomies: { category: [] },
+		});
+		expect(runtime.calls[1]).toEqual([
+			"update",
+			"posts",
+			"e1",
+			{ locale: "en", _rev: "rev-1", actor, taxonomies: { category: [] } },
+		]);
+	});
+});

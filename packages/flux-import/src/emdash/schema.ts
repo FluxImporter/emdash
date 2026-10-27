@@ -30,7 +30,15 @@ export interface RegistryField {
 	type: string;
 	required?: boolean;
 	defaultValue?: unknown;
-	validation?: (FieldRules & { relation?: string | undefined }) | null | undefined;
+	validation?:
+		| (FieldRules & {
+				relation?: string | undefined;
+				relationSide?: string | undefined;
+				targetCollection?: string | undefined;
+				multiple?: boolean | undefined;
+		  })
+		| null
+		| undefined;
 	unsupportedType?: unknown;
 }
 
@@ -93,11 +101,28 @@ function rulesOf(validation: RegistryField["validation"]): FieldRules {
 	return rules;
 }
 
+/** A reference field's relation keys (`emdash` src/schema/types.ts:107-125), as given. */
+function relationOf(
+	f: RegistryField,
+): Pick<SchemaField, "relationSide" | "targetCollection" | "multiple"> {
+	const v = f.validation ?? {};
+	return {
+		...(v.relationSide === "parent" || v.relationSide === "child"
+			? { relationSide: v.relationSide }
+			: {}),
+		...(typeof v.targetCollection === "string" && v.targetCollection !== ""
+			? { targetCollection: v.targetCollection }
+			: {}),
+		...(typeof v.multiple === "boolean" ? { multiple: v.multiple } : {}),
+	};
+}
+
 /**
  * The collection's fields for `checkTemplate` and the job's target snapshot, or `null` when the
  * collection does not exist: type, `required`, whether it has a default, the validation keys
- * EmDash enforces, and whether EmDash cannot read its type or keeps its values elsewhere (a
- * reference bound to a relation, `isStoragelessField` in src/schema/types.ts:120-125).
+ * EmDash enforces, whether EmDash cannot read its type or keeps its values elsewhere (a
+ * reference bound to a relation, `isStoragelessField` in src/schema/types.ts:120-125), and a
+ * reference field's relation side, target collection and `multiple`.
  */
 export async function listSchemaFields(
 	registry: SchemaRegistryLike,
@@ -117,6 +142,7 @@ export async function listSchemaFields(
 			...(f.type === "reference" && typeof relation === "string" && relation !== ""
 				? { storageless: true }
 				: {}),
+			...(f.type === "reference" ? relationOf(f) : {}),
 		};
 	});
 }

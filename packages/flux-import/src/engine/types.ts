@@ -1,7 +1,7 @@
 import type { TemplateSource } from "../sources/reader.js";
 import type { Change, PlanAction } from "./diff.js";
-import type { ContentPort, KvCollection, SourcePort } from "./ports.js";
-import type { Template } from "./template.js";
+import type { ContentPort, KvCollection, LookupPort, SourcePort } from "./ports.js";
+import type { TaxonomySnapshot, Template } from "./template.js";
 import type { TargetField } from "./values.js";
 
 export const BATCH_SIZE_DEFAULT = 50;
@@ -20,6 +20,14 @@ export interface Counters {
 	/** Records the template's filter skipped. Absent on jobs created before M3b (read as 0). */
 	filtered: number;
 }
+
+/** A term a dry run plans to create, kept on the job so later batches see it. */
+export type PlannedTerm = {
+	taxonomy: string;
+	/** The path from the root: slugs in `slug` mode, labels in `label` mode. */
+	path: string[];
+	match: "slug" | "label";
+};
 
 export interface Job {
 	id: string;
@@ -50,6 +58,18 @@ export interface Job {
 	targetFields?: Record<string, TargetField>;
 	/** The site timezone read at job creation, for `tz: "site"`; absent before M4a (UTC). */
 	siteTimezone?: string;
+	/**
+	 * The collection already had the `flux_source_id` field at job creation, so a dry run may
+	 * filter by it. Absent before M4b: such a dry run never does.
+	 */
+	sourceIdField?: boolean;
+	/** The mapped taxonomies as they were at job creation; absent when none are mapped. */
+	taxonomies?: Record<string, TaxonomySnapshot>;
+	/**
+	 * A dry run's terms that earlier batches planned to create, so later batches see them as a
+	 * real run would; capped at `MAX_PLANNED_TERMS`. Absent outside dry runs.
+	 */
+	plannedTerms?: PlannedTerm[];
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;
@@ -93,6 +113,11 @@ export interface RecordRow {
 	errors?: RecordError[];
 	/** The content revision this job wrote, saved before publishing so crash repair publishes only it. */
 	writtenRev?: string;
+	/**
+	 * Terms created for the record (`taxonomy: Parent > Child`), or that a dry run would create.
+	 * Absent when there are none.
+	 */
+	newTerms?: string[];
 	updatedAt: string;
 }
 
@@ -113,6 +138,7 @@ export interface EngineDeps {
 	records: KvCollection<RecordRow>;
 	links: KvCollection<LinkRow>;
 	content: ContentPort;
+	lookups: LookupPort;
 	source: SourcePort;
 	now: () => number;
 	newId: () => string;

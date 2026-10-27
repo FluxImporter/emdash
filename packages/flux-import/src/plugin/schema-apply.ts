@@ -29,6 +29,11 @@ export const APPLY_FIELD_TYPES = [
 	"slug",
 ] as const;
 export type ApplyFieldType = (typeof APPLY_FIELD_TYPES)[number];
+/**
+ * A template's reference mapping asks for a reference field, which `schema/apply` never creates:
+ * it needs a relation, and the handlers that create one are not exported by EmDash.
+ */
+type RequestType = ApplyFieldType | "reference";
 
 /** EmDash's indexable types (`emdash` src/schema/types.ts:56-66), of those above. */
 const INDEXABLE: ReadonlySet<string> = new Set([
@@ -47,7 +52,7 @@ const MAX_OPTIONS = 500;
 
 export interface FieldRequest {
 	slug: string;
-	type: ApplyFieldType;
+	type: RequestType;
 	label?: string | undefined;
 	options?: string[] | undefined;
 	indexed?: boolean | undefined;
@@ -238,6 +243,10 @@ export function planField(
 	const field = request.slug;
 	const type = request.type;
 	if (existing === undefined) {
+		if (type === "reference") {
+			const message = `Field "${field}" does not exist; create reference fields in the admin`;
+			return { change: { field, action: "conflict", type, message } };
+		}
 		const options = request.options === undefined ? {} : { options: request.options };
 		return { change: { field, action: "create", type, ...options } };
 	}
@@ -323,7 +332,8 @@ export async function applySchema(
 	try {
 		for (const [i, request] of requests.entries()) {
 			let plan = plans[i] as (typeof plans)[number];
-			if (plan.change.action === "create") {
+			// A reference request never plans `create` (planField); the type check narrows it.
+			if (plan.change.action === "create" && request.type !== "reference") {
 				try {
 					await registry.createField(collection, {
 						slug: request.slug,

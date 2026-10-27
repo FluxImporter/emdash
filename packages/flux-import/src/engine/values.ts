@@ -48,6 +48,12 @@ export type TargetField = {
 	minLength?: number;
 	maxLength?: number;
 	pattern?: string;
+	/** Reference fields: the end of the relation this field sits on. */
+	relationSide?: "parent" | "child";
+	/** Reference fields: the collection the field links to. */
+	targetCollection?: string;
+	/** Reference fields: the parent side takes more than one entry. */
+	multiple?: boolean;
 };
 
 export interface NumberOptions {

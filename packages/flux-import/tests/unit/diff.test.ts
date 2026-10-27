@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { type Comparison, comparisonsOf, deepEqual, planRecord } from "../../src/engine/diff.js";
+import {
+	type Comparison,
+	type CurrentLinks,
+	comparisonsOf,
+	deepEqual,
+	type LinkPlan,
+	planRecord,
+} from "../../src/engine/diff.js";
+import type { ResolvedLinks } from "../../src/engine/links.js";
 import { templateSchema } from "../../src/engine/template.js";
 
 const dates = new Map<string, Comparison>([["released", "instant"]]);
@@ -174,6 +182,125 @@ describe("comparisonsOf", () => {
 			title: "plain",
 			released: "instant",
 			day: "instant",
+		});
+	});
+});
+
+describe("planRecord with links", () => {
+	const item = (group: string | null, text = group ?? "new") => ({
+		group,
+		value: group ?? "",
+		text,
+	});
+	const cur = (group: string, text = group) => ({ group, text });
+	const record = { key: "P1", data: { title: "Hello" } };
+	const entry = { slug: "hello", data: { title: "Hello" } };
+	const plan = (resolved: ResolvedLinks, current: CurrentLinks, childSide: string[] = []) => {
+		const links: LinkPlan = { resolved, current, childSide: new Set(childSide) };
+		return planRecord(entry, record, new Map(), links);
+	};
+
+	it("treats a truncated reference field as changed even when the visible page matches", () => {
+		const current: CurrentLinks = {
+			references: { related: [cur("p1")] },
+			referencesTruncated: ["related"],
+		};
+		expect(plan({ references: { related: [item("p1")] } }, current)).toEqual({
+			action: "update",
+			changes: [{ field: "related", before: ["p1"], after: ["p1"] }],
+		});
+	});
+
+	it("compares taxonomies as sets, parent-side references and bylines in order", () => {
+		const current: CurrentLinks = {
+			taxonomies: { category: [cur("g1", "news"), cur("g2", "tech")] },
+			references: { related: [cur("p1"), cur("p2")], parents: [cur("q1"), cur("q2")] },
+			bylines: [cur("b1", "alex"), cur("b2", "sam")],
+		};
+		expect(
+			plan(
+				{
+					taxonomies: { category: [item("g2", "tech"), item("g1", "news")] },
+					references: { related: [item("p1"), item("p2")], parents: [item("q2"), item("q1")] },
+					bylines: [item("b1", "alex"), item("b2", "sam")],
+				},
+				current,
+				["parents"],
+			),
+		).toEqual({ action: "unchanged", changes: [] });
+		expect(
+			plan(
+				{
+					taxonomies: { category: [item("g1", "news"), item("g3", "electronics/phones")] },
+					references: { related: [item("p2"), item("p1")], parents: [item("q1")] },
+					bylines: [item("b2", "sam"), item("b1", "alex")],
+				},
+				current,
+				["parents"],
+			),
+		).toEqual({
+			action: "update",
+			changes: [
+				{ field: "related", before: ["p1", "p2"], after: ["p2", "p1"] },
+				{ field: "parents", before: ["q1", "q2"], after: ["q1"] },
+				{
+					field: "taxonomies.category",
+					before: ["news", "tech"],
+					after: ["news", "electronics/phones"],
+				},
+				{ field: "bylines", before: ["alex", "sam"], after: ["sam", "alex"] },
+			],
+		});
+	});
+
+	it("treats an empty value as equal to nothing, and clears what the entry has", () => {
+		expect(plan({ taxonomies: { tag: [] }, references: { related: [] }, bylines: [] }, {})).toEqual(
+			{ action: "unchanged", changes: [] },
+		);
+		expect(
+			plan(
+				{ taxonomies: { tag: [] }, bylines: [] },
+				{ taxonomies: { tag: [cur("t1", "rock")] }, bylines: [cur("b1", "alex")] },
+			),
+		).toEqual({
+			action: "update",
+			changes: [
+				{ field: "taxonomies.tag", before: ["rock"], after: null },
+				{ field: "bylines", before: ["alex"], after: null },
+			],
+		});
+	});
+
+	it("always plans a term a dry run would create as a change", () => {
+		expect(
+			plan(
+				{ taxonomies: { category: [item("g1", "news"), item(null, "Garden/Tools")] } },
+				{ taxonomies: { category: [cur("g1", "news")] } },
+			).changes,
+		).toEqual([
+			{ field: "taxonomies.category", before: ["news"], after: ["news", "Garden/Tools"] },
+		]);
+	});
+
+	it("lists the non-empty links of a new entry after its fields", () => {
+		const links: LinkPlan = {
+			resolved: {
+				references: { related: [item("p1")], maker: [] },
+				taxonomies: { category: [item("g1", "news")], tag: [] },
+				bylines: [item("b1", "alex")],
+			},
+			current: {},
+			childSide: new Set(),
+		};
+		expect(planRecord(null, { ...record, slug: "hello" }, new Map(), links)).toEqual({
+			action: "create",
+			changes: [
+				{ field: "slug", before: null, after: "hello" },
+				{ field: "title", before: null, after: "Hello" },
+				{ field: "related", before: null, after: ["p1"] },
+				{ field: "taxonomies.category", before: null, after: ["news"] },
+				{ field: "bylines", before: null, after: ["alex"] },
+			],
 		});
 	});
 });

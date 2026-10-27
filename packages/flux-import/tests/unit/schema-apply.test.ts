@@ -565,6 +565,48 @@ describe("template option handling", () => {
 	});
 });
 
+describe("template links", () => {
+	it("never creates reference fields, and ignores taxonomies and bylines", async () => {
+		const registry = new FakeApplyRegistry([
+			{ slug: "author", type: "reference", validation: null },
+			{ slug: "editor", type: "string" },
+		]);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields: {
+				title: { from: "T", type: "text" },
+				author: { from: "A", type: "reference" },
+				editor: { from: "E", type: "reference", match: "slug" },
+				related: { from: "R", type: "reference", match: "key" },
+			},
+			taxonomies: { category: { from: "C", create: true } },
+			bylines: { from: "B" },
+		};
+		const result = await applySchema(registry, { template }, invalidate);
+		expect(result.changes).toEqual([
+			{ field: "title", action: "create", type: "string" },
+			{ field: "author", action: "unchanged", type: "reference" },
+			{
+				field: "editor",
+				action: "conflict",
+				type: "reference",
+				message: 'Field "editor" is "string"; requested "reference"',
+			},
+			{
+				field: "related",
+				action: "conflict",
+				type: "reference",
+				message: 'Field "related" does not exist; create reference fields in the admin',
+			},
+		]);
+		expect(result.applied).toEqual(["title"]);
+		expect(registry.calls).toHaveLength(1);
+	});
+});
+
 describe("labelOf", () => {
 	it("turns a slug into a label", () => {
 		expect(labelOf("unit_price")).toBe("Unit price");

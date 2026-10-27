@@ -4,6 +4,8 @@ import {
 	type ContentPort,
 	ContentWriteError,
 	type EntrySnapshot,
+	type GetOptions,
+	type LinkWrites,
 	type WriteResult,
 } from "../engine/ports.js";
 import { type FieldValue, SOURCE_ID_FIELD } from "../engine/template.js";
@@ -23,7 +25,12 @@ export type HandlerResult = {
  */
 export interface ContentRuntime {
 	readonly schemaRegistry: SchemaRegistryLike;
-	handleContentGet(collection: string, id: string, locale?: string): Promise<HandlerResult>;
+	handleContentGet(
+		collection: string,
+		id: string,
+		locale?: string,
+		referenceOptions?: { includeDrafts: boolean },
+	): Promise<HandlerResult>;
 	handleContentList(
 		collection: string,
 		params: { locale?: string; limit?: number; fieldFilters?: ContentFieldFilters },
@@ -36,7 +43,7 @@ export interface ContentRuntime {
 			locale?: string;
 			authorId?: string;
 			actor?: ActorInfo;
-		},
+		} & LinkWrites,
 	): Promise<HandlerResult>;
 	handleContentUpdate(
 		collection: string,
@@ -47,7 +54,7 @@ export interface ContentRuntime {
 			locale?: string;
 			_rev?: string;
 			actor?: ActorInfo;
-		},
+		} & LinkWrites,
 	): Promise<HandlerResult>;
 	handleContentPublish(
 		collection: string,
@@ -59,6 +66,26 @@ export interface ContentRuntime {
 /** Answers whether anyone but `userId` holds a live lease on the entry. */
 export type LockReader = (collection: string, entryId: string, userId: string) => Promise<boolean>;
 
+/** One reference field's first page (src/api/handlers/content.ts:382-480). */
+const referencePage = z.object({
+	children: z.array(
+		z.object({ id: z.string(), translationGroup: z.string().nullable().optional() }),
+	),
+	/** Set when more references exist than the page holds. */
+	nextCursor: z.string().nullable().optional(),
+});
+
+/** A byline credit as `hydrateBylines` gives it (src/api/handlers/content.ts:312-353). */
+const bylineCredit = z.object({
+	byline: z.object({
+		id: z.string(),
+		slug: z.string(),
+		translationGroup: z.string().nullable().optional(),
+	}),
+	roleLabel: z.string().nullable().optional(),
+	source: z.string().optional(),
+});
+
 /** `{ item, _rev }` from get, create, update and publish (src/api/handlers/content.ts:1135). */
 const itemResult = z.object({
 	item: z.object({
@@ -66,8 +93,11 @@ const itemResult = z.object({
 		slug: z.string().nullable(),
 		status: z.string(),
 		locale: z.string().nullable().optional(),
+		translationGroup: z.string().nullable().optional(),
 		data: z.record(z.string(), z.unknown()),
 		draftRevisionId: z.string().nullable().optional(),
+		references: z.record(z.string(), referencePage).optional(),
+		bylines: z.array(bylineCredit).optional(),
 	}),
 	_rev: z.string(),
 });
@@ -89,7 +119,7 @@ function parse<T>(schema: z.ZodType<T>, data: unknown, op: string): T {
  * handlers, src/api/handlers/content.ts:1006, :1413, :1709) becomes `collection_missing`, which
  * fails the job rather than each record.
  */
-function writeError(op: string, error: HandlerResult["error"]): ContentWriteError {
+export function writeError(op: string, error: HandlerResult["error"]): ContentWriteError {
 	const code = error?.code ?? "UNKNOWN_ERROR";
 	if (code === "COLLECTION_NOT_FOUND") {
 		return new ContentWriteError("collection_missing", `${op} failed: ${error?.message ?? code}`);
@@ -109,8 +139,49 @@ function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string
 		// (hydrateDraftData without includeStagedSlug, src/emdash-runtime.ts:3389-3442).
 		slug: item.slug,
 		data: item.data,
+		...(item.translationGroup ? { group: item.translationGroup } : {}),
 		locale: item.locale ?? null,
 		pendingPublish: item.status !== "published" || (item.draftRevisionId ?? null) !== null,
+		...(item.references === undefined
+			? {}
+			: {
+					references: Object.fromEntries(
+						Object.entries(item.references).map(([field, page]) => [
+							field,
+							page.children.map((c) => ({ group: c.translationGroup ?? c.id, id: c.id })),
+						]),
+					),
+				}),
+		...(item.references !== undefined &&
+		Object.values(item.references).some((page) => page.nextCursor)
+			? {
+					referencesTruncated: Object.entries(item.references)
+						.filter(([, page]) => page.nextCursor)
+						.map(([field]) => field),
+				}
+			: {}),
+		...(item.bylines === undefined
+			? {}
+			: {
+					// An inferred credit (the author's byline) is not one the entry was given.
+					bylines: item.bylines
+						.filter((c) => c.source !== "inferred")
+						.map((c) => ({
+							group: c.byline.translationGroup ?? c.byline.id,
+							id: c.byline.id,
+							slug: c.byline.slug,
+							roleLabel: c.roleLabel ?? null,
+						})),
+				}),
+	};
+}
+
+/** The links of a write, without the ones not given. */
+function linksOf(input: LinkWrites): LinkWrites {
+	return {
+		...(input.taxonomies === undefined ? {} : { taxonomies: input.taxonomies }),
+		...(input.references === undefined ? {} : { references: input.references }),
+		...(input.bylines === undefined ? {} : { bylines: input.bylines }),
 	};
 }
 
@@ -126,8 +197,19 @@ export class EmDashContent implements ContentPort {
 		private readonly lockReader: LockReader,
 	) {}
 
-	async get(collection: string, locale: string, id: string): Promise<EntrySnapshot | null> {
-		const result = await this.runtime.handleContentGet(collection, id, locale);
+	/**
+	 * With `references`, every reference field's selection is read as an editor sees it: a
+	 * selection staged in a draft first (`includeDrafts`, src/api/handlers/content.ts:360-480).
+	 */
+	async get(
+		collection: string,
+		locale: string,
+		id: string,
+		options: GetOptions = {},
+	): Promise<EntrySnapshot | null> {
+		const result = options.references
+			? await this.runtime.handleContentGet(collection, id, locale, { includeDrafts: true })
+			: await this.runtime.handleContentGet(collection, id, locale);
 		if (!result.success) {
 			if (result.error?.code === "NOT_FOUND") return null;
 			throw writeError("Reading the entry", result.error);
@@ -144,6 +226,7 @@ export class EmDashContent implements ContentPort {
 		collection: string,
 		locale: string,
 		sourceId: string,
+		options: GetOptions = {},
 	): Promise<EntrySnapshot | null> {
 		const result = await this.runtime.handleContentList(collection, {
 			locale,
@@ -159,45 +242,51 @@ export class EmDashContent implements ContentPort {
 			);
 		}
 		const [only] = items;
-		return only ? this.get(collection, locale, only.id) : null;
+		return only ? this.get(collection, locale, only.id, options) : null;
 	}
 
 	isLocked(collection: string, _locale: string, id: string): Promise<boolean> {
 		return this.lockReader(collection, id, this.actor.id);
 	}
 
-	async create(input: {
-		collection: string;
-		locale: string;
-		slug?: string;
-		data: Record<string, FieldValue>;
-	}): Promise<{ id: string; rev: string }> {
+	async create(
+		input: {
+			collection: string;
+			locale: string;
+			slug?: string;
+			data: Record<string, FieldValue>;
+		} & LinkWrites,
+	): Promise<{ id: string; rev: string }> {
 		const result = await this.runtime.handleContentCreate(input.collection, {
 			data: input.data,
 			locale: input.locale,
 			authorId: this.actor.id,
 			actor: this.actor,
 			...(input.slug === undefined ? {} : { slug: input.slug }),
+			...linksOf(input),
 		});
 		if (!result.success) throw writeError("Creating the entry", result.error);
 		const { id, rev } = snapshotOf(result.data, "Creating the entry");
 		return { id, rev };
 	}
 
-	async update(input: {
-		collection: string;
-		locale: string;
-		id: string;
-		rev: string;
-		slug?: string;
-		data: Record<string, FieldValue>;
-	}): Promise<WriteResult> {
+	async update(
+		input: {
+			collection: string;
+			locale: string;
+			id: string;
+			rev: string;
+			slug?: string;
+			data?: Record<string, FieldValue>;
+		} & LinkWrites,
+	): Promise<WriteResult> {
 		const result = await this.runtime.handleContentUpdate(input.collection, input.id, {
-			data: input.data,
+			...(input.data === undefined ? {} : { data: input.data }),
 			locale: input.locale,
 			_rev: input.rev,
 			actor: this.actor,
 			...(input.slug === undefined ? {} : { slug: input.slug }),
+			...linksOf(input),
 		});
 		if (!result.success) {
 			if (result.error?.code === "CONFLICT") return { ok: false, reason: "conflict" };

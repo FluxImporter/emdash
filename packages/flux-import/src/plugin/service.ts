@@ -12,7 +12,7 @@ import {
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
-import type { SchemaField } from "../engine/template.js";
+import { type LinkSchema, type SchemaField, usesLinks } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import { type CsvSample, CsvSyntaxError, readCsvSample } from "../sources/csv.js";
 import {
@@ -36,6 +36,22 @@ export const LOG_MAX_BYTES = 8 * 1024 * 1024;
  * and each record costs about nine plugin storage calls plus EmDash's own content queries.
  */
 export const WORKERS_BATCH_CAP = 20;
+/**
+ * `WORKERS_BATCH_CAP` for jobs whose template maps reference fields, taxonomies or bylines: each
+ * record also looks its links up and reads them back.
+ */
+export const WORKERS_LINKED_BATCH_CAP = 10;
+
+/**
+ * The lookup cost one jobs/next call may spend on Workers (see `COST_READ`): D1 allows 1,000
+ * queries per invocation, and EmDash's lookups run several queries per call.
+ */
+export const WORKERS_LOOKUP_BUDGET = 600;
+
+/** The records one jobs/next call processes on Workers for this job. */
+export function workersBatchCap(job: Job): number {
+	return usesLinks(job.template) ? WORKERS_LINKED_BATCH_CAP : WORKERS_BATCH_CAP;
+}
 
 /** A failure the route layer turns into an HTTP error with this code and status. */
 export class ServiceError extends Error {
@@ -110,7 +126,7 @@ export async function stagePaste(storage: UploadStorage, text: string): Promise<
 	return stageUpload(storage, new Blob([bytes]).stream(), PASTE_MAX_BYTES, bytes.byteLength);
 }
 
-export type StartJobInput = Omit<CreateJobInput, "schemaFields">;
+export type StartJobInput = Omit<CreateJobInput, "schemaFields" | "linkSchema">;
 export type FieldLookup = (collection: string) => Promise<SchemaField[] | null>;
 export type LocaleResolver = (locale: string) => LocaleResolution;
 
@@ -148,7 +164,44 @@ function withSiteLocale(template: unknown, resolveLocale: LocaleResolver): unkno
 	return { ...template, locale: resolved.locale };
 }
 
-/** Creates a job after resolving the template locale and reading the target collection's fields. */
+/** The value of `key` on an object, or undefined. */
+function prop(value: unknown, key: string): unknown {
+	return typeof value === "object" && value !== null && key in value
+		? (value as Record<string, unknown>)[key]
+		: undefined;
+}
+
+/**
+ * What the link checks read, once per job creation: the fields of every collection a mapped
+ * reference field links to, and the taxonomy definitions when the template maps taxonomies.
+ * The template is not parsed yet, so shapes are checked loosely; createJob reports bad ones.
+ */
+async function linkSchemaFor(
+	deps: EngineDeps,
+	template: unknown,
+	fields: SchemaField[],
+	lookupFields: FieldLookup,
+	collection: string | null,
+): Promise<LinkSchema> {
+	const mapped = prop(template, "fields");
+	// The job's own collection is already loaded, so a self-reference does not read it again.
+	const targets: Record<string, SchemaField[] | null> =
+		collection === null ? {} : { [collection]: fields };
+	for (const f of fields) {
+		const target = f.targetCollection;
+		if (target === undefined || Object.hasOwn(targets, target)) continue;
+		if (prop(prop(mapped, f.slug), "type") !== "reference") continue;
+		targets[target] = await lookupFields(target);
+	}
+	const taxonomies = prop(template, "taxonomies");
+	const mapsTaxonomies = typeof taxonomies === "object" && taxonomies !== null;
+	return { targets, taxonomies: mapsTaxonomies ? await deps.lookups.taxonomyDefs() : [] };
+}
+
+/**
+ * Creates a job after resolving the template locale and reading the target collection's fields,
+ * its reference targets' fields and, for templates that map taxonomies, the taxonomy definitions.
+ */
 export async function startJob(
 	deps: EngineDeps,
 	input: StartJobInput,
@@ -162,7 +215,8 @@ export async function startJob(
 	if (schemaFields === null) {
 		throw new JobError("invalid_template", `Collection "${collection}" does not exist`);
 	}
-	return createJob(deps, { ...input, template, schemaFields });
+	const linkSchema = await linkSchemaFor(deps, template, schemaFields, lookupFields, collection);
+	return createJob(deps, { ...input, template, schemaFields, linkSchema });
 }
 
 export async function getJob(deps: EngineDeps, id: string): Promise<Job> {
@@ -257,7 +311,8 @@ export async function nextBatch(
 		deps,
 		id,
 		holder,
-		onWorkers() ? WORKERS_BATCH_CAP : Number.POSITIVE_INFINITY,
+		onWorkers() ? workersBatchCap : Number.POSITIVE_INFINITY,
+		onWorkers() ? WORKERS_LOOKUP_BUDGET : Number.POSITIVE_INFINITY,
 	);
 	await releaseQuietly(deps, uploads, job, keep);
 	return job;

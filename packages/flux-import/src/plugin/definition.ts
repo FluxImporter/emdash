@@ -19,7 +19,13 @@ export type FluxImportOptions = Record<string, never>;
 export const STORAGE = {
 	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
 	records: {
-		indexes: ["jobId", ["jobId", "status"], ["jobId", "seq"], ["jobId", "status", "seq"]],
+		indexes: [
+			"jobId",
+			["jobId", "status"],
+			["jobId", "seq"],
+			["jobId", "status", "seq"],
+			["jobId", "sourceKey"],
+		],
 	},
 	links: { indexes: ["entryId"] },
 	sources: { indexes: ["name", "createdAt"] },
@@ -29,13 +35,25 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 	return definePlugin({
 		id: FLUX_IMPORT_ID,
 		version: FLUX_IMPORT_VERSION,
-		// Declared for disclosure on the admin plugins page. The importer reads and writes content,
-		// adds the flux_source_id field and creates fields for schema/apply through the trusted
-		// runtime (withEmDashRuntime), not through ctx.content, so these do not gate any call it
-		// makes; plugins have no schema-writing capability to declare. URL sources are fetched with
-		// the runtime's own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through
-		// ctx.http, so no network capability is declared.
-		capabilities: ["content:read", "content:write", "content:publish", "schema:read"],
+		// The content and schema capabilities are declared for disclosure on the admin plugins
+		// page. The importer reads and writes content, adds the flux_source_id field and creates
+		// fields for schema/apply through the trusted runtime (withEmDashRuntime), not through
+		// ctx.content, so these do not gate any call it makes; plugins have no schema-writing
+		// capability to declare. The other two gate calls the importer makes: taxonomies:write
+		// gives ctx.taxonomies, which reads taxonomies, terms and entry terms and creates missing
+		// terms (createTerm, the only sanctioned way to create one); bylines:read gives
+		// ctx.bylines, whose list is the only way to look bylines up. Entries are assigned their
+		// terms, references and bylines through the runtime's content writes. URL sources are
+		// fetched with the runtime's own fetch() behind the plugin's SSRF guard
+		// (src/sources/net.ts), not through ctx.http, so no network capability is declared.
+		capabilities: [
+			"content:read",
+			"content:write",
+			"content:publish",
+			"schema:read",
+			"taxonomies:write",
+			"bylines:read",
+		],
 		storage: STORAGE,
 		routes,
 		admin: {

@@ -6,8 +6,17 @@ import type { ApplyResult } from "../../src/plugin/schema-apply.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
 import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
+import {
+	createLinkSchema,
+	linkNames,
+	PEOPLE_CSV,
+	POSTS_CSV,
+	peopleTemplate,
+	postsStored,
+	postsTemplate,
+} from "../fixtures/links.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
-import { Client } from "../integration/client.js";
+import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import { CF_SITE_DIR } from "./global-setup.js";
@@ -265,6 +274,46 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await client.api("POST", "/_emdash/api/settings", { timezone: settings.timezone ?? "UTC" });
 		}
+	});
+
+	it("imports M4b links on D1: a created term path, a key reference and bylines", async () => {
+		const n = linkNames("cf");
+		await createLinkSchema(client, n);
+		const importLinked = async (csv: string, template: object) => {
+			const { uploadId } = await client.upload(csv);
+			const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
+			return client.runToEnd(job.id);
+		};
+		expect((await importLinked(PEOPLE_CSV, peopleTemplate(n))).counters).toMatchObject({
+			created: 2,
+		});
+		const done = await importLinked(POSTS_CSV, postsTemplate(n));
+		expect(done).toMatchObject({ status: "completed", counters: { created: 3, failed: 0 } });
+		const people = new Map(
+			(await client.listAll(n.people)).map((e) => [e.id, e.data.flux_source_id as string]),
+		);
+		const posts = await byKey(n.posts);
+		const expected = postsStored(n);
+		for (const key of ["P1", "P2"] as const) {
+			const post = posts.get(key)!;
+			const { item } = await client.api<{ item: Product }>(
+				"GET",
+				`/_emdash/api/content/${n.posts}/${post.id}?locale=en`,
+			);
+			const author = item.references?.author?.children[0]?.id;
+			expect(people.get(author ?? ""), key).toBe(expected[key].author);
+			expect(
+				item.bylines?.map((b) => b.byline.slug),
+				key,
+			).toEqual(expected[key].bylines);
+			expect(await client.entryTerms(n.posts, post.id, n.category), key).toEqual(
+				expected[key].category,
+			);
+			expect(await client.entryTerms(n.posts, post.id, n.tag), key).toEqual(expected[key].tag);
+		}
+		expect((await importLinked(POSTS_CSV, postsTemplate(n))).counters).toMatchObject({
+			unchanged: 3,
+		});
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {

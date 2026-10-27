@@ -9,11 +9,15 @@ import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
 	compileTemplate,
+	type LinkSchema,
+	linkWarnings,
 	missingPathWarnings,
 	noRecordsWarning,
 	type SchemaField,
+	SOURCE_ID_FIELD,
 	type Template,
 	targetFieldsOf,
+	taxonomiesOf,
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
@@ -61,6 +65,8 @@ export type CreateJobInput = {
 	warnings?: string[];
 	/** The site's timezone setting, for templates with `tz: "site"`; UTC when absent. */
 	siteTimezone?: string;
+	/** Reference targets' fields and the taxonomy definitions, for the link checks. */
+	linkSchema?: LinkSchema;
 	dryRun?: boolean;
 	publish?: boolean;
 	batchSize?: number;
@@ -123,7 +129,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	}
 
 	const siteTimezone = usesSiteTimezone(template) ? (input.siteTimezone ?? "UTC") : undefined;
-	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone);
+	const linkSchema = input.linkSchema ?? {};
+	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone, linkSchema);
 	if (problems.length > 0) {
 		throw new JobError(
 			"invalid_template",
@@ -137,7 +144,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			: await asJobError(() =>
 					sampleWarnings(deps, reader, template, input.uploadId, located.bodyOffset),
 				);
-	const warnings = [...(input.warnings ?? []), ...sampled];
+	const taxonomyDefs = linkSchema.taxonomies ?? [];
+	const warnings = [...(input.warnings ?? []), ...sampled, ...linkWarnings(template, taxonomyDefs)];
 
 	const now = new Date(deps.now()).toISOString();
 	const job: Job = {
@@ -155,12 +163,16 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		warnings,
 		targetFields: targetFieldsOf(template, input.schemaFields),
 		...(siteTimezone === undefined ? {} : { siteTimezone }),
+		...(template.taxonomies === undefined
+			? {}
+			: { taxonomies: taxonomiesOf(template, taxonomyDefs) }),
 		cursor: { offset: located.bodyOffset, seq: 0 },
 		counters: emptyCounters(),
 		lease: null,
 		phase: "import",
 		retryFromSeq: 0,
 		schemaReady: false,
+		sourceIdField: input.schemaFields.some((f) => f.slug === SOURCE_ID_FIELD),
 		error: null,
 		failures: 0,
 		createdAt: now,
@@ -260,6 +272,12 @@ const ALLOWED: Record<"pause" | "resume" | "cancel" | "retry", JobStatus[]> = {
 	retry: ["completed"],
 };
 
+/** The job without the dry run's planned terms, which only its running batches need. */
+export function withoutPlannedTerms(job: Job): Job {
+	const { plannedTerms: _planned, ...rest } = job;
+	return rest;
+}
+
 export function transitionJob(
 	deps: EngineDeps,
 	id: string,
@@ -278,7 +296,7 @@ export function transitionJob(
 			case "resume":
 				return { ...job, status: "running", error: null, failures: 0 };
 			case "cancel":
-				return { ...job, status: "cancelled" };
+				return { ...withoutPlannedTerms(job), status: "cancelled" };
 			case "retry":
 				return { ...job, status: "running", phase: "retry", retryFromSeq: 0, error: null };
 		}
