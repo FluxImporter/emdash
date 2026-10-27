@@ -11,6 +11,18 @@ import {
 import { dateConverter } from "./dates.js";
 import { type CompiledExpression, compileExpression } from "./expressions.js";
 import {
+	bylinesConverter,
+	DEFAULT_HIERARCHY,
+	DEFAULT_SEPARATOR,
+	type LinkConverted,
+	type LinkErrorCode,
+	type LinkRequests,
+	referenceConverter,
+	type TaxonomySnapshot,
+	type TermRequest,
+	taxonomyConverter,
+} from "./links.js";
+import {
 	booleanConverter,
 	type ConversionCode,
 	checkRules,
@@ -31,6 +43,9 @@ export const SOURCE_ID_FIELD = "flux_source_id";
 export const SITE_TIMEZONE = "site";
 
 const SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
+/** EmDash's taxonomy name rule (`createTaxonomyDefBody`, src/api/schemas/taxonomies.ts:18-31). */
+const TAXONOMY_NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
+const MAX_TAXONOMIES = 20;
 const MAX_KEY_LENGTH = 256;
 const MAX_SLUG_LENGTH = 200;
 
@@ -52,6 +67,7 @@ const tokens = z
 	)
 	.min(1)
 	.max(50);
+const separator = z.string().min(1).max(10);
 const optionMap = z
 	.record(z.string().min(1).max(200), z.string().min(1).max(200))
 	.refine((m) => Object.keys(m).length <= 1000, { message: "map takes at most 1,000 entries" });
@@ -127,7 +143,7 @@ const fieldMapping = z.discriminatedUnion("type", [
 			type: z.literal("multiSelect"),
 			map: optionMap.optional(),
 			ignoreCase: z.boolean().optional(),
-			separator: z.string().min(1).max(10).optional(),
+			separator: separator.optional(),
 		})
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
@@ -139,8 +155,40 @@ const fieldMapping = z.discriminatedUnion("type", [
 		.object({ ...valueSource, type: z.literal("slug") })
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("reference"),
+			match: z.enum(["id", "slug", "key"]).optional(),
+			separator: separator.optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
 ]);
 const valueMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
+
+const taxonomyMapping = z
+	.object({
+		...valueSource,
+		match: z.enum(["slug", "label"]).optional(),
+		separator: separator.optional(),
+		hierarchy: separator.optional(),
+		create: z.boolean().optional(),
+	})
+	.strict()
+	.refine(hasOneSource, ONE_SOURCE)
+	.refine((m) => (m.hierarchy ?? DEFAULT_HIERARCHY) !== (m.separator ?? DEFAULT_SEPARATOR), {
+		message: "hierarchy must differ from separator",
+	});
+
+const bylinesMapping = z
+	.object({
+		...valueSource,
+		match: z.enum(["slug", "name"]).optional(),
+		separator: separator.optional(),
+	})
+	.strict()
+	.refine(hasOneSource, ONE_SOURCE);
 
 /**
  * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
@@ -181,16 +229,52 @@ export const templateSchema = z
 				}
 			}
 		}),
+		/** Terms to assign, by taxonomy name; each replaces the entry's terms of that taxonomy. */
+		taxonomies: z
+			.record(z.string(), taxonomyMapping)
+			.superRefine((taxonomies, ctx) => {
+				const names = Object.keys(taxonomies);
+				if (names.length > MAX_TAXONOMIES) {
+					ctx.addIssue({
+						code: "custom",
+						message: `Map at most ${MAX_TAXONOMIES} taxonomies`,
+					});
+				}
+				for (const name of names) {
+					if (!TAXONOMY_NAME_RE.test(name)) {
+						ctx.addIssue({
+							code: "custom",
+							message: `Invalid taxonomy name "${name}"`,
+							path: [name],
+						});
+					}
+				}
+			})
+			.optional(),
+		/** Existing bylines to credit, in order; replaces the entry's bylines. */
+		bylines: bylinesMapping.optional(),
 	})
 	.strict();
 
 export type Template = z.infer<typeof templateSchema>;
 export type FieldMapping = Template["fields"][string];
 export type MappingType = FieldMapping["type"];
+export type TaxonomyMapping = NonNullable<Template["taxonomies"]>[string];
+export type BylinesMapping = NonNullable<Template["bylines"]>;
 
-export type { JsonValue, TargetField };
+export type { JsonValue, LinkRequests, TargetField, TaxonomySnapshot, TermRequest };
 export type FieldValue = string | number | boolean | string[] | JsonValue | null;
-export type MappedRecord = { key: string; slug?: string; data: Record<string, FieldValue> };
+/**
+ * One record after the template: the key, the slug, the field values, and the link requests
+ * (reference fields, taxonomies, bylines) when the template maps any. Reference fields are kept
+ * out of `data`.
+ */
+export type MappedRecord = {
+	key: string;
+	slug?: string;
+	data: Record<string, FieldValue>;
+	links?: LinkRequests;
+};
 export type ValueErrorCode =
 	| "filter_error"
 	| "filter_not_boolean"
@@ -201,7 +285,8 @@ export type ValueErrorCode =
 	| "invalid_date"
 	| "empty_slug"
 	| ConversionCode
-	| RuleCode;
+	| RuleCode
+	| LinkErrorCode;
 export type ValueError = { field: string; code: ValueErrorCode; message: string };
 
 export function slugify(s: string): string {
@@ -275,7 +360,16 @@ export function fieldConverter(
 				target?.type ?? null,
 			);
 		}
+		case "reference":
+			return referenceConverter(mapping, target);
 	}
+}
+
+/** A link mapping read from `from` or `expr` and converted to lookup requests. */
+export interface LinkReader<T> {
+	readonly from: string | undefined;
+	readonly expr: CompiledExpression | null;
+	readonly convert: (raw: unknown) => LinkConverted<T>;
 }
 
 /** A template with its expressions parsed once, for every record of a batch. */
@@ -292,6 +386,10 @@ export interface CompiledTemplate {
 	readonly converters: ReadonlyMap<string, FieldConverter>;
 	/** The job's target field snapshot; null for jobs created before M4a (no field rules). */
 	readonly targets: Readonly<Record<string, TargetField>> | null;
+	/** Each mapped taxonomy's reader, by taxonomy name. */
+	readonly taxonomies: ReadonlyMap<string, LinkReader<TermRequest>>;
+	/** The bylines reader, or null when the template maps no bylines. */
+	readonly bylines: LinkReader<string> | null;
 }
 
 /** What a job knows about its target fields; absent on jobs created before M4a. */
@@ -299,6 +397,8 @@ export interface CompileContext {
 	targets?: Readonly<Record<string, TargetField>> | undefined;
 	/** The site timezone stored on the job; `UTC` when absent. */
 	siteTimezone?: string | undefined;
+	/** The mapped taxonomies as they were at job creation (M4b); flat when absent. */
+	taxonomies?: Readonly<Record<string, TaxonomySnapshot>> | undefined;
 }
 
 /**
@@ -331,8 +431,37 @@ export function compileTemplate(
 			fieldConverter(mapping, targets?.[name] ?? null, context.siteTimezone ?? "UTC"),
 		);
 	}
+	const taxonomies = new Map<string, LinkReader<TermRequest>>();
+	for (const [name, mapping] of Object.entries(t.taxonomies ?? {})) {
+		taxonomies.set(name, {
+			from: mapping.from,
+			expr: compile(`taxonomies.${name}.expr`, mapping.expr),
+			convert: taxonomyConverter(mapping, context.taxonomies?.[name] ?? null),
+		});
+	}
+	const bylines =
+		t.bylines === undefined
+			? null
+			: {
+					from: t.bylines.from,
+					expr: compile("bylines.expr", t.bylines.expr),
+					convert: bylinesConverter(t.bylines),
+				};
 	if (problems.length > 0) return { ok: false, problems };
-	return { ok: true, compiled: { template: t, filter, key, slug, fields, converters, targets } };
+	return {
+		ok: true,
+		compiled: {
+			template: t,
+			filter,
+			key,
+			slug,
+			fields,
+			converters,
+			targets,
+			taxonomies,
+			bylines,
+		},
+	};
 }
 
 function kindOf(value: unknown): string {
@@ -368,9 +497,10 @@ const FAILED = Symbol("failed");
 
 /**
  * Applies the template to one record value (a CSV row object, a JSON value, an XML object): reads
- * the key, the slug and each field from `from` or `expr` and converts them, collecting every
- * error. An expression result goes through the same conversion as a path value, and `undefined`
- * reads as a missing path. Run `filterRecord` first.
+ * the key, the slug, each field, each taxonomy and the bylines from `from` or `expr` and converts
+ * them, collecting every error. An expression result goes through the same conversion as a path
+ * value, and `undefined` reads as a missing path. Reference fields and the other links go into
+ * `links`, as lookup requests. Run `filterRecord` first.
  */
 export async function applyTemplate(
 	c: CompiledTemplate,
@@ -432,6 +562,7 @@ export async function applyTemplate(
 	}
 
 	const data: Record<string, FieldValue> = {};
+	const links: LinkRequests = {};
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
@@ -443,19 +574,50 @@ export async function applyTemplate(
 		const target = c.targets?.[field];
 		const broken = target === undefined ? [] : checkRules(result.value, target);
 		for (const e of broken) errors.push({ field, ...e });
-		if (broken.length === 0) data[field] = result.value;
+		if (broken.length > 0) continue;
+		if (mapping.type === "reference") {
+			links.references ??= {};
+			links.references[field] = result.value as string[] | null;
+		} else data[field] = result.value;
+	}
+	for (const [name, reader] of c.taxonomies) {
+		const field = `taxonomies.${name}`;
+		const raw = await read(field, reader.from, reader.expr);
+		if (raw === FAILED) continue;
+		const result = reader.convert(raw);
+		if (!result.ok) errors.push({ field, code: result.code, message: result.message });
+		else {
+			links.taxonomies ??= {};
+			links.taxonomies[name] = result.value;
+		}
+	}
+	if (c.bylines !== null) {
+		const raw = await read("bylines", c.bylines.from, c.bylines.expr);
+		if (raw !== FAILED) {
+			const result = c.bylines.convert(raw);
+			if (!result.ok) errors.push({ field: "bylines", code: result.code, message: result.message });
+			else links.bylines = result.value;
+		}
 	}
 
 	if (errors.length > 0) return { ok: false, errors };
-	return { ok: true, value: slug === undefined ? { key, data } : { key, slug, data } };
+	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
+	if (Object.keys(links).length > 0) mapped.links = links;
+	return { ok: true, value: mapped };
 }
 
 /**
- * Every source path the template reads: key, slug and field `from`s, without duplicates.
- * Expressions are not analysed for the paths they read.
+ * Every source path the template reads: key, slug, field, taxonomy and bylines `from`s, without
+ * duplicates. Expressions are not analysed for the paths they read.
  */
 export function templatePaths(t: Template): string[] {
-	const froms = [t.key.from, t.slug?.from, ...Object.values(t.fields).map((m) => m.from)];
+	const froms = [
+		t.key.from,
+		t.slug?.from,
+		...Object.values(t.fields).map((m) => m.from),
+		...Object.values(t.taxonomies ?? {}).map((m) => m.from),
+		t.bylines?.from,
+	];
 	return [...new Set(froms.filter((path): path is string => path !== undefined))];
 }
 
@@ -513,6 +675,7 @@ export const COMPATIBLE: Record<MappingType, string[]> = {
 	multiSelect: ["multiSelect"],
 	json: ["json"],
 	slug: ["slug", "string"],
+	reference: ["reference"],
 };
 
 /** Whether `value` names one of `options`, as the select matching would find it. */
