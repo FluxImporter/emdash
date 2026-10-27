@@ -199,10 +199,10 @@ Answered on 2026-10-08 against `emdash@1.2.0`; details and evidence in
 Added 2026-10-27. Milestone 4 is delivered in five parts, each with its own spec, plan and review,
 in dependency order. Each part ends with unit and integration tests for its field types.
 
-| Part | Scope |
-| --- | --- |
-| **M4a** ([spec](./2026-10-27-flux-import-m4a-scalar-fields-design.md)) | Scalar field types with no external objects: boolean, select and multiSelect, date with site or IANA timezone (and calendar dates into text fields), number and integer with locale separators, json, custom slug fields; field-rule checks before write; type-aware diff; additive `schema/apply` route |
-| M4b | Taxonomy paths, references and bylines: term lookup by slug or `parent/child` path with optional creation, assigned through the content write's `taxonomies`; reference fields by entry ID, slug or source key (`references` for relation-bound fields); existing bylines only, by slug or exact name, through `bylines` |
-| M4c | Media from URL into image and file fields: fetch through the M3c fetcher and SSRF guard, `maxUploadSize`, content-hash dedupe via `handleMediaUpload`, alt text, per-job URL-to-media map |
-| M4d | HTML and Markdown to Portable Text, with unknown markup reported per record, and image URLs in Portable Text rewritten to media from M4c |
-| M4e | Locales and translation links: one template per locale, `translationOf` resolved from another locale's source key, non-translatable fields left to EmDash's sync |
+| Part | Scope | Status |
+| --- | --- | --- |
+| **M4a** ([spec](./2026-10-27-flux-import-m4a-scalar-fields-design.md)) | Scalar field types with no external objects: boolean, select and multiSelect, date with site or IANA timezone (and calendar dates into text fields), number and integer with locale separators, json, custom slug fields; field-rule checks before write; type-aware diff; additive `schema/apply` route | Done ([review](../notes/2026-10-27-m4a-review.md)) |
+| M4b | Taxonomy paths, references and bylines: term lookup by slug or `parent/child` path with optional creation, assigned through the content write's `taxonomies`; reference fields by entry ID, slug or source key (`references` for relation-bound fields); existing bylines only, by slug or exact name, through `bylines` | Planned |
+| M4c | Media from URL into image and file fields: fetch through the M3c fetcher and SSRF guard, `maxUploadSize`, content-hash dedupe via `handleMediaUpload`, alt text, per-job URL-to-media map | Planned |
+| M4d | HTML and Markdown to Portable Text, with unknown markup reported per record, and image URLs in Portable Text rewritten to media from M4c | Planned |
+| M4e | Locales and translation links: one template per locale, `translationOf` resolved from another locale's source key, non-translatable fields left to EmDash's sync | Planned |
