@@ -5,7 +5,9 @@ import {
 	type ContentPort,
 	ContentWriteError,
 	type EntrySnapshot,
+	type GetOptions,
 	type KvCollection,
+	type LinkWrites,
 	type LookupPort,
 	SourceMissingError,
 	type SourcePort,
@@ -106,6 +108,10 @@ type StoredEntry = {
 	data: Record<string, unknown>;
 	rev: number;
 	pendingPublish: boolean;
+	/** Term slugs by taxonomy, entry IDs by reference field, byline credits: as written. */
+	taxonomies: Record<string, string[]>;
+	references: Record<string, string[]>;
+	bylines: { bylineId: string; roleLabel: string | null }[];
 };
 
 export class FakeContent implements ContentPort {
@@ -117,13 +123,17 @@ export class FakeContent implements ContentPort {
 	afterWrite: (id: string) => void = () => {};
 	/** Return a ContentWriteError to make a write with this data fail. */
 	failWrite: (data: Record<string, unknown>) => ContentWriteError | null = () => null;
+	/** A byline's slug, for read-back; `makeDeps` answers from its `FakeLookups`. */
+	bylineSlug: (id: string) => string = (id) => id;
+	/** Every write's links, as given. */
+	readonly linkWrites: LinkWrites[] = [];
 	/** Return a reason to make publishing this entry fail. */
 	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
 	/** Called at the start of publish; throw from it to simulate a crash before publishing. */
 	beforePublish: (id: string) => void = () => {};
 	private next = 0;
 
-	private snap(e: StoredEntry): EntrySnapshot {
+	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
 			id: e.id,
 			rev: String(e.rev),
@@ -131,13 +141,29 @@ export class FakeContent implements ContentPort {
 			data: structuredClone(e.data),
 			group: e.id,
 			pendingPublish: e.pendingPublish,
+			...(options.references
+				? {
+						references: Object.fromEntries(
+							Object.entries(e.references).map(([f, ids]) => [
+								f,
+								ids.map((id) => ({ group: id, id })),
+							]),
+						),
+					}
+				: {}),
+			bylines: e.bylines.map((b) => ({
+				group: b.bylineId,
+				id: b.bylineId,
+				slug: this.bylineSlug(b.bylineId),
+				roleLabel: b.roleLabel,
+			})),
 		};
 	}
-	async get(collection: string, locale: string, id: string) {
+	async get(collection: string, locale: string, id: string, options?: GetOptions) {
 		const e = this.entries.get(id);
-		return e && e.collection === collection && e.locale === locale ? this.snap(e) : null;
+		return e && e.collection === collection && e.locale === locale ? this.snap(e, options) : null;
 	}
-	async findBySourceId(collection: string, locale: string, sourceId: string) {
+	async findBySourceId(collection: string, locale: string, sourceId: string, options?: GetOptions) {
 		this.calls.push(`find:${sourceId}`);
 		for (const e of this.entries.values()) {
 			if (
@@ -145,24 +171,38 @@ export class FakeContent implements ContentPort {
 				e.locale === locale &&
 				e.data.flux_source_id === sourceId
 			) {
-				return this.snap(e);
+				return this.snap(e, options);
 			}
 		}
 		return null;
 	}
+	/** Writes the links given; each replaces that link's value. */
+	private writeLinks(e: StoredEntry, input: LinkWrites) {
+		const links: LinkWrites = {
+			...(input.taxonomies ? { taxonomies: input.taxonomies } : {}),
+			...(input.references ? { references: input.references } : {}),
+			...(input.bylines ? { bylines: input.bylines } : {}),
+		};
+		this.linkWrites.push(structuredClone(links));
+		Object.assign(e.taxonomies, structuredClone(input.taxonomies ?? {}));
+		Object.assign(e.references, structuredClone(input.references ?? {}));
+		if (input.bylines) e.bylines = structuredClone(input.bylines);
+	}
 	async isLocked(_c: string, _l: string, id: string) {
 		return this.locked.has(id);
 	}
-	async create(input: {
-		collection: string;
-		locale: string;
-		slug?: string;
-		data: Record<string, unknown>;
-	}) {
+	async create(
+		input: {
+			collection: string;
+			locale: string;
+			slug?: string;
+			data: Record<string, unknown>;
+		} & LinkWrites,
+	) {
 		const failure = this.failWrite(input.data);
 		if (failure) throw failure;
 		const id = `e${++this.next}`;
-		this.entries.set(id, {
+		const entry: StoredEntry = {
 			id,
 			collection: input.collection,
 			locale: input.locale,
@@ -170,27 +210,38 @@ export class FakeContent implements ContentPort {
 			data: structuredClone(input.data),
 			rev: 1,
 			pendingPublish: true,
-		});
+			taxonomies: {},
+			references: {},
+			bylines: [],
+		};
+		this.writeLinks(entry, input);
+		this.entries.set(id, entry);
 		this.calls.push(`create:${id}`);
 		this.afterWrite(id);
 		return { id, rev: "1" };
 	}
-	async update(input: {
-		id: string;
-		rev: string;
-		slug?: string;
-		data: Record<string, unknown>;
-	}): Promise<WriteResult> {
+	async update(
+		input: {
+			id: string;
+			rev: string;
+			slug?: string;
+			data?: Record<string, unknown>;
+		} & LinkWrites,
+	): Promise<WriteResult> {
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
-		const failure = this.failWrite(input.data);
+		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
-		e.data = { ...e.data, ...structuredClone(input.data) };
+		e.data = { ...e.data, ...structuredClone(input.data ?? {}) };
 		if (input.slug !== undefined) e.slug = input.slug;
+		this.writeLinks(e, input);
 		e.rev++;
-		e.pendingPublish = true;
+		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
+		if (input.data !== undefined || input.slug !== undefined || input.references) {
+			e.pendingPublish = true;
+		}
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
 		return { ok: true, rev: String(e.rev) };
@@ -216,15 +267,13 @@ export class FakeContent implements ContentPort {
 type StoredTerm = TermInfo & { taxonomy: string; locale: string };
 
 /**
- * In-memory `LookupPort`: terms and bylines added by tests (a term's group is its ID), entries
- * from the `FakeContent` (an entry's group is its ID), and entry terms set by tests.
+ * In-memory `LookupPort`: terms and bylines added by tests (a term's group is its ID), and
+ * entries and entry terms from the `FakeContent` (an entry's group is its ID).
  */
 export class FakeLookups implements LookupPort {
 	readonly defs: TaxonomyDef[] = [];
 	readonly storedTerms: StoredTerm[] = [];
 	readonly storedBylines: (BylineRef & { locale: string })[] = [];
-	/** Entry terms by entry ID: term groups by taxonomy. */
-	readonly assigned = new Map<string, Record<string, string[]>>();
 	readonly calls: string[] = [];
 	/** Return an error to make creating this term fail. */
 	failCreate: (taxonomy: string, input: { label: string; slug?: string }) => Error | null = () =>
@@ -294,9 +343,21 @@ export class FakeLookups implements LookupPort {
 		return this.addTerm(taxonomy, slug, input.label, parentSlug, input.locale);
 	}
 
+	/** The groups of the term slugs the `FakeContent` entry was given, by taxonomy. */
 	async entryTerms(_collection: string, entryId: string) {
 		this.calls.push(`entryTerms:${entryId}`);
-		return structuredClone(this.assigned.get(entryId) ?? {});
+		const e = this.content.entries.get(entryId);
+		const groups: Record<string, string[]> = {};
+		for (const [taxonomy, slugs] of Object.entries(e?.taxonomies ?? {})) {
+			if (slugs.length === 0) continue;
+			groups[taxonomy] = slugs.map((slug) => {
+				const term = this.storedTerms.find(
+					(t) => t.taxonomy === taxonomy && t.locale === e?.locale && t.slug === slug,
+				);
+				return term?.group ?? `unknown:${slug}`;
+			});
+		}
+		return groups;
 	}
 
 	/** Pages of two, so tests see the cursor. */
@@ -340,12 +401,14 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 	const clock = opts.clock ?? { t: Date.parse("2026-10-07T10:00:00Z") };
 	let id = 0;
 	const content = new FakeContent();
+	const lookups = new FakeLookups(content);
+	content.bylineSlug = (id) => lookups.storedBylines.find((b) => b.id === id)?.slug ?? id;
 	const deps = {
 		jobs: new MemoryKv<Job>(),
 		records: new MemoryKv<RecordRow>(),
 		links: new MemoryKv<LinkRow>(),
 		content,
-		lookups: new FakeLookups(content),
+		lookups,
 		source: new FakeSource(),
 		now: () => clock.t,
 		newId: () => `id${++id}`,
