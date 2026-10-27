@@ -166,7 +166,8 @@ New `ValueErrorCode`s: `term_not_found`, `term_path_mismatch`, `ambiguous_term`,
   into an unbound reference field (pointing to the docs on binding), or into a field whose target
   collection does not exist.
 - `match: "key"` when the target collection has no `flux_source_id` field ("no entries were
-  imported into it").
+  imported into it"), unless the target is the job's own collection (the job adds the field on its
+  first real batch, so a self-referencing first import is allowed).
 - The M4a `storageless` problem now applies only to non-reference mappings.
 - A `taxonomies` name that has no definition in any locale, or whose definition does not list the
   collection in `collections`. EmDash itself does not check attachment on content writes (F2).
