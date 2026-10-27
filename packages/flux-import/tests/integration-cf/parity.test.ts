@@ -15,6 +15,15 @@ import {
 	postsStored,
 	postsTemplate,
 } from "../fixtures/links.js";
+import {
+	createMediaSchema,
+	GREEN_JPEG,
+	largePng,
+	MANUAL_PDF,
+	mediaCsv,
+	mediaTemplate,
+	type StoredMedia,
+} from "../fixtures/media.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
@@ -314,6 +323,65 @@ describe("workerd parity (D1, R2)", () => {
 		expect((await importLinked(POSTS_CSV, postsTemplate(n))).counters).toMatchObject({
 			unchanged: 3,
 		});
+	});
+
+	it("imports M4c media into R2, re-runs unchanged, and refuses a file over the Workers cap", async () => {
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			await createMediaSchema(client, "cf_media");
+			feeds.feeds.set("/photo.jpg", { body: GREEN_JPEG, contentType: "image/jpeg" });
+			feeds.feeds.set("/manual.pdf", { body: MANUAL_PDF, contentType: "application/pdf" });
+			// One byte over WORKERS_MEDIA_MAX_BYTES (5 MiB), refused by its Content-Length.
+			feeds.feeds.set("/huge.png", {
+				body: largePng(5 * 1024 * 1024 + 1),
+				contentType: "image/png",
+			});
+			const csv = mediaCsv([
+				["C1", "Chair", feeds.url("/photo.jpg"), "A chair", feeds.url("/manual.pdf"), ""],
+				["C2", "Huge", feeds.url("/huge.png"), "", "", ""],
+			]);
+			const importMedia = async () => {
+				const { uploadId } = await client.upload(csv);
+				const job = await client.plugin("jobs/create", {
+					uploadId,
+					template: mediaTemplate("cf_media"),
+					dryRun: false,
+				});
+				const done = await client.runToEnd(job.id);
+				return { done, rows: await client.records(done.id) };
+			};
+			const first = await importMedia();
+			expect(first.done.counters).toMatchObject({ created: 1, failed: 1 });
+			expect(first.rows[1]?.errors).toEqual([
+				{
+					field: "photo",
+					code: "media_too_large",
+					message: `The file is larger than the limit of ${5 * 1024 * 1024} bytes`,
+				},
+			]);
+			const entry = (await byKey("cf_media")).get("C1")!;
+			const photo = entry.data.photo as StoredMedia;
+			expect(photo).toMatchObject({
+				filename: "photo.jpg",
+				mimeType: "image/jpeg",
+				width: 4,
+				height: 3,
+				alt: "A chair",
+			});
+			expect(photo.blurhash).toEqual(expect.any(String));
+			const manual = entry.data.manual as StoredMedia;
+			const file = await client.raw("GET", `/_emdash/api/media/file/${manual.meta.storageKey}`);
+			expect(file.headers.get("content-type")).toBe("application/pdf");
+			expect(new Uint8Array(await file.arrayBuffer())).toEqual(MANUAL_PDF);
+			const requests = feeds.requests.length;
+			const again = await importMedia();
+			expect(again.done.counters).toMatchObject({ unchanged: 1, failed: 1 });
+			// Only the refused file is requested again.
+			expect(feeds.requests.slice(requests).map((r) => r.path)).toEqual(["/huge.png"]);
+		} finally {
+			await feeds.stop();
+		}
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {
