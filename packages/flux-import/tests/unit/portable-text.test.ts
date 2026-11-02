@@ -9,7 +9,10 @@ import {
 	type PortableTextFormat,
 	type PortableTextOptions,
 	parseHtml,
+	portableTextBytes,
+	renderMarkdown,
 	safeHref,
+	utf8Length,
 } from "../../src/engine/portable-text.js";
 
 const HTML: PortableTextOptions = {
@@ -19,8 +22,8 @@ const HTML: PortableTextOptions = {
 	imageErrors: "drop",
 	unknownMarkup: "warn",
 };
-const convert = (text: string, options: Partial<PortableTextOptions> = {}) =>
-	convertPortableText(text, { ...HTML, ...options });
+const convert = (text: string, options: Partial<PortableTextOptions> = {}, budget?: number) =>
+	convertPortableText(text, { ...HTML, ...options }, budget);
 const markdown = (text: string) => convert(text, { format: "markdown" });
 
 /** Each block as one line: `style list level: text`, `image #slot`, `code lang: text`, `break`. */
@@ -43,6 +46,10 @@ const span = (key: string, text: string, marks: string[] = []) => ({
 });
 
 const LIMIT = 512 * 1024;
+const MARKDOWN_LIMIT = 128 * 1024;
+const TOO_LARGE = [
+	{ code: "portable_text_too_large", message: "The record's Portable Text is larger than 1 MiB" },
+];
 /** Input of about `bytes` characters: `prefix`, then `unit` repeated. */
 const sized =
 	(unit: string, prefix = "") =>
@@ -246,6 +253,28 @@ describe("convertPortableText: unknown and removed markup", () => {
 		]);
 	});
 
+	it("sums the markup issues past the 19th in one neutral issue, whatever their kind", () => {
+		const tags = Array.from({ length: 19 }, (_, i) => `<x-t${i}>a</x-t${i}>`).join("");
+		const links = Array.from({ length: 5 }, (_, i) => `<a href="s${i}x:y">l</a>`).join("");
+		for (const unknownMarkup of ["warn", "fail"] as const) {
+			const converted = convert(`<p>${tags}${links}</p>`, { unknownMarkup });
+			const issues = unknownMarkup === "warn" ? converted.warnings : converted.errors;
+			expect(issues).toHaveLength(20);
+			expect(issues[19]).toEqual({ code: "unknown_markup", message: "5 more markup issues" });
+		}
+	});
+
+	it("shortens a refused scheme in the link_dropped message", () => {
+		const scheme = `s${"a".repeat(2000)}`;
+		const converted = convert(`<a href="${scheme}:x">l</a>`);
+		expect(converted.warnings).toEqual([
+			{
+				code: "link_dropped",
+				message: `Kept the text of 1 link without the address: the scheme ${scheme.slice(0, 39)}… is not allowed`,
+			},
+		]);
+	});
+
 	it("fails unknown and removed markup and dropped links with unknownMarkup: fail", () => {
 		const converted = convert(
 			'<table><tr><td>t</td></tr></table><script>x</script><a href="javascript:x">j</a>',
@@ -404,6 +433,30 @@ describe("convertPortableText: images", () => {
 		expect(failed.warnings).toEqual([]);
 	});
 
+	it("reports at most 19 images with a bad URL per field, and sums the rest", () => {
+		const html = sized("<img src=a>")(LIMIT);
+		const failed = convert(html, { imageErrors: "fail" });
+		expect(failed.errors).toHaveLength(20);
+		expect(failed.errors[0]).toEqual({
+			code: "invalid_media_url",
+			message: "a: A relative URL needs the mapping's baseUrl",
+		});
+		const count = Math.floor(LIMIT / "<img src=a>".length);
+		expect(failed.errors[19]).toEqual({
+			code: "invalid_media_url",
+			message: `${count - 19} more images with an invalid URL`,
+		});
+		const dropped = convert(html);
+		expect(dropped.errors).toEqual([]);
+		expect(dropped.warnings).toHaveLength(20);
+		expect(dropped.warnings[19]).toEqual({
+			code: "image_dropped",
+			message: `invalid_media_url: ${count - 19} more images with an invalid URL`,
+		});
+		const message = convert(`<img src="/${"a".repeat(3000)}">`).warnings[0]?.message ?? "";
+		expect(message.length).toBeLessThan(300);
+	});
+
 	it("gives a figure's caption to its one image, and keeps it as a paragraph otherwise", () => {
 		const html =
 			'<figure><img src="https://x.test/a.png"><figcaption> Cap <b>tion</b> <script>x</script></figcaption></figure><figure><img src="https://x.test/b.png"><img src="https://x.test/c.png"><figcaption>Two</figcaption></figure><figure><blockquote>q</blockquote><figcaption>said</figcaption></figure>';
@@ -525,7 +578,7 @@ describe("convertPortableText: formats, keys and limits", () => {
 		});
 	});
 
-	it("refuses source text over 512 KiB and rendered Markdown over 2 MiB", () => {
+	it("refuses HTML and text over 512 KiB, Markdown over 128 KiB, and rendered Markdown over 2 MiB", () => {
 		const tooLarge = {
 			draft: null,
 			errors: [{ code: "portable_text_too_large", message: "The text is larger than 512 KiB" }],
@@ -534,14 +587,96 @@ describe("convertPortableText: formats, keys and limits", () => {
 		expect(convert(`<p>${"a".repeat(512 * 1024)}</p>`)).toEqual(tooLarge);
 		// 2 bytes in UTF-8 each: over the limit with half as many characters.
 		expect(convert("é".repeat(256 * 1024 + 1), { format: "text" })).toEqual(tooLarge);
-		expect(convert("é".repeat(256 * 1024), { format: "text" }).errors).toEqual([]);
-		// Each "<" renders as "&lt;": 512 KiB of them is more than 2 MiB of HTML.
-		expect(convert("<".repeat(512 * 1024), { format: "markdown" }).errors).toEqual([
+		expect(convert("é".repeat(256 * 1024), { format: "text" }, Infinity).errors).toEqual([]);
+		const markdownTooLarge = [
+			{ code: "portable_text_too_large", message: "The Markdown is larger than 128 KiB" },
+		];
+		expect(convert("a".repeat(128 * 1024 + 1), { format: "markdown" }).errors).toEqual(
+			markdownTooLarge,
+		);
+		expect(convert("é".repeat(64 * 1024 + 1), { format: "markdown" }).errors).toEqual(
+			markdownTooLarge,
+		);
+		expect(convert("a".repeat(128 * 1024), { format: "markdown" }).errors).toEqual([]);
+		// One reference definition used 43,000 times would render to 87 MB: rendering stops at 2 MiB.
+		const definition = `[a]: https://x.test/${"a".repeat(2000)}\n\n`;
+		const references = sized("[a]", definition)(MARKDOWN_LIMIT);
+		const started = performance.now();
+		expect(convert(references, { format: "markdown" }).errors).toEqual([
 			{
 				code: "portable_text_too_large",
 				message: "The Markdown renders to more than 2 MiB of HTML",
 			},
 		]);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+
+	it("renders Markdown exactly as markdown-it does", () => {
+		const reference = new MarkdownIt("commonmark", { html: true }).enable([
+			"table",
+			"strikethrough",
+		]);
+		const inputs = [
+			"# Title\n\nSome *em* and **strong** ~~gone~~ `code` [a](https://x.test/) ![i](/i.png)",
+			"- one\n- two\n  - nested\n\n1. first\n2. second\n\n> quote\n\n---\n\n```js\nx\n```",
+			"| a | b |\n|---|---|\n| 1 | 2 |\n\n<div>raw <b>html</b></div>\n\nline  \nbreak",
+			"[ref]\n\n[ref]: https://x.test/r 'title'\n\n![alt *x*][ref] <https://auto.test/>",
+			"",
+		];
+		for (const input of inputs) expect(renderMarkdown(input)).toBe(reference.render(input));
+	});
+
+	it("stops building blocks as soon as their JSON passes the record's budget", () => {
+		const cases: [string, PortableTextFormat][] = [
+			[
+				`<h2>T</h2><p>é <a href="https://x.test/">l</a></p><figure><img src="https://x.test/i.png" alt="a"><figcaption>c</figcaption></figure><pre>x</pre><hr><img src="https://x.test/j.png">`,
+				"html",
+			],
+			["one\n\ntwo é\nthree\n\n", "text"],
+			// Spaces trimmed, blank spans and blocks dropped: the open block's estimate stays below.
+			[
+				`<p> ${"a  <b> b </b> <br> <i> </i>c <br>".repeat(50)} </p><p> <b> </b> </p><li> x <br></li>`,
+				"html",
+			],
+			["# a\n\n- b\n\n![c](https://x.test/c.png)", "markdown"],
+		];
+		for (const [text, format] of cases) {
+			const full = convert(text, { format });
+			expect(full.errors).toEqual([]);
+			// The estimate is exact: the JSON with each image's allowance for its item.
+			const bytes = portableTextBytes(full.draft?.blocks ?? []);
+			expect(convert(text, { format }, bytes)).toEqual(full);
+			expect(convert(text, { format }, bytes - 1)).toEqual({
+				draft: null,
+				errors: TOO_LARGE,
+				warnings: [],
+			});
+		}
+		expect(convert('<img src="https://x.test/i.png">').draft?.blocks).toHaveLength(1);
+		expect(portableTextBytes([{ _type: "image", _key: "b0", slot: 0 }])).toBe(
+			utf8Length('[{"_type":"image","_key":"b0","slot":0}]') + 160,
+		);
+		// 512 KiB of paragraphs would be 7 MB of JSON: the walker stops after a few blocks.
+		for (const [text, format] of [
+			[sized("<p>a</p>")(LIMIT), "html"],
+			[sized("a\n\n")(LIMIT), "text"],
+			[sized("a\n\n")(MARKDOWN_LIMIT), "markdown"],
+			// One block of 100,000 spans: the open block counts too.
+			[sized("a<br>")(LIMIT), "html"],
+		] as [string, PortableTextFormat][]) {
+			const stringify = vi.spyOn(JSON, "stringify");
+			expect(convert(text, { format }, 1000).errors).toEqual(TOO_LARGE);
+			expect(stringify.mock.calls.length).toBeLessThan(20);
+			stringify.mockRestore();
+		}
+	});
+
+	it("counts UTF-8 bytes like TextEncoder", () => {
+		for (const text of ["", "abc", "é", "€", "😀", "a\ud800b", "\udc00", "\ud800", "x😀é€"]) {
+			expect(utf8Length(text), JSON.stringify(text)).toBe(
+				new TextEncoder().encode(text).byteLength,
+			);
+		}
 	});
 
 	it("refuses markup that keeps more than 256 elements open, implied ones included", () => {
@@ -580,9 +715,13 @@ describe("convertPortableText: formats, keys and limits", () => {
 		let attributes = "";
 		for (let i = 0; attributes.length < 480 * 1024; i++) attributes += ` ${i.toString(36)}`;
 		const many = `<p${attributes}>x</p>`;
+		// About 22,000 names: Markdown is at most 128 KiB.
+		let fewer = "";
+		for (let i = 0; fewer.length < 120 * 1024; i++) fewer += ` ${i.toString(36)}`;
+		const manyMarkdown = `<p${fewer}>x</p>`;
 		const inputs: [string, PortableTextFormat][] = [
 			[many, "html"],
-			[many, "markdown"],
+			[manyMarkdown, "markdown"],
 			...[
 				`<!-->${many}<!---->`,
 				`<!--->${many}<!---->`,
@@ -597,8 +736,8 @@ describe("convertPortableText: formats, keys and limits", () => {
 				`<p a=<b${attributes}>x`,
 				`<p${attributes.replace(/ /g, "/")}>x`,
 			].map((html): [string, PortableTextFormat] => [html, "html"]),
-			[`<script><x a="</script>\n\n${many}\n`, "markdown"],
-			[`<!-->\n${many}\n<!---->\n`, "markdown"],
+			[`<script><x a="</script>\n\n${manyMarkdown}\n`, "markdown"],
+			[`<!-->\n${manyMarkdown}\n<!---->\n`, "markdown"],
 		];
 		for (const [text, format] of inputs) {
 			const started = performance.now();
@@ -614,12 +753,13 @@ describe("convertPortableText: formats, keys and limits", () => {
 			[sized("</p>", "<ul><li>".repeat(127))(LIMIT), "html"],
 			[sized("<p>Some <b>bold</b> and <a href='/x'>a link</a>.</p>")(LIMIT), "html"],
 			[`${">".repeat(5000)} a`, "markdown"],
-			// 700 nested list levels: about 490 KB.
-			[Array.from({ length: 700 }, (_, i) => `${"  ".repeat(i)}- item`).join("\n"), "markdown"],
+			// 355 nested list levels: about 128 KiB.
+			[Array.from({ length: 355 }, (_, i) => `${"  ".repeat(i)}- item`).join("\n"), "markdown"],
 		];
 		for (const [text, format] of cases) {
 			const started = performance.now();
-			expect(convert(text, { format }).errors).toEqual([]);
+			// Without the JSON budget, which would stop the paragraphs early.
+			expect(convert(text, { format }, Infinity).errors).toEqual([]);
 			expect(performance.now() - started).toBeLessThan(5000);
 		}
 	});
@@ -648,19 +788,21 @@ describe("convertPortableText: formats, keys and limits", () => {
 			],
 		];
 		for (const [name, make, format] of cases) {
+			const limit = format === "markdown" ? MARKDOWN_LIMIT : LIMIT;
 			const time = (bytes: number) => {
 				const text = make(bytes);
 				let best = Number.POSITIVE_INFINITY;
 				for (let run = 0; run < 5; run++) {
 					const started = performance.now();
-					expect(convert(text, { format }).errors, name).toEqual([]);
+					// Without the JSON budget, which would stop the paragraphs early.
+					expect(convert(text, { format }, Infinity).errors, name).toEqual([]);
 					best = Math.min(best, performance.now() - started);
 				}
 				expect(best, name).toBeLessThan(5000);
 				return best;
 			};
-			const small = time(LIMIT / 4);
-			const large = time(LIMIT);
+			const small = time(limit / 4);
+			const large = time(limit);
 			// Below 10 ms, timer noise dominates the ratio.
 			expect(large / Math.max(small, 10), name).toBeLessThan(10);
 		}
@@ -802,7 +944,7 @@ describe("convertPortableText: Markdown", () => {
 	});
 
 	it("fails the record, not the batch, when a parser throws", () => {
-		vi.spyOn(MarkdownIt.prototype, "render").mockImplementation(() => {
+		vi.spyOn(MarkdownIt.prototype, "parse").mockImplementation(() => {
 			throw new RangeError("Maximum call stack size exceeded");
 		});
 		expect(markdown("# a")).toEqual({

@@ -18,14 +18,35 @@ import type { JsonValue } from "./values.js";
 
 /** `portableText` mappings a template may have, so a record converts at most this many. */
 export const MAX_PORTABLE_TEXT_MAPPINGS = 3;
-/** The source text of one field, in UTF-8 bytes. */
+/** The HTML or plain source text of one field, in UTF-8 bytes. */
 export const MAX_PORTABLE_TEXT_SOURCE_BYTES = 512 * 1024;
+/**
+ * The Markdown source text of one field, in UTF-8 bytes. Smaller than for HTML: `markdown-it`'s
+ * tokens and the HTML it renders take many times the source's memory (512 KiB of `"a\n\n"`
+ * exhausted a 128 MB heap in `render` alone).
+ */
+export const MAX_MARKDOWN_SOURCE_BYTES = 128 * 1024;
+/**
+ * The source text of all of one record's `portableText` fields together, in UTF-8 bytes, checked
+ * before any of them is parsed: the parsed trees of three fields at their own limits do not fit
+ * in a Worker's memory.
+ */
+export const MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES = 512 * 1024;
 /** The HTML `markdown-it` renders for one field, in UTF-8 bytes. */
 export const MAX_RENDERED_MARKDOWN_BYTES = 2 * 1024 * 1024;
 /** The open elements `parse5` may hold at once: its work grows with this depth squared. */
 export const MAX_PORTABLE_TEXT_NESTING = 256;
-/** The Portable Text JSON of one record, over every mapped field, in UTF-8 bytes. */
+/**
+ * The Portable Text JSON of one record, over every mapped field, in UTF-8 bytes. The converter
+ * stops as soon as its running estimate passes what earlier fields left of it, so no field builds
+ * more than this; the exact size is checked again once every field is converted.
+ */
 export const MAX_PORTABLE_TEXT_RECORD_BYTES = 1024 * 1024;
+/**
+ * What an image block grows by once resolution replaces its slot with the media item's `asset`,
+ * `width` and `height` (about 120 bytes), counted for each image in the JSON size.
+ */
+export const IMAGE_BLOCK_ALLOWANCE = 160;
 /** Distinct image URLs in one record's Portable Text. */
 export const MAX_PORTABLE_TEXT_IMAGES = 50;
 export const MAX_LIST_LEVEL = 6;
@@ -61,7 +82,10 @@ export type PortableTextCode =
 
 export type PortableTextIssue = { code: PortableTextCode; message: string };
 
-/** At most this many markup issues per field; the rest are summed in one more. */
+/**
+ * At most this many markup issues per field, and as many invalid image URLs; the rest of each
+ * are summed in one more.
+ */
 const MAX_MARKUP_ISSUES = 19;
 
 /** One distinct image URL of a field; slots index into the field's list. */
@@ -97,6 +121,9 @@ const markdown = new MarkdownIt("commonmark", {
 
 /** Thrown inside `parse5` when the markup is too complex to parse in bounded time. */
 class TooComplex extends Error {}
+
+/** Thrown while building blocks once their estimated JSON passes the record's budget. */
+class TooLarge extends Error {}
 
 type ParentNode = DefaultTreeAdapterTypes.ParentNode;
 type ChildNode = DefaultTreeAdapterTypes.ChildNode;
@@ -223,45 +250,101 @@ export function parseHtml(html: string): DefaultTreeAdapterTypes.DocumentFragmen
 	return parser.getFragment();
 }
 
-function utf8Bytes(text: string): number {
-	return new TextEncoder().encode(text).byteLength;
+/** The UTF-8 length of `text`, without encoding it. A lone surrogate counts 3, as it encodes. */
+export function utf8Length(text: string): number {
+	let bytes = text.length;
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code < 0x80) continue;
+		if (code < 0x800) {
+			bytes += 1;
+			continue;
+		}
+		bytes += 2;
+		// A surrogate pair is 4 bytes for its 2 units.
+		const next = text.charCodeAt(i + 1);
+		if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) i++;
+	}
+	return bytes;
 }
 
 /** Whether `text` is over `limit` UTF-8 bytes; every UTF-16 unit is at least one byte. */
 function overBytes(text: string, limit: number): boolean {
-	return text.length > limit || utf8Bytes(text) > limit;
+	return text.length > limit || utf8Length(text) > limit;
 }
 
 const KIB = 1024;
+
+/** The UTF-8 size of `blocks` as JSON, each image block counted with `IMAGE_BLOCK_ALLOWANCE`. */
+export function portableTextBytes(blocks: readonly DraftBlock[]): number {
+	let images = 0;
+	for (const block of blocks) if (block._type === "image") images++;
+	return utf8Length(JSON.stringify(blocks)) + images * IMAGE_BLOCK_ALLOWANCE;
+}
+
+/** The record's message for Portable Text JSON over `MAX_PORTABLE_TEXT_RECORD_BYTES`. */
+export const RECORD_TOO_LARGE_MESSAGE = `The record's Portable Text is larger than ${MAX_PORTABLE_TEXT_RECORD_BYTES / KIB / KIB} MiB`;
+
+/** The record's message for source text over `MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES`. */
+export const RECORD_SOURCE_TOO_LARGE_MESSAGE = `The record's Portable Text sources are larger than ${MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES / KIB} KiB together`;
+
+/** Why one field's source text is too large to convert, or null when it is not. */
+export function portableTextSourceProblem(
+	text: string,
+	format: PortableTextFormat,
+): PortableTextIssue | null {
+	if (format === "markdown") {
+		return overBytes(text, MAX_MARKDOWN_SOURCE_BYTES)
+			? {
+					code: "portable_text_too_large",
+					message: `The Markdown is larger than ${MAX_MARKDOWN_SOURCE_BYTES / KIB} KiB`,
+				}
+			: null;
+	}
+	return overBytes(text, MAX_PORTABLE_TEXT_SOURCE_BYTES)
+		? {
+				code: "portable_text_too_large",
+				message: `The text is larger than ${MAX_PORTABLE_TEXT_SOURCE_BYTES / KIB} KiB`,
+			}
+		: null;
+}
 
 /**
  * Converts one source value. A missing value, `null`, blank text, or markup that leaves no block
  * is empty (`draft: null`). Anything but text fails `not_scalar` in `applyTemplate` before this
  * runs. Errors from the parsers (a `RangeError` among them) fail `portable_text_failed`.
+ *
+ * `budget` is what the record's earlier Portable Text fields left of
+ * `MAX_PORTABLE_TEXT_RECORD_BYTES`: building stops with `portable_text_too_large` as soon as the
+ * blocks' estimated JSON passes it.
  */
 export function convertPortableText(
 	text: string,
 	options: PortableTextOptions,
+	budget: number = MAX_PORTABLE_TEXT_RECORD_BYTES,
 ): PortableTextConverted {
 	const fail = (code: PortableTextCode, message: string): PortableTextConverted => ({
 		draft: null,
 		errors: [{ code, message }],
 		warnings: [],
 	});
-	if (overBytes(text, MAX_PORTABLE_TEXT_SOURCE_BYTES)) {
-		return fail(
-			"portable_text_too_large",
-			`The text is larger than ${MAX_PORTABLE_TEXT_SOURCE_BYTES / KIB} KiB`,
-		);
+	const source = portableTextSourceProblem(text, options.format);
+	if (source !== null) return fail(source.code, source.message);
+	if (options.format === "text") {
+		try {
+			return { draft: textDraft(text, budget), errors: [], warnings: [] };
+		} catch (e) {
+			if (e instanceof TooLarge) return fail("portable_text_too_large", RECORD_TOO_LARGE_MESSAGE);
+			throw e;
+		}
 	}
-	if (options.format === "text") return { draft: textDraft(text), errors: [], warnings: [] };
-	let html = text;
+	let html: string | null = text;
 	try {
-		if (options.format === "markdown") html = markdown.render(text);
+		if (options.format === "markdown") html = renderMarkdown(text);
 	} catch (e) {
 		return fail("portable_text_failed", `The Markdown could not be converted: ${errorText(e)}`);
 	}
-	if (overBytes(html, MAX_RENDERED_MARKDOWN_BYTES)) {
+	if (html === null || overBytes(html, MAX_RENDERED_MARKDOWN_BYTES)) {
 		return fail(
 			"portable_text_too_large",
 			`The Markdown renders to more than ${MAX_RENDERED_MARKDOWN_BYTES / KIB / KIB} MiB of HTML`,
@@ -275,34 +358,128 @@ export function convertPortableText(
 		return fail("portable_text_failed", `The HTML could not be parsed: ${errorText(e)}`);
 	}
 	try {
-		return new Walker(options).run(fragment);
+		return new Walker(options, budget).run(fragment);
 	} catch (e) {
+		if (e instanceof TooLarge) return fail("portable_text_too_large", RECORD_TOO_LARGE_MESSAGE);
 		return fail("portable_text_failed", `The HTML could not be converted: ${errorText(e)}`);
 	}
+}
+
+/**
+ * The running estimate of a value's JSON size against the record's budget, exact as each block is
+ * finished: the block and one comma or bracket each, and the closing bracket. While a text block
+ * is open, its text and a part of each span's JSON count too, so one long block cannot grow far
+ * past the budget before it ends; the exact size replaces that when it does.
+ */
+class SizeBudget {
+	private bytes = 1;
+	/** The open text block's share, an estimate below its exact size. */
+	private open = 0;
+	constructor(private readonly budget: number) {}
+	add(bytes: number): void {
+		this.bytes += bytes;
+		this.check();
+	}
+	block(block: DraftBlock): void {
+		this.open = 0;
+		this.add(utf8Length(JSON.stringify(block)) + 1);
+	}
+	/** Text or a new span (`OPEN_SPAN_BYTES`) appended to the open block. */
+	grow(bytes: number): void {
+		this.open += bytes;
+		this.check();
+	}
+	/** The open block ended without a block. */
+	drop(): void {
+		this.open = 0;
+	}
+	private check(): void {
+		if (this.bytes + this.open > this.budget) throw new TooLarge();
+	}
+}
+
+/**
+ * What a span counts in the open block's estimate besides its text: less than the 50 bytes of
+ * `{"_type":"span","_key":"b0s0","text":"","marks":[]},`, so that trimmed spaces and dropped
+ * blank spans never make the estimate pass the exact size.
+ */
+const OPEN_SPAN_BYTES = 40;
+
+/**
+ * `markdown.render`, stopping with null as soon as the HTML is longer than
+ * `MAX_RENDERED_MARKDOWN_BYTES` characters: one reference definition can be used thousands of
+ * times, so 128 KiB of Markdown can render to tens of megabytes. The loops are `markdown-it`'s
+ * own `Renderer.render` and `renderInline` (`lib/renderer.mjs`), with the check after each token.
+ * Exported for the tests, which compare it with `render`.
+ */
+export function renderMarkdown(text: string): string | null {
+	const env = {};
+	const tokens = markdown.parse(text, env);
+	const renderer = markdown.renderer;
+	const { rules } = renderer;
+	const options = markdown.options;
+	let html = "";
+	const add = (piece: string): boolean => {
+		html += piece;
+		return html.length <= MAX_RENDERED_MARKDOWN_BYTES;
+	};
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i] as (typeof tokens)[number];
+		if (token.type === "inline") {
+			const children = token.children ?? [];
+			for (let j = 0; j < children.length; j++) {
+				const rule = rules[(children[j] as (typeof children)[number]).type];
+				const piece =
+					rule === undefined
+						? renderer.renderToken(children, j, options)
+						: rule(children, j, options, env, renderer);
+				if (!add(piece)) return null;
+			}
+			continue;
+		}
+		const rule = rules[token.type];
+		const piece =
+			rule === undefined
+				? renderer.renderToken(tokens, i, options)
+				: rule(tokens, i, options, env, renderer);
+		if (!add(piece)) return null;
+	}
+	return html;
 }
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-/** Plain text: paragraphs split on blank lines, single line breaks kept as `\n`. */
-function textDraft(text: string): PortableTextDraft | null {
-	const paragraphs = text
-		.replace(/\r\n?/g, "\n")
-		.split(/\n[ \t]*\n/)
-		.map((p) => p.trim())
-		.filter((p) => p !== "");
-	if (paragraphs.length === 0) return null;
-	const blocks = paragraphs.map((p, i): DraftBlock => {
-		const key = `b${i}`;
-		return {
-			_type: "block",
-			_key: key,
-			style: "normal",
-			children: [{ _type: "span", _key: `${key}s0`, text: p, marks: [] }],
-		};
-	});
-	return { blocks, images: [] };
+/**
+ * Plain text: paragraphs split on blank lines, single line breaks kept as `\n`. Throws
+ * `TooLarge` as soon as the blocks' estimated JSON passes `budget`.
+ */
+function textDraft(text: string, budget: number): PortableTextDraft | null {
+	const size = new SizeBudget(budget);
+	const normalized = text.replace(/\r\n?/g, "\n");
+	const blocks: DraftBlock[] = [];
+	const separator = /\n[ \t]*\n/g;
+	let from = 0;
+	for (;;) {
+		const match = separator.exec(normalized);
+		const end = match === null ? normalized.length : match.index;
+		const paragraph = normalized.slice(from, end).trim();
+		if (paragraph !== "") {
+			const key = `b${blocks.length}`;
+			const block: DraftBlock = {
+				_type: "block",
+				_key: key,
+				style: "normal",
+				children: [{ _type: "span", _key: `${key}s0`, text: paragraph, marks: [] }],
+			};
+			size.block(block);
+			blocks.push(block);
+		}
+		if (match === null) break;
+		from = separator.lastIndex;
+	}
+	return blocks.length === 0 ? null : { blocks, images: [] };
 }
 
 /** Inline elements whose decorator EmDash's editor accepts (spec F9). */
@@ -461,16 +638,15 @@ type TextDraft = {
 type SpanText = { text: string; decorators: readonly string[]; link: number | null };
 type TextOut = { context: BlockContext; spans: SpanText[]; links: LinkTarget[] };
 type Out =
-	| { kind: "text"; block: TextOut }
-	| { kind: "code"; code: string; language: string | null }
-	| { kind: "break" }
-	| {
-			kind: "image";
-			slot: number;
-			alt: string | null;
-			caption: string | null;
-			link: LinkTarget | null;
-	  };
+	/** A finished text, code or break block. */
+	{ kind: "block"; block: DraftBlock } | ImageOut;
+type ImageOut = {
+	kind: "image";
+	slot: number;
+	alt: string | null;
+	caption: string | null;
+	link: LinkTarget | null;
+};
 
 /** What an element's exit restores and finishes. */
 type Exit = {
@@ -496,12 +672,16 @@ function attr(element: Element, name: string): string | null {
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** `text` cut to at most `max` characters, the last one an ellipsis when it is cut. */
+function shortened(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
 /** A URL as messages show it: at most 200 characters. */
 export function shownUrl(url: string): string {
-	return url.length > 200 ? `${url.slice(0, 199)}…` : url;
+	return shortened(url, 200);
 }
-/** A tag name as messages show it. */
-const shownTag = (tag: string) => (tag.length > 40 ? `${tag.slice(0, 39)}…` : tag);
+/** A tag name or URL scheme as messages show it. */
+const shownTag = (tag: string) => shortened(tag, 40);
 
 /** One field's HTML, walked into blocks with an explicit stack. */
 class Walker {
@@ -524,10 +704,28 @@ class Walker {
 	private altCut = 0;
 	/** Images inside `pre` or `figcaption`, which hold only text. */
 	imagesInText = 0;
+	/** The first `MAX_MARKUP_ISSUES` images with a URL that cannot be imported, and their count. */
 	private readonly imageIssues: PortableTextIssue[] = [];
+	private invalidImages = 0;
+	private readonly size: SizeBudget;
 
-	constructor(private readonly options: PortableTextOptions) {
+	constructor(
+		private readonly options: PortableTextOptions,
+		budget: number,
+	) {
 		this.base = options.baseUrl === null ? null : new URL(options.baseUrl);
+		this.size = new SizeBudget(budget);
+	}
+
+	/** The key of the next block. */
+	private key(): string {
+		return `b${this.out.length}`;
+	}
+
+	/** Adds a finished block, counted against the budget first. */
+	private push(block: DraftBlock): void {
+		this.size.block(block);
+		this.out.push({ kind: "block", block });
 	}
 
 	run(fragment: DefaultTreeAdapterTypes.DocumentFragment): PortableTextConverted {
@@ -638,7 +836,7 @@ class Walker {
 				return true;
 			case "hr":
 				this.flush();
-				this.out.push({ kind: "break" });
+				this.push({ _type: "break", _key: this.key(), style: "lineBreak" });
 				return true;
 			case "img":
 				this.image(element);
@@ -708,8 +906,13 @@ class Walker {
 		const last = block.spans[block.spans.length - 1];
 		// The editor ends a span at each hard break, so text after one starts a new span.
 		const joins = last && lastChar(last) !== "\n" && last.link === link;
-		if (joins && sameList(last.decorators, marks)) last.parts.push(text);
-		else block.spans.push({ parts: [text], decorators: marks, link });
+		if (joins && sameList(last.decorators, marks)) {
+			this.size.grow(utf8Length(text));
+			last.parts.push(text);
+		} else {
+			this.size.grow(utf8Length(text) + OPEN_SPAN_BYTES);
+			block.spans.push({ parts: [text], decorators: marks, link });
+		}
 	}
 
 	private trimEnd(block: TextDraft): void {
@@ -732,6 +935,8 @@ class Walker {
 		if (last === undefined) return;
 		this.pending = null;
 		trimSpaces(last);
+		// `\n` is 2 bytes in JSON.
+		this.size.grow(2);
 		last.parts.push("\n");
 	}
 
@@ -743,8 +948,8 @@ class Walker {
 		if (block === null) return;
 		const spans = trimSpans(block.spans);
 		if (spans.length > 0) {
-			this.out.push({ kind: "text", block: { context: block.context, spans, links: block.links } });
-		}
+			this.push(textBlock({ context: block.context, spans, links: block.links }, this.key()));
+		} else this.size.drop();
 	}
 
 	/** The link of an `a` element with `href`, or null: no `href`, or one that is dropped. */
@@ -769,7 +974,12 @@ class Walker {
 		);
 		const classes = `${attr(element, "class") ?? ""} ${inner ? (attr(inner, "class") ?? "") : ""}`;
 		const language = LANGUAGE.exec(classes)?.[1] ?? null;
-		this.out.push({ kind: "code", code, language });
+		this.push({
+			_type: "code",
+			_key: this.key(),
+			code,
+			...(language === null ? {} : { language }),
+		});
 	}
 
 	private caption(element: Element): void {
@@ -786,6 +996,7 @@ class Walker {
 		const one = figure.images.length === 1 && !figure.nested;
 		const only = one ? this.out[figure.images[0] as number] : undefined;
 		if (only?.kind === "image" && only.caption === null) {
+			this.size.add(utf8Length(`,"caption":${JSON.stringify(caption)}`));
 			only.caption = caption;
 			return;
 		}
@@ -802,6 +1013,8 @@ class Walker {
 		if (raw === "") return;
 		const resolved = imageUrl(raw, this.base);
 		if (!resolved.ok) {
+			this.invalidImages++;
+			if (this.imageIssues.length === MAX_MARKUP_ISSUES) return;
 			const message = `${shownUrl(raw)}: ${resolved.message}`;
 			this.imageIssues.push(
 				this.options.imageErrors === "fail"
@@ -823,8 +1036,18 @@ class Walker {
 			this.images.push({ url: resolved.url, alt: alt === "" ? null : alt });
 		}
 		const link = this.links[this.links.length - 1] ?? null;
+		const out: ImageOut = {
+			kind: "image",
+			slot,
+			alt: alt === "" ? null : alt,
+			caption: null,
+			link,
+		};
+		// A caption is counted when its figure ends; the item's fields once resolved, here.
+		const draft = JSON.stringify(imageDraft(out, this.key()));
+		this.size.add(utf8Length(draft) + 1 + IMAGE_BLOCK_ALLOWANCE);
 		this.figures[this.figures.length - 1]?.images.push(this.out.length);
-		this.out.push({ kind: "image", slot, alt: alt === "" ? null : alt, caption: null, link });
+		this.out.push(out);
 	}
 
 	private result(): PortableTextConverted {
@@ -847,14 +1070,9 @@ class Walker {
 		for (const { code, message } of found.slice(0, MAX_MARKUP_ISSUES)) {
 			markup.push({ code, message });
 		}
-		const rest = found.slice(MAX_MARKUP_ISSUES);
-		if (rest.length > 0) {
-			const n = rest.reduce((sum, r) => sum + r.n, 0);
-			markup.push({
-				code: (rest[0] as { code: PortableTextCode }).code,
-				message: `${n} more elements`,
-			});
-		}
+		const rest = found.length - MAX_MARKUP_ISSUES;
+		// The hidden issues may be of any kind, so the summary has one fixed code.
+		if (rest > 0) markup.push({ code: "unknown_markup", message: `${rest} more markup issues` });
 		if (this.altCut > 0) {
 			warnings.push({
 				code: "alt_truncated",
@@ -867,8 +1085,21 @@ class Walker {
 				message: `Left out ${plural(this.imagesInText, "image")} inside <pre> or <figcaption>, which hold only text`,
 			});
 		}
-		for (const issue of this.imageIssues) {
-			(issue.code === "image_dropped" ? warnings : errors).push(issue);
+		const images = this.options.imageErrors === "fail" ? errors : warnings;
+		images.push(...this.imageIssues);
+		const more = this.invalidImages - this.imageIssues.length;
+		if (more > 0) {
+			images.push(
+				this.options.imageErrors === "fail"
+					? {
+							code: "invalid_media_url",
+							message: `${plural(more, "more image")} with an invalid URL`,
+						}
+					: {
+							code: "image_dropped",
+							message: `invalid_media_url: ${plural(more, "more image")} with an invalid URL`,
+						},
+			);
 		}
 		const blocks = this.blocks();
 		return {
@@ -880,28 +1111,20 @@ class Walker {
 
 	/** The blocks as JSON, with deterministic keys: `b<n>`, `b<n>s<m>`, `b<n>l<m>`. */
 	private blocks(): DraftBlock[] {
-		return this.out.map((out, i): DraftBlock => {
-			const key = `b${i}`;
-			if (out.kind === "text") return textBlock(out.block, key);
-			if (out.kind === "break") return { _type: "break", _key: key, style: "lineBreak" };
-			if (out.kind === "code") {
-				return {
-					_type: "code",
-					_key: key,
-					code: out.code,
-					...(out.language === null ? {} : { language: out.language }),
-				};
-			}
-			return {
-				_type: "image",
-				_key: key,
-				slot: out.slot,
-				...(out.alt === null ? {} : { alt: out.alt }),
-				...(out.caption === null ? {} : { caption: out.caption }),
-				...(out.link === null ? {} : { link: linkValue(out.link) }),
-			};
-		});
+		return this.out.map((out, i) => (out.kind === "block" ? out.block : imageDraft(out, `b${i}`)));
 	}
+}
+
+/** An image slot as a draft block; resolution replaces `slot` with the item. */
+function imageDraft(out: ImageOut, key: string): DraftBlock {
+	return {
+		_type: "image",
+		_key: key,
+		slot: out.slot,
+		...(out.alt === null ? {} : { alt: out.alt }),
+		...(out.caption === null ? {} : { caption: out.caption }),
+		...(out.link === null ? {} : { link: linkValue(out.link) }),
+	};
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
@@ -1054,7 +1277,7 @@ export function safeHref(
 		return { ok: false, reason: "it is not a valid URL" };
 	}
 	if (!LINK_SCHEMES.has(url.protocol)) {
-		return { ok: false, reason: `the scheme ${url.protocol} is not allowed` };
+		return { ok: false, reason: `the scheme ${shownTag(url.protocol)} is not allowed` };
 	}
 	if (url.href.length > MAX_HREF_LENGTH) {
 		return { ok: false, reason: `it is longer than ${MAX_HREF_LENGTH} characters` };

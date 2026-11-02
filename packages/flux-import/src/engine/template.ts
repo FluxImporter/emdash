@@ -37,10 +37,16 @@ import {
 	MAX_PORTABLE_TEXT_IMAGES,
 	MAX_PORTABLE_TEXT_MAPPINGS,
 	MAX_PORTABLE_TEXT_RECORD_BYTES,
+	MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES,
 	type PortableTextCode,
 	type PortableTextDraft,
 	type PortableTextOptions,
+	portableTextBytes,
+	portableTextSourceProblem,
+	RECORD_SOURCE_TOO_LARGE_MESSAGE,
+	RECORD_TOO_LARGE_MESSAGE,
 	shownUrl,
+	utf8Length,
 } from "./portable-text.js";
 import type { TaxonomyDef } from "./ports.js";
 import {
@@ -715,6 +721,7 @@ export async function applyTemplate(
 	const links: LinkRequests = {};
 	const media: Record<string, MediaRequest | null> = {};
 	const portableText: Record<string, PortableTextDraft | null> = {};
+	const sources: PortableTextSource[] = [];
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
@@ -730,21 +737,9 @@ export async function applyTemplate(
 		const reader = c.media.get(field);
 		const options = c.portableText.get(field);
 		if (options !== undefined) {
+			// Converted once every field is read, so their sizes are known before any is parsed.
 			const text = result.value as string | null;
-			const converted = text === null ? null : convertPortableText(text, options);
-			for (const e of converted?.errors ?? []) errors.push({ field, ...e });
-			for (const w of converted?.warnings ?? []) warnings.push({ field, ...w });
-			const draft = converted?.draft ?? null;
-			// Markup that leaves no block is empty, as a missing value is.
-			if (
-				draft === null &&
-				text !== null &&
-				target !== undefined &&
-				(converted?.errors.length ?? 0) === 0
-			) {
-				for (const e of checkRules(null, target)) errors.push({ field, ...e });
-			}
-			portableText[field] = draft;
+			sources.push({ field, text, options, target, at: errors.length });
 		} else if (mapping.type === "reference") {
 			links.references ??= {};
 			links.references[field] = result.value as string[] | null;
@@ -769,6 +764,7 @@ export async function applyTemplate(
 			media[field] = { kind: reader.kind, url, alt, refresh: reader.refresh };
 		} else data[field] = result.value;
 	}
+	if (sources.length > 0) convertSources(sources, portableText, errors, warnings);
 	for (const [name, reader] of c.taxonomies) {
 		const field = `taxonomies.${name}`;
 		const raw = await read(field, reader.from, reader.expr);
@@ -800,11 +796,81 @@ export async function applyTemplate(
 	return { ok: true, value: mapped, ...reported };
 }
 
+/** A `portableText` field's source value, and where its errors go in the record's list. */
+type PortableTextSource = {
+	field: string;
+	text: string | null;
+	options: PortableTextOptions;
+	target: TargetField | undefined;
+	/** The length of the record's errors when the field was read. */
+	at: number;
+};
+
+/**
+ * Converts each `portableText` field in template order, each with what the fields before it left
+ * of `MAX_PORTABLE_TEXT_RECORD_BYTES`. Nothing is parsed when a field's source text is over its
+ * own limit, which fails that field, or when the fields' source text is over
+ * `MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES` together, which fails the field that goes over. Each
+ * field's errors are inserted where it was read, so they stay in template order with the other
+ * fields' errors.
+ */
+function convertSources(
+	sources: readonly PortableTextSource[],
+	drafts: Record<string, PortableTextDraft | null>,
+	errors: ValueError[],
+	warnings: ValueWarning[],
+): void {
+	let inserted = 0;
+	const report = (source: PortableTextSource, found: readonly ValueError[]) => {
+		errors.splice(source.at + inserted, 0, ...found);
+		inserted += found.length;
+	};
+	for (const { field } of sources) drafts[field] = null;
+	let total = 0;
+	let tooLarge = false;
+	for (const source of sources) {
+		if (source.text === null) continue;
+		const own = portableTextSourceProblem(source.text, source.options.format);
+		if (own !== null) {
+			report(source, [{ field: source.field, ...own }]);
+			tooLarge = true;
+			continue;
+		}
+		total += utf8Length(source.text);
+		if (total > MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES) {
+			const message = RECORD_SOURCE_TOO_LARGE_MESSAGE;
+			report(source, [{ field: source.field, code: "portable_text_too_large", message }]);
+			tooLarge = true;
+			break;
+		}
+	}
+	if (tooLarge) return;
+	let used = 0;
+	for (const source of sources) {
+		const { field, text, options, target } = source;
+		if (text === null) continue;
+		const converted = convertPortableText(text, options, MAX_PORTABLE_TEXT_RECORD_BYTES - used);
+		const found: ValueError[] = converted.errors.map((e) => ({ field, ...e }));
+		for (const w of converted.warnings) warnings.push({ field, ...w });
+		const draft = converted.draft;
+		// Markup that leaves no block is empty, as a missing value is.
+		if (draft === null && target !== undefined && found.length === 0) {
+			for (const e of checkRules(null, target)) found.push({ field, ...e });
+		}
+		report(source, found);
+		drafts[field] = draft;
+		if (draft !== null) used += portableTextBytes(draft.blocks);
+		// Past the budget, the later fields could only fail too.
+		if (converted.errors.some((e) => e.message === RECORD_TOO_LARGE_MESSAGE)) return;
+	}
+}
+
 /**
  * The per-record limits over every Portable Text field, in template order: at most
  * `MAX_PORTABLE_TEXT_IMAGES` distinct image URLs (the rest are dropped with one `image_dropped`
  * warning per field, or fail `portable_text_limit` with `imageErrors: "fail"`), then at most
- * `MAX_PORTABLE_TEXT_RECORD_BYTES` of JSON (`portable_text_too_large`).
+ * `MAX_PORTABLE_TEXT_RECORD_BYTES` of JSON, each image block counted with
+ * `IMAGE_BLOCK_ALLOWANCE` (`portable_text_too_large`).
  */
 function limitPortableText(
 	c: CompiledTemplate,
@@ -848,17 +914,13 @@ function limitPortableText(
 			errors.push({ field, code: "required", message: "The field is required" });
 		}
 	}
+	// The exact size, as a backstop to the converter's running estimate.
 	let bytes = 0;
-	const encoder = new TextEncoder();
 	for (const [field, draft] of Object.entries(drafts)) {
 		if (draft === null) continue;
-		bytes += encoder.encode(JSON.stringify(draft.blocks)).byteLength;
+		bytes += portableTextBytes(draft.blocks);
 		if (bytes > MAX_PORTABLE_TEXT_RECORD_BYTES) {
-			errors.push({
-				field,
-				code: "portable_text_too_large",
-				message: `The record's Portable Text is larger than ${MAX_PORTABLE_TEXT_RECORD_BYTES / 1024 / 1024} MiB`,
-			});
+			errors.push({ field, code: "portable_text_too_large", message: RECORD_TOO_LARGE_MESSAGE });
 			return;
 		}
 	}

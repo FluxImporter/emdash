@@ -288,7 +288,7 @@ describe("portableText mappings", () => {
 			expect(issues.at(-1)).toEqual({
 				field: "body",
 				code: "unknown_markup",
-				message: "281 more elements",
+				message: "281 more markup issues",
 			});
 		}
 	});
@@ -300,7 +300,8 @@ describe("portableText mappings", () => {
 			b: { from: "b", ...text },
 			c: { from: "c", ...text },
 		});
-		const big = "x".repeat(400_000);
+		// About 100 bytes of JSON for each 3 bytes of source: 400 KB per field.
+		const big = "x\n\n".repeat(4000);
 		expect((await applyTemplate(c, { id: "1", a: big, b: big })).ok).toBe(true);
 		expect(await applyTemplate(c, { id: "1", a: big, b: big, c: big })).toEqual({
 			ok: false,
@@ -312,6 +313,89 @@ describe("portableText mappings", () => {
 				},
 			],
 		});
+	});
+});
+
+describe("portableText source limits", () => {
+	const fields = (format: string) => {
+		const mapping = { type: "portableText", format };
+		return {
+			a: { from: "a", ...mapping },
+			b: { from: "b", ...mapping },
+			c: { from: "c", ...mapping },
+		};
+	};
+
+	it("gives each field's Portable Text what the earlier fields left of 1 MiB", async () => {
+		const c = compiled(fields("text"));
+		const big = "x\n\n".repeat(4000);
+		const result = await applyTemplate(c, { id: "1", a: big, b: big, c: big, d: "y" });
+		expect(result).toMatchObject({ ok: false, errors: [{ field: "c" }] });
+		// A small last field still fits.
+		expect((await applyTemplate(c, { id: "1", a: big, b: big, c: "small" })).ok).toBe(true);
+	});
+
+	it("refuses more than 512 KiB of source over a record's fields before parsing any", async () => {
+		const c = compiled(fields("html"));
+		// Each field fits on its own, and each would warn about its unknown element if parsed.
+		const part = `<x-a>a</x-a>${"a".repeat(200 * 1024)}`;
+		expect(await applyTemplate(c, { id: "1", a: part, b: part, c: part })).toEqual({
+			ok: false,
+			errors: [
+				{
+					field: "c",
+					code: "portable_text_too_large",
+					message: "The record's Portable Text sources are larger than 512 KiB together",
+				},
+			],
+		});
+		const result = await applyTemplate(c, { id: "1", a: part, b: part });
+		expect(result.ok).toBe(true);
+		expect(result.warnings).toHaveLength(2);
+		// UTF-8 bytes are counted: 2 for each "é".
+		const accents = "é".repeat(100 * 1024);
+		expect(await applyTemplate(c, { id: "1", a: accents, b: accents, c: accents })).toMatchObject({
+			ok: false,
+			errors: [{ field: "c", code: "portable_text_too_large" }],
+		});
+	});
+
+	it("refuses a field over its own limit without parsing the others", async () => {
+		const c = compiled({
+			...fields("html"),
+			c: { from: "c", type: "portableText", format: "markdown" },
+		});
+		const result = await applyTemplate(c, {
+			id: "1",
+			a: "<x-a>a</x-a>",
+			c: "a".repeat(128 * 1024 + 1),
+		});
+		expect(result).toEqual({
+			ok: false,
+			errors: [
+				{
+					field: "c",
+					code: "portable_text_too_large",
+					message: "The Markdown is larger than 128 KiB",
+				},
+			],
+		});
+	});
+
+	it("keeps the errors of Portable Text fields in template order with the others", async () => {
+		const c = compiled({
+			n1: { from: "n1", type: "number" },
+			body: { from: "body", type: "portableText", format: "html", unknownMarkup: "fail" },
+			n2: { from: "n2", type: "number" },
+		});
+		const result = await applyTemplate(c, { id: "1", n1: "x", body: "<x-a>a</x-a>", n2: "y" });
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.errors.map((e) => `${e.field}:${e.code}`)).toEqual([
+			"n1:invalid_number",
+			"body:unknown_markup",
+			"n2:invalid_number",
+		]);
 	});
 });
 
