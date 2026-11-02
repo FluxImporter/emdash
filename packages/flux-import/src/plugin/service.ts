@@ -64,7 +64,9 @@ export const WORKERS_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
 export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolean): number {
 	const valid = maxUploadSize !== undefined && Number.isFinite(maxUploadSize) && maxUploadSize > 0;
 	const site = valid ? maxUploadSize : DEFAULT_MAX_UPLOAD_SIZE;
-	return workers ? Math.min(site, WORKERS_MEDIA_MAX_BYTES) : site;
+	const limit = workers ? Math.min(site, WORKERS_MEDIA_MAX_BYTES) : site;
+	// EmDash prechecks the padded base64 size, 4 bytes per 3: a multiple of 3 never trips it.
+	return Math.max(3, Math.floor(limit / 3) * 3);
 }
 
 /** The records one jobs/next call processes on Workers for this job. */

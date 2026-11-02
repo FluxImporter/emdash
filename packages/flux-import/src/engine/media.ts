@@ -322,8 +322,26 @@ export async function obtainMedia(
 	lookup: MediaLookup,
 ): Promise<{ ok: true; item: MediaInfo; downloaded: boolean } | { ok: false; error: LinkError }> {
 	const { field, request, item: hit, row } = lookup;
+	// An item reused for another field must still fit that field.
+	const reuse = (
+		item: MediaInfo,
+	): { ok: true; item: MediaInfo; downloaded: false } | { ok: false; error: LinkError } => {
+		const problem = mediaTypeProblem(
+			item.mimeType,
+			request.kind,
+			ctx.targets[field]?.allowedMimeTypes,
+		);
+		return problem === null
+			? { ok: true, item, downloaded: false }
+			: {
+					ok: false,
+					error: fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`),
+				};
+	};
 	const obtained = cache.mediaObtained.get(lookup.key);
-	if (obtained) return { ok: true, item: obtained, downloaded: false };
+	if (obtained) return reuse(obtained);
+	const failedBefore = cache.mediaFailed.get(lookup.key);
+	if (failedBefore) return { ok: false, error: { ...failedBefore, field } };
 	// A file is refreshed at most once per job: a batch that defers the record's next download
 	// would otherwise download it again, and never get past it.
 	if (hit && (!request.refresh || row?.jobId === ctx.jobId)) {
@@ -355,7 +373,7 @@ export async function obtainMedia(
 					});
 				}
 				cache.mediaObtained.set(lookup.key, hit);
-				return { ok: true, item: hit, downloaded: false };
+				return reuse(hit);
 			}
 			return {
 				ok: false,
@@ -407,9 +425,15 @@ export async function obtainMedia(
 		}
 		return { ok: true, item, downloaded: true };
 	} catch (e) {
-		if (e instanceof MediaError) return { ok: false, error: fieldError(field, e.code, e.message) };
-		if (e instanceof MediaUploadError) return { ok: false, error: uploadError(field, e) };
-		throw e;
+		// A download cut short by the batch's deadline is not the file's fault: the next batch retries.
+		if (e instanceof MediaError && e.deadline && !first) throw new MediaDeferred();
+		let error: LinkError;
+		if (e instanceof MediaError) error = fieldError(field, e.code, e.message);
+		else if (e instanceof MediaUploadError) error = uploadError(field, e);
+		else throw e;
+		// A failing URL shared by many records is fetched once per batch.
+		cache.mediaFailed.set(lookup.key, error);
+		return { ok: false, error };
 	}
 }
 

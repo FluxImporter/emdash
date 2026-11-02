@@ -26,6 +26,8 @@ export type MediaErrorCode =
 
 /** A media problem for one field of a record. Messages never contain header values. */
 export class MediaError extends Error {
+	/** A timeout caused by the caller's deadline, not by the download's own limits. */
+	deadline = false;
 	constructor(
 		readonly code: MediaErrorCode,
 		message: string,
@@ -153,16 +155,18 @@ export function createMediaFetcher(
 			const total = new AbortController();
 			const untilHeaders = new AbortController();
 			const seconds = (ms: number) => Math.ceil(ms / 1000);
-			const totalTimer = setTimeout(
-				() =>
-					total.abort(
-						new UrlSourceError(
-							"FETCH_FAILED",
-							`The download did not finish within ${seconds(totalMs)} s`,
-						),
+			// The caller's deadline, not the 30 s limit, is what ends this download if it is nearer.
+			const deadlineBound = o.deadline - now() < limits.totalMs;
+			let totalFired = false;
+			const totalTimer = setTimeout(() => {
+				totalFired = true;
+				total.abort(
+					new UrlSourceError(
+						"FETCH_FAILED",
+						`The download did not finish within ${seconds(totalMs)} s`,
 					),
-				totalMs,
-			);
+				);
+			}, totalMs);
 			const headersTimer = setTimeout(
 				() =>
 					untilHeaders.abort(
@@ -220,7 +224,11 @@ export function createMediaFetcher(
 					...(lastModified === null ? {} : { lastModified }),
 				};
 			} catch (e) {
-				throw asMediaError(e, signal);
+				const error = asMediaError(e, signal);
+				if (totalFired && deadlineBound && error.code === "media_fetch_failed") {
+					error.deadline = true;
+				}
+				throw error;
 			} finally {
 				clearTimeout(totalTimer);
 				clearTimeout(headersTimer);
@@ -239,6 +247,35 @@ const ascii = (bytes: Uint8Array, at: number, text: string) =>
 	);
 const textOf = (bytes: Uint8Array, from: number, to: number) =>
 	String.fromCharCode(...bytes.subarray(from, to));
+
+/** ISO base media brands of MP4 and 3GPP video; an unknown brand is not guessed at. */
+const MP4_BRANDS = new Set([
+	"isom",
+	"iso2",
+	"iso3",
+	"iso4",
+	"iso5",
+	"iso6",
+	"mp41",
+	"mp42",
+	"mp71",
+	"avc1",
+	"dash",
+	"M4V ",
+	"M4VH",
+	"M4VP",
+	"3gp4",
+	"3gp5",
+	"3gp6",
+	"3gp7",
+	"3ge6",
+	"3ge7",
+	"3gg6",
+	"3g2a",
+	"3g2b",
+	"3g2c",
+	"f4v ",
+]);
 
 /** ISO base media brands that are images (HEIF/AVIF), which `ftyp` alone does not tell apart. */
 const IMAGE_BRANDS: Record<string, string> = {
@@ -278,7 +315,7 @@ export function sniffMime(bytes: Uint8Array): string | null {
 		if (IMAGE_BRANDS[brand]) return IMAGE_BRANDS[brand];
 		if (brand === "qt  ") return "video/quicktime";
 		if (brand === "M4A " || brand === "M4B ") return "audio/mp4";
-		return "video/mp4";
+		return MP4_BRANDS.has(brand) ? "video/mp4" : null;
 	}
 	if (startsWith(bytes, 0, [0xff, 0x0a])) return "image/jxl";
 	if (startsWith(bytes, 0, [0, 0, 0, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a])) {

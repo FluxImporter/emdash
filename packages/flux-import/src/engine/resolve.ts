@@ -148,6 +148,8 @@ export class LookupCache {
 	readonly mediaItems = new Map<string, MediaInfo | null>();
 	/** Items already obtained or refreshed this batch, by media map key: a URL is fetched once. */
 	readonly mediaObtained = new Map<string, MediaInfo>();
+	/** Media failures this batch, by media map key: a failing URL is fetched once. */
+	readonly mediaFailed = new Map<string, LinkError>();
 	/** Media downloads started this batch. */
 	mediaDownloads = 0;
 	/** When this batch's downloads must be done by (epoch ms); `runBatch` sets it. */

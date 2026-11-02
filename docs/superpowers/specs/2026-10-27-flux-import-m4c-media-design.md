@@ -190,6 +190,11 @@ creation with `NOT_CONFIGURED` when storage is missing, as uploads already do.
 - `RecordRow` gains `newMedia?: string[]` (`"photo: https://…"`). It lists URLs downloaded for the
   record (also when the upload deduplicated) or, in a dry run, URLs a real run would download. A
   retried row keeps its earlier entries, as with `newTerms`.
+- Documented behaviour (rewrite): when any data field of an existing entry changes, every mapped
+  media field is rewritten from the library item, so per-use keys an editor added to the stored
+  value (a focal point, or a per-use alt when the template maps no alt) are dropped.
+- Documented behaviour (dry run): a URL repeated across records is listed in each row's
+  `newMedia`, although a real run downloads it once per batch and reuses the item.
 
 ## Batch integration
 

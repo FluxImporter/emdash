@@ -411,6 +411,59 @@ describe("one fetch per URL and batch", () => {
 	});
 });
 
+describe("reuse and failures within a batch", () => {
+	it("checks an item reused for another field against that field's kind", async () => {
+		const { deps, ctx, cache } = setup();
+		const url = "https://cdn.test/doc.pdf";
+		deps.mediaFetcher.files.set(url, { body: PDF, contentType: "application/pdf" });
+		const { lookups } = await lookupRecordMedia(deps, cache, ctx, {
+			doc: { kind: "file", url, alt: null, refresh: false },
+			cover: image(url),
+		});
+		expect(await obtainRecordMedia(deps, cache, ctx, lookups)).toEqual({
+			ok: false,
+			errors: [
+				{
+					field: "cover",
+					code: "media_type_not_allowed",
+					message: `${url}: An image field cannot take application/pdf`,
+				},
+			],
+			newMedia: [`doc: ${url}`],
+		});
+		expect(deps.mediaFetcher.urls()).toEqual([url]);
+	});
+
+	it("defers a non-first download the batch deadline cut short; the first one fails", async () => {
+		const { deps, ctx } = setup();
+		const cut = new MediaError("media_fetch_failed", "The download did not finish within 1 s");
+		cut.deadline = true;
+		deps.mediaFetcher.files.set(B, { body: "", error: cut });
+		const cache = new LookupCache();
+		const { lookups } = await lookupRecordMedia(deps, cache, ctx, {
+			photo: image(A),
+			hero: image(B),
+		});
+		const deferred = await obtainRecordMedia(deps, cache, ctx, lookups).catch((e: unknown) => e);
+		expect(deferred).toBeInstanceOf(MediaDeferred);
+		expect((deferred as MediaDeferred).newMedia).toEqual([`photo: ${A}`]);
+		const first = await resolveMedia(deps, new LookupCache(), ctx, "hero", image(B));
+		expect(first).toMatchObject({ ok: false, error: { code: "media_fetch_failed" } });
+	});
+
+	it("fetches a failing URL once per batch, whatever the field", async () => {
+		const { deps, ctx, cache } = setup();
+		const bad = "https://cdn.test/missing.png";
+		const one = await resolveMedia(deps, cache, ctx, "photo", image(bad));
+		const two = await resolveMedia(deps, cache, ctx, "thumb", image(bad));
+		expect(one).toMatchObject({ ok: false, error: { field: "photo", code: "media_http_error" } });
+		expect(two).toMatchObject({ ok: false, error: { field: "thumb", code: "media_http_error" } });
+		expect(deps.mediaFetcher.urls()).toEqual([bad]);
+		await resolveMedia(deps, new LookupCache(), ctx, "photo", image(bad));
+		expect(deps.mediaFetcher.urls()).toEqual([bad, bad]);
+	});
+});
+
 describe("mediaFieldValue", () => {
 	const item = {
 		id: "m1",

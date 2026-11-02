@@ -453,7 +453,8 @@ export class FakeMedia implements MediaPort {
 		}
 		const n = ++this.next;
 		const image = input.contentType.startsWith("image/");
-		const extension = input.filename.slice(input.filename.lastIndexOf("."));
+		const dot = input.filename.lastIndexOf(".");
+		const extension = dot > 0 ? input.filename.slice(dot) : "";
 		this.items.set(`m${n}`, {
 			id: `m${n}`,
 			filename: input.filename,

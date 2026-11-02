@@ -43,6 +43,8 @@ describe("sniffMime", () => {
 			[bytes([0, 0, 0, 0x1c], "ftyp", "isom", [0, 0, 0, 0], "isom", "avif", "mif1"), "image/avif"],
 			[bytes("ID3", [4, 0]), "audio/mpeg"],
 			[bytes([0xff, 0xfb, 0x90, 0x64]), "audio/mpeg"],
+			[ftyp("jp2 "), null],
+			[ftyp("mp42"), "video/mp4"],
 			[bytes("hello"), null],
 			[bytes(), null],
 		];
@@ -304,6 +306,25 @@ describe("createMediaFetcher", () => {
 			code: "media_fetch_failed",
 			message: "The download did not finish within 1 s",
 		});
+	});
+
+	it("marks a timeout caused by the caller's deadline", async () => {
+		const near = fetcher(async (_url, { signal }) => never(signal), {
+			headersMs: 10_000,
+			totalMs: 30_000,
+		});
+		const nearError = await near.media
+			.fetch("https://cdn.test/a.png", options({ deadline: Date.now() + 50 }))
+			.catch((e: unknown) => e);
+		expect(nearError).toMatchObject({ code: "media_fetch_failed", deadline: true });
+		const own = fetcher(async (_url, { signal }) => never(signal), {
+			headersMs: 1000,
+			totalMs: 60,
+		});
+		const ownError = await own.media
+			.fetch("https://cdn.test/a.png", options())
+			.catch((e: unknown) => e);
+		expect(ownError).toMatchObject({ code: "media_fetch_failed", deadline: false });
 	});
 
 	it("never runs past the caller's deadline", async () => {
