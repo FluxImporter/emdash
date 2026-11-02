@@ -589,7 +589,11 @@ async function decideRecord(
 				const url = mediaRequests?.[field]?.url;
 				if (item?.mediaId === null && url) found.newMedia.push(`${field}: ${url}`);
 			}
-			for (const [url, { field }] of misses) found.newMedia.push(`${field}: ${url}`);
+			// A URL an image field also downloads is listed once, under that field.
+			const listed = new Set(Object.values(mediaRequests ?? {}).map((r) => r?.url));
+			for (const [url, { field }] of misses) {
+				if (!listed.has(url)) found.newMedia.push(`${field}: ${url}`);
+			}
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		}
 		if (entry) {
@@ -633,7 +637,6 @@ async function decideRecord(
 				cache,
 				mediaContext(job),
 				images,
-				template.portableText,
 				found.newMedia,
 			);
 			found.warnings.push(...obtained.warnings);

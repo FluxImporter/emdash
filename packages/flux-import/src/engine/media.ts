@@ -389,10 +389,14 @@ export async function obtainMedia(
 			? mediaTypeProblem(type.mimeType, request.kind, ctx.targets[field]?.allowedMimeTypes)
 			: type.message;
 		if (!type.ok || problem !== null) {
-			return {
-				ok: false,
-				error: fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`),
-			};
+			const error = fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`);
+			// A file no field can take (markup, an unknown type, one EmDash never accepts) is fetched
+			// once per batch, like any other failure. A type only this field refuses is not: the map
+			// key is the URL alone, and another field may take the file.
+			if (!type.ok || mediaTypeProblem(type.mimeType, "file", undefined) !== null) {
+				cache.mediaFailed.set(lookup.key, error);
+			}
+			return { ok: false, error };
 		}
 		const { item, deduplicated } = await deps.media.upload({
 			filename: mediaFilename(fetched.finalUrl, type.mimeType),

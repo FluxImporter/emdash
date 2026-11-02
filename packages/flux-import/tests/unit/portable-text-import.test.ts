@@ -281,6 +281,70 @@ describe("importing Portable Text", () => {
 		expect((body(deps) as unknown[]).length).toBe(1);
 	});
 
+	it("carries images refused for their type across deferred batches, fetching each URL once", async () => {
+		const { deps } = makeDeps();
+		const names = Array.from({ length: 10 }, (_, i) => `page${i}.png`);
+		for (const n of names) {
+			deps.mediaFetcher.files.set(url(n), {
+				body: "<!doctype html><html><body>no</body></html>",
+				contentType: "text/html",
+			});
+		}
+		const html = `<p>t</p>${names.map((n) => `<img src="${url(n)}">`).join("")}`;
+		const created = await start(deps, [{ id: "p1", title: "T", html }]);
+		let job = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
+		expect(job.cursor.seq).toBe(0);
+		expect(job.deferred?.failed).toHaveLength(9);
+		let batches = 1;
+		while (job.status === "running" && batches < 10) {
+			job = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
+			batches++;
+		}
+		expect(job.status).toBe("completed");
+		expect(batches).toBe(2);
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
+		expect(deps.mediaFetcher.urls()).toEqual(names.map(url));
+		const [row] = await rows(deps, job.id);
+		expect(row?.warnings).toHaveLength(10);
+		expect(row?.warnings?.[0]).toMatchObject({ field: "body", code: "image_dropped" });
+		expect(row?.warnings?.[0]?.message).toMatch(/^media_type_not_allowed: /);
+		expect((body(deps) as unknown[]).length).toBe(1);
+	});
+
+	it("fetches a markup file used by image fields of two records once per batch", async () => {
+		const { deps } = makeDeps();
+		deps.mediaFetcher.files.set(url("page.png"), {
+			body: "<html></html>",
+			contentType: "text/html",
+		});
+		const tpl = template({}, { photo: { from: "photo", type: "image" } });
+		const posts = ["p1", "p2"].map((id) => ({ id, title: id, photo: url("page.png") }));
+		const job = await runToEnd(deps, (await start(deps, posts, { tpl })).id);
+		expect(job.counters).toMatchObject({ failed: 2 });
+		const all = await rows(deps, job.id);
+		expect(all.map((r) => r.errors?.[0]?.code)).toEqual([
+			"media_type_not_allowed",
+			"media_type_not_allowed",
+		]);
+		expect(deps.mediaFetcher.urls()).toEqual([url("page.png")]);
+	});
+
+	it("lists a URL shared by an image field and Portable Text once in a dry run", async () => {
+		const { deps } = makeDeps();
+		serve(deps, "a.png", "b.png");
+		const tpl = template({}, { photo: { from: "photo", type: "image" } });
+		const post = {
+			id: "p1",
+			title: "T",
+			photo: url("a.png"),
+			html: `<img src="${url("a.png")}"><img src="${url("b.png")}">`,
+		};
+		const job = await runToEnd(deps, (await start(deps, [post], { tpl, dryRun: true })).id);
+		const [row] = await rows(deps, job.id);
+		expect(row?.newMedia).toEqual([`photo: ${url("a.png")}`, `body: ${url("b.png")}`]);
+		expect(deps.mediaFetcher.urls()).toEqual([]);
+	});
+
 	it("updates only a changed Portable Text field, sending data, and clears an emptied one", async () => {
 		const { deps } = makeDeps();
 		serve(deps, "a.png");

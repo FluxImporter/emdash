@@ -121,14 +121,7 @@ describe("Portable Text images", () => {
 		const cache = new LookupCache();
 		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
 		const newMedia = ["photo: https://cdn.test/photo.png"];
-		const obtained = await obtainPortableTextImages(
-			deps,
-			cache,
-			ctx,
-			looked.images,
-			options(),
-			newMedia,
-		);
+		const obtained = await obtainPortableTextImages(deps, cache, ctx, looked.images, newMedia);
 		expect(obtained).toEqual({ ok: true, warnings: [] });
 		expect(deps.mediaFetcher.urls()).toEqual([url("b.png"), url("a.png"), url("c.png")]);
 		expect(newMedia).toEqual([
@@ -175,7 +168,7 @@ describe("Portable Text images", () => {
 				message: "media_blocked: https://blocked.test/x.png: The host blocked.test is not allowed",
 			},
 		]);
-		const obtained = await obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []);
+		const obtained = await obtainPortableTextImages(deps, cache, ctx, looked.images, []);
 		expect(obtained).toEqual({
 			ok: true,
 			warnings: [
@@ -205,9 +198,7 @@ describe("Portable Text images", () => {
 		const failing = { body: draft(`<img src="${url("missing.png")}"><img src="${url("c.png")}">`) };
 		const next = new LookupCache();
 		const found = await lookupPortableTextImages(deps, next, ctx, failing, options(["body"]));
-		expect(
-			await obtainPortableTextImages(deps, next, ctx, found.images, options(["body"]), []),
-		).toEqual({
+		expect(await obtainPortableTextImages(deps, next, ctx, found.images, [])).toEqual({
 			ok: false,
 			errors: [
 				{
@@ -227,7 +218,7 @@ describe("Portable Text images", () => {
 		const drafts = { body: draft(`<img src="${url("missing.png")}">`) };
 		const cache = new LookupCache();
 		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
-		await obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []);
+		await obtainPortableTextImages(deps, cache, ctx, looked.images, []);
 		expect(portableTextPlan(drafts, looked.images)).toEqual({ body: null });
 	});
 
@@ -242,7 +233,6 @@ describe("Portable Text images", () => {
 			byBudget,
 			ctx,
 			looked.images,
-			options(),
 			newMedia,
 		).catch((e: unknown) => e);
 		expect(deferred).toBeInstanceOf(MediaDeferred);
@@ -254,7 +244,7 @@ describe("Portable Text images", () => {
 		byDeadline.mediaDownloads = 1;
 		const again = await lookupPortableTextImages(deps, byDeadline, ctx, drafts, options());
 		await expect(
-			obtainPortableTextImages(deps, byDeadline, ctx, again.images, options(), []),
+			obtainPortableTextImages(deps, byDeadline, ctx, again.images, []),
 		).rejects.toBeInstanceOf(MediaDeferred);
 		expect(deps.mediaFetcher.urls()).toEqual([url("a.png")]);
 	});
@@ -265,14 +255,7 @@ describe("Portable Text images", () => {
 		const drafts = { body: draft(html), summary: draft(html) };
 		const cache = new LookupCache();
 		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options(["summary"]));
-		const obtained = await obtainPortableTextImages(
-			deps,
-			cache,
-			ctx,
-			looked.images,
-			options(["summary"]),
-			[],
-		);
+		const obtained = await obtainPortableTextImages(deps, cache, ctx, looked.images, []);
 		expect(obtained).toEqual({
 			ok: false,
 			errors: [
@@ -301,7 +284,7 @@ describe("Portable Text images", () => {
 			for (const { key, error } of carried) cache.mediaFailed.set(key, error);
 			const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
 			try {
-				result = await obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []);
+				result = await obtainPortableTextImages(deps, cache, ctx, looked.images, []);
 			} catch (e) {
 				if (!(e instanceof MediaDeferred)) throw e;
 				const merged = new Map([...carried, ...e.failed].map((f) => [f.key, f] as const));
@@ -321,7 +304,7 @@ describe("Portable Text images", () => {
 		const cache = new LookupCache();
 		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
 		await expect(
-			obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []),
+			obtainPortableTextImages(deps, cache, ctx, looked.images, []),
 		).rejects.toMatchObject({ name: "ContentWriteError", code: "media_config" });
 	});
 
@@ -331,7 +314,7 @@ describe("Portable Text images", () => {
 		const drafts = { body: draft(html) };
 		const cache = new LookupCache();
 		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
-		await obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []);
+		await obtainPortableTextImages(deps, cache, ctx, looked.images, []);
 		const value = portableTextPlan(drafts, looked.images).body?.blocks ?? [];
 		const edited = JSON.parse(
 			JSON.stringify(prosemirrorToPortableText(portableTextToProsemirror(value as never))),

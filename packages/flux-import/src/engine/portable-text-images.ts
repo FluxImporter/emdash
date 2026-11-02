@@ -106,19 +106,22 @@ export async function lookupPortableTextImages(
  * Obtains every image not stored yet, in document order, one download at a time: a failure
  * stops the record when its field's `imageErrors` is `"fail"`, and is dropped with a warning
  * otherwise. Each download is added to `newMedia` (`content: https://…`). A `MediaDeferred`
- * carries `newMedia`, which the caller starts with the record's field media.
+ * carries `newMedia`, which the caller starts with the record's field media, and every URL this
+ * call dropped (at most 50), so the next batch drops them again without a download.
  */
 export async function obtainPortableTextImages(
 	deps: MediaDeps,
 	cache: LookupCache,
 	ctx: MediaContext,
 	images: RecordImages,
-	_options: ReadonlyMap<string, PortableTextOptions>,
 	newMedia: string[],
 ): Promise<
 	{ ok: true; warnings: LinkError[] } | { ok: false; errors: LinkError[]; warnings: LinkError[] }
 > {
 	const warnings: LinkError[] = [];
+	// Every download this call dropped, whatever its cause (a type refusal is not always kept in
+	// `cache.mediaFailed`), carried to the next batch on a deferral.
+	const dropped: { key: string; error: LinkError }[] = [];
 	for (const [url, { field, failField, lookup }] of images.lookups) {
 		if (images.items.has(url)) continue;
 		let obtained: Awaited<ReturnType<typeof obtainMedia>>;
@@ -129,10 +132,7 @@ export async function obtainPortableTextImages(
 				e.newMedia = newMedia;
 				// What failed for good stays failed in the next batch, which would defer at the same
 				// point again otherwise.
-				for (const { lookup: l } of images.lookups.values()) {
-					const error = cache.mediaFailed.get(l.key);
-					if (error && e.failed.length < MAX_CARRIED_FAILURES) e.failed.push({ key: l.key, error });
-				}
+				e.failed = dropped.slice(0, MAX_CARRIED_FAILURES);
 			}
 			throw e;
 		}
@@ -144,6 +144,7 @@ export async function obtainPortableTextImages(
 		} else {
 			warnings.push(dropWarning(field, url, obtained.error));
 			images.dropped.add(url);
+			dropped.push({ key: lookup.key, error: obtained.error });
 		}
 	}
 	return { ok: true, warnings };
