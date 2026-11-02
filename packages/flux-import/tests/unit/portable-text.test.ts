@@ -216,6 +216,20 @@ describe("convertPortableText: unknown and removed markup", () => {
 		});
 	});
 
+	it("removes elements whose raw text would show as markup source", () => {
+		const converted = convert(
+			"<title>t</title><noembed><b>n</b></noembed><noframes><i>f</i></noframes><xmp><b>x</b></xmp><p>kept</p><plaintext><p>rest</p>",
+		);
+		expect(outline(converted)).toEqual(["normal: kept"]);
+		expect(converted.warnings).toEqual([
+			{ code: "removed_markup", message: "Removed 1 <title> element" },
+			{ code: "removed_markup", message: "Removed 1 <noembed> element" },
+			{ code: "removed_markup", message: "Removed 1 <noframes> element" },
+			{ code: "removed_markup", message: "Removed 1 <xmp> element" },
+			{ code: "removed_markup", message: "Removed 1 <plaintext> element" },
+		]);
+	});
+
 	it("fails unknown and removed markup and dropped links with unknownMarkup: fail", () => {
 		const converted = convert(
 			'<table><tr><td>t</td></tr></table><script>x</script><a href="javascript:x">j</a>',
@@ -395,10 +409,32 @@ describe("convertPortableText: images", () => {
 		expect(converted.warnings).toEqual([
 			{ code: "removed_markup", message: "Removed 1 <script> element" },
 		]);
+		// A figure that holds another figure keeps its caption as a paragraph.
+		const nested = convert(
+			'<figure><img src="https://x.test/a.png"><figure><img src="https://x.test/b.png"><figcaption>inner</figcaption></figure><figcaption>outer</figcaption></figure>',
+		);
+		expect(outline(nested)).toEqual(["image #0", "image #1", "normal: outer"]);
+		expect(nested.draft?.blocks[1]?.caption).toBe("inner");
+		expect(nested.draft?.blocks[0]?.caption).toBeUndefined();
 		const long = convert(
 			`<figure><img src="https://x.test/a.png"><figcaption>${"c".repeat(1001)}</figcaption></figure>`,
 		);
 		expect(long.draft?.blocks[0]?.caption).toHaveLength(1000);
+	});
+
+	it("reports images inside code or a caption, which hold only text", () => {
+		const html =
+			'<pre>a<img src="https://x.test/a.png">b</pre><figure><img src="https://x.test/c.png"><figcaption>c<img src="https://x.test/d.png"></figcaption></figure>';
+		const converted = convert(html);
+		expect(outline(converted)).toEqual(["code -: ab", "image #0"]);
+		expect(converted.draft?.images).toEqual([{ url: "https://x.test/c.png", alt: null }]);
+		expect(converted.warnings).toEqual([
+			{
+				code: "image_dropped",
+				message: "Left out 2 images inside <pre> or <figcaption>, which hold only text",
+			},
+		]);
+		expect(convert(html, { images: "skip" }).warnings).toEqual([]);
 	});
 
 	it("links an image inside a link, and keeps the alt, cut at 1,000 characters", () => {
@@ -507,14 +543,50 @@ describe("convertPortableText: formats, keys and limits", () => {
 		expect(convert(`${"<b>".repeat(300)}x`).errors).toEqual(tooComplex);
 	});
 
+	it("refuses a tag with more than 1,000 attributes, quickly", () => {
+		const tag = (n: number) =>
+			`<p ${Array.from({ length: n }, (_, i) => `a${i}="v ${i}>"`).join(" ")}>x</p>`;
+		expect(convert(tag(1000)).errors).toEqual([]);
+		const tooMany = [
+			{
+				code: "portable_text_too_complex",
+				message: "The markup has a tag with more than 1000 attributes",
+			},
+		];
+		expect(convert(tag(1001)).errors).toEqual(tooMany);
+		expect(convert(`</p ${"b ".repeat(1001)}>`).errors).toEqual(tooMany);
+		// Attributes in a comment are not counted.
+		expect(convert(`<!-- <p ${"b ".repeat(1001)}> -->x`).errors).toEqual([]);
+		// About 95,000 distinct names on one tag, from HTML and from Markdown.
+		let many = "<p";
+		for (let i = 0; many.length < 512 * 1024 - 20; i++) many += ` ${i.toString(36)}`;
+		many += ">x</p>";
+		for (const format of ["html", "markdown"] as const) {
+			const started = performance.now();
+			expect(convert(many, { format }).errors).toEqual(tooMany);
+			expect(performance.now() - started).toBeLessThan(1000);
+		}
+	});
+
 	it("stays fast at the limits", () => {
 		const fill = (unit: string, prefix: string) =>
 			prefix + unit.repeat(Math.floor((512 * 1024 - prefix.length) / unit.length));
+		const distinct = (unit: (i: number) => string) => {
+			let text = "";
+			for (let i = 0; text.length < 512 * 1024 - 40; i++) text += unit(i);
+			return text;
+		};
 		for (const html of [
 			fill("</p>", "<div>".repeat(255)),
 			fill("<li>", "<div>".repeat(255)),
 			fill("</p>", "<ul><li>".repeat(127)),
 			fill("<p>Some <b>bold</b> and <a href='/x'>a link</a>.</p>", ""),
+			// One row of 100,000 cells, and one paragraph of 130,000 line breaks.
+			fill("<td>a", "<table><tr>"),
+			fill("<br>", "x"),
+			fill("a <br>", ""),
+			// Distinct links in one block.
+			distinct((i) => `<a href="#${i}">x</a>`),
 		]) {
 			const started = performance.now();
 			expect(convert(html).errors).toEqual([]);
@@ -574,6 +646,10 @@ describe("convertPortableText: Markdown", () => {
 			Array.from({ length: 700 }, (_, i) => `${"  ".repeat(i)}- item`).join("\n"),
 			"[a](".repeat(50_000),
 			"**a ".repeat(100_000),
+			// A table row of 50,000 cells.
+			`|${"a|".repeat(50_000)}\n|${"-|".repeat(50_000)}\n`,
+			// 130,000 thematic breaks, each a top-level element.
+			"***\n".repeat(130_000),
 		];
 		for (const text of cases) {
 			const started = performance.now();

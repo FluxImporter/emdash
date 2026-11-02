@@ -32,6 +32,8 @@ export const MAX_LIST_LEVEL = 6;
 export const MAX_CAPTION_LENGTH = 1000;
 /** The longest `href` kept. */
 export const MAX_HREF_LENGTH = 2048;
+/** Attributes on one tag: `parse5` checks each new name against all earlier ones. */
+export const MAX_TAG_ATTRIBUTES = 1000;
 
 export type PortableTextFormat = "html" | "markdown" | "text";
 
@@ -97,9 +99,17 @@ class TooComplex extends Error {}
  * The default tree adapter with a count of open elements: the parse stops as soon as more than
  * `MAX_PORTABLE_TEXT_NESTING` are open, which bounds `parse5`'s quadratic scope checks.
  * `onItemPush` and `onItemPop` are part of parse5's `TreeAdapter` interface.
+ *
+ * `getFirstChild` and `detachNode` make moving all of a node's children linear: `parse5` calls
+ * `getFirstChild` only to move every child out, first to last (the fragment's top-level nodes,
+ * and the adoption agency's furthest block), and the default `detachNode` splices each one off
+ * the front, which is quadratic. Here a parent being emptied keeps its moved-out children until
+ * the last one goes, and `getFirstChild` skips them.
  */
 function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 	let open = 0;
+	/** Parents being emptied by `getFirstChild` and `detachNode`, with the children moved out. */
+	const moved = new Map<DefaultTreeAdapterTypes.ParentNode, number>();
 	return {
 		...defaultTreeAdapter,
 		onItemPush() {
@@ -110,7 +120,90 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 		onItemPop() {
 			open--;
 		},
+		getFirstChild(node) {
+			const head = moved.get(node) ?? 0;
+			const child = node.childNodes[head];
+			if (child === undefined) {
+				if (head > 0) node.childNodes.length = 0;
+				moved.delete(node);
+				return null;
+			}
+			moved.set(node, head);
+			return child;
+		},
+		detachNode(node) {
+			const parent = node.parentNode;
+			const head = parent === null ? undefined : moved.get(parent);
+			if (parent === null || head === undefined) {
+				defaultTreeAdapter.detachNode(node);
+				return;
+			}
+			if (parent.childNodes[head] === node) {
+				moved.set(parent, head + 1);
+				node.parentNode = null;
+				return;
+			}
+			// Not a move from the front: drop the moved-out children for real first.
+			parent.childNodes.splice(0, head);
+			moved.delete(parent);
+			defaultTreeAdapter.detachNode(node);
+		},
 	};
+}
+
+const isTagSpace = (code: number) =>
+	code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
+const isAsciiLetter = (code: number) => (code | 0x20) >= 0x61 && (code | 0x20) <= 0x7a;
+
+/**
+ * Whether some tag has more than `MAX_TAG_ATTRIBUTES` attributes, by a linear scan that follows
+ * the HTML tokenizer's tag states closely enough to count attribute names outside quoted values.
+ * Comments are skipped; text inside raw-text elements may be counted, which can only refuse more.
+ */
+function tooManyAttributes(html: string): boolean {
+	const n = html.length;
+	let i = 0;
+	while (i < n) {
+		const lt = html.indexOf("<", i);
+		if (lt === -1) return false;
+		i = lt + 1;
+		if (html.startsWith("!--", i)) {
+			const close = html.indexOf("-->", i + 3);
+			if (close === -1) return false;
+			i = close + 3;
+			continue;
+		}
+		if (html.charCodeAt(i) === 0x2f) i++; // end tags are tokenized with attributes too
+		if (!isAsciiLetter(html.charCodeAt(i))) continue;
+		// The tag name.
+		while (i < n && !isTagSpace(html.charCodeAt(i)) && html[i] !== "/" && html[i] !== ">") i++;
+		let count = 0;
+		while (i < n && html[i] !== ">") {
+			const c = html[i] as string;
+			if (isTagSpace(html.charCodeAt(i)) || c === "/") {
+				i++;
+				continue;
+			}
+			// An attribute name: its first character may be "=", the rest stops at "=".
+			count++;
+			if (count > MAX_TAG_ATTRIBUTES) return true;
+			i++;
+			while (i < n && !isTagSpace(html.charCodeAt(i)) && !"/>=".includes(html[i] as string)) i++;
+			while (i < n && isTagSpace(html.charCodeAt(i))) i++;
+			if (html[i] !== "=") continue;
+			i++;
+			while (i < n && isTagSpace(html.charCodeAt(i))) i++;
+			const quote = html[i];
+			if (quote === '"' || quote === "'") {
+				const close = html.indexOf(quote, i + 1);
+				if (close === -1) return false;
+				i = close + 1;
+			} else {
+				while (i < n && !isTagSpace(html.charCodeAt(i)) && html[i] !== ">") i++;
+			}
+		}
+	}
+	return false;
 }
 
 function utf8Bytes(text: string): number {
@@ -155,6 +248,12 @@ export function convertPortableText(
 		return fail(
 			"portable_text_too_large",
 			`The Markdown renders to more than ${MAX_RENDERED_MARKDOWN_BYTES / KIB / KIB} MiB of HTML`,
+		);
+	}
+	if (tooManyAttributes(html)) {
+		return fail(
+			"portable_text_too_complex",
+			`The markup has a tag with more than ${MAX_TAG_ATTRIBUTES} attributes`,
 		);
 	}
 	let fragment: DefaultTreeAdapterTypes.DocumentFragment;
@@ -276,6 +375,12 @@ const REMOVED: ReadonlySet<string> = new Set([
 	"link",
 	"meta",
 	"base",
+	// Their content is raw text that would otherwise show as markup source.
+	"noembed",
+	"noframes",
+	"xmp",
+	"plaintext",
+	"title",
 ]);
 /** Unknown elements that hold lines of text: each becomes a paragraph. */
 const UNKNOWN_LINES: ReadonlySet<string> = new Set([
@@ -334,10 +439,24 @@ type BlockContext = {
 	cells?: number;
 };
 
-type SpanDraft = { text: string; decorators: readonly string[]; link: number | null };
-type TextDraft = { context: BlockContext; spans: SpanDraft[]; links: LinkTarget[] };
+/**
+ * A span being built: its text as pieces (never empty strings) joined when the block ends, so
+ * appending and trimming the end never rescan or copy the whole text.
+ */
+type SpanDraft = { parts: string[]; decorators: readonly string[]; link: number | null };
+type TextDraft = {
+	context: BlockContext;
+	spans: SpanDraft[];
+	links: LinkTarget[];
+	/** Each link's index in `links`, by `blank` flag and `href`. */
+	linkIndexes: Map<string, number>;
+	/** Whether the block has text besides HTML whitespace and line breaks. */
+	hasText: boolean;
+};
+type SpanText = { text: string; decorators: readonly string[]; link: number | null };
+type TextOut = { context: BlockContext; spans: SpanText[]; links: LinkTarget[] };
 type Out =
-	| { kind: "text"; block: TextDraft }
+	| { kind: "text"; block: TextOut }
 	| { kind: "code"; code: string; language: string | null }
 	| { kind: "break" }
 	| {
@@ -389,14 +508,17 @@ class Walker {
 	private readonly lists: ("bullet" | "number")[] = [];
 	private readonly decorators: string[] = [];
 	private readonly links: (LinkTarget | null)[] = [];
-	private readonly figures: { images: number[]; caption: string }[] = [];
+	/** Open figures; `nested` when one holds another figure, so its caption stays a paragraph. */
+	private readonly figures: { images: number[]; caption: string; nested: boolean }[] = [];
 	private readonly images: PortableTextImage[] = [];
 	private readonly slots = new Map<string, number>();
 	private readonly base: URL | null;
 	private readonly unknown = new Map<string, number>();
-	private readonly removed = new Map<string, number>();
+	readonly removed = new Map<string, number>();
 	private readonly dropped = new Map<string, number>();
 	private altCut = 0;
+	/** Images inside `pre` or `figcaption`, which hold only text. */
+	imagesInText = 0;
 	private readonly imageIssues: PortableTextIssue[] = [];
 
 	constructor(private readonly options: PortableTextOptions) {
@@ -466,7 +588,9 @@ class Walker {
 			});
 		} else if (TRANSPARENT_BLOCK.has(tag)) {
 			if (tag === "figure") {
-				this.figures.push({ images: [], caption: "" });
+				const parent = this.figures[this.figures.length - 1];
+				if (parent) parent.nested = true;
+				this.figures.push({ images: [], caption: "", nested: false });
 				exit.figure = true;
 			}
 			if (this.context.line) {
@@ -546,25 +670,26 @@ class Walker {
 		if (this.open === null) {
 			text = text.replace(/^ /, "");
 			if (text === "") return;
-			this.open = { context: this.context, spans: [], links: [] };
+			this.open = {
+				context: this.context,
+				spans: [],
+				links: [],
+				linkIndexes: new Map(),
+				hasText: false,
+			};
 		}
 		const block = this.open;
-		if (this.pending !== null && this.hasText(block)) {
+		if (this.pending !== null && block.hasText) {
 			this.trimEnd(block);
 			this.append(block, this.pending, [], null);
 			text = text.replace(/^ /, "");
 		}
 		this.pending = null;
-		const last = block.spans[block.spans.length - 1]?.text ?? "";
-		if (last === "" || last.endsWith(" ") || last.endsWith("\n")) text = text.replace(/^ /, "");
+		const last = lastChar(block.spans[block.spans.length - 1]);
+		if (last === "" || last === " " || last === "\n") text = text.replace(/^ /, "");
 		if (text === "") return;
 		const link = this.links[this.links.length - 1] ?? null;
 		this.append(block, text, this.decorators, link === null ? null : this.linkIndex(block, link));
-	}
-
-	/** Whether the block has text besides HTML whitespace and line breaks. */
-	private hasText(block: TextDraft): boolean {
-		return block.spans.some((s) => /[^ \n]/.test(s.text));
 	}
 
 	private append(
@@ -573,23 +698,26 @@ class Walker {
 		decorators: readonly string[],
 		link: number | null,
 	): void {
+		if (!block.hasText && /[^ \n]/.test(text)) block.hasText = true;
 		const marks = [...new Set(decorators)];
 		const last = block.spans[block.spans.length - 1];
 		// The editor ends a span at each hard break, so text after one starts a new span.
-		const joins = last && !last.text.endsWith("\n") && last.link === link;
-		if (joins && sameList(last.decorators, marks)) last.text += text;
-		else block.spans.push({ text, decorators: marks, link });
+		const joins = last && lastChar(last) !== "\n" && last.link === link;
+		if (joins && sameList(last.decorators, marks)) last.parts.push(text);
+		else block.spans.push({ parts: [text], decorators: marks, link });
 	}
 
 	private trimEnd(block: TextDraft): void {
 		const last = block.spans[block.spans.length - 1];
-		if (last) last.text = last.text.replace(/ +$/, "");
+		if (last) trimSpaces(last);
 	}
 
 	private linkIndex(block: TextDraft, link: LinkTarget): number {
-		const i = block.links.findIndex((l) => l.href === link.href && l.blank === link.blank);
-		if (i !== -1) return i;
+		const id = `${link.blank ? 1 : 0}${link.href}`;
+		const known = block.linkIndexes.get(id);
+		if (known !== undefined) return known;
 		block.links.push(link);
+		block.linkIndexes.set(id, block.links.length - 1);
 		return block.links.length - 1;
 	}
 
@@ -598,7 +726,8 @@ class Walker {
 		const last = this.open?.spans[this.open.spans.length - 1];
 		if (last === undefined) return;
 		this.pending = null;
-		last.text = `${last.text.replace(/ +$/, "")}\n`;
+		trimSpaces(last);
+		last.parts.push("\n");
 	}
 
 	/** Ends the open text block, keeping it when it has text. */
@@ -608,7 +737,9 @@ class Walker {
 		this.pending = null;
 		if (block === null) return;
 		const spans = trimSpans(block.spans);
-		if (spans.length > 0) this.out.push({ kind: "text", block: { ...block, spans } });
+		if (spans.length > 0) {
+			this.out.push({ kind: "text", block: { context: block.context, spans, links: block.links } });
+		}
 	}
 
 	/** The link of an `a` element with `href`, or null: no `href`, or one that is dropped. */
@@ -625,7 +756,7 @@ class Walker {
 
 	private pre(element: Element): void {
 		this.flush();
-		let code = textOf(element, true, this.removed);
+		let code = textOf(element, true, this);
 		if (code.startsWith("\n")) code = code.slice(1);
 		if (code.trim() === "") return;
 		const inner = element.childNodes.find(
@@ -638,7 +769,7 @@ class Walker {
 
 	private caption(element: Element): void {
 		const figure = this.figures[this.figures.length - 1];
-		const text = textOf(element, false, this.removed);
+		const text = textOf(element, false, this);
 		if (figure) figure.caption = figure.caption === "" ? text : `${figure.caption} ${text}`;
 	}
 
@@ -647,7 +778,8 @@ class Walker {
 		const figure = this.figures.pop();
 		if (!figure || figure.caption === "") return;
 		const caption = figure.caption.slice(0, MAX_CAPTION_LENGTH);
-		const only = figure.images.length === 1 ? this.out[figure.images[0] as number] : undefined;
+		const one = figure.images.length === 1 && !figure.nested;
+		const only = one ? this.out[figure.images[0] as number] : undefined;
 		if (only?.kind === "image" && only.caption === null) {
 			only.caption = caption;
 			return;
@@ -718,6 +850,12 @@ class Walker {
 				message: `Cut the alt text of ${plural(this.altCut, "image")} to ${MAX_ALT_LENGTH} characters`,
 			});
 		}
+		if (this.imagesInText > 0 && this.options.images === "import") {
+			warnings.push({
+				code: "image_dropped",
+				message: `Left out ${plural(this.imagesInText, "image")} inside <pre> or <figcaption>, which hold only text`,
+			});
+		}
 		for (const issue of this.imageIssues) {
 			(issue.code === "image_dropped" ? warnings : errors).push(issue);
 		}
@@ -759,22 +897,57 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 	return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
-/** Drops leading and trailing whitespace of the block, then empty spans. */
-function trimSpans(spans: readonly SpanDraft[]): SpanDraft[] {
-	const out = spans.map((s) => ({ ...s }));
-	while (out.length > 0) {
-		const first = out[0] as SpanDraft;
-		first.text = first.text.replace(/^[ \n]+/, "");
+/** The last character of a span, or "" for none. */
+function lastChar(span: SpanDraft | undefined): string {
+	const part = span?.parts[span.parts.length - 1];
+	return part === undefined ? "" : part.charAt(part.length - 1);
+}
+
+/** The end of `text` without trailing characters that `strip` accepts. */
+function endWithout(text: string, strip: (code: number) => boolean): number {
+	let end = text.length;
+	while (end > 0 && strip(text.charCodeAt(end - 1))) end--;
+	return end;
+}
+
+const isSpace = (code: number) => code === 0x20;
+const isSpaceOrNewline = (code: number) => code === 0x20 || code === 0x0a;
+
+/** Removes the span's trailing spaces, looking only at its last pieces. */
+function trimSpaces(span: SpanDraft): void {
+	for (let part = span.parts.pop(); part !== undefined; part = span.parts.pop()) {
+		const end = endWithout(part, isSpace);
+		if (end > 0) {
+			span.parts.push(end === part.length ? part : part.slice(0, end));
+			return;
+		}
+	}
+}
+
+/** Joins each span's pieces, drops the block's leading and trailing whitespace, then empty spans. */
+function trimSpans(spans: readonly SpanDraft[]): SpanText[] {
+	const out: SpanText[] = spans.map((s) => ({
+		text: s.parts.join(""),
+		decorators: s.decorators,
+		link: s.link,
+	}));
+	let from = 0;
+	while (from < out.length) {
+		const first = out[from] as SpanText;
+		let start = 0;
+		while (start < first.text.length && isSpaceOrNewline(first.text.charCodeAt(start))) start++;
+		first.text = first.text.slice(start);
 		if (first.text !== "") break;
-		out.shift();
+		from++;
 	}
-	while (out.length > 0) {
-		const last = out[out.length - 1] as SpanDraft;
-		last.text = last.text.replace(/[ \n]+$/, "");
+	let to = out.length;
+	while (to > from) {
+		const last = out[to - 1] as SpanText;
+		last.text = last.text.slice(0, endWithout(last.text, isSpaceOrNewline));
 		if (last.text !== "") break;
-		out.pop();
+		to--;
 	}
-	return out.filter((s) => s.text !== "");
+	return out.slice(from, to).filter((s) => s.text !== "");
 }
 
 function linkValue(link: LinkTarget): { [key: string]: JsonValue } {
@@ -782,7 +955,7 @@ function linkValue(link: LinkTarget): { [key: string]: JsonValue } {
 }
 
 /** A text block in the shape EmDash's editor writes: no empty `markDefs`, spans with `marks`. */
-function textBlock(block: TextDraft, key: string): DraftBlock {
+function textBlock(block: TextOut, key: string): DraftBlock {
 	// Only links that a kept span uses get a definition, numbered in order of first use.
 	const used = new Map<number, string>();
 	const markDefs: { [key: string]: JsonValue }[] = [];
@@ -814,16 +987,23 @@ function textBlock(block: TextDraft, key: string): DraftBlock {
 	};
 }
 
-/** The text of an element's subtree: `br` as a line break, removed elements counted and skipped. */
-function textOf(element: Element, preserve: boolean, removed: Map<string, number>): string {
+/** Where `textOf` reports what it leaves out. */
+type TextSink = { removed: Map<string, number>; imagesInText: number };
+
+/**
+ * The text of an element's subtree: `br` as a line break, removed elements counted and skipped,
+ * images counted and left out.
+ */
+function textOf(element: Element, preserve: boolean, sink: TextSink): string {
 	let text = "";
 	const stack: ChildNode[] = [...element.childNodes].reverse();
 	for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
 		if (node.nodeName === "#text") text += (node as DefaultTreeAdapterTypes.TextNode).value;
 		else if ("tagName" in node) {
-			if (REMOVED.has(node.tagName))
-				removed.set(node.tagName, (removed.get(node.tagName) ?? 0) + 1);
-			else if (node.tagName === "br") text += "\n";
+			if (REMOVED.has(node.tagName)) {
+				sink.removed.set(node.tagName, (sink.removed.get(node.tagName) ?? 0) + 1);
+			} else if (node.tagName === "br") text += "\n";
+			else if (node.tagName === "img") sink.imagesInText++;
 			else
 				for (let i = node.childNodes.length - 1; i >= 0; i--)
 					stack.push(node.childNodes[i] as ChildNode);
