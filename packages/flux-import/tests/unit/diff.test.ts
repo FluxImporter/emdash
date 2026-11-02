@@ -457,6 +457,23 @@ describe("Portable Text in the plan", () => {
 		).toEqual(canonicalPortableText([block("x", "a", { listItem: "number", level: 1 })]));
 	});
 
+	it("compares marks as a set, as the editor reorders them on save", () => {
+		const spans = (marks: string[], def: string) => [
+			{
+				_type: "block",
+				_key: "a",
+				children: [{ _type: "span", _key: "s", text: "x", marks }],
+				markDefs: [{ _type: "link", _key: def, href: "https://x.test/" }],
+			},
+		];
+		expect(canonicalPortableText(spans(["em", "strong", "b1l0"], "b1l0"))).toEqual(
+			canonicalPortableText(spans(["zz9", "strong", "em"], "zz9")),
+		);
+		expect(canonicalPortableText(spans(["em", "strong", "b1l0"], "b1l0"))).not.toEqual(
+			canonicalPortableText(spans(["em", "b1l0"], "b1l0")),
+		);
+	});
+
 	it("compares text, marks, link targets, images and block order", () => {
 		const changed = (blocks: unknown[]) => plan(blocks, item(value)).action;
 		expect(changed([block("b0", "Hello!"), linked("b1", "b1l0"), image("b2", "m1")])).toBe(

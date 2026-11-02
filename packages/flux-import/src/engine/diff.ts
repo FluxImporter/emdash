@@ -198,7 +198,7 @@ const MAX_CANONICAL_DEPTH = 16;
 /**
  * The comparable form of one Portable Text value, or undefined when it is not an array (or nests
  * too deep), which always compares as changed. Every `_key` is dropped, and marks that name a
- * block's link definitions name its position instead (`@0`). An empty `marks` or `markDefs`, a
+ * block's link definitions name its position instead (`@0`); marks are a set, so they are sorted. An empty `marks` or `markDefs`, a
  * text block's `style: "normal"`, a link's `blank: false` and a list's `listStart: 1` equal a
  * missing one, and `listId` is dropped: EmDash's editor writes and drops these on save (Fact V2).
  */
@@ -234,7 +234,7 @@ function canonicalBlock(block: unknown): JsonValue | undefined {
 		if (key === "children" && Array.isArray(raw)) {
 			value = raw.map((span) =>
 				isObject(span) && Array.isArray(span.marks)
-					? { ...span, marks: span.marks.map((m) => ids.get(m) ?? m) }
+					? { ...span, marks: span.marks.map((m) => ids.get(m) ?? m).sort() }
 					: span,
 			);
 		}

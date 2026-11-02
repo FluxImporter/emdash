@@ -55,7 +55,7 @@ Found while writing this plan, on Node v22.23.1, EmDash 1.2.0 and local workerd;
 ## Rulings this plan makes
 
 1. **Exact nesting bound instead of the pre-scan.** The spec's linear pre-scan does not count elements whose end tag may be omitted, but `parse5` keeps them open when they nest (`<ul><li>` × 256 is 513 deep, Fact V4). `convertPortableText` instead passes `parseFragment` a tree adapter (the default one plus `onItemPush`/`onItemPop`, Fact E1) that counts open elements and throws as soon as more than 256 are open (257 with the fragment's root): `portable_text_too_complex`, "The markup nests more than 256 elements deep". The bound is exact for every tag, so 128 nested lists (256 elements) pass and 129 fail.
-2. **Canonical form (spec "Diff", extended by Fact V2).** `canonicalPortableText` removes `_key` at every depth; on text blocks it removes `listId`, a `normal` style, `listStart: 1` and an empty `markDefs`, and renames each span mark that names a `markDef` to `@<index of the definition>`; at every depth it removes empty `marks`, a link's `blank: false` and `undefined` values. A stored value that is not an array, contains a non-JSON value or nests deeper than 16 levels has no canonical form and always compares as changed. An empty array is equal to nothing stored.
+2. **Canonical form (spec "Diff", extended by Fact V2).** `canonicalPortableText` removes `_key` at every depth; on text blocks it removes `listId`, a `normal` style, `listStart: 1` and an empty `markDefs`, renames each span mark that names a `markDef` to `@<index of the definition>` and sorts a span's marks (they are a set: the editor reorders them by schema rank on save); at every depth it removes empty `marks`, a link's `blank: false` and `undefined` values. A stored value that is not an array, contains a non-JSON value or nests deeper than 16 levels has no canonical form and always compares as changed. An empty array is equal to nothing stored.
 3. **No new comparison kind.** `Comparison` and `BY_TARGET` do not change; Portable Text fields never enter `data` before the plan, so `planRecord` gets them as a sixth argument (`portableText`), like M4c's `media`, and compares them with the canonical form.
 4. **`<br>`.** `\n` is appended to the text before it and the text after it starts a new span (the editor's shape), so a round trip stays equal.
 5. **`applyTemplate` warnings.** The result gains `warnings?: ValueWarning[]` only when there is one, so existing `toEqual` assertions on `applyTemplate` results are unchanged. Warnings are kept on records that then fail.
@@ -1924,7 +1924,7 @@ const MAX_CANONICAL_DEPTH = 16;
 /**
  * The comparable form of one Portable Text value, or undefined when it is not an array (or nests
  * too deep), which always compares as changed. Every `_key` is dropped, and marks that name a
- * block's link definitions name its position instead (`@0`). An empty `marks` or `markDefs`, a
+ * block's link definitions name its position instead (`@0`); marks are a set, so they are sorted. An empty `marks` or `markDefs`, a
  * text block's `style: "normal"`, a link's `blank: false` and a list's `listStart: 1` equal a
  * missing one, and `listId` is dropped: EmDash's editor writes and drops these on save (Fact V2).
  */
