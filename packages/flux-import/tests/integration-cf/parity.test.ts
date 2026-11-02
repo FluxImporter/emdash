@@ -16,14 +16,23 @@ import {
 	postsTemplate,
 } from "../fixtures/links.js";
 import {
+	BLUE_PNG,
 	createMediaSchema,
 	GREEN_JPEG,
 	largePng,
 	MANUAL_PDF,
 	mediaCsv,
 	mediaTemplate,
+	RED_PNG,
 	type StoredMedia,
 } from "../fixtures/media.js";
+import {
+	articleHtml,
+	createPortableTextSchema,
+	type Post,
+	portableTextTemplate,
+	postsJson,
+} from "../fixtures/portable-text.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
@@ -382,6 +391,104 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await feeds.stop();
 		}
+	});
+
+	it("imports M4d Portable Text from HTML and Markdown into R2, defers a record by budget, and re-runs unchanged", async () => {
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			await createPortableTextSchema(client, "cf_pt");
+			const names = Array.from({ length: 12 }, (_, i) => `/pt/${i}.png`);
+			for (const [i, name] of names.entries()) {
+				const body = new Uint8Array([...RED_PNG, ...new TextEncoder().encode(`cf-pt-${i}`)]);
+				feeds.feeds.set(name, { body, contentType: "image/png" });
+			}
+			feeds.feeds.set("/pt/blue.png", { body: BLUE_PNG, contentType: "image/png" });
+			const run = async (posts: Post[], template: Record<string, unknown>) => {
+				const { uploadId } = await client.upload(postsJson(posts), "posts.json");
+				const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
+				const done = await client.runToEnd(job.id);
+				return { done, rows: await client.records(done.id) };
+			};
+			const html: Post[] = [
+				{ id: "H1", title: "Article", html: articleHtml(feeds.url(names[0] as string)) },
+				// More new images than one Workers batch downloads (WORKERS_LOOKUP_BUDGET).
+				{
+					id: "H2",
+					title: "Gallery",
+					html: names.map((n) => `<img src="${feeds.url(n)}">`).join(""),
+				},
+			];
+			const first = await run(html, portableTextTemplate("cf_pt"));
+			expect(first.done.counters).toMatchObject({ created: 2, failed: 0 });
+			expect(first.rows[0]?.warnings).toHaveLength(3);
+			expect(first.rows[1]?.newMedia).toEqual(names.slice(1).map((n) => `body: ${feeds.url(n)}`));
+			// Each URL was downloaded once, across the batches that deferred H2.
+			for (const name of names) {
+				expect(feeds.requests.filter((r) => r.path === name)).toHaveLength(1);
+			}
+			const entries = await byKey("cf_pt");
+			const gallery = entries.get("H2")?.data.body as { asset: { url: string } }[];
+			expect(gallery).toHaveLength(12);
+			const file = await client.raw("GET", gallery[0]?.asset.url ?? "?");
+			expect(file.status).toBe(200);
+			expect(file.headers.get("content-type")).toBe("image/png");
+
+			const md = `# Title\n\n![Blue](${feeds.url("/pt/blue.png")})\n\n- *one*\n`;
+			const markdown = await run(
+				[{ id: "M1", title: "Markdown", md }],
+				portableTextTemplate("cf_pt", { format: "markdown" }),
+			);
+			expect(markdown.done.counters).toMatchObject({ created: 1 });
+			const body = (await byKey("cf_pt")).get("M1")?.data.body as { _type: string }[];
+			expect(body.map((b) => b._type)).toEqual(["block", "image", "block"]);
+
+			const requests = feeds.requests.length;
+			const again = await run(html, portableTextTemplate("cf_pt"));
+			expect(again.done.counters).toMatchObject({ unchanged: 2 });
+			expect(feeds.requests.length).toBe(requests);
+		} finally {
+			await feeds.stop();
+		}
+	});
+
+	it("writes a record with almost 1 MiB of M4d Portable Text to D1", async () => {
+		await client.createCollection("cf_pt_big");
+		for (const slug of ["a", "b", "c"]) {
+			await client.api("POST", "/_emdash/api/schema/collections/cf_pt_big/fields", {
+				slug,
+				label: slug,
+				type: "portableText",
+			});
+		}
+		// Three fields of 340,000 characters: about 1,020,000 bytes of JSON, under the 1 MiB cap.
+		const text = (tag: string) => `${tag} ${"lorem ipsum ".repeat(28_333)}`.trim();
+		const record = { id: "B1", a: text("a"), b: text("b"), c: text("c") };
+		const field = (from: string) => ({ from, type: "portableText", format: "text" });
+		const { uploadId } = await client.upload(JSON.stringify({ posts: [record] }), "big.json");
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: {
+				version: 1,
+				source: { format: "json", records: "posts" },
+				collection: "cf_pt_big",
+				locale: "en",
+				key: { from: "id" },
+				slug: { from: "id" },
+				fields: { a: field("a"), b: field("b"), c: field("c") },
+			},
+			dryRun: false,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done.counters).toMatchObject({ created: 1, failed: 0 });
+		const stored = (await byKey("cf_pt_big")).get("B1")?.data;
+		const bytes = new TextEncoder().encode(
+			JSON.stringify([stored?.a, stored?.b, stored?.c]),
+		).byteLength;
+		expect(bytes).toBeGreaterThan(1_000_000);
+		expect(
+			(stored?.c as { children: { text: string }[] }[] | undefined)?.[0]?.children[0]?.text,
+		).toBe(record.c);
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {
