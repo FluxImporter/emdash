@@ -5,14 +5,15 @@ import {
 	MEDIA_MIN_LEFT_MS,
 	type MediaContext,
 	MediaDeferred,
+	type MediaDeps,
 	type MediaRequest,
 	mediaFieldValue,
 	mediaMapKey,
+	obtainMedia,
 	obtainRecordMedia,
-	resolveMedia,
 } from "../../src/engine/media.js";
-import { ContentWriteError, MediaUploadError } from "../../src/engine/ports.js";
-import { COST_CALL, COST_MEDIA, LookupCache } from "../../src/engine/resolve.js";
+import { ContentWriteError, type MediaInfo, MediaUploadError } from "../../src/engine/ports.js";
+import { COST_CALL, COST_MEDIA, type LinkError, LookupCache } from "../../src/engine/resolve.js";
 import { MediaError } from "../../src/sources/media-fetch.js";
 import { makeDeps } from "./fakes.js";
 
@@ -38,7 +39,27 @@ function setup(ctx: Partial<MediaContext> = {}) {
 	return { deps, clock, ctx: context, cache: new LookupCache() };
 }
 
-describe("resolveMedia", () => {
+/**
+ * One media request resolved as the importer does: the map lookup, then in a real run the
+ * download and upload when it is a miss (or a hit with `refresh`); a dry run gives `item: null`
+ * for a miss.
+ */
+async function resolveMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	field: string,
+	request: MediaRequest,
+): Promise<
+	{ ok: true; item: MediaInfo | null; downloaded: boolean } | { ok: false; error: LinkError }
+> {
+	const found = await findMedia(deps, cache, ctx, field, request);
+	if (!found.ok) return found;
+	if (ctx.dryRun) return { ok: true, item: found.lookup.item, downloaded: false };
+	return obtainMedia(deps, cache, ctx, found.lookup);
+}
+
+describe("findMedia and obtainMedia", () => {
 	it("downloads a miss, uploads it with its alt and filename, and writes the map row", async () => {
 		const { deps, ctx, cache } = setup();
 		const resolved = await resolveMedia(deps, cache, ctx, "photo", image(A, { alt: "A chair" }));

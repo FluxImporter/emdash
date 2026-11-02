@@ -1,7 +1,12 @@
 import { portableTextToProsemirror, prosemirrorToPortableText } from "emdash";
 import { describe, expect, it } from "vitest";
 import { canonicalPortableText } from "../../src/engine/diff.js";
-import { type MediaContext, MediaDeferred, resolveMedia } from "../../src/engine/media.js";
+import {
+	findMedia,
+	type MediaContext,
+	MediaDeferred,
+	obtainMedia,
+} from "../../src/engine/media.js";
 import {
 	convertPortableText,
 	type PortableTextDraft,
@@ -52,12 +57,15 @@ const options = (fail: string[] = []) =>
 describe("Portable Text images", () => {
 	it("uses map hits without downloading and assembles EmDash's image block", async () => {
 		const { deps, ctx } = setup();
-		await resolveMedia(deps, new LookupCache(), ctx, "photo", {
+		const stored = new LookupCache();
+		const found = await findMedia(deps, stored, ctx, "photo", {
 			kind: "image",
 			url: url("a.png"),
 			alt: null,
 			refresh: false,
 		});
+		if (!found.ok) throw new Error(found.error.message);
+		await obtainMedia(deps, stored, ctx, found.lookup);
 		const drafts = {
 			body: draft(
 				`<p>Hi</p><figure><a href="https://x.test/" target="_blank"><img src="${url("a.png")}" alt="A"></a><figcaption>Cap</figcaption></figure>`,

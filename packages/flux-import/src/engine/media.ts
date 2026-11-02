@@ -445,27 +445,6 @@ export async function obtainMedia(
 	}
 }
 
-/**
- * Resolves one media request: the map lookup, then in a real run the download and upload when
- * it is a miss (or a hit with `refresh`). A dry run gives `item: null` for a miss. This is the
- * resolver M4d calls for each Portable Text image URL; it shares the batch's cache, budget and
- * deadline.
- */
-export async function resolveMedia(
-	deps: MediaDeps,
-	cache: LookupCache,
-	ctx: MediaContext,
-	field: string,
-	request: MediaRequest,
-): Promise<
-	{ ok: true; item: MediaInfo | null; downloaded: boolean } | { ok: false; error: LinkError }
-> {
-	const found = await findMedia(deps, cache, ctx, field, request);
-	if (!found.ok) return found;
-	if (ctx.dryRun) return { ok: true, item: found.lookup.item, downloaded: false };
-	return obtainMedia(deps, cache, ctx, found.lookup);
-}
-
 /** Every media field of a record looked up; all errors are collected. */
 export async function lookupRecordMedia(
 	deps: MediaDeps,
