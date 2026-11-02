@@ -10,7 +10,7 @@ import {
 	type DefaultTreeAdapterMap,
 	type DefaultTreeAdapterTypes,
 	defaultTreeAdapter,
-	parseFragment,
+	Parser,
 	type TreeAdapter,
 } from "parse5";
 import { MAX_ALT_LENGTH, normalizeMediaUrl } from "./media.js";
@@ -92,118 +92,132 @@ const markdown = new MarkdownIt("commonmark", {
 	typographer: false,
 }).enable(["table", "strikethrough"]);
 
-/** Thrown inside `parse5` when the open-element stack grows past the limit. */
+/** Thrown inside `parse5` when the markup is too complex to parse in bounded time. */
 class TooComplex extends Error {}
 
+type ParentNode = DefaultTreeAdapterTypes.ParentNode;
+type ChildNode = DefaultTreeAdapterTypes.ChildNode;
+
 /**
- * The default tree adapter with a count of open elements: the parse stops as soon as more than
- * `MAX_PORTABLE_TEXT_NESTING` are open, which bounds `parse5`'s quadratic scope checks.
- * `onItemPush` and `onItemPop` are part of parse5's `TreeAdapter` interface.
+ * The default tree adapter with two bounds on `parse5`'s work. Both rely on `parse5`'s internals
+ * as of the exact pinned version, 7.3.0 (`package.json`); re-check them on any upgrade.
  *
- * `getFirstChild` and `detachNode` make moving all of a node's children linear: `parse5` calls
- * `getFirstChild` only to move every child out, first to last (the fragment's top-level nodes,
- * and the adoption agency's furthest block), and the default `detachNode` splices each one off
- * the front, which is quadratic. Here a parent being emptied keeps its moved-out children until
- * the last one goes, and `getFirstChild` skips them.
+ * A count of open elements: the parse stops as soon as more than `MAX_PORTABLE_TEXT_NESTING` are
+ * open, which bounds `parse5`'s quadratic scope checks. `onItemPush` and `onItemPop` are part of
+ * the `TreeAdapter` interface, and every change to the open-element stack calls them.
+ *
+ * Linear moves of all of a node's children: `parse5` calls `getFirstChild` only to move every
+ * child out, first to last (`getFragment` and `_adoptNodes`: the fragment's top-level nodes, and
+ * the adoption agency's furthest block), and the default `detachNode` splices each one off the
+ * front, which is quadratic. Here detaching the child that `getFirstChild` just returned only
+ * moves a cursor past it; the moved-out prefix is removed when the last child goes, or before
+ * any other change to or read of that parent's children.
  */
 function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 	let open = 0;
-	/** Parents being emptied by `getFirstChild` and `detachNode`, with the children moved out. */
-	const moved = new Map<DefaultTreeAdapterTypes.ParentNode, number>();
+	/** Parents being emptied: the children moved out so far, and the one returned last. */
+	const moving = new Map<ParentNode, { head: number; returned: ChildNode }>();
+	const compact = (parent: ParentNode) => {
+		const state = moving.get(parent);
+		if (state === undefined) return;
+		moving.delete(parent);
+		parent.childNodes.splice(0, state.head);
+	};
 	return {
 		...defaultTreeAdapter,
 		onItemPush() {
 			// The fragment parser's own root element is the first push.
 			open++;
-			if (open > MAX_PORTABLE_TEXT_NESTING + 1) throw new TooComplex();
+			if (open > MAX_PORTABLE_TEXT_NESTING + 1) {
+				throw new TooComplex(
+					`The markup nests more than ${MAX_PORTABLE_TEXT_NESTING} elements deep`,
+				);
+			}
 		},
 		onItemPop() {
 			open--;
 		},
 		getFirstChild(node) {
-			const head = moved.get(node) ?? 0;
+			const head = moving.get(node)?.head ?? 0;
 			const child = node.childNodes[head];
 			if (child === undefined) {
-				if (head > 0) node.childNodes.length = 0;
-				moved.delete(node);
+				compact(node);
 				return null;
 			}
-			moved.set(node, head);
+			moving.set(node, { head, returned: child });
 			return child;
 		},
 		detachNode(node) {
 			const parent = node.parentNode;
-			const head = parent === null ? undefined : moved.get(parent);
-			if (parent === null || head === undefined) {
-				defaultTreeAdapter.detachNode(node);
-				return;
-			}
-			if (parent.childNodes[head] === node) {
-				moved.set(parent, head + 1);
+			if (parent === null) return;
+			const state = moving.get(parent);
+			if (
+				state !== undefined &&
+				state.returned === node &&
+				parent.childNodes[state.head] === node
+			) {
+				state.head++;
 				node.parentNode = null;
 				return;
 			}
-			// Not a move from the front: drop the moved-out children for real first.
-			parent.childNodes.splice(0, head);
-			moved.delete(parent);
+			compact(parent);
 			defaultTreeAdapter.detachNode(node);
+		},
+		appendChild(parent, node) {
+			compact(parent);
+			defaultTreeAdapter.appendChild(parent, node);
+		},
+		insertBefore(parent, node, reference) {
+			compact(parent);
+			defaultTreeAdapter.insertBefore(parent, node, reference);
+		},
+		insertText(parent, text) {
+			compact(parent);
+			defaultTreeAdapter.insertText(parent, text);
+		},
+		insertTextBefore(parent, text, reference) {
+			compact(parent);
+			defaultTreeAdapter.insertTextBefore(parent, text, reference);
+		},
+		getChildNodes(node) {
+			compact(node);
+			return defaultTreeAdapter.getChildNodes(node);
 		},
 	};
 }
 
-const isTagSpace = (code: number) =>
-	code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
-const isAsciiLetter = (code: number) => (code | 0x20) >= 0x61 && (code | 0x20) <= 0x7a;
+/** The tokenizer members the attribute count wraps (protected in `parse5`'s types). */
+type CountedTokenizer = { currentToken: unknown; _leaveAttrName(): void };
 
 /**
- * Whether some tag has more than `MAX_TAG_ATTRIBUTES` attributes, by a linear scan that follows
- * the HTML tokenizer's tag states closely enough to count attribute names outside quoted values.
- * Comments are skipped; text inside raw-text elements may be counted, which can only refuse more.
+ * Parses an HTML fragment like `parseFragment`, within the limits: at most
+ * `MAX_PORTABLE_TEXT_NESTING` open elements (`nestingGuard`) and at most `MAX_TAG_ATTRIBUTES`
+ * attribute names per tag. `parse5`'s tokenizer checks each new attribute name against all the
+ * earlier ones of its tag, so the count wraps `_leaveAttrName`, which runs once per name: like
+ * `nestingGuard`, this relies on `parse5` 7.3.0's internals (`dist/tokenizer/index.js`). Throws
+ * `TooComplex` past a limit. Exported for the tests, which compare it with `parseFragment`.
  */
-function tooManyAttributes(html: string): boolean {
-	const n = html.length;
-	let i = 0;
-	while (i < n) {
-		const lt = html.indexOf("<", i);
-		if (lt === -1) return false;
-		i = lt + 1;
-		if (html.startsWith("!--", i)) {
-			const close = html.indexOf("-->", i + 3);
-			if (close === -1) return false;
-			i = close + 3;
-			continue;
+export function parseHtml(html: string): DefaultTreeAdapterTypes.DocumentFragment {
+	const parser = Parser.getFragmentParser<DefaultTreeAdapterMap>(null, {
+		treeAdapter: nestingGuard(),
+	});
+	const tokenizer = parser.tokenizer as unknown as CountedTokenizer;
+	const leaveAttrName = tokenizer._leaveAttrName;
+	let token: unknown = null;
+	let names = 0;
+	tokenizer._leaveAttrName = function (this: CountedTokenizer) {
+		if (this.currentToken !== token) {
+			token = this.currentToken;
+			names = 0;
 		}
-		if (html.charCodeAt(i) === 0x2f) i++; // end tags are tokenized with attributes too
-		if (!isAsciiLetter(html.charCodeAt(i))) continue;
-		// The tag name.
-		while (i < n && !isTagSpace(html.charCodeAt(i)) && html[i] !== "/" && html[i] !== ">") i++;
-		let count = 0;
-		while (i < n && html[i] !== ">") {
-			const c = html[i] as string;
-			if (isTagSpace(html.charCodeAt(i)) || c === "/") {
-				i++;
-				continue;
-			}
-			// An attribute name: its first character may be "=", the rest stops at "=".
-			count++;
-			if (count > MAX_TAG_ATTRIBUTES) return true;
-			i++;
-			while (i < n && !isTagSpace(html.charCodeAt(i)) && !"/>=".includes(html[i] as string)) i++;
-			while (i < n && isTagSpace(html.charCodeAt(i))) i++;
-			if (html[i] !== "=") continue;
-			i++;
-			while (i < n && isTagSpace(html.charCodeAt(i))) i++;
-			const quote = html[i];
-			if (quote === '"' || quote === "'") {
-				const close = html.indexOf(quote, i + 1);
-				if (close === -1) return false;
-				i = close + 1;
-			} else {
-				while (i < n && !isTagSpace(html.charCodeAt(i)) && html[i] !== ">") i++;
-			}
+		names++;
+		if (names > MAX_TAG_ATTRIBUTES) {
+			throw new TooComplex(`The markup has a tag with more than ${MAX_TAG_ATTRIBUTES} attributes`);
 		}
-	}
-	return false;
+		leaveAttrName.call(this);
+	};
+	parser.tokenizer.write(html, true);
+	return parser.getFragment();
 }
 
 function utf8Bytes(text: string): number {
@@ -250,22 +264,11 @@ export function convertPortableText(
 			`The Markdown renders to more than ${MAX_RENDERED_MARKDOWN_BYTES / KIB / KIB} MiB of HTML`,
 		);
 	}
-	if (tooManyAttributes(html)) {
-		return fail(
-			"portable_text_too_complex",
-			`The markup has a tag with more than ${MAX_TAG_ATTRIBUTES} attributes`,
-		);
-	}
 	let fragment: DefaultTreeAdapterTypes.DocumentFragment;
 	try {
-		fragment = parseFragment(html, { treeAdapter: nestingGuard() });
+		fragment = parseHtml(html);
 	} catch (e) {
-		if (e instanceof TooComplex) {
-			return fail(
-				"portable_text_too_complex",
-				`The markup nests more than ${MAX_PORTABLE_TEXT_NESTING} elements deep`,
-			);
-		}
+		if (e instanceof TooComplex) return fail("portable_text_too_complex", e.message);
 		return fail("portable_text_failed", `The HTML could not be parsed: ${errorText(e)}`);
 	}
 	try {
@@ -425,7 +428,6 @@ const PARTS: ReadonlySet<string> = new Set([
 ]);
 
 type Element = DefaultTreeAdapterTypes.Element;
-type ChildNode = DefaultTreeAdapterTypes.ChildNode;
 type LinkTarget = { href: string; blank: boolean };
 
 /** What a new text block starts as, where text arrives. */

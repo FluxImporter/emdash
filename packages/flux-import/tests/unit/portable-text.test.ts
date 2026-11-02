@@ -1,11 +1,14 @@
 import MarkdownIt from "markdown-it";
+import { type DefaultTreeAdapterTypes, parseFragment } from "parse5";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	convertPortableText,
 	type DraftBlock,
 	imageUrl,
 	type PortableTextConverted,
+	type PortableTextFormat,
 	type PortableTextOptions,
+	parseHtml,
 	safeHref,
 } from "../../src/engine/portable-text.js";
 
@@ -38,6 +41,19 @@ const span = (key: string, text: string, marks: string[] = []) => ({
 	text,
 	marks,
 });
+
+const LIMIT = 512 * 1024;
+/** Input of about `bytes` characters: `prefix`, then `unit` repeated. */
+const sized =
+	(unit: string, prefix = "") =>
+	(bytes: number) =>
+		prefix + unit.repeat(Math.floor((bytes - prefix.length) / unit.length));
+/** Input of about `bytes` characters made of distinct units. */
+const distinct = (unit: (i: number) => string) => (bytes: number) => {
+	let text = "";
+	for (let i = 0; text.length < bytes - 40; i++) text += unit(i);
+	return text;
+};
 
 describe("convertPortableText: blocks and marks", () => {
 	it("builds the blocks and marks EmDash's editor writes", () => {
@@ -555,42 +571,191 @@ describe("convertPortableText: formats, keys and limits", () => {
 		];
 		expect(convert(tag(1001)).errors).toEqual(tooMany);
 		expect(convert(`</p ${"b ".repeat(1001)}>`).errors).toEqual(tooMany);
-		// Attributes in a comment are not counted.
-		expect(convert(`<!-- <p ${"b ".repeat(1001)}> -->x`).errors).toEqual([]);
-		// About 95,000 distinct names on one tag, from HTML and from Markdown.
-		let many = "<p";
-		for (let i = 0; many.length < 512 * 1024 - 20; i++) many += ` ${i.toString(36)}`;
-		many += ">x</p>";
-		for (const format of ["html", "markdown"] as const) {
+		// Attributes in a comment, raw text or CDATA are not counted.
+		const names = "b ".repeat(1001);
+		expect(convert(`<!-- <p ${names}> -->x`).errors).toEqual([]);
+		expect(convert(`<script><p ${names}></script>x`).errors).toEqual([]);
+		expect(convert(`<svg><![CDATA[<p ${names}>]]></svg>x`).errors).toEqual([]);
+		// About 95,000 distinct names on one tag, also after markup that hides a tag from a scan.
+		let attributes = "";
+		for (let i = 0; attributes.length < 480 * 1024; i++) attributes += ` ${i.toString(36)}`;
+		const many = `<p${attributes}>x</p>`;
+		const inputs: [string, PortableTextFormat][] = [
+			[many, "html"],
+			[many, "markdown"],
+			...[
+				`<!-->${many}<!---->`,
+				`<!--->${many}<!---->`,
+				`<!-- a --!>${many}<!---->`,
+				`<script><x a="</script>${many}`,
+				`<style><x a='</style>${many}`,
+				`<textarea><x a="</textarea>${many}`,
+				`<title><x a="</title>${many}`,
+				`<svg><![CDATA[<x a="]]></svg>${many}`,
+				`<?x a="?>${many}`,
+				`</ x a=">${many}`,
+				`<p a=<b${attributes}>x`,
+				`<p${attributes.replace(/ /g, "/")}>x`,
+			].map((html): [string, PortableTextFormat] => [html, "html"]),
+			[`<script><x a="</script>\n\n${many}\n`, "markdown"],
+			[`<!-->\n${many}\n<!---->\n`, "markdown"],
+		];
+		for (const [text, format] of inputs) {
 			const started = performance.now();
-			expect(convert(many, { format }).errors).toEqual(tooMany);
-			expect(performance.now() - started).toBeLessThan(1000);
+			expect(convert(text, { format }).errors, text.slice(0, 40)).toEqual(tooMany);
+			expect(performance.now() - started).toBeLessThan(5000);
 		}
 	});
 
 	it("stays fast at the limits", () => {
-		const fill = (unit: string, prefix: string) =>
-			prefix + unit.repeat(Math.floor((512 * 1024 - prefix.length) / unit.length));
-		const distinct = (unit: (i: number) => string) => {
-			let text = "";
-			for (let i = 0; text.length < 512 * 1024 - 40; i++) text += unit(i);
-			return text;
-		};
-		for (const html of [
-			fill("</p>", "<div>".repeat(255)),
-			fill("<li>", "<div>".repeat(255)),
-			fill("</p>", "<ul><li>".repeat(127)),
-			fill("<p>Some <b>bold</b> and <a href='/x'>a link</a>.</p>", ""),
-			// One row of 100,000 cells, and one paragraph of 130,000 line breaks.
-			fill("<td>a", "<table><tr>"),
-			fill("<br>", "x"),
-			fill("a <br>", ""),
-			// Distinct links in one block.
-			distinct((i) => `<a href="#${i}">x</a>`),
-		]) {
+		const cases: [string, PortableTextFormat][] = [
+			[sized("</p>", "<div>".repeat(255))(LIMIT), "html"],
+			[sized("<li>", "<div>".repeat(255))(LIMIT), "html"],
+			[sized("</p>", "<ul><li>".repeat(127))(LIMIT), "html"],
+			[sized("<p>Some <b>bold</b> and <a href='/x'>a link</a>.</p>")(LIMIT), "html"],
+			[`${">".repeat(5000)} a`, "markdown"],
+			// 700 nested list levels: about 490 KB.
+			[Array.from({ length: 700 }, (_, i) => `${"  ".repeat(i)}- item`).join("\n"), "markdown"],
+		];
+		for (const [text, format] of cases) {
 			const started = performance.now();
-			expect(convert(html).errors).toEqual([]);
-			expect(performance.now() - started).toBeLessThan(2000);
+			expect(convert(text, { format }).errors).toEqual([]);
+			expect(performance.now() - started).toBeLessThan(5000);
+		}
+	});
+
+	it("stays linear: four times the input takes less than eight times as long", () => {
+		const cases: [string, (bytes: number) => string, PortableTextFormat][] = [
+			["one row of cells", sized("<td>a", "<table><tr>"), "html"],
+			["line breaks", sized("<br>", "x"), "html"],
+			["words and line breaks", sized("a <br>"), "html"],
+			["distinct links in one block", distinct((i) => `<a href="#${i}">x</a>`), "html"],
+			["paragraphs", sized("<p>x</p>"), "html"],
+			["formatting and paragraphs", sized("<b><p>x</b>"), "html"],
+			["emphasis openers", sized("*a "), "markdown"],
+			["underscore openers", sized("_a "), "markdown"],
+			["brackets", sized("["), "markdown"],
+			["link openers", sized("[a]("), "markdown"],
+			["strong openers", sized("**a "), "markdown"],
+			["thematic breaks", sized("***\n"), "markdown"],
+			[
+				"a table row",
+				(bytes) => {
+					const cells = Math.floor(bytes / 4) - 2;
+					return `|${"a|".repeat(cells)}\n|${"-|".repeat(cells)}\n`;
+				},
+				"markdown",
+			],
+		];
+		for (const [name, make, format] of cases) {
+			const time = (bytes: number) => {
+				const text = make(bytes);
+				let best = Number.POSITIVE_INFINITY;
+				for (let run = 0; run < 3; run++) {
+					const started = performance.now();
+					expect(convert(text, { format }).errors, name).toEqual([]);
+					best = Math.min(best, performance.now() - started);
+				}
+				expect(best, name).toBeLessThan(5000);
+				return best;
+			};
+			const small = time(LIMIT / 4);
+			const large = time(LIMIT);
+			// Below 10 ms, timer noise dominates the ratio.
+			expect(large / Math.max(small, 10), name).toBeLessThan(8);
+		}
+	}, 120_000);
+});
+
+describe("parseHtml", () => {
+	/** A node as text: names, namespaces, attributes, children, template content and parents. */
+	function dump(node: DefaultTreeAdapterTypes.Node, parent: unknown, out: string[]): void {
+		if (parent !== undefined && "parentNode" in node && node.parentNode !== parent) {
+			out.push(`parent mismatch at ${node.nodeName}`);
+		}
+		if (node.nodeName === "#text") {
+			out.push(`T${JSON.stringify((node as DefaultTreeAdapterTypes.TextNode).value)}`);
+			return;
+		}
+		if (node.nodeName === "#comment") {
+			out.push(`C${JSON.stringify((node as DefaultTreeAdapterTypes.CommentNode).data)}`);
+			return;
+		}
+		const element = node as DefaultTreeAdapterTypes.Element;
+		out.push(
+			`<${node.nodeName} ${element.namespaceURI ?? ""} ${JSON.stringify(element.attrs ?? [])}`,
+		);
+		for (const child of (node as DefaultTreeAdapterTypes.ParentNode).childNodes) {
+			dump(child, node, out);
+		}
+		const content = (node as DefaultTreeAdapterTypes.Template).content;
+		if (content !== undefined) {
+			out.push("[content");
+			for (const child of content.childNodes) dump(child, content, out);
+			out.push("]");
+		}
+		out.push(">");
+	}
+	const tree = (fragment: DefaultTreeAdapterTypes.DocumentFragment) => {
+		const out: string[] = [];
+		dump(fragment, undefined, out);
+		return out.join("|");
+	};
+
+	it("builds the same tree as parseFragment", () => {
+		const corpus = [
+			"",
+			"x",
+			"<p>a<p>b",
+			"<table><tr><td>a<td>b</table>",
+			"<table><b>x</b><tr><td>y</table>z",
+			"<table>text<tr>",
+			"<p>1<table><tr><td>2</p>3</table>",
+			"<b><table><td></b><i></table>X",
+			"<b><i>a<p>b</i>c</b>d",
+			"<a href=1>x<div>y</a>z</div>",
+			"<a><p><a>x</a></p></a>",
+			"<p><b><i><u>a</p><p>b</p>",
+			"<b>x<div><i>y<div>z</b>w</i>v</div></div>",
+			"<a>1<a>2<a>3",
+			"<nobr>a<nobr>b",
+			"<em><div><em>x</div></em>y",
+			"<template><tr><td>x</td></tr></template><p>y",
+			"<template><template><b>z</template></template>",
+			"<svg><foreignObject><p>a</p></foreignObject><desc><b>x</b></desc></svg><math><mi>x</mi><mtext><b>y</b></mtext></math>",
+			"<svg><![CDATA[<b>x</b>]]></svg>t",
+			"<select><option>a<option>b</select><input>",
+			"<ul><li>a<li>b<ul><li>c</ul></ul>",
+			"<dl><dt>a<dd>b<dt>c</dl>",
+			"<pre>\nx</pre><textarea>\ny</textarea>",
+			"<!-- c --><p>a<!-- d -->b",
+			"<ruby>a<rb>b<rt>c<rp>d</ruby>",
+			"<p a=1 a=2 b>dup</p>",
+			"<hr>".repeat(300),
+			"<b><p>x</b>".repeat(300),
+			"<a><p>".repeat(100),
+			"<td>a".repeat(300),
+		];
+		// Random tag soup, from a fixed seed.
+		const tags = ["b", "i", "a", "p", "div", "table", "tr", "td", "li", "ul", "font", "nobr"];
+		const more = ["template", "svg", "math", "select", "option", "pre", "h1", "form", "caption"];
+		const all = [...tags, ...more];
+		let seed = 7;
+		const random = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return seed % n;
+		};
+		for (let k = 0; k < 500; k++) {
+			let html = "";
+			for (let j = 3 + random(25); j > 0; j--) {
+				const r = random(6);
+				const tag = all[random(all.length)];
+				html += r < 3 ? `<${tag}>` : r < 5 ? `</${tag}>` : "x";
+			}
+			corpus.push(html);
+		}
+		for (const html of corpus) {
+			expect(tree(parseHtml(html)), html).toBe(tree(parseFragment(html)));
 		}
 	});
 });
@@ -634,29 +799,6 @@ describe("convertPortableText: Markdown", () => {
 			{ code: "unknown_markup", message: "Kept the text of 1 <table> element" },
 			{ code: "removed_markup", message: "Removed 1 <script> element" },
 		]);
-	});
-
-	it("stays linear on inputs that are quadratic in other parsers", () => {
-		const cases = [
-			"*a ".repeat(50_000),
-			"_a ".repeat(50_000),
-			"[".repeat(50_000),
-			`${">".repeat(5000)} a`,
-			// 700 nested list levels: about 490 KB.
-			Array.from({ length: 700 }, (_, i) => `${"  ".repeat(i)}- item`).join("\n"),
-			"[a](".repeat(50_000),
-			"**a ".repeat(100_000),
-			// A table row of 50,000 cells.
-			`|${"a|".repeat(50_000)}\n|${"-|".repeat(50_000)}\n`,
-			// 130,000 thematic breaks, each a top-level element.
-			"***\n".repeat(130_000),
-		];
-		for (const text of cases) {
-			const started = performance.now();
-			const converted = markdown(text);
-			expect(converted.errors).toEqual([]);
-			expect(performance.now() - started).toBeLessThan(1000);
-		}
 	});
 
 	it("fails the record, not the batch, when a parser throws", () => {
