@@ -611,6 +611,51 @@ describe("convertPortableText: formats, keys and limits", () => {
 		expect(performance.now() - started).toBeLessThan(5000);
 	});
 
+	it("refuses Markdown that expands to more than 100,000 markdown-it tokens", () => {
+		const tooMany = [
+			{ code: "portable_text_too_large", message: "The Markdown expands to too many elements" },
+		];
+		// A 100-column header turns each row after it into 100 cells: 1.7 KB made 200,000 tokens.
+		const table = `|${"a|".repeat(100)}\n|${"-|".repeat(100)}\n${"a\n".repeat(660)}\n`;
+		expect(table.length).toBeLessThan(2000);
+		for (const text of [table, sized(table)(MARKDOWN_LIMIT), sized("*a* ")(MARKDOWN_LIMIT)]) {
+			const started = performance.now();
+			expect(convert(text, { format: "markdown" }).errors).toEqual(tooMany);
+			expect(performance.now() - started).toBeLessThan(5000);
+		}
+		// 128 KiB of prose takes about 11,000 tokens.
+		const prose = sized(
+			"Lorem ipsum dolor sit amet, *consectetur* adipiscing elit, sed do **eiusmod** tempor incididunt ut labore et [dolore](https://x.test/d) magna aliqua. Ut enim ad `minim` veniam.\n\n",
+		)(MARKDOWN_LIMIT);
+		expect(convert(prose, { format: "markdown" }).errors).toEqual([]);
+		// The limit is per parse: a later field starts again.
+		expect(convert("# a", { format: "markdown" }).errors).toEqual([]);
+		// The shared markdown-it module is not changed.
+		expect(new MarkdownIt().parse(table, {}).length).toBeGreaterThan(0);
+	});
+
+	it("refuses HTML whose tree would have more than 150,000 nodes", () => {
+		const tooMany = [
+			{ code: "portable_text_too_large", message: "The markup expands to too many elements" },
+		];
+		// Each paragraph reopens the 42 formatting elements still active: 16 KiB made 164,000 nodes.
+		const kinds = ["a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike"];
+		const open = `<p>${[...kinds, "strong", "tt", "u"]
+			.map((k) => `<${k}>`)
+			.join("")
+			.repeat(3)}`;
+		const started = performance.now();
+		expect(convert(sized("<p>a", open)(16 * 1024)).errors).toEqual(tooMany);
+		expect(performance.now() - started).toBeLessThan(5000);
+		expect(convert(sized("<p>a")(LIMIT), {}, Infinity).errors).toEqual(tooMany);
+		// Text joined into one node counts once: 512 KiB of words in one paragraph is one node.
+		expect(convert(`<p>${sized("a ")(LIMIT - 10)}</p>`, {}, Infinity).errors).toEqual([]);
+		expect(
+			convert(sized("<p>Some <b>bold</b> and <a href='/x'>a link</a>.</p>")(LIMIT), {}, Infinity)
+				.errors,
+		).toEqual([]);
+	});
+
 	it("renders Markdown exactly as markdown-it does", () => {
 		const reference = new MarkdownIt("commonmark", { html: true }).enable([
 			"table",
@@ -656,13 +701,14 @@ describe("convertPortableText: formats, keys and limits", () => {
 		expect(portableTextBytes([{ _type: "image", _key: "b0", slot: 0 }])).toBe(
 			utf8Length('[{"_type":"image","_key":"b0","slot":0}]') + 160,
 		);
-		// 512 KiB of paragraphs would be 7 MB of JSON: the walker stops after a few blocks.
+		// Paragraphs that would be megabytes of JSON: the walker stops after a few blocks.
 		for (const [text, format] of [
-			[sized("<p>a</p>")(LIMIT), "html"],
+			[sized("<p>a</p>")(LIMIT / 4), "html"],
 			[sized("a\n\n")(LIMIT), "text"],
-			[sized("a\n\n")(MARKDOWN_LIMIT), "markdown"],
-			// One block of 100,000 spans: the open block counts too.
-			[sized("a<br>")(LIMIT), "html"],
+			// 11,000 paragraphs: 44,000 markdown-it tokens, under that limit.
+			[sized("a\n\n")(MARKDOWN_LIMIT / 4), "markdown"],
+			// One block of 26,000 spans: the open block counts too.
+			[sized("a<br>")(LIMIT / 4), "html"],
 		] as [string, PortableTextFormat][]) {
 			const stringify = vi.spyOn(JSON, "stringify");
 			expect(convert(text, { format }, 1000).errors).toEqual(TOO_LARGE);
@@ -781,14 +827,16 @@ describe("convertPortableText: formats, keys and limits", () => {
 			[
 				"a table row",
 				(bytes) => {
-					const cells = Math.floor(bytes / 4) - 2;
+					// 4 tokens a cell: at most 16,000 cells keeps 128 KiB under the token limit.
+					const cells = Math.floor(bytes / 8) - 2;
 					return `|${"a|".repeat(cells)}\n|${"-|".repeat(cells)}\n`;
 				},
 				"markdown",
 			],
 		];
 		for (const [name, make, format] of cases) {
-			const limit = format === "markdown" ? MARKDOWN_LIMIT : LIMIT;
+			// Half the HTML limit keeps one-node-per-2-bytes cases under the node limit.
+			const limit = format === "markdown" ? MARKDOWN_LIMIT : LIMIT / 2;
 			const time = (bytes: number) => {
 				const text = make(bytes);
 				let best = Number.POSITIVE_INFINITY;

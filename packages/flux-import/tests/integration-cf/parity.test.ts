@@ -464,17 +464,20 @@ describe("workerd parity (D1, R2)", () => {
 		}
 	});
 
-	it("fails a worst-case M4d Markdown record cleanly and completes the job", async () => {
+	it("fails worst-case M4d Markdown records cleanly and completes the job", async () => {
 		await createPortableTextSchema(client, "cf_pt_worst");
 		const fill = (unit: string, bytes: number) => unit.repeat(Math.floor(bytes / unit.length));
 		const limit = 128 * 1024;
-		const head = `|${"a|".repeat(100)}\n|${"-|".repeat(100)}\n`;
+		const table = `|${"a|".repeat(100)}\n|${"-|".repeat(100)}\n${"a\n".repeat(660)}\n`;
+		const prose =
+			"Lorem ipsum dolor sit amet, *consectetur* adipiscing elit, sed do **eiusmod** tempor incididunt ut labore et [dolore](https://x.test/d) magna aliqua. Ut enim ad `minim` veniam.\n\n";
 		const posts: Post[] = [
-			// 43,690 paragraphs: 175,000 markdown-it tokens and about 4.6 MB of JSON if built.
-			{ id: "W1", title: "Paragraphs", md: fill("a\n\n", limit) },
-			// 65,000 table cells: the most memory a Markdown field at the limit takes (Node).
-			{ id: "W2", title: "Table", md: head + fill("a\n", limit - head.length) },
-			{ id: "W3", title: "Small", md: "# After\n\nText" },
+			// 24,576 paragraphs: 98,304 markdown-it tokens, under that limit, and 2.6 MB of JSON.
+			{ id: "W1", title: "Paragraphs", md: fill("a\n\n", 72 * 1024) },
+			// Tables of 66,000 cells each, 200,000 tokens per 1.7 KB, repeated to the limit.
+			{ id: "W2", title: "Tables", md: fill(table, limit) },
+			{ id: "W3", title: "Prose", md: fill(prose, limit) },
+			{ id: "W4", title: "Small", md: "# After\n\nText" },
 		];
 		const { uploadId } = await client.upload(postsJson(posts), "worst.json");
 		const job = await client.plugin("jobs/create", {
@@ -483,22 +486,19 @@ describe("workerd parity (D1, R2)", () => {
 			dryRun: false,
 		});
 		const done = await client.runToEnd(job.id);
-		expect(done).toMatchObject({ status: "completed", counters: { created: 2, failed: 1 } });
+		expect(done).toMatchObject({ status: "completed", counters: { created: 2, failed: 2 } });
 		const rows = await client.records(done.id);
-		expect(rows[0]).toMatchObject({
+		const tooLarge = (message: string) => ({
 			status: "failed",
-			errors: [
-				{
-					field: "body",
-					code: "portable_text_too_large",
-					message: "The record's Portable Text is larger than 1 MiB",
-				},
-			],
+			errors: [{ field: "body", code: "portable_text_too_large", message }],
 		});
+		expect(rows[0]).toMatchObject(tooLarge("The record's Portable Text is larger than 1 MiB"));
+		expect(rows[1]).toMatchObject(tooLarge("The Markdown expands to too many elements"));
 		const entries = await byKey("cf_pt_worst");
 		expect(entries.has("W1")).toBe(false);
-		expect((entries.get("W2")?.data.body as unknown[] | undefined)?.length).toBeGreaterThan(600);
-		expect(entries.get("W3")?.data.body).toHaveLength(2);
+		expect(entries.has("W2")).toBe(false);
+		expect((entries.get("W3")?.data.body as unknown[] | undefined)?.length).toBeGreaterThan(600);
+		expect(entries.get("W4")?.data.body).toHaveLength(2);
 	});
 
 	it("writes a record with almost 1 MiB of M4d Portable Text to D1", async () => {

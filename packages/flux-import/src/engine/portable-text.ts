@@ -55,6 +55,19 @@ export const MAX_CAPTION_LENGTH = 1000;
 export const MAX_HREF_LENGTH = 2048;
 /** Attributes on one tag: `parse5` checks each new name against all earlier ones. */
 export const MAX_TAG_ATTRIBUTES = 1000;
+/**
+ * The tokens `markdown-it` may create while parsing one field, block and inline ones together.
+ * Its memory grows with them, not with the source: a 100-column table header turns each short
+ * row after it into 100 cells, so 1.7 KB of Markdown made 200,000 tokens.
+ */
+export const MAX_MARKDOWN_TOKENS = 100_000;
+/**
+ * The nodes `parse5` may create for one field, each element counted with its attributes. The tree
+ * grows with them, not with the source: each new paragraph reopens every formatting element still
+ * active (up to 3 of each of 14 kinds, with their attributes), so 16 KiB of HTML made 164,000
+ * nodes.
+ */
+export const MAX_HTML_NODES = 150_000;
 
 export type PortableTextFormat = "html" | "markdown" | "text";
 
@@ -119,6 +132,37 @@ const markdown = new MarkdownIt("commonmark", {
 	typographer: false,
 }).enable(["table", "strikethrough"]);
 
+/** Thrown while parsing when the source expands to more tokens or nodes than its limit. */
+class TooMany extends Error {}
+
+/** Tokens left for the `markdown-it` parse in progress (parsing is synchronous). */
+let tokensLeft = Number.POSITIVE_INFINITY;
+function spendToken(): void {
+	tokensLeft--;
+	if (tokensLeft < 0) throw new TooMany("The Markdown expands to too many elements");
+}
+
+// Every token the block and inline rules create goes through these states' `push` (and, for
+// text, `pushPending`). Only this instance's parsers get the counting states.
+const BlockState = markdown.block.State;
+markdown.block.State = class CountedBlockState extends BlockState {
+	override push(...args: Parameters<InstanceType<typeof BlockState>["push"]>) {
+		spendToken();
+		return super.push(...args);
+	}
+};
+const InlineState = markdown.inline.State;
+markdown.inline.State = class CountedInlineState extends InlineState {
+	override push(...args: Parameters<InstanceType<typeof InlineState>["push"]>) {
+		spendToken();
+		return super.push(...args);
+	}
+	override pushPending() {
+		spendToken();
+		return super.pushPending();
+	}
+};
+
 /** Thrown inside `parse5` when the markup is too complex to parse in bounded time. */
 class TooComplex extends Error {}
 
@@ -129,8 +173,11 @@ type ParentNode = DefaultTreeAdapterTypes.ParentNode;
 type ChildNode = DefaultTreeAdapterTypes.ChildNode;
 
 /**
- * The default tree adapter with two bounds on `parse5`'s work. Both rely on `parse5`'s internals
+ * The default tree adapter with three bounds on `parse5`'s work. All rely on `parse5`'s internals
  * as of the exact pinned version, 7.3.0 (`package.json`); re-check them on any upgrade.
+ *
+ * A count of created nodes: the parse stops (`TooMany`) as soon as more than `MAX_HTML_NODES`
+ * elements, attributes, text and comment nodes are made.
  *
  * A count of open elements: the parse stops as soon as more than `MAX_PORTABLE_TEXT_NESTING` are
  * open, which bounds `parse5`'s quadratic scope checks. `onItemPush` and `onItemPop` are part of
@@ -145,6 +192,11 @@ type ChildNode = DefaultTreeAdapterTypes.ChildNode;
  */
 function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 	let open = 0;
+	let nodes = 0;
+	const created = (n: number) => {
+		nodes += n;
+		if (nodes > MAX_HTML_NODES) throw new TooMany("The markup expands to too many elements");
+	};
 	/** Parents being emptied: the children moved out so far, and the one returned last. */
 	const moving = new Map<ParentNode, { head: number; returned: ChildNode }>();
 	const compact = (parent: ParentNode) => {
@@ -155,6 +207,14 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 	};
 	return {
 		...defaultTreeAdapter,
+		createElement(tagName, namespaceURI, attrs) {
+			created(1 + attrs.length);
+			return defaultTreeAdapter.createElement(tagName, namespaceURI, attrs);
+		},
+		createCommentNode(data) {
+			created(1);
+			return defaultTreeAdapter.createCommentNode(data);
+		},
 		onItemPush() {
 			// The fragment parser's own root element is the first push.
 			open++;
@@ -203,9 +263,13 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 		},
 		insertText(parent, text) {
 			compact(parent);
+			// Text joined to the text node before it makes no node.
+			const last = parent.childNodes[parent.childNodes.length - 1];
+			if (last === undefined || !defaultTreeAdapter.isTextNode(last)) created(1);
 			defaultTreeAdapter.insertText(parent, text);
 		},
 		insertTextBefore(parent, text, reference) {
+			created(1);
 			compact(parent);
 			defaultTreeAdapter.insertTextBefore(parent, text, reference);
 		},
@@ -342,6 +406,7 @@ export function convertPortableText(
 	try {
 		if (options.format === "markdown") html = renderMarkdown(text);
 	} catch (e) {
+		if (e instanceof TooMany) return fail("portable_text_too_large", e.message);
 		return fail("portable_text_failed", `The Markdown could not be converted: ${errorText(e)}`);
 	}
 	if (html === null || overBytes(html, MAX_RENDERED_MARKDOWN_BYTES)) {
@@ -355,6 +420,7 @@ export function convertPortableText(
 		fragment = parseHtml(html);
 	} catch (e) {
 		if (e instanceof TooComplex) return fail("portable_text_too_complex", e.message);
+		if (e instanceof TooMany) return fail("portable_text_too_large", e.message);
 		return fail("portable_text_failed", `The HTML could not be parsed: ${errorText(e)}`);
 	}
 	try {
@@ -414,7 +480,13 @@ const OPEN_SPAN_BYTES = 40;
  */
 export function renderMarkdown(text: string): string | null {
 	const env = {};
-	const tokens = markdown.parse(text, env);
+	let tokens: ReturnType<typeof markdown.parse>;
+	tokensLeft = MAX_MARKDOWN_TOKENS;
+	try {
+		tokens = markdown.parse(text, env);
+	} finally {
+		tokensLeft = Number.POSITIVE_INFINITY;
+	}
 	const renderer = markdown.renderer;
 	const { rules } = renderer;
 	const options = markdown.options;
