@@ -357,7 +357,7 @@ describe("workerd parity (D1, R2)", () => {
 				{
 					field: "photo",
 					code: "media_too_large",
-					message: `The file is larger than the limit of ${5 * 1024 * 1024} bytes`,
+					message: `The file is larger than the limit of ${Math.floor((5 * 1024 * 1024) / 3) * 3} bytes`,
 				},
 			]);
 			const entry = (await byKey("cf_media")).get("C1")!;

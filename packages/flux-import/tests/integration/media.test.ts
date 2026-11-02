@@ -191,7 +191,7 @@ describe("media from URL on Node", () => {
 			["scan:media_type_not_allowed"],
 		]);
 		expect(rows[1]?.errors?.[0]?.message).toBe(
-			`The file is larger than the limit of ${MAX_UPLOAD} bytes`,
+			`The file is larger than the limit of ${Math.floor(MAX_UPLOAD / 3) * 3} bytes`,
 		);
 		expect(rows[4]?.errors?.[0]?.message).toBe(
 			`${feeds.url("/t4/scan.pdf")}: The field accepts only image/png, image/jpeg, not application/pdf`,
