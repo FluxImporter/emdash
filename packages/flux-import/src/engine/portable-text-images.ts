@@ -107,7 +107,7 @@ export async function lookupPortableTextImages(
  * stops the record when its field's `imageErrors` is `"fail"`, and is dropped with a warning
  * otherwise. Each download is added to `newMedia` (`content: https://…`). A `MediaDeferred`
  * carries `newMedia`, which the caller starts with the record's field media, and every URL this
- * call dropped (at most 50), so the next batch drops them again without a download.
+ * call downloaded and dropped (at most 50), so the next batch drops them again without a download.
  */
 export async function obtainPortableTextImages(
 	deps: MediaDeps,
@@ -119,11 +119,14 @@ export async function obtainPortableTextImages(
 	{ ok: true; warnings: LinkError[] } | { ok: false; errors: LinkError[]; warnings: LinkError[] }
 > {
 	const warnings: LinkError[] = [];
-	// Every download this call dropped, whatever its cause (a type refusal is not always kept in
-	// `cache.mediaFailed`), carried to the next batch on a deferral.
+	// Every download this call tried and dropped, whatever its cause (a type refusal is not always
+	// kept in `cache.mediaFailed`), carried to the next batch on a deferral. A refusal without a
+	// download (a file another field obtained, or a failure an earlier record cached) is not: the
+	// next batch must not hold it against a field that can take the file.
 	const dropped: { key: string; error: LinkError }[] = [];
 	for (const [url, { field, failField, lookup }] of images.lookups) {
 		if (images.items.has(url)) continue;
+		const downloads = cache.mediaDownloads;
 		let obtained: Awaited<ReturnType<typeof obtainMedia>>;
 		try {
 			obtained = await obtainMedia(deps, cache, ctx, lookup);
@@ -144,7 +147,8 @@ export async function obtainPortableTextImages(
 		} else {
 			warnings.push(dropWarning(field, url, obtained.error));
 			images.dropped.add(url);
-			dropped.push({ key: lookup.key, error: obtained.error });
+			if (cache.mediaDownloads > downloads)
+				dropped.push({ key: lookup.key, error: obtained.error });
 		}
 	}
 	return { ok: true, warnings };

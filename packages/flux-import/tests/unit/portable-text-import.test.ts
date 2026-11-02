@@ -345,6 +345,87 @@ describe("importing Portable Text", () => {
 		expect(deps.mediaFetcher.urls()).toEqual([...names.map(url), url(names[0] ?? "")]);
 	});
 
+	it("does not carry an image refused for a file another field obtained", async () => {
+		const { deps } = makeDeps();
+		const pdf = "%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF";
+		const doc = url("doc.pdf");
+		deps.mediaFetcher.files.set(doc, { body: pdf, contentType: "application/pdf" });
+		const names = Array.from({ length: 12 }, (_, i) => `${i}.png`);
+		serve(deps, ...names);
+		const html = `<p>t</p><img src="${doc}">${names.map((n) => `<img src="${url(n)}">`).join("")}`;
+		const tpl = template({}, { doc: { from: "photo", type: "file" } });
+		const schema = [...schemaFields, { slug: "doc", type: "file" }];
+		deps.source.add("u1", json([{ id: "p1", title: "T", html, photo: doc }]));
+		const created = await createJob(deps, {
+			uploadId: "u1",
+			template: tpl,
+			schemaFields: schema,
+			mediaMaxBytes: 1000,
+		});
+		let job = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
+		// Deferred after some downloads; the image refused without a download is not carried.
+		expect(job.cursor.seq).toBe(0);
+		expect(job.deferred?.seq).toBe(0);
+		expect(job.deferred).not.toHaveProperty("failed");
+		job = await runToEnd(deps, created.id, 600);
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
+		const [row] = await rows(deps, job.id);
+		expect(row?.status).toBe("created");
+		expect(row?.warnings?.[0]).toMatchObject({ field: "body", code: "image_dropped" });
+		expect(row?.warnings?.[0]?.message).toMatch(/^media_type_not_allowed: /);
+		expect([...deps.content.entries.values()][0]?.data.doc).toMatchObject({
+			mimeType: "application/pdf",
+		});
+		expect(deps.mediaFetcher.urls()).toEqual([doc, ...names.map(url)]);
+	});
+
+	it("fails a required field that every dropped image leaves empty, before writing", async () => {
+		const { deps } = makeDeps();
+		const schema = schemaFields.map((f) => (f.slug === "body" ? { ...f, required: true } : f));
+		deps.source.add("u1", json([{ id: "p1", title: "T", html: `<img src="${url("gone.png")}">` }]));
+		const created = await createJob(deps, {
+			uploadId: "u1",
+			template: template(),
+			schemaFields: schema,
+			mediaMaxBytes: 1000,
+		});
+		const job = await runToEnd(deps, created.id);
+		expect(job.counters).toMatchObject({ created: 0, failed: 1 });
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({
+			status: "failed",
+			action: "create",
+			errors: [{ field: "body", code: "required", message: "The field is required" }],
+			warnings: [{ field: "body", code: "image_dropped" }],
+		});
+		expect(deps.content.entries.size).toBe(0);
+	});
+
+	it("caps a row's errors at 50 and bounds each message", async () => {
+		const { deps } = makeDeps();
+		const fields = Object.fromEntries(
+			Array.from({ length: 60 }, (_, i) => [`n${i}`, { from: "title", type: "number" }]),
+		);
+		const schema = [
+			...schemaFields,
+			...Object.keys(fields).map((slug) => ({ slug, type: "number" as const })),
+		];
+		const title = "x".repeat(5000);
+		deps.source.add("u1", json([{ id: "p1", title }]));
+		const tpl = { ...template(), fields: { ...fields, title: { from: "title", type: "text" } } };
+		const created = await createJob(deps, {
+			uploadId: "u1",
+			template: tpl,
+			schemaFields: schema,
+			mediaMaxBytes: 1000,
+		});
+		await runToEnd(deps, created.id);
+		const [row] = await rows(deps, created.id);
+		expect(row?.errors).toHaveLength(50);
+		expect(row?.errors?.[49]).toEqual({ code: "errors_truncated", message: "11 more errors" });
+		for (const e of row?.errors ?? []) expect(e.message.length).toBeLessThanOrEqual(1000);
+	});
+
 	it("fetches a markup file used by image fields of two records once per batch", async () => {
 		const { deps } = makeDeps();
 		deps.mediaFetcher.files.set(url("page.png"), {

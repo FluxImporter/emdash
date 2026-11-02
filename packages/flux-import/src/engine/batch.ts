@@ -62,6 +62,7 @@ import {
 } from "./template.js";
 import {
 	type Counters,
+	capErrors,
 	capWarnings,
 	type EngineDeps,
 	emptyCounters,
@@ -186,8 +187,15 @@ export async function processRecord(
 	}
 
 	const base = { jobId: job.id, seq: rec.seq, start: rec.start, end: rec.end };
+	// Every row is saved through here, so the caps hold whatever produced its errors and warnings.
 	const save = (fields: RowFields) =>
-		deps.records.put(key, { ...base, ...fields, updatedAt: iso(deps) });
+		deps.records.put(key, {
+			...base,
+			...fields,
+			...(fields.errors ? { errors: capErrors(fields.errors) } : {}),
+			...(fields.warnings ? { warnings: capWarnings(fields.warnings) } : {}),
+			updatedAt: iso(deps),
+		});
 
 	const cache = opts.cache ?? new LookupCache();
 	const row = await decide(deps, job, template, rec, existing, save, cache);
@@ -436,7 +444,7 @@ async function decide(
 		...row,
 		...(newTerms.length > 0 ? { newTerms } : {}),
 		...(newMedia.length > 0 ? { newMedia } : {}),
-		...(found.warnings.length > 0 ? { warnings: capWarnings(found.warnings) } : {}),
+		...(found.warnings.length > 0 ? { warnings: found.warnings } : {}),
 	};
 }
 
@@ -586,7 +594,13 @@ async function decideRecord(
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
 		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
-		if (drafts && images) ctx.portableText = portableTextPlan(drafts, images);
+		if (drafts && images) {
+			ctx.portableText = portableTextPlan(drafts, images);
+			const required = emptiedRequired(ctx.portableText, job);
+			if (required.length > 0) {
+				return { status: "failed", sourceKey, entryId, errors: required };
+			}
+		}
 		const plan = planRecord(entry, mapped.value, comparisons, links, media, ctx.portableText);
 		action = plan.action;
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
@@ -657,6 +671,10 @@ async function decideRecord(
 				};
 			}
 			ctx.portableText = portableTextPlan(drafts, images);
+			const required = emptiedRequired(ctx.portableText, job);
+			if (required.length > 0) {
+				return { status: "failed", sourceKey, entryId, action: plan.action, errors: required };
+			}
 		}
 		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media, ctx.portableText);
 		action = final.action;
@@ -675,6 +693,19 @@ async function decideRecord(
 			errors: [{ code: e.code, message: e.message }],
 		};
 	}
+}
+
+/**
+ * A `required` error for each required Portable Text field that holds a value in the source but
+ * is left empty once its dropped images are left out, which EmDash would refuse to write.
+ */
+function emptiedRequired(
+	plan: Readonly<Record<string, PortableTextPlanItem | null>>,
+	job: Job,
+): RecordError[] {
+	return Object.entries(plan)
+		.filter(([field, item]) => item === null && job.targetFields?.[field]?.required === true)
+		.map(([field]) => ({ field, code: "required", message: "The field is required" }));
 }
 
 /** The entry already holds the mapped data: finish an unfinished write or publish our own draft. */

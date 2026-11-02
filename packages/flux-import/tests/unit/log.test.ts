@@ -6,7 +6,7 @@ import {
 	LogTooLargeError,
 	recordsToCsvLines,
 } from "../../src/engine/log.js";
-import { capWarnings, type RecordRow, recordKey } from "../../src/engine/types.js";
+import { capErrors, capWarnings, type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
 const row = (seq: number, patch: Partial<RecordRow> = {}): RecordRow => ({
@@ -87,6 +87,28 @@ describe("capWarnings", () => {
 		expect(capWarnings(warnings)).toEqual([
 			...warnings.slice(0, 19),
 			{ code: "warnings_truncated", message: "6 more warnings" },
+		]);
+	});
+
+	it("cuts each message to 1,000 characters", () => {
+		const long = { field: "body", code: "link_dropped", message: "x".repeat(5000) };
+		const [cut] = capWarnings([long]);
+		expect(cut).toEqual({ ...long, message: `${"x".repeat(999)}…` });
+		expect(capErrors([long])).toEqual([cut]);
+	});
+});
+
+describe("capErrors", () => {
+	it("keeps at most 50 errors, the last saying how many more there were", () => {
+		const errors = Array.from({ length: 60 }, (_, i) => ({
+			field: "body",
+			code: "invalid_media_url",
+			message: `e${i}`,
+		}));
+		expect(capErrors(errors.slice(0, 50))).toEqual(errors.slice(0, 50));
+		expect(capErrors(errors)).toEqual([
+			...errors.slice(0, 49),
+			{ code: "errors_truncated", message: "11 more errors" },
 		]);
 	});
 });

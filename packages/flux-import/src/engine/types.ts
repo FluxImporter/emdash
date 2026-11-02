@@ -205,16 +205,48 @@ export function linkKey(collection: string, locale: string, sourceKey: string): 
 
 /** Warnings kept on one record row. */
 export const MAX_RECORD_WARNINGS = 20;
+/** Errors kept on one record row, so that no producer can make a row too large to store. */
+export const MAX_RECORD_ERRORS = 50;
+/** The longest message kept in a row's error or warning, in characters. */
+export const MAX_RECORD_MESSAGE_LENGTH = 1000;
+
+/** `issue` with its message cut to `MAX_RECORD_MESSAGE_LENGTH` characters. */
+function bounded(issue: RecordError): RecordError {
+	if (issue.message.length <= MAX_RECORD_MESSAGE_LENGTH) return issue;
+	return { ...issue, message: `${issue.message.slice(0, MAX_RECORD_MESSAGE_LENGTH - 1)}…` };
+}
+
+/** At most `max` issues, each message bounded: past it, the last one kept says how many more. */
+function capIssues(
+	issues: readonly RecordError[],
+	max: number,
+	summary: (more: number) => RecordError,
+): RecordError[] {
+	if (issues.length <= max) return issues.map(bounded);
+	const kept = issues.slice(0, max - 1).map(bounded);
+	return [...kept, summary(issues.length - kept.length)];
+}
 
 /**
  * At most `MAX_RECORD_WARNINGS` warnings: when there are more, the last one kept says how many
- * were left out (`warnings_truncated`).
+ * were left out (`warnings_truncated`). Each message is at most `MAX_RECORD_MESSAGE_LENGTH`.
  */
 export function capWarnings(warnings: readonly RecordError[]): RecordError[] {
-	if (warnings.length <= MAX_RECORD_WARNINGS) return [...warnings];
-	const kept = warnings.slice(0, MAX_RECORD_WARNINGS - 1);
-	const more = warnings.length - kept.length;
-	return [...kept, { code: "warnings_truncated", message: `${more} more warnings` }];
+	return capIssues(warnings, MAX_RECORD_WARNINGS, (more) => ({
+		code: "warnings_truncated",
+		message: `${more} more warnings`,
+	}));
+}
+
+/**
+ * At most `MAX_RECORD_ERRORS` errors: when there are more, the last one kept says how many were
+ * left out (`errors_truncated`). Each message is at most `MAX_RECORD_MESSAGE_LENGTH`.
+ */
+export function capErrors(errors: readonly RecordError[]): RecordError[] {
+	return capIssues(errors, MAX_RECORD_ERRORS, (more) => ({
+		code: "errors_truncated",
+		message: `${more} more errors`,
+	}));
 }
 
 export function emptyCounters(): Counters {
