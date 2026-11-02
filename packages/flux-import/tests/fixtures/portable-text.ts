@@ -1,7 +1,7 @@
 /**
  * Schema, sources and templates for the M4d Portable Text imports on the Node and workerd sites.
- * Image URLs point at a `FeedServer`; the bodies carry a link, a table and a script, so every
- * import reports warnings.
+ * Image URLs point at a `FeedServer`; the bodies carry a table, a script and a `javascript:` link,
+ * so every import reports warnings.
  */
 import type { Client } from "../integration/client.js";
 
@@ -64,10 +64,13 @@ export function portableTextTemplate(
 	};
 }
 
-/** An article body: a heading, marks, a link, a captioned linked image, a table and a script. */
+/**
+ * An article body: a heading, marks, a link, a captioned linked image, a table and a script, plus
+ * unsafe content the importer must drop: a `javascript:` link, an `onclick` and a `style` attribute.
+ */
 export function articleHtml(image: string): string {
 	return `<h2>Intro <em>here</em></h2>
-<p>Read <strong>this</strong> and <a href="https://example.com/more" target="_blank">more</a>.</p>
+<p onclick="steal()" style="color:red">Read <strong>this</strong> and <a href="https://example.com/more" target="_blank">more</a>, not <a href="javascript:steal()">that</a>.</p>
 <figure><a href="https://example.com/big"><img src="${image}" alt="A red square"></a><figcaption>A caption</figcaption></figure>
 <table><tr><td>cell</td></tr></table><script>alert("x")</script>`;
 }

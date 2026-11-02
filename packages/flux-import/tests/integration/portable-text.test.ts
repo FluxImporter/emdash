@@ -57,6 +57,17 @@ async function stored(collection: string): Promise<Map<string, Record<string, un
 	);
 }
 
+/** The warnings `articleHtml` reports on `field`. */
+const ARTICLE_WARNINGS = (field: string) => [
+	{ field, code: "unknown_markup", message: "Kept the text of 1 <table> element" },
+	{ field, code: "removed_markup", message: "Removed 1 <script> element" },
+	{
+		field,
+		code: "link_dropped",
+		message: "Kept the text of 1 link without the address: the scheme javascript: is not allowed",
+	},
+];
+
 type Block = { _type: string; style?: string; asset?: { _ref: string; url: string } };
 const imagesOf = (value: unknown) => (value as Block[]).filter((b) => b._type === "image");
 
@@ -75,12 +86,26 @@ describe("Portable Text on Node", () => {
 		expect(first.rows[0]).toMatchObject({
 			status: "created",
 			newMedia: [`content: ${feeds.url("/t1/red.png")}`],
-			warnings: [
-				{ field: "content", code: "unknown_markup", message: "Kept the text of 1 <table> element" },
-				{ field: "content", code: "removed_markup", message: "Removed 1 <script> element" },
-			],
+			warnings: ARTICLE_WARNINGS("content"),
 		});
+		const log = await client.raw(
+			"GET",
+			`/_emdash/api/plugins/flux-import/jobs/log.csv?id=${first.job.id}`,
+		);
+		expect(log.status).toBe(200);
+		const lines = (await log.text()).trimEnd().split("\r\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[1]).toContain(
+			ARTICLE_WARNINGS("content")
+				.map((w) => `${w.field}: ${w.code}: ${w.message}`)
+				.join("; "),
+		);
 		const content = (await stored("pages")).get("it-m4d-1")?.content;
+		const storedJson = JSON.stringify(content);
+		expect(storedJson).toContain("not that.");
+		for (const unsafe of ["alert", "javascript:", "onclick", "steal", "color:red"]) {
+			expect(storedJson).not.toContain(unsafe);
+		}
 		const [image] = imagesOf(content);
 		const item = await client.api<{
 			item: { id: string; mimeType: string; storageKey: string; alt: string };
@@ -99,15 +124,18 @@ describe("Portable Text on Node", () => {
 		expect(html).toContain('href="https://example.com/more" target="_blank"');
 		expect(html).toContain("<strong>this</strong>");
 		expect(html).toContain("<em>here</em>");
-		expect(html).not.toContain('alert("x")');
+		// Astro escapes quotes, so look for the bare words.
+		for (const unsafe of ["alert", "javascript:", "onclick", "steal"]) {
+			expect(html).not.toContain(unsafe);
+		}
 		const file = await client.raw("GET", image?.asset?.url ?? "?");
 		expect(file.status).toBe(200);
 		expect(file.headers.get("content-type")).toBe("image/png");
 
 		const requests = feeds.requests.length;
 		const again = await importPosts([post], template);
-		expect(again.job.counters).toMatchObject({ unchanged: 1 });
-		expect(again.rows[0]?.warnings).toHaveLength(2);
+		expect(again.job.counters).toMatchObject({ unchanged: 1, failed: 0 });
+		expect(again.rows[0]?.warnings).toEqual(ARTICLE_WARNINGS("content"));
 		expect(feeds.requests.length).toBe(requests);
 	});
 
@@ -119,7 +147,7 @@ describe("Portable Text on Node", () => {
 			[{ id: "M1", title: "Markdown", md }],
 			portableTextTemplate("it_pt_md", { format: "markdown" }),
 		);
-		expect(job.counters).toMatchObject({ created: 1 });
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
 		expect(rows[0]).not.toHaveProperty("warnings");
 		const body = (await stored("it_pt_md")).get("M1")?.body as Record<string, unknown>[];
 		expect(
@@ -140,7 +168,7 @@ describe("Portable Text on Node", () => {
 			portableTextTemplate("it_pt_dry"),
 			{ dryRun: true },
 		);
-		expect(job.counters).toMatchObject({ created: 1 });
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
 		expect(rows[0]).toMatchObject({
 			status: "planned",
 			newMedia: [`body: ${feeds.url("/t3/red.png")}`],
@@ -149,7 +177,7 @@ describe("Portable Text on Node", () => {
 				{ field: "body", before: null, after: "4 blocks, 1 image (1 new)" },
 			],
 		});
-		expect(rows[0]?.warnings).toHaveLength(2);
+		expect(rows[0]?.warnings).toEqual(ARTICLE_WARNINGS("body"));
 		expect(feeds.requests.length).toBe(requests);
 		expect(await client.listAll("it_pt_dry")).toEqual([]);
 	});
@@ -162,15 +190,24 @@ describe("Portable Text on Node", () => {
 			[{ id: "N1", title: "Dropped", html }],
 			portableTextTemplate("it_pt_404"),
 		);
-		expect(dropped.job.counters).toMatchObject({ created: 1 });
-		expect(dropped.rows[0]?.warnings).toEqual([
-			{
-				field: "body",
-				code: "image_dropped",
-				message: `media_http_error: ${missing}: The server answered HTTP 404`,
-			},
-		]);
+		const droppedWarning = {
+			field: "body",
+			code: "image_dropped",
+			message: `media_http_error: ${missing}: The server answered HTTP 404`,
+		};
+		expect(dropped.job.counters).toMatchObject({ created: 1, failed: 0 });
+		expect(dropped.rows[0]?.warnings).toEqual([droppedWarning]);
 		expect(imagesOf((await stored("it_pt_404")).get("N1")?.body)).toEqual([]);
+		// A re-run tries the URL again and, with the image dropped once more, plans unchanged.
+		const requests = feeds.requests.length;
+		const rerun = await importPosts(
+			[{ id: "N1", title: "Dropped", html }],
+			portableTextTemplate("it_pt_404"),
+		);
+		expect(rerun.job.counters).toMatchObject({ unchanged: 1, updated: 0, failed: 0 });
+		expect(rerun.rows[0]?.status).toBe("unchanged");
+		expect(rerun.rows[0]?.warnings).toEqual([droppedWarning]);
+		expect(feeds.requests.length).toBe(requests + 1);
 		const failed = await importPosts(
 			[{ id: "N2", title: "Failed", html }],
 			portableTextTemplate("it_pt_404", { body: { imageErrors: "fail" } }),
@@ -194,7 +231,7 @@ describe("Portable Text on Node", () => {
 			[{ id: "S1", title: "Shared", photo: image, html: `<p>t</p><img src="${image}">` }],
 			portableTextTemplate("it_pt_shared", { photo: true }),
 		);
-		expect(job.counters).toMatchObject({ created: 1 });
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
 		expect(rows[0]?.newMedia).toEqual([`photo: ${image}`]);
 		expect(feeds.requests.filter((r) => r.path === "/t5/green.jpg")).toHaveLength(1);
 		const data = (await stored("it_pt_shared")).get("S1");
