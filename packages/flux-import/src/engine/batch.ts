@@ -393,6 +393,8 @@ async function decide(
 	const found: Found = { newTerms: [], newMedia: [], warnings: [] };
 	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
 	let row: RowFields;
+	// Failures carried from the record's earlier batch apply to that record only: a later record
+	// may take the same file in a field that accepts it.
 	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
 	try {
 		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
@@ -416,6 +418,11 @@ async function decide(
 			}
 		}
 		throw e;
+	} finally {
+		// The identity check keeps a failure this batch recorded for the same URL itself.
+		for (const { key, error } of carried?.failed ?? []) {
+			if (cache.mediaFailed.get(key) === error) cache.mediaFailed.delete(key);
+		}
 	}
 	// A retried or deferred record keeps the terms and media its earlier attempts created.
 	const newTerms = [

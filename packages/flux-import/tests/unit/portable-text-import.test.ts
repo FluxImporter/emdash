@@ -311,6 +311,40 @@ describe("importing Portable Text", () => {
 		expect((body(deps) as unknown[]).length).toBe(1);
 	});
 
+	it("keeps a carried image failure to its record, so a later file field can take the file", async () => {
+		const { deps } = makeDeps();
+		const pdf = "%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF";
+		const names = Array.from({ length: 12 }, (_, i) => `doc${i}.pdf`);
+		for (const n of names) {
+			deps.mediaFetcher.files.set(url(n), { body: pdf, contentType: "application/pdf" });
+		}
+		const html = `<p>t</p>${names.map((n) => `<img src="${url(n)}">`).join("")}`;
+		const tpl = template({}, { doc: { from: "photo", type: "file" } });
+		const schema = [...schemaFields, { slug: "doc", type: "file" }];
+		deps.source.add(
+			"u1",
+			json([
+				{ id: "p1", title: "T", html },
+				{ id: "p2", title: "U", photo: url(names[0] ?? "") },
+			]),
+		);
+		const created = await createJob(deps, {
+			uploadId: "u1",
+			template: tpl,
+			schemaFields: schema,
+			mediaMaxBytes: 1000,
+		});
+		let job = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
+		expect(job.cursor.seq).toBe(0);
+		expect(job.deferred?.failed?.[0]?.error.message).toContain("An image field cannot take");
+		job = await runToEnd(deps, created.id, 600);
+		expect(job.counters).toMatchObject({ created: 2, failed: 0 });
+		const [first, second] = await rows(deps, job.id);
+		expect(first?.warnings).toHaveLength(12);
+		expect(second).toMatchObject({ status: "created", newMedia: [`doc: ${url(names[0] ?? "")}`] });
+		expect(deps.mediaFetcher.urls()).toEqual([...names.map(url), url(names[0] ?? "")]);
+	});
+
 	it("fetches a markup file used by image fields of two records once per batch", async () => {
 		const { deps } = makeDeps();
 		deps.mediaFetcher.files.set(url("page.png"), {
