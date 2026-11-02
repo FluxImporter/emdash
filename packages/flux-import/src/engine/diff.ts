@@ -1,5 +1,5 @@
 import type { ResolvedItem, ResolvedLinks } from "./links.js";
-import type { FieldValue, MappedRecord, Template } from "./template.js";
+import type { FieldValue, JsonValue, MappedRecord, Template } from "./template.js";
 
 export type Change = { field: string; before: unknown; after: FieldValue };
 export type PlanAction = "create" | "update" | "unchanged";
@@ -132,15 +132,67 @@ function linkChanges(links: LinkPlan, exists: boolean): Change[] {
 	return changes;
 }
 
+/** A media field's resolved value, for `planRecord`; null for an empty value. */
+export type MediaPlanItem = {
+	/** The media item's ID; null for a file not stored yet, which is always a change. */
+	mediaId: string | null;
+	/** What the field is written with; null when `mediaId` is. */
+	value: JsonValue | null;
+	/** How the record shows it: the ID, or `new media from <url>`. */
+	text: string;
+	/** The mapped alt text; null when the mapping gives none, so the stored alt is not compared. */
+	alt: string | null;
+};
+
+/** A stored image or file value's media ID: its `id`, or the value itself when it is a string. */
+function storedMediaId(stored: unknown): string | null {
+	if (typeof stored === "string") return stored;
+	if (typeof stored === "object" && stored !== null && "id" in stored) {
+		return typeof stored.id === "string" ? stored.id : null;
+	}
+	return null;
+}
+
+function storedAlt(stored: unknown): string | null {
+	if (typeof stored !== "object" || stored === null || !("alt" in stored)) return null;
+	return typeof stored.alt === "string" ? stored.alt : null;
+}
+
+/**
+ * The media changes: a field whose stored media ID differs (a new file always does), or, with
+ * the same ID, `<field>.alt` when the mapped alt is given and differs. Other keys of the stored
+ * value are not compared: EmDash fills them on save. An empty value equals nothing stored.
+ */
+function mediaChanges(
+	media: Readonly<Record<string, MediaPlanItem | null>>,
+	data: Readonly<Record<string, unknown>> | null,
+): Change[] {
+	const changes: Change[] = [];
+	for (const [field, item] of Object.entries(media)) {
+		const stored = data !== null && Object.hasOwn(data, field) ? data[field] : null;
+		const before = storedMediaId(stored);
+		if (item === null) {
+			if (stored !== null && stored !== undefined) changes.push({ field, before, after: null });
+		} else if (item.mediaId === null || item.mediaId !== before) {
+			changes.push({ field, before, after: item.text });
+		} else if (item.alt !== null && storedAlt(stored) !== item.alt) {
+			changes.push({ field: `${field}.alt`, before: storedAlt(stored), after: item.alt });
+		}
+	}
+	return changes;
+}
+
 /**
  * The record's plan: `create` without a current entry, else `update` when the slug, a data
- * field or a link differs, else `unchanged`. `links` is given when the template maps links.
+ * field, a media field or a link differs, else `unchanged`. `links` is given when the template
+ * maps links, `media` when it maps image or file fields.
  */
 export function planRecord(
 	current: CurrentEntry | null,
 	next: MappedRecord,
 	comparisons: ReadonlyMap<string, Comparison>,
 	links?: LinkPlan,
+	media?: Readonly<Record<string, MediaPlanItem | null>>,
 ): RecordPlan {
 	const changes: Change[] = [];
 	if (current === null) {
@@ -148,6 +200,7 @@ export function planRecord(
 		for (const [field, after] of Object.entries(next.data)) {
 			if (after !== null) changes.push({ field, before: null, after });
 		}
+		if (media) changes.push(...mediaChanges(media, null));
 		if (links) changes.push(...linkChanges(links, false));
 		return { action: "create", changes };
 	}
@@ -159,6 +212,7 @@ export function planRecord(
 		if (!same(before, after, comparisons.get(field) ?? "plain"))
 			changes.push({ field, before: before ?? null, after });
 	}
+	if (media) changes.push(...mediaChanges(media, current.data));
 	if (links) changes.push(...linkChanges(links, true));
 	return { action: changes.length === 0 ? "unchanged" : "update", changes };
 }

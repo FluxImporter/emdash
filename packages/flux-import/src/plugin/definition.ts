@@ -14,7 +14,8 @@ export type FluxImportOptions = Record<string, never>;
  * Every field a query filters or sorts on is indexed (plugin storage rejects others,
  * `emdash` src/plugins/storage-query.ts:113-127). `jobs.uploadId` and `jobs.sourceUploadId` let a
  * finished job check whether another job still needs its staged file (or the workbook an XLSX
- * job was converted from) before deleting it.
+ * job was converted from) before deleting it. `media` is the site-wide media map; its
+ * `jobId` and `mediaId` indexes let a job's own media be listed (M5 rollback, audit).
  */
 export const STORAGE = {
 	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
@@ -29,6 +30,7 @@ export const STORAGE = {
 	},
 	links: { indexes: ["entryId"] },
 	sources: { indexes: ["name", "createdAt"] },
+	media: { indexes: ["jobId", "mediaId"] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {
@@ -43,9 +45,11 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// gives ctx.taxonomies, which reads taxonomies, terms and entry terms and creates missing
 		// terms (createTerm, the only sanctioned way to create one); bylines:read gives
 		// ctx.bylines, whose list is the only way to look bylines up. Entries are assigned their
-		// terms, references and bylines through the runtime's content writes. URL sources are
-		// fetched with the runtime's own fetch() behind the plugin's SSRF guard
-		// (src/sources/net.ts), not through ctx.http, so no network capability is declared.
+		// terms, references and bylines through the runtime's content writes. media:write is
+		// declared for disclosure too: image and file fields are uploaded through the runtime's
+		// handleMediaUpload, not ctx.media. URL sources and media are fetched with the runtime's
+		// own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through ctx.http,
+		// so no network capability is declared.
 		capabilities: [
 			"content:read",
 			"content:write",
@@ -53,6 +57,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 			"schema:read",
 			"taxonomies:write",
 			"bylines:read",
+			"media:write",
 		],
 		storage: STORAGE,
 		routes,

@@ -522,6 +522,41 @@ describe("createJob with links", () => {
 	});
 });
 
+describe("createJob with media", () => {
+	const media = {
+		...template,
+		fields: { title: { from: "Name", type: "text" }, photo: { from: "Name", type: "image" } },
+	};
+	const mediaFields = [
+		{ slug: "title", type: "string" },
+		{ slug: "photo", type: "image" },
+	];
+
+	it("stores the media size limit only for templates that map media", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: media,
+			schemaFields: mediaFields,
+			mediaMaxBytes: 1234,
+		});
+		expect(job.mediaMaxBytes).toBe(1234);
+		const unset = await createJob(deps, {
+			uploadId: "u1",
+			template: media,
+			schemaFields: mediaFields,
+		});
+		expect(unset.mediaMaxBytes).toBe(50 * 1024 * 1024);
+		const plain = await createJob(deps, {
+			uploadId: "u1",
+			template,
+			schemaFields,
+			mediaMaxBytes: 1,
+		});
+		expect(plain).not.toHaveProperty("mediaMaxBytes");
+	});
+});
+
 describe("transitionJob", () => {
 	it("pauses, resumes and cancels", async () => {
 		const { deps } = setup();

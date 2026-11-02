@@ -60,6 +60,7 @@ describe("createPlugin", () => {
 		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
+		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);
 	});
 
 	it("has the retention setting, the activate hook and the cron hook", () => {
@@ -78,8 +79,10 @@ describe("createPlugin", () => {
 			"schema:read",
 			"taxonomies:write",
 			"bylines:read",
-			// definePlugin adds the read capability that taxonomies:write implies.
+			"media:write",
+			// definePlugin adds the read capabilities that taxonomies:write and media:write imply.
 			"taxonomies:read",
+			"media:read",
 		]);
 	});
 
@@ -153,10 +156,15 @@ describe("createPlugin", () => {
 				apply.safeParse({ collection: "products", fields: [{ ...field, ...extra }] }).success,
 			).toBe(false);
 		}
-		for (const type of ["portableText", "image", "file", "reference", "repeater", "blocks"]) {
+		for (const type of ["portableText", "reference", "repeater", "blocks"]) {
 			expect(
 				apply.safeParse({ collection: "products", fields: [{ slug: "x", type }] }).success,
 			).toBe(false);
+		}
+		for (const type of ["image", "file"]) {
+			expect(
+				apply.safeParse({ collection: "products", fields: [{ slug: "x", type }] }).success,
+			).toBe(true);
 		}
 		expect(apply.safeParse({ collection: "products", fields: [field], extra: 1 }).success).toBe(
 			false,

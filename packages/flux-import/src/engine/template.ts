@@ -22,6 +22,15 @@ import {
 	type TermRequest,
 	taxonomyConverter,
 } from "./links.js";
+import {
+	acceptsUploadable,
+	altConverter,
+	MAX_MEDIA_MAPPINGS,
+	type MediaConversionCode,
+	type MediaKind,
+	type MediaRequest,
+	mediaUrlConverter,
+} from "./media.js";
 import type { TaxonomyDef } from "./ports.js";
 import {
 	booleanConverter,
@@ -86,6 +95,9 @@ function sharedToken(m: { true?: string[] | undefined; false?: string[] | undefi
 	const trues = new Set((m.true ?? TRUE_TOKENS).map(token));
 	return (m.false ?? FALSE_TOKENS).map(token).find((t) => trues.has(t));
 }
+
+/** An image mapping's alt text: from a source path or an expression. */
+const altMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
 
 const fieldMapping = z.discriminatedUnion("type", [
 	z
@@ -163,6 +175,19 @@ const fieldMapping = z.discriminatedUnion("type", [
 			match: z.enum(["id", "slug", "key"]).optional(),
 			separator: separator.optional(),
 		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("image"),
+			alt: altMapping.optional(),
+			refresh: z.boolean().optional(),
+		})
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({ ...valueSource, type: z.literal("file"), refresh: z.boolean().optional() })
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
 ]);
@@ -263,18 +288,20 @@ export type MappingType = FieldMapping["type"];
 export type TaxonomyMapping = NonNullable<Template["taxonomies"]>[string];
 export type BylinesMapping = NonNullable<Template["bylines"]>;
 
-export type { JsonValue, LinkRequests, TargetField, TaxonomySnapshot, TermRequest };
+export type { JsonValue, LinkRequests, MediaRequest, TargetField, TaxonomySnapshot, TermRequest };
 export type FieldValue = string | number | boolean | string[] | JsonValue | null;
 /**
- * One record after the template: the key, the slug, the field values, and the link requests
- * (reference fields, taxonomies, bylines) when the template maps any. Reference fields are kept
- * out of `data`.
+ * One record after the template: the key, the slug, the field values, the link requests
+ * (reference fields, taxonomies, bylines) when the template maps any, and the media requests
+ * when it maps image or file fields (null for an empty value). Reference and media fields are
+ * kept out of `data`.
  */
 export type MappedRecord = {
 	key: string;
 	slug?: string;
 	data: Record<string, FieldValue>;
 	links?: LinkRequests;
+	media?: Record<string, MediaRequest | null>;
 };
 export type ValueErrorCode =
 	| "filter_error"
@@ -287,7 +314,8 @@ export type ValueErrorCode =
 	| "empty_slug"
 	| ConversionCode
 	| RuleCode
-	| LinkErrorCode;
+	| LinkErrorCode
+	| MediaConversionCode;
 export type ValueError = { field: string; code: ValueErrorCode; message: string };
 
 export function slugify(s: string): string {
@@ -363,6 +391,9 @@ export function fieldConverter(
 		}
 		case "reference":
 			return referenceConverter(mapping, target);
+		case "image":
+		case "file":
+			return mediaUrlConverter;
 	}
 }
 
@@ -371,6 +402,16 @@ export interface LinkReader<T> {
 	readonly from: string | undefined;
 	readonly expr: CompiledExpression | null;
 	readonly convert: (raw: unknown) => LinkConverted<T>;
+}
+
+/** An image or file mapping as each record reads it; `alt` is null for files and images without it. */
+export interface MediaReader {
+	readonly kind: MediaKind;
+	readonly refresh: boolean;
+	readonly alt: {
+		readonly from: string | undefined;
+		readonly expr: CompiledExpression | null;
+	} | null;
 }
 
 /** A template with its expressions parsed once, for every record of a batch. */
@@ -391,6 +432,8 @@ export interface CompiledTemplate {
 	readonly taxonomies: ReadonlyMap<string, LinkReader<TermRequest>>;
 	/** The bylines reader, or null when the template maps no bylines. */
 	readonly bylines: LinkReader<string> | null;
+	/** Each image and file field's reader, by field name. */
+	readonly media: ReadonlyMap<string, MediaReader>;
 }
 
 /** What a job knows about its target fields; absent on jobs created before M4a. */
@@ -424,6 +467,7 @@ export function compileTemplate(
 	const fields = new Map<string, CompiledExpression>();
 	const converters = new Map<string, FieldConverter>();
 	const targets = context.targets ?? null;
+	const media = new Map<string, MediaReader>();
 	for (const [name, mapping] of Object.entries(t.fields)) {
 		const expr = compile(`fields.${name}.expr`, mapping.expr);
 		if (expr !== null) fields.set(name, expr);
@@ -431,6 +475,17 @@ export function compileTemplate(
 			name,
 			fieldConverter(mapping, targets?.[name] ?? null, context.siteTimezone ?? "UTC"),
 		);
+		if (mapping.type === "image" || mapping.type === "file") {
+			const alt = mapping.type === "image" ? mapping.alt : undefined;
+			media.set(name, {
+				kind: mapping.type,
+				refresh: mapping.refresh ?? false,
+				alt:
+					alt === undefined
+						? null
+						: { from: alt.from, expr: compile(`fields.${name}.alt.expr`, alt.expr) },
+			});
+		}
 	}
 	const taxonomies = new Map<string, LinkReader<TermRequest>>();
 	for (const [name, mapping] of Object.entries(t.taxonomies ?? {})) {
@@ -461,6 +516,7 @@ export function compileTemplate(
 			targets,
 			taxonomies,
 			bylines,
+			media,
 		},
 	};
 }
@@ -564,6 +620,7 @@ export async function applyTemplate(
 
 	const data: Record<string, FieldValue> = {};
 	const links: LinkRequests = {};
+	const media: Record<string, MediaRequest | null> = {};
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
@@ -576,9 +633,29 @@ export async function applyTemplate(
 		const broken = target === undefined ? [] : checkRules(result.value, target);
 		for (const e of broken) errors.push({ field, ...e });
 		if (broken.length > 0) continue;
+		const reader = c.media.get(field);
 		if (mapping.type === "reference") {
 			links.references ??= {};
 			links.references[field] = result.value as string[] | null;
+		} else if (reader !== undefined) {
+			const url = result.value as string | null;
+			if (url === null) {
+				media[field] = null;
+				continue;
+			}
+			let alt: string | null = null;
+			if (reader.alt !== null) {
+				const altField = `${field}.alt`;
+				const altRaw = await read(altField, reader.alt.from, reader.alt.expr);
+				if (altRaw === FAILED) continue;
+				const converted = altConverter(altRaw);
+				if (!converted.ok) {
+					errors.push({ field: altField, code: converted.code, message: converted.message });
+					continue;
+				}
+				alt = converted.value;
+			}
+			media[field] = { kind: reader.kind, url, alt, refresh: reader.refresh };
 		} else data[field] = result.value;
 	}
 	for (const [name, reader] of c.taxonomies) {
@@ -604,18 +681,21 @@ export async function applyTemplate(
 	if (errors.length > 0) return { ok: false, errors };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
 	if (Object.keys(links).length > 0) mapped.links = links;
+	if (c.media.size > 0) mapped.media = media;
 	return { ok: true, value: mapped };
 }
 
 /**
- * Every source path the template reads: key, slug, field, taxonomy and bylines `from`s, without
- * duplicates. Expressions are not analysed for the paths they read.
+ * Every source path the template reads: key, slug, field, image alt, taxonomy and bylines
+ * `from`s, without duplicates. Expressions are not analysed for the paths they read.
  */
 export function templatePaths(t: Template): string[] {
 	const froms = [
 		t.key.from,
 		t.slug?.from,
-		...Object.values(t.fields).map((m) => m.from),
+		...Object.values(t.fields).flatMap((m) =>
+			m.type === "image" ? [m.from, m.alt?.from] : [m.from],
+		),
 		...Object.values(t.taxonomies ?? {}).map((m) => m.from),
 		t.bylines?.from,
 	];
@@ -644,10 +724,13 @@ export function noRecordsWarning(source: { records?: string | undefined }): stri
 		: `No records found at "${source.records}"`;
 }
 
-/** The validation keys EmDash enforces on writes (`emdash` src/schema/zod-generator.ts:240-290). */
+/**
+ * The validation keys EmDash enforces on writes (`emdash` src/schema/zod-generator.ts:240-290),
+ * and the media types an image or file field accepts (src/api/handlers/validate-media-fields.ts).
+ */
 export type FieldRules = Pick<
 	TargetField,
-	"options" | "min" | "max" | "minLength" | "maxLength" | "pattern"
+	"options" | "min" | "max" | "minLength" | "maxLength" | "pattern" | "allowedMimeTypes"
 >;
 
 /**
@@ -695,6 +778,8 @@ export const COMPATIBLE: Record<MappingType, string[]> = {
 	json: ["json"],
 	slug: ["slug", "string"],
 	reference: ["reference"],
+	image: ["image"],
+	file: ["file"],
 };
 
 /** Whether `value` names one of `options`, as the select matching would find it. */
@@ -769,11 +854,22 @@ function fieldProblems(
 	}
 	const compatible = COMPATIBLE[mapping.type];
 	if (!compatible.includes(target.type)) {
+		const article = mapping.type === "image" ? "an" : "a";
 		return [
-			`Field "${field}" has type "${target.type}"; a ${mapping.type} mapping needs one of ${compatible.join(", ")}`,
+			`Field "${field}" has type "${target.type}"; ${article} ${mapping.type} mapping needs one of ${compatible.join(", ")}`,
 		];
 	}
 	const problems: string[] = [];
+	const allowed = target.validation?.allowedMimeTypes ?? [];
+	if (
+		(mapping.type === "image" || mapping.type === "file") &&
+		allowed.length > 0 &&
+		!acceptsUploadable(allowed, mapping.type)
+	) {
+		problems.push(
+			`Field "${field}": EmDash's upload refuses every type this field accepts (${allowed.join(", ")})`,
+		);
+	}
 	if (mapping.type === "date") {
 		if (mapping.output !== undefined && target.type === "datetime") {
 			problems.push(`Field "${field}" is a datetime field; "output" only formats text fields`);
@@ -808,7 +904,9 @@ function fieldProblems(
  * that are not options, `tz: "site"` without a valid site timezone, required fields with no
  * default that the template does not map (every create would fail), reference fields that are
  * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
- * to the collection. The link checks run only on what `links` carries.
+ * to the collection, more than five image and file mappings, and image or file fields whose
+ * `allowedMimeTypes` EmDash's upload can never satisfy. The link checks run only on what `links`
+ * carries.
  */
 export function checkTemplate(
 	t: Template,
@@ -829,6 +927,12 @@ export function checkTemplate(
 		}
 		const problem = pathProblem(path, format);
 		if (problem !== null) errors.push(problem);
+	}
+	const media = Object.values(t.fields).filter((m) => m.type === "image" || m.type === "file");
+	if (media.length > MAX_MEDIA_MAPPINGS) {
+		errors.push(
+			`The template maps ${media.length} image and file fields; at most ${MAX_MEDIA_MAPPINGS} are allowed`,
+		);
 	}
 	const byslug = new Map(fields.map((f) => [f.slug, f]));
 	for (const [field, mapping] of Object.entries(t.fields)) {
@@ -891,6 +995,9 @@ export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<strin
 			...(f.relationSide === undefined ? {} : { relationSide: f.relationSide }),
 			...(f.targetCollection === undefined ? {} : { targetCollection: f.targetCollection }),
 			...(f.multiple === undefined ? {} : { multiple: f.multiple }),
+			...(v.allowedMimeTypes && v.allowedMimeTypes.length > 0
+				? { allowedMimeTypes: v.allowedMimeTypes }
+				: {}),
 		};
 	}
 	return targets;
@@ -940,6 +1047,11 @@ export function usesLinks(t: Template): boolean {
 		t.bylines !== undefined ||
 		Object.values(t.fields).some((m) => m.type === "reference")
 	);
+}
+
+/** Whether the template maps image or file fields. */
+export function usesMedia(t: Template): boolean {
+	return Object.values(t.fields).some((m) => m.type === "image" || m.type === "file");
 }
 
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */

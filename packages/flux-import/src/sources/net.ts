@@ -233,6 +233,8 @@ export interface GuardedRequest {
 	/** Removed from the request once a redirect leaves the original origin. */
 	credentialHeader?: string;
 	signal: AbortSignal;
+	/** Told each URL before it is fetched, so the caller knows the URL that answered. */
+	onRequest?: (url: URL) => void;
 }
 
 /**
@@ -256,6 +258,7 @@ export async function guardedFetch(
 			throw fetchError(e, request.signal, `Could not resolve ${host}`);
 		}
 		let response: Response;
+		request.onRequest?.(new URL(url.href));
 		try {
 			response = await net.fetch(url.href, {
 				method: "GET",

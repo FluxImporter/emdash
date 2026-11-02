@@ -14,7 +14,10 @@ import {
 } from "../engine/template.js";
 import { ServiceError } from "./service.js";
 
-/** The field types `schema/apply` creates: every type that holds a plain value. */
+/**
+ * The field types `schema/apply` creates: every type that holds a plain value, and `image` and
+ * `file` (a TEXT column holding one media value), created without `allowedMimeTypes`.
+ */
 export const APPLY_FIELD_TYPES = [
 	"string",
 	"text",
@@ -27,6 +30,8 @@ export const APPLY_FIELD_TYPES = [
 	"multiSelect",
 	"json",
 	"slug",
+	"image",
+	"file",
 ] as const;
 export type ApplyFieldType = (typeof APPLY_FIELD_TYPES)[number];
 /**

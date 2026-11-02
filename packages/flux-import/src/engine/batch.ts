@@ -3,6 +3,7 @@ import {
 	type CurrentLinks,
 	comparisonsOf,
 	type LinkPlan,
+	type MediaPlanItem,
 	type PlanAction,
 	planRecord,
 	type RecordPlan,
@@ -17,9 +18,20 @@ import {
 } from "./jobs.js";
 import type { ResolvedLinks } from "./links.js";
 import {
+	DEFAULT_MAX_UPLOAD_SIZE,
+	lookupRecordMedia,
+	type MediaContext,
+	MediaDeferred,
+	type MediaLookup,
+	mediaFieldValue,
+	obtainRecordMedia,
+	type ResolvedMedia,
+} from "./media.js";
+import {
 	ContentWriteError,
 	type EntrySnapshot,
 	type LinkWrites,
+	type MediaInfo,
 	SourceMissingError,
 } from "./ports.js";
 import {
@@ -35,8 +47,10 @@ import {
 	applyTemplate,
 	type CompiledTemplate,
 	compileTemplate,
+	type FieldValue,
 	filterRecord,
 	type MappedRecord,
+	type MediaRequest,
 	SOURCE_ID_FIELD,
 } from "./template.js";
 import {
@@ -51,11 +65,17 @@ import {
 } from "./types.js";
 
 export const LEASE_GRACE_MS = 30_000;
+/**
+ * Media downloads must end this long after the batch's budget (`LookupCache.mediaDeadline`),
+ * which leaves 10 s of the lease for the record's write and publish.
+ */
+export const MEDIA_GRACE_MS = 20_000;
 const CAS_ATTEMPTS = 5;
 /** Content errors that fail the job rather than the record being written. */
 const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
 	"collection_missing",
 	"source_id_field_invalid",
+	"media_config",
 ]);
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
@@ -123,6 +143,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			phase: finishedRetry ? "import" : job.phase,
 			retryFromSeq: job.retryFromSeq,
 			...(job.plannedTerms ? { plannedTerms: job.plannedTerms } : {}),
+			...(job.deferred ? { deferred: job.deferred } : {}),
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
@@ -131,6 +152,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			updatedAt: iso(deps),
 		};
 		// A finished retry pass has no later batch to need the dry run's planned terms.
+		if (!job.deferred) delete next.deferred;
 		const saved = finishedRetry ? withoutPlannedTerms(next) : next;
 		const result = await deps.jobs.compareAndSet(job.id, current.revision, saved);
 		if (result.applied) return saved;
@@ -178,6 +200,8 @@ type RecordCtx = {
 	save: (fields: RowFields) => Promise<void>;
 	/** The record's resolved links; absent when the template maps none. */
 	links?: ResolvedLinks;
+	/** The record's media field values, written with the data; absent when it maps none. */
+	media?: Record<string, MediaPlanItem | null>;
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -334,9 +358,13 @@ async function linkPlan(
 	return { resolved, current, childSide };
 }
 
+/** What a record found to create or download, listed on its row whatever happens to it. */
+type Found = { newTerms: string[]; newMedia: string[] };
+
 /**
  * Decides and writes one record. Terms that resolution creates (or, in a dry run, would create)
- * are listed on the row as `newTerms`, whatever happens to the record afterwards.
+ * are listed on the row as `newTerms`, and media it downloads (or would) as `newMedia`, whatever
+ * happens to the record afterwards.
  */
 async function decide(
 	deps: EngineDeps,
@@ -347,11 +375,81 @@ async function decide(
 	save: (fields: RowFields) => Promise<void>,
 	cache: LookupCache,
 ): Promise<RowFields> {
-	const found = { newTerms: [] as string[] };
-	const row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
-	// A retried record keeps the terms its earlier attempts created.
-	const newTerms = [...new Set([...(existing?.newTerms ?? []), ...found.newTerms])];
-	return newTerms.length > 0 ? { ...row, newTerms } : row;
+	const found: Found = { newTerms: [], newMedia: [] };
+	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
+	let row: RowFields;
+	try {
+		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
+	} catch (e) {
+		if (e instanceof MediaDeferred) {
+			// Keep what this attempt created for the record's row in the next batch.
+			const newTerms = [...new Set([...(carried?.newTerms ?? []), ...found.newTerms])];
+			const newMedia = [
+				...new Set([...(carried?.newMedia ?? []), ...found.newMedia, ...e.newMedia]),
+			];
+			if (newTerms.length > 0 || newMedia.length > 0) {
+				job.deferred = { seq: rec.seq, newTerms, newMedia };
+			}
+		}
+		throw e;
+	}
+	// A retried or deferred record keeps the terms and media its earlier attempts created.
+	const newTerms = [
+		...new Set([...(existing?.newTerms ?? []), ...(carried?.newTerms ?? []), ...found.newTerms]),
+	];
+	const newMedia = [
+		...new Set([...(existing?.newMedia ?? []), ...(carried?.newMedia ?? []), ...found.newMedia]),
+	];
+	if (carried) delete job.deferred;
+	return {
+		...row,
+		...(newTerms.length > 0 ? { newTerms } : {}),
+		...(newMedia.length > 0 ? { newMedia } : {}),
+	};
+}
+
+function mediaContext(job: Job): MediaContext {
+	return {
+		jobId: job.id,
+		dryRun: job.dryRun,
+		maxBytes: job.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE,
+		targets: job.targetFields ?? {},
+	};
+}
+
+function mediaItem(request: MediaRequest, item: MediaInfo | null): MediaPlanItem {
+	if (item === null) {
+		const text = `new media from ${request.url}`;
+		return { mediaId: null, value: null, text, alt: request.alt };
+	}
+	const value = mediaFieldValue(request.kind, item, request.alt);
+	return { mediaId: item.id, value, text: item.id, alt: request.alt };
+}
+
+/**
+ * The media plan before any download: a hit as its item, and a miss (or, in a real run, a hit
+ * to refresh) as a file not stored yet, which is always a change.
+ */
+function lookedUpMedia(
+	lookups: Readonly<Record<string, MediaLookup | null>>,
+	dryRun: boolean,
+	jobId: string,
+): Record<string, MediaPlanItem | null> {
+	const plan: Record<string, MediaPlanItem | null> = {};
+	for (const [field, lookup] of Object.entries(lookups)) {
+		const stays =
+			lookup?.item && (dryRun || !lookup.request.refresh || lookup.row?.jobId === jobId);
+		plan[field] = lookup === null ? null : mediaItem(lookup.request, stays ? lookup.item : null);
+	}
+	return plan;
+}
+
+function obtainedMedia(media: Readonly<Record<string, ResolvedMedia>>) {
+	const plan: Record<string, MediaPlanItem | null> = {};
+	for (const [field, resolved] of Object.entries(media)) {
+		plan[field] = resolved === null ? null : mediaItem(resolved.request, resolved.item);
+	}
+	return plan;
 }
 
 async function decideRecord(
@@ -362,7 +460,7 @@ async function decideRecord(
 	existing: RecordRow | null,
 	save: (fields: RowFields) => Promise<void>,
 	cache: LookupCache,
-	found: { newTerms: string[] },
+	found: Found,
 ): Promise<RowFields> {
 	if (rec.error) return { status: "failed", sourceKey: null, entryId: null, errors: [rec.error] };
 	const filter = await filterRecord(template, rec.value);
@@ -389,7 +487,9 @@ async function decideRecord(
 	let action: PlanAction | undefined;
 	try {
 		const requests = mapped.value.links;
-		if (requests) cache.spend(COST_RECORD);
+		const mediaRequests = mapped.value.media;
+		if (requests || mediaRequests) cache.spend(COST_RECORD);
+		const errors: { field: string; code: string; message: string }[] = [];
 		if (requests) {
 			const resolution = await resolveLinks(
 				deps,
@@ -405,11 +505,17 @@ async function decideRecord(
 				requests,
 			);
 			found.newTerms = resolution.newTerms;
-			if (!resolution.ok) {
-				return { status: "failed", sourceKey, entryId: null, errors: resolution.errors };
-			}
-			ctx.links = resolution.links;
+			if (resolution.ok) ctx.links = resolution.links;
+			else errors.push(...resolution.errors);
 		}
+		// Media is looked up even when a link failed, so the record reports every error.
+		let lookups: Record<string, MediaLookup | null> | undefined;
+		if (mediaRequests) {
+			const looked = await lookupRecordMedia(deps, cache, mediaContext(job), mediaRequests);
+			lookups = looked.lookups;
+			errors.push(...looked.errors);
+		}
+		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		// Reference selections are read only when the template maps reference fields.
 		const read = { references: requests?.references !== undefined };
 		let link = await deps.links.get(ctx.linkId);
@@ -430,23 +536,50 @@ async function decideRecord(
 		entryId = entry?.id ?? null;
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
-		const plan = planRecord(entry, mapped.value, comparisons, links);
+		// Before any download: a file not stored yet counts as a change.
+		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
+		const plan = planRecord(entry, mapped.value, comparisons, links, media);
 		action = plan.action;
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
+			for (const [field, item] of Object.entries(media ?? {})) {
+				const url = mediaRequests?.[field]?.url;
+				if (item?.mediaId === null && url) found.newMedia.push(`${field}: ${url}`);
+			}
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		}
-		if (!entry) return await writeRecord(ctx, null, plan, mapped.value);
-		if (plan.action === "unchanged")
+		if (entry) {
+			if (plan.action === "unchanged")
+				return await finishUnchanged(ctx, entry, link, existing, repaired);
+			if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
+				const code = "pending_draft";
+				return notImported(
+					"conflict",
+					sourceKey,
+					entry.id,
+					plan.action,
+					code,
+					PENDING_DRAFT_MESSAGE,
+				);
+			}
+			if (await deps.content.isLocked(collection, locale, entry.id)) {
+				return notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
+			}
+		}
+		if (!lookups) return await writeRecord(ctx, entry, plan, mapped.value);
+		// Downloads only for a record that will be written, after the draft and lock checks.
+		const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
+		found.newMedia = obtained.newMedia;
+		if (!obtained.ok) {
+			return { status: "failed", sourceKey, entryId, action: plan.action, errors: obtained.errors };
+		}
+		ctx.media = obtainedMedia(obtained.media);
+		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media);
+		action = final.action;
+		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
-		if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
-			const code = "pending_draft";
-			return notImported("conflict", sourceKey, entry.id, plan.action, code, PENDING_DRAFT_MESSAGE);
 		}
-		if (await deps.content.isLocked(collection, locale, entry.id)) {
-			return notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
-		}
-		return await writeRecord(ctx, entry, plan, mapped.value);
+		return await writeRecord(ctx, entry, final, mapped.value);
 	} catch (e) {
 		// A missing collection or a broken source-id field fails every record: fail the job instead.
 		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
@@ -586,27 +719,34 @@ async function writeRecord(
 	const { collection, locale } = job.template;
 	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
+	// Media fields are data fields: their values (null clears one) are written with the rest.
+	const media: Record<string, FieldValue> = {};
+	for (const [field, item] of Object.entries(ctx.media ?? {})) media[field] = item?.value ?? null;
+	const data = { ...mapped.data, ...media };
 	let written: { id: string; rev: string };
 	if (!entry) {
 		written = await deps.content.create({
 			collection,
 			locale,
 			...slugPart,
-			data: { ...mapped.data, [SOURCE_ID_FIELD]: sourceKey },
+			data: { ...data, [SOURCE_ID_FIELD]: sourceKey },
 			...createLinks(ctx.links),
 		});
 	} else {
 		// When only links changed, data and slug stay out: on a collection with revisions that
-		// would stage a draft identical to the live entry.
+		// would stage a draft identical to the live entry. A media alt change is a data change.
 		const dataChanged = plan.changes.some(
-			(c) => c.field === "slug" || Object.hasOwn(mapped.data, c.field),
+			(c) =>
+				c.field === "slug" ||
+				Object.hasOwn(data, c.field) ||
+				(c.field.endsWith(".alt") && Object.hasOwn(media, c.field.slice(0, -4))),
 		);
 		const result = await deps.content.update({
 			collection,
 			locale,
 			id: entry.id,
 			rev: entry.rev,
-			...(dataChanged ? { ...slugPart, data: mapped.data } : {}),
+			...(dataChanged ? { ...slugPart, data } : {}),
 			...updateLinks(ctx.links, plan, entry),
 		});
 		if (!result.ok) {
@@ -661,7 +801,13 @@ async function importPass(
 		startOffset: job.cursor.offset,
 		startSeq: job.cursor.seq,
 	})) {
-		await processRecord(deps, job, template, rec, { retry: false, cache });
+		try {
+			await processRecord(deps, job, template, rec, { retry: false, cache });
+		} catch (e) {
+			// Not saved and not counted: the next batch processes the record again.
+			if (e instanceof MediaDeferred) return { done: false };
+			throw e;
+		}
 		job.cursor = { offset: rec.end, seq: rec.seq + 1 };
 		processed++;
 		if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
@@ -731,7 +877,12 @@ async function retryPass(
 		}
 		for (const { data: row } of page.items) {
 			const rec = await readOneRecord(deps, job, row);
-			await processRecord(deps, job, template, rec, { retry: true, cache });
+			try {
+				await processRecord(deps, job, template, rec, { retry: true, cache });
+			} catch (e) {
+				if (e instanceof MediaDeferred) return { done: false };
+				throw e;
+			}
 			job.retryFromSeq = row.seq + 1;
 			processed++;
 			if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
@@ -746,8 +897,10 @@ async function retryPass(
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
  * live lease exists, whoever holds it (the same holder name included). A batch is at most
  * `job.batchSize` records, and at most `maxRecords` (or what it gives for the job) when that is
- * smaller; the job is not changed. Link lookups are cached for the batch, and the batch ends
- * after the record that brings their cost to `lookupBudget` (that record always completes).
+ * smaller; the job is not changed. Link and media lookups are cached for the batch, and the
+ * batch ends after the record that brings their cost to `lookupBudget` (that record always
+ * completes). Media downloads end by the budget plus `MEDIA_GRACE_MS`; a record whose next
+ * download would start later is left for the next batch.
  */
 export async function runBatch(
 	deps: EngineDeps,
@@ -763,6 +916,7 @@ export async function runBatch(
 	const cap = typeof maxRecords === "number" ? maxRecords : maxRecords(job);
 	const limit = Math.min(job.batchSize, cap);
 	const cache = new LookupCache(job.dryRun ? (job.plannedTerms ?? []) : [], lookupBudget);
+	cache.mediaDeadline = started + job.budgetMs + MEDIA_GRACE_MS;
 	let outcome: Outcome;
 	try {
 		if (!job.dryRun && !job.schemaReady) {

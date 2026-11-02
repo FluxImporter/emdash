@@ -187,3 +187,24 @@ describe("listSchemaFields", () => {
 		]);
 	});
 });
+
+describe("listSchemaFields for media", () => {
+	it("keeps a non-empty allowedMimeTypes list of strings", async () => {
+		const registry: SchemaRegistryLike = Object.assign(new FakeRegistry(), {
+			getCollectionWithFields: async () => ({
+				fields: [
+					{
+						slug: "logo",
+						type: "image",
+						validation: { allowedMimeTypes: ["image/png", "image/"] },
+					},
+					{ slug: "any", type: "file", validation: { allowedMimeTypes: [] } },
+					{ slug: "odd", type: "file", validation: { allowedMimeTypes: ["a/b", 7 as never] } },
+					{ slug: "plain", type: "image", validation: null },
+				],
+			}),
+		});
+		const rules = (await listSchemaFields(registry, "products"))?.map((f) => f.validation);
+		expect(rules).toEqual([{ allowedMimeTypes: ["image/png", "image/"] }, {}, {}, {}]);
+	});
+});

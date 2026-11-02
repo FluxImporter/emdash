@@ -17,6 +17,7 @@ import {
 	ContentWriteError,
 	type KvCollection,
 	type LookupPort,
+	type MediaInfo,
 	type TermInfo,
 } from "./ports.js";
 import { slugify, type TargetField, type Template } from "./template.js";
@@ -34,8 +35,10 @@ export const COST_CALL = 1;
 /** A content get or list, or a byline page: a full read with its hydration queries. */
 export const COST_READ = 5;
 export const COST_CREATE_TERM = 6;
-/** Charged for each processed record of a job that maps links: its writes and bookkeeping. */
+/** Charged for each processed record of a job that maps links or media: its writes and bookkeeping. */
 export const COST_RECORD = 25;
+/** One media download and its upload (M4c): about ten per Workers batch. */
+export const COST_MEDIA = 60;
 
 export type { ResolvedItem, ResolvedLinks };
 
@@ -141,6 +144,16 @@ export class LookupCache {
 	spent = 0;
 	bylines: BylineIndex | null = null;
 	readonly entries = new Map<string, { id: string; group: string }>();
+	/** Media items read or stored this batch, by ID; null when missing or not ready. */
+	readonly mediaItems = new Map<string, MediaInfo | null>();
+	/** Items already obtained or refreshed this batch, by media map key: a URL is fetched once. */
+	readonly mediaObtained = new Map<string, MediaInfo>();
+	/** Media failures this batch, by media map key: a failing URL is fetched once. */
+	readonly mediaFailed = new Map<string, LinkError>();
+	/** Media downloads started this batch. */
+	mediaDownloads = 0;
+	/** When this batch's downloads must be done by (epoch ms); `runBatch` sets it. */
+	mediaDeadline = Number.POSITIVE_INFINITY;
 
 	/** `budget`: the batch should end after the record that brings `spent` to this. */
 	constructor(

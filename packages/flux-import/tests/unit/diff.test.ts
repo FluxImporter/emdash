@@ -5,6 +5,7 @@ import {
 	comparisonsOf,
 	deepEqual,
 	type LinkPlan,
+	type MediaPlanItem,
 	planRecord,
 } from "../../src/engine/diff.js";
 import type { ResolvedLinks } from "../../src/engine/links.js";
@@ -299,6 +300,85 @@ describe("planRecord with links", () => {
 				{ field: "title", before: null, after: "Hello" },
 				{ field: "related", before: null, after: ["p1"] },
 				{ field: "taxonomies.category", before: null, after: ["news"] },
+				{ field: "bylines", before: null, after: ["alex"] },
+			],
+		});
+	});
+});
+
+describe("planRecord with media", () => {
+	const record = { key: "P1", data: { title: "Chair" } };
+	const item = (mediaId: string | null, alt: string | null = null): MediaPlanItem => ({
+		mediaId,
+		value: mediaId === null ? null : { id: mediaId, provider: "local" },
+		text: mediaId ?? "new media from https://cdn.test/a.png",
+		alt,
+	});
+	const stored = (data: Record<string, unknown>) => ({
+		slug: null,
+		data: { title: "Chair", ...data },
+	});
+	const plan = (data: Record<string, unknown>, media: Record<string, MediaPlanItem | null>) =>
+		planRecord(stored(data), record, new Map(), undefined, media);
+
+	it("compares the stored media ID, also when the value is a bare ID", () => {
+		const photo = { id: "m1", provider: "local", width: 4, meta: { storageKey: "K1.png" } };
+		expect(plan({ photo, manual: "m2" }, { photo: item("m1"), manual: item("m2") })).toEqual({
+			action: "unchanged",
+			changes: [],
+		});
+		expect(plan({ photo, manual: "m2" }, { photo: item("m3"), manual: item(null) })).toEqual({
+			action: "update",
+			changes: [
+				{ field: "photo", before: "m1", after: "m3" },
+				{ field: "manual", before: "m2", after: "new media from https://cdn.test/a.png" },
+			],
+		});
+	});
+
+	it("compares the alt only when the mapping gives one", () => {
+		const photo = { id: "m1", alt: "Library alt" };
+		expect(plan({ photo }, { photo: item("m1") }).action).toBe("unchanged");
+		expect(plan({ photo }, { photo: item("m1", "Library alt") }).action).toBe("unchanged");
+		expect(plan({ photo }, { photo: item("m1", "A red chair") })).toEqual({
+			action: "update",
+			changes: [{ field: "photo.alt", before: "Library alt", after: "A red chair" }],
+		});
+		expect(plan({ photo: { id: "m1" } }, { photo: item("m1", "A red chair") }).changes).toEqual([
+			{ field: "photo.alt", before: null, after: "A red chair" },
+		]);
+	});
+
+	it("treats an empty value as equal to nothing stored, and clears a stored one", () => {
+		expect(plan({ photo: null }, { photo: null, manual: null }).action).toBe("unchanged");
+		expect(plan({ photo: { id: "m1" } }, { photo: null })).toEqual({
+			action: "update",
+			changes: [{ field: "photo", before: "m1", after: null }],
+		});
+		expect(plan({ photo: { id: "m1" } }, { photo: item(null) }).changes).toEqual([
+			{ field: "photo", before: "m1", after: "new media from https://cdn.test/a.png" },
+		]);
+	});
+
+	it("lists a new entry's media after its fields", () => {
+		expect(
+			planRecord(
+				null,
+				record,
+				new Map(),
+				{
+					resolved: { bylines: [{ group: "b1", value: "b1", text: "alex" }] },
+					current: {},
+					childSide: new Set(),
+				},
+				{ photo: item("m1", "Alt"), manual: null, icon: item(null) },
+			),
+		).toEqual({
+			action: "create",
+			changes: [
+				{ field: "title", before: null, after: "Chair" },
+				{ field: "photo", before: null, after: "m1" },
+				{ field: "icon", before: null, after: "new media from https://cdn.test/a.png" },
 				{ field: "bylines", before: null, after: ["alex"] },
 			],
 		});

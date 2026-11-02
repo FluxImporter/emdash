@@ -17,6 +17,10 @@ export interface Feed {
 	authorization?: string;
 	/** Sends the body in two chunks without a Content-Length (Transfer-Encoding: chunked). */
 	chunked?: boolean;
+	/** The `Content-Type` sent; `text/csv` when absent, none when null. */
+	contentType?: string | null;
+	/** Sends the headers and half the body, then the rest after this many milliseconds. */
+	delayMs?: number;
 }
 
 /**
@@ -39,17 +43,16 @@ export class FeedServer {
 				body?: string | Uint8Array,
 			) => {
 				this.requests.push({ path, headers: req.headers, status });
-				if (feed?.chunked && status === 200 && body !== undefined) {
-					res.writeHead(status, headers);
+				const length =
+					body === undefined ? {} : { "content-length": String(Buffer.byteLength(body)) };
+				if ((feed?.chunked || feed?.delayMs) && status === 200 && body !== undefined) {
+					res.writeHead(status, feed.chunked ? headers : { ...headers, ...length });
 					const half = Math.floor(body.length / 2);
 					res.write(body.slice(0, half));
-					setTimeout(() => res.end(body.slice(half)), 20);
+					setTimeout(() => res.end(body.slice(half)), feed.delayMs ?? 20);
 					return;
 				}
-				res.writeHead(status, {
-					...headers,
-					...(body === undefined ? {} : { "content-length": String(Buffer.byteLength(body)) }),
-				});
+				res.writeHead(status, { ...headers, ...length });
 				res.end(body);
 			};
 			if (!feed) return send(404, {}, "not found");
@@ -58,7 +61,12 @@ export class FeedServer {
 			}
 			const tag = `"${createHash("sha256").update(feed.body).digest("hex").slice(0, 16)}"`;
 			if (feed.etag && req.headers["if-none-match"] === tag) return send(304, { etag: tag });
-			send(200, { "content-type": "text/csv", ...(feed.etag ? { etag: tag } : {}) }, feed.body);
+			const type = feed.contentType === undefined ? "text/csv" : feed.contentType;
+			send(
+				200,
+				{ ...(type === null ? {} : { "content-type": type }), ...(feed.etag ? { etag: tag } : {}) },
+				feed.body,
+			);
 		});
 		this.server = server;
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

@@ -5,6 +5,7 @@ import {
 	type SourceErrorCode,
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
+import { DEFAULT_MAX_UPLOAD_SIZE } from "./media.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
@@ -21,6 +22,7 @@ import {
 	templatePaths,
 	templateSchema,
 	unresolvedPaths,
+	usesMedia,
 	usesSiteTimezone,
 } from "./template.js";
 import {
@@ -67,6 +69,8 @@ export type CreateJobInput = {
 	siteTimezone?: string;
 	/** Reference targets' fields and the taxonomy definitions, for the link checks. */
 	linkSchema?: LinkSchema;
+	/** The largest media download (`mediaMaxBytes`); EmDash's default upload limit when absent. */
+	mediaMaxBytes?: number;
 	dryRun?: boolean;
 	publish?: boolean;
 	batchSize?: number;
@@ -166,6 +170,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		...(template.taxonomies === undefined
 			? {}
 			: { taxonomies: taxonomiesOf(template, taxonomyDefs) }),
+		...(usesMedia(template)
+			? { mediaMaxBytes: input.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE }
+			: {}),
 		cursor: { offset: located.bodyOffset, seq: 0 },
 		counters: emptyCounters(),
 		lease: null,

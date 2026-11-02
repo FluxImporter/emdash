@@ -54,6 +54,8 @@ export type TargetField = {
 	targetCollection?: string;
 	/** Reference fields: the parent side takes more than one entry. */
 	multiple?: boolean;
+	/** Image and file fields: the types the field accepts (EmDash checks them on save). */
+	allowedMimeTypes?: string[];
 };
 
 export interface NumberOptions {

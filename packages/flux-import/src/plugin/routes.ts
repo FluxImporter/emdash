@@ -6,6 +6,7 @@ import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { EmDashLookups } from "../emdash/lookups.js";
+import { EmDashMedia } from "../emdash/media.js";
 import { listSchemaFields } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
 import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
@@ -14,7 +15,8 @@ import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
-import { defaultResolver } from "../sources/net.js";
+import { createMediaFetcher } from "../sources/media-fetch.js";
+import { defaultResolver, type NetOptions } from "../sources/net.js";
 import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
 import {
 	CREDENTIAL_NAME,
@@ -34,6 +36,7 @@ import {
 	jobLogCsv,
 	listJobs,
 	listRecords,
+	mediaMaxBytes,
 	nextBatch,
 	PASTE_MAX_BYTES,
 	SAMPLE_MAX,
@@ -173,17 +176,18 @@ async function withServices<T>(
 		}
 		const uploads = new EmDashUploads(runtime.storage);
 		const collection = sourcesCollection(ctx.storage);
+		const net: NetOptions = {
+			resolver: defaultResolver(),
+			allowPrivateNetwork: allowPrivateNetwork(),
+			// A plain call: workerd rejects fetch() called as a method of another object.
+			fetch: (input, init) => fetch(input, init),
+		};
 		const sources: SourceDeps = {
 			sources: collection,
 			jobs: pluginCollections(ctx.storage).jobs,
 			settings: ctx.settings,
 			storage: runtime.storage,
-			net: {
-				resolver: defaultResolver(),
-				allowPrivateNetwork: allowPrivateNetwork(),
-				// A plain call: workerd rejects fetch() called as a method of another object.
-				fetch: (input, init) => fetch(input, init),
-			},
+			net,
 			limits: { ...FETCH_LIMITS, maxBytes: maxSourceBytes() },
 			workers: onWorkers(),
 			now: Date.now,
@@ -197,6 +201,9 @@ async function withServices<T>(
 				isEntryLocked(runtime.db, collection, entryId, userId),
 			),
 			lookups: new EmDashLookups(ctx.taxonomies, ctx.bylines, runtime),
+			// Media is fetched without credentials, behind the same SSRF guard as URL sources.
+			media: new EmDashMedia(runtime, actor.id, runtime.config.maxUploadSize),
+			mediaFetcher: createMediaFetcher(net),
 			source: uploads,
 			now: Date.now,
 			newId: () => ulid(),
@@ -392,6 +399,7 @@ export const routes: Record<string, PluginRoute> = {
 					uploadId: upload,
 					template: input.template,
 					dryRun: input.dryRun,
+					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 					...(siteTimezone === undefined ? {} : { siteTimezone }),
 					...(input.publish === undefined ? {} : { publish: input.publish }),
 					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
