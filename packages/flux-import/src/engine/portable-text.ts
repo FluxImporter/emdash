@@ -61,6 +61,9 @@ export type PortableTextCode =
 
 export type PortableTextIssue = { code: PortableTextCode; message: string };
 
+/** At most this many markup issues per field; the rest are summed in one more. */
+const MAX_MARKUP_ISSUES = 19;
+
 /** One distinct image URL of a field; slots index into the field's list. */
 export type PortableTextImage = {
 	/** Normalized (`normalizeMediaUrl`), the media map key's input. */
@@ -828,22 +831,28 @@ class Walker {
 		const errors: PortableTextIssue[] = [];
 		const warnings: PortableTextIssue[] = [];
 		const markup = this.options.unknownMarkup === "fail" ? errors : warnings;
+		const found: { code: PortableTextCode; message: string; n: number }[] = [];
 		for (const [tag, n] of this.unknown) {
-			markup.push({
-				code: "unknown_markup",
-				message: `Kept the text of ${plural(n, `<${shownTag(tag)}> element`)}`,
-			});
+			const message = `Kept the text of ${plural(n, `<${shownTag(tag)}> element`)}`;
+			found.push({ code: "unknown_markup", message, n });
 		}
 		for (const [tag, n] of this.removed) {
-			markup.push({
-				code: "removed_markup",
-				message: `Removed ${plural(n, `<${shownTag(tag)}> element`)}`,
-			});
+			const message = `Removed ${plural(n, `<${shownTag(tag)}> element`)}`;
+			found.push({ code: "removed_markup", message, n });
 		}
 		for (const [reason, n] of this.dropped) {
+			const message = `Kept the text of ${plural(n, "link")} without the address: ${reason}`;
+			found.push({ code: "link_dropped", message, n });
+		}
+		for (const { code, message } of found.slice(0, MAX_MARKUP_ISSUES)) {
+			markup.push({ code, message });
+		}
+		const rest = found.slice(MAX_MARKUP_ISSUES);
+		if (rest.length > 0) {
+			const n = rest.reduce((sum, r) => sum + r.n, 0);
 			markup.push({
-				code: "link_dropped",
-				message: `Kept the text of ${plural(n, "link")} without the address: ${reason}`,
+				code: (rest[0] as { code: PortableTextCode }).code,
+				message: `${n} more elements`,
 			});
 		}
 		if (this.altCut > 0) {

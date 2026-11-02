@@ -251,6 +251,48 @@ describe("portableText mappings", () => {
 		});
 	});
 
+	it("fails a required field that the image limit empties", async () => {
+		const c = compiled(
+			{ body: html(), last: html("last") },
+			{ targets: { last: { type: "portableText", required: true } } },
+		);
+		const result = await applyTemplate(c, {
+			id: "1",
+			html: Array.from({ length: 50 }, (_, i) => img(i)).join(""),
+			last: img(50),
+		});
+		expect(result).toMatchObject({
+			ok: false,
+			errors: [{ field: "last", code: "required", message: "The field is required" }],
+		});
+	});
+
+	it("adds required only when the conversion gave no errors", async () => {
+		const c = compiled(
+			{ body: html("html", { unknownMarkup: "fail" }) },
+			{ targets: { body: { type: "portableText", required: true } } },
+		);
+		const result = await applyTemplate(c, { id: "1", html: "<custom-a></custom-a>" });
+		expect(result).toMatchObject({ ok: false });
+		if (result.ok) return;
+		expect(result.errors.map((e) => e.code)).toEqual(["unknown_markup"]);
+	});
+
+	it("bounds the markup issues per field", async () => {
+		const tags = Array.from({ length: 300 }, (_, i) => `<x-t${i}>a</x-t${i}>`).join("");
+		for (const unknownMarkup of ["warn", "fail"] as const) {
+			const c = compiled({ body: html("html", { unknownMarkup }) });
+			const result = await applyTemplate(c, { id: "1", html: `<p>${tags}</p>` });
+			const issues = result.ok ? (result.warnings ?? []) : result.errors;
+			expect(issues.length).toBe(20);
+			expect(issues.at(-1)).toEqual({
+				field: "body",
+				code: "unknown_markup",
+				message: "281 more elements",
+			});
+		}
+	});
+
 	it("refuses more than 1 MiB of Portable Text JSON in one record", async () => {
 		const text = { type: "portableText", format: "text" };
 		const c = compiled({

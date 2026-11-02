@@ -736,7 +736,12 @@ export async function applyTemplate(
 			for (const w of converted?.warnings ?? []) warnings.push({ field, ...w });
 			const draft = converted?.draft ?? null;
 			// Markup that leaves no block is empty, as a missing value is.
-			if (draft === null && text !== null && target !== undefined) {
+			if (
+				draft === null &&
+				text !== null &&
+				target !== undefined &&
+				(converted?.errors.length ?? 0) === 0
+			) {
 				for (const e of checkRules(null, target)) errors.push({ field, ...e });
 			}
 			portableText[field] = draft;
@@ -837,7 +842,11 @@ function limitPortableText(
 			code: "image_dropped",
 			message: `Left out ${which}: at most ${MAX_PORTABLE_TEXT_IMAGES} distinct image URLs per record`,
 		});
-		drafts[field] = withoutImages(draft, new Set(over.map((image) => image.url)));
+		const kept = withoutImages(draft, new Set(over.map((image) => image.url)));
+		drafts[field] = kept;
+		if (kept === null && c.targets?.[field]?.required === true) {
+			errors.push({ field, code: "required", message: "The field is required" });
+		}
 	}
 	let bytes = 0;
 	const encoder = new TextEncoder();
@@ -1095,8 +1104,8 @@ function fieldProblems(
  * default that the template does not map (every create would fail), reference fields that are
  * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
  * to the collection, more than five image and file mappings, more than three `portableText`
- * mappings, and image or file fields whose `allowedMimeTypes` EmDash's upload can never satisfy. The link checks run only on what `links`
- * carries.
+ * mappings, and image or file fields whose `allowedMimeTypes` EmDash's upload can never
+ * satisfy. The link checks run only on what `links` carries.
  */
 export function checkTemplate(
 	t: Template,
