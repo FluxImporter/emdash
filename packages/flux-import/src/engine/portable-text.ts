@@ -177,7 +177,9 @@ type ChildNode = DefaultTreeAdapterTypes.ChildNode;
  * as of the exact pinned version, 7.3.0 (`package.json`); re-check them on any upgrade.
  *
  * A count of created nodes: the parse stops (`TooMany`) as soon as more than `MAX_HTML_NODES`
- * elements, attributes, text and comment nodes are made.
+ * elements, attributes, text and comment nodes are made. `adoptAttributes` (`<html>` and `<body>`
+ * start tags) adds at linear cost and counts what it adds, and `insertBefore` and
+ * `insertTextBefore` (foster parenting) find their reference from the end.
  *
  * A count of open elements: the parse stops as soon as more than `MAX_PORTABLE_TEXT_NESTING` are
  * open, which bounds `parse5`'s quadratic scope checks. `onItemPush` and `onItemPop` are part of
@@ -193,6 +195,8 @@ type ChildNode = DefaultTreeAdapterTypes.ChildNode;
 function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 	let open = 0;
 	let nodes = 0;
+	/** The attribute names of each element `adoptAttributes` has added to. */
+	const adopted = new WeakMap<Element, Set<string>>();
 	const created = (n: number) => {
 		nodes += n;
 		if (nodes > MAX_HTML_NODES) throw new TooMany("The markup expands to too many elements");
@@ -214,6 +218,21 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 		createCommentNode(data) {
 			created(1);
 			return defaultTreeAdapter.createCommentNode(data);
+		},
+		adoptAttributes(recipient, attrs) {
+			// The default rebuilds a set of the recipient's names on each call, and every `<html>`
+			// start tag adopts into the root: quadratic. Same result, with one set per recipient.
+			let names = adopted.get(recipient);
+			if (names === undefined) {
+				names = new Set(recipient.attrs.map((a) => a.name));
+				adopted.set(recipient, names);
+			}
+			for (const attr of attrs) {
+				if (names.has(attr.name)) continue;
+				created(1);
+				names.add(attr.name);
+				recipient.attrs.push(attr);
+			}
 		},
 		onItemPush() {
 			// The fragment parser's own root element is the first push.
@@ -259,7 +278,11 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 		},
 		insertBefore(parent, node, reference) {
 			compact(parent);
-			defaultTreeAdapter.insertBefore(parent, node, reference);
+			// The default finds the reference with `indexOf`. Foster parenting inserts each node
+			// before the open table, which is at or near the end, so searching from the end is
+			// linear where the default is quadratic.
+			parent.childNodes.splice(parent.childNodes.lastIndexOf(reference), 0, node);
+			node.parentNode = parent;
 		},
 		insertText(parent, text) {
 			compact(parent);
@@ -269,9 +292,18 @@ function nestingGuard(): TreeAdapter<DefaultTreeAdapterMap> {
 			defaultTreeAdapter.insertText(parent, text);
 		},
 		insertTextBefore(parent, text, reference) {
-			created(1);
 			compact(parent);
-			defaultTreeAdapter.insertTextBefore(parent, text, reference);
+			// As the default, searching for the reference from the end (see `insertBefore`).
+			const at = parent.childNodes.lastIndexOf(reference);
+			const before = parent.childNodes[at - 1];
+			if (before !== undefined && defaultTreeAdapter.isTextNode(before)) {
+				before.value += text;
+				return;
+			}
+			created(1);
+			const node = defaultTreeAdapter.createTextNode(text);
+			parent.childNodes.splice(at, 0, node);
+			node.parentNode = parent;
 		},
 		getChildNodes(node) {
 			compact(node);

@@ -816,6 +816,18 @@ describe("convertPortableText: formats, keys and limits", () => {
 			["line breaks", sized("<br>", "x"), "html"],
 			["words and line breaks", sized("a <br>"), "html"],
 			["distinct links in one block", distinct((i) => `<a href="#${i}">x</a>`), "html"],
+			// Each <html> or <body> start tag adds its attributes to the root's or body's.
+			["distinct html attributes", distinct((i) => `<html a${i.toString(36)}>`), "html"],
+			["distinct body attributes", distinct((i) => `<body b${i.toString(36)}>`), "html"],
+			["misnested formatting", sized("<b><p></b>"), "html"],
+			["links in links", sized("<a href=x>a"), "html"],
+			["options", sized("<option>a", "<select>"), "html"],
+			["foster-parented text", sized("a<br>", "<table>"), "html"],
+			["stray end tags", sized("</p>", "<div>".repeat(255)), "html"],
+			["raw html attributes", distinct((i) => `<html a${i.toString(36)}>\n`), "markdown"],
+			["mixed delimiters", sized("*_~~", "a"), "markdown"],
+			["autolinks", sized("<https://x.test/a> "), "markdown"],
+			["entities", sized("&amp;"), "markdown"],
 			["paragraphs", sized("<p>x</p>"), "html"],
 			["formatting and paragraphs", sized("<b><p>x</b>"), "html"],
 			["emphasis openers", sized("*a "), "markdown"],
@@ -925,6 +937,10 @@ describe("parseHtml", () => {
 			"<b><p>x</b>".repeat(300),
 			"<a><p>".repeat(100),
 			"<td>a".repeat(300),
+			// Attributes adopted by the root and by body: earlier names win, in order.
+			"<html a=1 b><p>x<html a=2 c=3 b=4><html d c=5>y",
+			"<body x=1>a<body x=2 y><body z y=3>b",
+			Array.from({ length: 300 }, (_, i) => `<html a${i % 120}=${i}>`).join("t"),
 		];
 		// Random tag soup, from a fixed seed.
 		const tags = ["b", "i", "a", "p", "div", "table", "tr", "td", "li", "ul", "font", "nobr"];
