@@ -156,12 +156,12 @@ describe("createPlugin", () => {
 				apply.safeParse({ collection: "products", fields: [{ ...field, ...extra }] }).success,
 			).toBe(false);
 		}
-		for (const type of ["portableText", "reference", "repeater", "blocks"]) {
+		for (const type of ["reference", "repeater", "blocks"]) {
 			expect(
 				apply.safeParse({ collection: "products", fields: [{ slug: "x", type }] }).success,
 			).toBe(false);
 		}
-		for (const type of ["image", "file"]) {
+		for (const type of ["image", "file", "portableText"]) {
 			expect(
 				apply.safeParse({ collection: "products", fields: [{ slug: "x", type }] }).success,
 			).toBe(true);

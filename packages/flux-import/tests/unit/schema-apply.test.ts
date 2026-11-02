@@ -648,6 +648,31 @@ describe("template media", () => {
 			'Field "photo": image fields cannot be indexed',
 		]);
 	});
+
+	it("creates portableText fields for portableText mappings, never indexed", async () => {
+		const registry = new FakeApplyRegistry([{ slug: "body", type: "portableText" }]);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "id" },
+			fields: {
+				body: { from: "html", type: "portableText", format: "html" },
+				summary: { from: "md", type: "portableText", format: "markdown", images: "skip" },
+			},
+		};
+		const result = await applySchema(registry, { template }, invalidate);
+		expect(result.changes).toEqual([
+			{ field: "body", action: "unchanged", type: "portableText" },
+			{ field: "summary", action: "create", type: "portableText" },
+		]);
+		expect(registry.calls).toEqual([
+			'create:summary:{"slug":"summary","label":"Summary","type":"portableText","indexed":false,"searchable":false,"translatable":true}',
+		]);
+		expect(requestProblems([{ slug: "body", type: "portableText", indexed: true }])).toEqual([
+			'Field "body": portableText fields cannot be indexed',
+		]);
+	});
 });
 
 describe("labelOf", () => {
