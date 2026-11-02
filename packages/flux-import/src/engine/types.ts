@@ -80,7 +80,13 @@ export interface Job {
 	 * Terms and media a record created before a batch left it for the next one (a download that
 	 * would start too late), merged into its row when it completes. Absent otherwise.
 	 */
-	deferred?: { seq: number; newTerms: string[]; newMedia: string[] };
+	deferred?: {
+		seq: number;
+		newTerms: string[];
+		newMedia: string[];
+		/** Image downloads that failed for good (media map key and error), so the retry skips them. */
+		failed?: { key: string; error: { field: string; code: string; message: string } }[];
+	};
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;

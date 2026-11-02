@@ -220,6 +220,8 @@ export type MediaLookup = {
 export class MediaDeferred extends Error {
 	/** The record's media (`field: url`) downloaded before the deferral. */
 	newMedia: string[] = [];
+	/** The record's downloads that failed for good (media map key and error), kept for the retry. */
+	failed: { key: string; error: LinkError }[] = [];
 	constructor() {
 		super("No time left in this batch for the next download");
 		this.name = "MediaDeferred";

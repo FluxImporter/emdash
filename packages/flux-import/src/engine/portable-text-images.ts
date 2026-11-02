@@ -24,7 +24,7 @@ export const MEDIA_FILE_PATH = "/_emdash/api/media/file/";
 /** A record's Portable Text images, by normalized URL. */
 export type RecordImages = {
 	/** Each URL looked up, in document order, with the first field that uses it. */
-	readonly lookups: Map<string, { field: string; lookup: MediaLookup }>;
+	readonly lookups: Map<string, { field: string; failField: string | null; lookup: MediaLookup }>;
 	/** The item each URL resolved to: map hits from the lookup, downloads once obtained. */
 	readonly items: Map<string, MediaInfo>;
 	/** URLs left out of the blocks (`imageErrors: "drop"`). */
@@ -33,14 +33,37 @@ export type RecordImages = {
 
 /** A dropped image's warning: its M4c code, then the URL and the reason. */
 function dropWarning(field: string, url: string, error: LinkError): LinkError {
-	const message = error.message.startsWith(url)
-		? error.message
-		: `${shownUrl(url)}: ${error.message}`;
-	return { field, code: "image_dropped", message: `${error.code}: ${message}` };
+	return { field, code: "image_dropped", message: `${error.code}: ${namedMessage(url, error)}` };
 }
 
-const failsOn = (options: ReadonlyMap<string, PortableTextOptions>, field: string) =>
-	options.get(field)?.imageErrors === "fail";
+/** An error's message with the image URL in front, unless it already starts with it. */
+function namedMessage(url: string, error: LinkError): string {
+	return error.message.startsWith(url) ? error.message : `${shownUrl(url)}: ${error.message}`;
+}
+
+/** A failure that fails the record: its code, the field that asked for it, the URL and reason. */
+const failError = (field: string, url: string, error: LinkError): LinkError => ({
+	field,
+	code: error.code,
+	message: namedMessage(url, error),
+});
+
+/** The first field using the URL whose `imageErrors` is `"fail"`, if any. */
+function failFieldOf(
+	drafts: Readonly<Record<string, PortableTextDraft | null>>,
+	options: ReadonlyMap<string, PortableTextOptions>,
+	url: string,
+): string | null {
+	for (const [field, draft] of Object.entries(drafts)) {
+		if (options.get(field)?.imageErrors === "fail" && draft?.images.some((i) => i.url === url)) {
+			return field;
+		}
+	}
+	return null;
+}
+
+/** The most failed URLs a deferral carries to the next batch. */
+const MAX_CARRIED_FAILURES = 50;
 
 /**
  * Looks every distinct image URL of the record's Portable Text up, without the network, as an
@@ -65,10 +88,11 @@ export async function lookupPortableTextImages(
 			seen.add(image.url);
 			const request = { kind: "image" as const, url: image.url, alt: image.alt, refresh: false };
 			const found = await findMedia(deps, cache, ctx, field, request);
+			const failField = failFieldOf(drafts, options, image.url);
 			if (found.ok) {
-				images.lookups.set(image.url, { field, lookup: found.lookup });
+				images.lookups.set(image.url, { field, failField, lookup: found.lookup });
 				if (found.lookup.item) images.items.set(image.url, found.lookup.item);
-			} else if (failsOn(options, field)) errors.push(found.error);
+			} else if (failField !== null) errors.push(failError(failField, image.url, found.error));
 			else {
 				warnings.push(dropWarning(field, image.url, found.error));
 				images.dropped.add(image.url);
@@ -89,26 +113,35 @@ export async function obtainPortableTextImages(
 	cache: LookupCache,
 	ctx: MediaContext,
 	images: RecordImages,
-	options: ReadonlyMap<string, PortableTextOptions>,
+	_options: ReadonlyMap<string, PortableTextOptions>,
 	newMedia: string[],
 ): Promise<
 	{ ok: true; warnings: LinkError[] } | { ok: false; errors: LinkError[]; warnings: LinkError[] }
 > {
 	const warnings: LinkError[] = [];
-	for (const [url, { field, lookup }] of images.lookups) {
+	for (const [url, { field, failField, lookup }] of images.lookups) {
 		if (images.items.has(url)) continue;
 		let obtained: Awaited<ReturnType<typeof obtainMedia>>;
 		try {
 			obtained = await obtainMedia(deps, cache, ctx, lookup);
 		} catch (e) {
-			if (e instanceof MediaDeferred) e.newMedia = newMedia;
+			if (e instanceof MediaDeferred) {
+				e.newMedia = newMedia;
+				// What failed for good stays failed in the next batch, which would defer at the same
+				// point again otherwise.
+				for (const { lookup: l } of images.lookups.values()) {
+					const error = cache.mediaFailed.get(l.key);
+					if (error && e.failed.length < MAX_CARRIED_FAILURES) e.failed.push({ key: l.key, error });
+				}
+			}
 			throw e;
 		}
 		if (obtained.ok) {
 			images.items.set(url, obtained.item);
 			if (obtained.downloaded) newMedia.push(`${field}: ${url}`);
-		} else if (failsOn(options, field)) return { ok: false, errors: [obtained.error], warnings };
-		else {
+		} else if (failField !== null) {
+			return { ok: false, errors: [failError(failField, url, obtained.error)], warnings };
+		} else {
 			warnings.push(dropWarning(field, url, obtained.error));
 			images.dropped.add(url);
 		}

@@ -196,7 +196,11 @@ describe("Portable Text images", () => {
 			options(["body"]),
 		);
 		expect(strict.errors).toEqual([
-			{ field: "body", code: "media_blocked", message: "The host blocked.test is not allowed" },
+			{
+				field: "body",
+				code: "media_blocked",
+				message: "https://blocked.test/x.png: The host blocked.test is not allowed",
+			},
 		]);
 		const failing = { body: draft(`<img src="${url("missing.png")}"><img src="${url("c.png")}">`) };
 		const next = new LookupCache();
@@ -206,7 +210,11 @@ describe("Portable Text images", () => {
 		).toEqual({
 			ok: false,
 			errors: [
-				{ field: "body", code: "media_http_error", message: "The server answered HTTP 404" },
+				{
+					field: "body",
+					code: "media_http_error",
+					message: `${url("missing.png")}: The server answered HTTP 404`,
+				},
 			],
 			warnings: [],
 		});
@@ -249,6 +257,61 @@ describe("Portable Text images", () => {
 			obtainPortableTextImages(deps, byDeadline, ctx, again.images, options(), []),
 		).rejects.toBeInstanceOf(MediaDeferred);
 		expect(deps.mediaFetcher.urls()).toEqual([url("a.png")]);
+	});
+
+	it("fails the record when any field using a shared URL says fail", async () => {
+		const { deps, ctx } = setup();
+		const html = `<img src="${url("missing.png")}">`;
+		const drafts = { body: draft(html), summary: draft(html) };
+		const cache = new LookupCache();
+		const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options(["summary"]));
+		const obtained = await obtainPortableTextImages(
+			deps,
+			cache,
+			ctx,
+			looked.images,
+			options(["summary"]),
+			[],
+		);
+		expect(obtained).toEqual({
+			ok: false,
+			errors: [
+				{
+					field: "summary",
+					code: "media_http_error",
+					message: `${url("missing.png")}: The server answered HTTP 404`,
+				},
+			],
+			warnings: [],
+		});
+	});
+
+	it("completes a record of many failing images across deferred batches, fetching each once", async () => {
+		const { deps, ctx } = setup({ maxBytes: 1000 });
+		let html = "";
+		for (let i = 0; i < 10; i++) html += `<img src="${url(`missing${i}.png`)}">`;
+		const drafts = { body: draft(html) };
+		let carried: MediaDeferred["failed"] = [];
+		let batches = 0;
+		let result: Awaited<ReturnType<typeof obtainPortableTextImages>> | undefined;
+		while (result === undefined && batches < 6) {
+			batches++;
+			const cache = new LookupCache([], 600);
+			cache.spend(25);
+			for (const { key, error } of carried) cache.mediaFailed.set(key, error);
+			const looked = await lookupPortableTextImages(deps, cache, ctx, drafts, options());
+			try {
+				result = await obtainPortableTextImages(deps, cache, ctx, looked.images, options(), []);
+			} catch (e) {
+				if (!(e instanceof MediaDeferred)) throw e;
+				const merged = new Map([...carried, ...e.failed].map((f) => [f.key, f] as const));
+				carried = [...merged.values()];
+			}
+		}
+		expect(result).toMatchObject({ ok: true });
+		expect(batches).toBeLessThanOrEqual(3);
+		expect(deps.mediaFetcher.urls()).toHaveLength(10);
+		expect(new Set(deps.mediaFetcher.urls()).size).toBe(10);
 	});
 
 	it("fails the job when EmDash cannot store media, whatever imageErrors says", async () => {

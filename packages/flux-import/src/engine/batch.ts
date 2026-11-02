@@ -378,6 +378,7 @@ async function decide(
 	const found: Found = { newTerms: [], newMedia: [] };
 	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
 	let row: RowFields;
+	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
 	try {
 		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
 	} catch (e) {
@@ -387,8 +388,16 @@ async function decide(
 			const newMedia = [
 				...new Set([...(carried?.newMedia ?? []), ...found.newMedia, ...e.newMedia]),
 			];
-			if (newTerms.length > 0 || newMedia.length > 0) {
-				job.deferred = { seq: rec.seq, newTerms, newMedia };
+			const failed = new Map(
+				[...(carried?.failed ?? []), ...e.failed].map((f) => [f.key, f] as const),
+			);
+			if (newTerms.length > 0 || newMedia.length > 0 || failed.size > 0) {
+				job.deferred = {
+					seq: rec.seq,
+					newTerms,
+					newMedia,
+					...(failed.size > 0 ? { failed: [...failed.values()].slice(0, 50) } : {}),
+				};
 			}
 		}
 		throw e;
