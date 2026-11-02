@@ -5,6 +5,7 @@ import {
 	type LinkPlan,
 	type MediaPlanItem,
 	type PlanAction,
+	type PortableTextPlanItem,
 	planRecord,
 	type RecordPlan,
 } from "./diff.js";
@@ -27,6 +28,12 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
+import {
+	lookupPortableTextImages,
+	obtainPortableTextImages,
+	portableTextPlan,
+	type RecordImages,
+} from "./portable-text-images.js";
 import {
 	ContentWriteError,
 	type EntrySnapshot,
@@ -55,11 +62,13 @@ import {
 } from "./template.js";
 import {
 	type Counters,
+	capWarnings,
 	type EngineDeps,
 	emptyCounters,
 	type Job,
 	type LinkRow,
 	linkKey,
+	type RecordError,
 	type RecordRow,
 	recordKey,
 } from "./types.js";
@@ -202,6 +211,8 @@ type RecordCtx = {
 	links?: ResolvedLinks;
 	/** The record's media field values, written with the data; absent when it maps none. */
 	media?: Record<string, MediaPlanItem | null>;
+	/** The record's Portable Text values, written with the data; absent when it maps none. */
+	portableText?: Record<string, PortableTextPlanItem | null>;
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -358,13 +369,17 @@ async function linkPlan(
 	return { resolved, current, childSide };
 }
 
-/** What a record found to create or download, listed on its row whatever happens to it. */
-type Found = { newTerms: string[]; newMedia: string[] };
+/**
+ * What a record found to create or download, and the warnings of its conversion and images,
+ * listed on its row whatever happens to it.
+ */
+type Found = { newTerms: string[]; newMedia: string[]; warnings: RecordError[] };
 
 /**
  * Decides and writes one record. Terms that resolution creates (or, in a dry run, would create)
- * are listed on the row as `newTerms`, and media it downloads (or would) as `newMedia`, whatever
- * happens to the record afterwards.
+ * are listed on the row as `newTerms`, media it downloads (or would) as `newMedia`, and what its
+ * conversion and images reported as `warnings`, whatever happens to the record afterwards. A
+ * retried record's warnings replace the earlier ones.
  */
 async function decide(
 	deps: EngineDeps,
@@ -375,7 +390,7 @@ async function decide(
 	save: (fields: RowFields) => Promise<void>,
 	cache: LookupCache,
 ): Promise<RowFields> {
-	const found: Found = { newTerms: [], newMedia: [] };
+	const found: Found = { newTerms: [], newMedia: [], warnings: [] };
 	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
 	let row: RowFields;
 	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
@@ -414,6 +429,7 @@ async function decide(
 		...row,
 		...(newTerms.length > 0 ? { newTerms } : {}),
 		...(newMedia.length > 0 ? { newMedia } : {}),
+		...(found.warnings.length > 0 ? { warnings: capWarnings(found.warnings) } : {}),
 	};
 }
 
@@ -479,6 +495,7 @@ async function decideRecord(
 	// A filtered record stops here: its key is not read and EmDash is never called.
 	if (!filter.keep) return { status: "filtered", sourceKey: null, entryId: null };
 	const mapped = await applyTemplate(template, rec.value);
+	found.warnings.push(...(mapped.warnings ?? []));
 	if (!mapped.ok)
 		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
 
@@ -497,7 +514,9 @@ async function decideRecord(
 	try {
 		const requests = mapped.value.links;
 		const mediaRequests = mapped.value.media;
-		if (requests || mediaRequests) cache.spend(COST_RECORD);
+		const drafts = mapped.value.portableText;
+		const hasImages = Object.values(drafts ?? {}).some((d) => d !== null && d.images.length > 0);
+		if (requests || mediaRequests || hasImages) cache.spend(COST_RECORD);
 		const errors: { field: string; code: string; message: string }[] = [];
 		if (requests) {
 			const resolution = await resolveLinks(
@@ -524,6 +543,19 @@ async function decideRecord(
 			lookups = looked.lookups;
 			errors.push(...looked.errors);
 		}
+		let images: RecordImages | undefined;
+		if (drafts) {
+			const looked = await lookupPortableTextImages(
+				deps,
+				cache,
+				mediaContext(job),
+				drafts,
+				template.portableText,
+			);
+			images = looked.images;
+			errors.push(...looked.errors);
+			found.warnings.push(...looked.warnings);
+		}
 		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		// Reference selections are read only when the template maps reference fields.
 		const read = { references: requests?.references !== undefined };
@@ -545,16 +577,19 @@ async function decideRecord(
 		entryId = entry?.id ?? null;
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
-		// Before any download: a file not stored yet counts as a change.
+		// Before any download: a file or image not stored yet counts as a change.
 		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
-		const plan = planRecord(entry, mapped.value, comparisons, links, media);
+		if (drafts && images) ctx.portableText = portableTextPlan(drafts, images);
+		const plan = planRecord(entry, mapped.value, comparisons, links, media, ctx.portableText);
 		action = plan.action;
+		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
 			for (const [field, item] of Object.entries(media ?? {})) {
 				const url = mediaRequests?.[field]?.url;
 				if (item?.mediaId === null && url) found.newMedia.push(`${field}: ${url}`);
 			}
+			for (const [url, { field }] of misses) found.newMedia.push(`${field}: ${url}`);
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		}
 		if (entry) {
@@ -575,15 +610,45 @@ async function decideRecord(
 				return notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
 			}
 		}
-		if (!lookups) return await writeRecord(ctx, entry, plan, mapped.value);
-		// Downloads only for a record that will be written, after the draft and lock checks.
-		const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
-		found.newMedia = obtained.newMedia;
-		if (!obtained.ok) {
-			return { status: "failed", sourceKey, entryId, action: plan.action, errors: obtained.errors };
+		if (!lookups && misses.length === 0) return await writeRecord(ctx, entry, plan, mapped.value);
+		// Downloads only for a record that will be written, after the draft and lock checks: field
+		// media first, then Portable Text images in document order.
+		if (lookups) {
+			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
+			found.newMedia = obtained.newMedia;
+			if (!obtained.ok) {
+				return {
+					status: "failed",
+					sourceKey,
+					entryId,
+					action: plan.action,
+					errors: obtained.errors,
+				};
+			}
+			ctx.media = obtainedMedia(obtained.media);
 		}
-		ctx.media = obtainedMedia(obtained.media);
-		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media);
+		if (drafts && images && misses.length > 0) {
+			const obtained = await obtainPortableTextImages(
+				deps,
+				cache,
+				mediaContext(job),
+				images,
+				template.portableText,
+				found.newMedia,
+			);
+			found.warnings.push(...obtained.warnings);
+			if (!obtained.ok) {
+				return {
+					status: "failed",
+					sourceKey,
+					entryId,
+					action: plan.action,
+					errors: obtained.errors,
+				};
+			}
+			ctx.portableText = portableTextPlan(drafts, images);
+		}
+		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media, ctx.portableText);
 		action = final.action;
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
@@ -728,9 +793,13 @@ async function writeRecord(
 	const { collection, locale } = job.template;
 	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
-	// Media fields are data fields: their values (null clears one) are written with the rest.
+	// Media and Portable Text fields are data fields: their values (null clears one) are written
+	// with the rest.
 	const media: Record<string, FieldValue> = {};
 	for (const [field, item] of Object.entries(ctx.media ?? {})) media[field] = item?.value ?? null;
+	for (const [field, item] of Object.entries(ctx.portableText ?? {})) {
+		media[field] = item?.blocks ?? null;
+	}
 	const data = { ...mapped.data, ...media };
 	let written: { id: string; rev: string };
 	if (!entry) {
