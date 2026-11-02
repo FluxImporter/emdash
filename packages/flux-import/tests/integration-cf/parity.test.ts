@@ -407,8 +407,15 @@ describe("workerd parity (D1, R2)", () => {
 			const run = async (posts: Post[], template: Record<string, unknown>) => {
 				const { uploadId } = await client.upload(postsJson(posts), "posts.json");
 				const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
-				const done = await client.runToEnd(job.id);
-				return { done, rows: await client.records(done.id) };
+				// Each batch's job, to see the deferrals between them.
+				const batches: Job[] = [];
+				let done = job;
+				while (done.status === "running" || done.status === "created") {
+					if (batches.length >= 100) throw new Error("did not finish in 100 batches");
+					done = await client.plugin<Job>("jobs/next", { id: job.id });
+					batches.push(done);
+				}
+				return { done, batches, rows: await client.records(done.id) };
 			};
 			const html: Post[] = [
 				{ id: "H1", title: "Article", html: articleHtml(feeds.url(names[0] as string)) },
@@ -421,6 +428,11 @@ describe("workerd parity (D1, R2)", () => {
 			];
 			const first = await run(html, portableTextTemplate("cf_pt"));
 			expect(first.done.counters).toMatchObject({ created: 2, failed: 0 });
+			// H2 (seq 1) was deferred by the budget: a batch ended inside it, with its downloads kept.
+			expect(first.batches.length).toBeGreaterThan(1);
+			const deferred = first.batches.find((b) => b.deferred !== undefined)?.deferred;
+			expect(deferred?.seq).toBe(1);
+			expect(deferred?.newMedia.length).toBeGreaterThan(0);
 			expect(first.rows[0]?.warnings).toHaveLength(3);
 			expect(first.rows[1]?.newMedia).toEqual(names.slice(1).map((n) => `body: ${feeds.url(n)}`));
 			// Each URL was downloaded once, across the batches that deferred H2.
@@ -452,6 +464,43 @@ describe("workerd parity (D1, R2)", () => {
 		}
 	});
 
+	it("fails a worst-case M4d Markdown record cleanly and completes the job", async () => {
+		await createPortableTextSchema(client, "cf_pt_worst");
+		const fill = (unit: string, bytes: number) => unit.repeat(Math.floor(bytes / unit.length));
+		const limit = 128 * 1024;
+		const head = `|${"a|".repeat(100)}\n|${"-|".repeat(100)}\n`;
+		const posts: Post[] = [
+			// 43,690 paragraphs: 175,000 markdown-it tokens and about 4.6 MB of JSON if built.
+			{ id: "W1", title: "Paragraphs", md: fill("a\n\n", limit) },
+			// 65,000 table cells: the most memory a Markdown field at the limit takes (Node).
+			{ id: "W2", title: "Table", md: head + fill("a\n", limit - head.length) },
+			{ id: "W3", title: "Small", md: "# After\n\nText" },
+		];
+		const { uploadId } = await client.upload(postsJson(posts), "worst.json");
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: portableTextTemplate("cf_pt_worst", { format: "markdown" }),
+			dryRun: false,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 2, failed: 1 } });
+		const rows = await client.records(done.id);
+		expect(rows[0]).toMatchObject({
+			status: "failed",
+			errors: [
+				{
+					field: "body",
+					code: "portable_text_too_large",
+					message: "The record's Portable Text is larger than 1 MiB",
+				},
+			],
+		});
+		const entries = await byKey("cf_pt_worst");
+		expect(entries.has("W1")).toBe(false);
+		expect((entries.get("W2")?.data.body as unknown[] | undefined)?.length).toBeGreaterThan(600);
+		expect(entries.get("W3")?.data.body).toHaveLength(2);
+	});
+
 	it("writes a record with almost 1 MiB of M4d Portable Text to D1", async () => {
 		await client.createCollection("cf_pt_big");
 		for (const slug of ["a", "b", "c"]) {
@@ -461,8 +510,9 @@ describe("workerd parity (D1, R2)", () => {
 				type: "portableText",
 			});
 		}
-		// Three fields of 340,000 characters: about 1,020,000 bytes of JSON, under the 1 MiB cap.
-		const text = (tag: string) => `${tag} ${"lorem ipsum ".repeat(28_333)}`.trim();
+		// Three fields of 169,002 characters, under the 512 KiB of source a record may have: each
+		// quote is 2 bytes in JSON, so about 1,014,000 bytes of JSON, under the 1 MiB cap.
+		const text = (tag: string) => `${tag} ${'"'.repeat(169_000)}`;
 		const record = { id: "B1", a: text("a"), b: text("b"), c: text("c") };
 		const field = (from: string) => ({ from, type: "portableText", format: "text" });
 		const { uploadId } = await client.upload(JSON.stringify({ posts: [record] }), "big.json");
