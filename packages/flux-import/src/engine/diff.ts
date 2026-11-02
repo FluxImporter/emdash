@@ -182,10 +182,148 @@ function mediaChanges(
 	return changes;
 }
 
+/** A Portable Text field's assembled value, for `planRecord`; null for an empty value. */
+export type PortableTextPlanItem = {
+	/** The assembled blocks. */
+	blocks: JsonValue[];
+	/** Images not stored yet: the field is a change while this is above 0. */
+	pending: number;
+	/** How the record shows it: `14 blocks, 3 images (1 new)`. */
+	text: string;
+};
+
+/** Canonical forms nest at most this deep; a deeper stored value always compares as changed. */
+const MAX_CANONICAL_DEPTH = 16;
+
+/**
+ * The comparable form of one Portable Text value, or undefined when it is not an array (or nests
+ * too deep), which always compares as changed. Every `_key` is dropped, and marks that name a
+ * block's link definitions name its position instead (`@0`). An empty `marks` or `markDefs`, a
+ * text block's `style: "normal"`, a link's `blank: false` and a list's `listStart: 1` equal a
+ * missing one, and `listId` is dropped: EmDash's editor writes and drops these on save (Fact V2).
+ */
+export function canonicalPortableText(value: unknown): JsonValue[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const blocks: JsonValue[] = [];
+	for (const block of value) {
+		const canonical = canonicalBlock(block);
+		if (canonical === undefined) return undefined;
+		blocks.push(canonical);
+	}
+	return blocks;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canonicalBlock(block: unknown): JsonValue | undefined {
+	if (!isObject(block) || block._type !== "block") return canonicalJson(block, 0);
+	const ids = new Map<unknown, string>();
+	if (Array.isArray(block.markDefs)) {
+		block.markDefs.forEach((def, i) => {
+			if (isObject(def) && def._key !== undefined) ids.set(def._key, `@${i}`);
+		});
+	}
+	const out: { [key: string]: JsonValue } = {};
+	for (const [key, raw] of Object.entries(block)) {
+		if (key === "_key" || key === "listId" || raw === undefined) continue;
+		if (key === "style" && raw === "normal") continue;
+		if (key === "listStart" && raw === 1) continue;
+		let value: unknown = raw;
+		if (key === "children" && Array.isArray(raw)) {
+			value = raw.map((span) =>
+				isObject(span) && Array.isArray(span.marks)
+					? { ...span, marks: span.marks.map((m) => ids.get(m) ?? m) }
+					: span,
+			);
+		}
+		const canonical = canonicalJson(value, 1);
+		if (canonical === undefined) return undefined;
+		if (Array.isArray(canonical) && canonical.length === 0 && key === "markDefs") continue;
+		out[key] = canonical;
+	}
+	return out;
+}
+
+/** JSON without `_key`, empty `marks` and a link's `blank: false`, at most `MAX_CANONICAL_DEPTH` deep. */
+function canonicalJson(value: unknown, depth: number): JsonValue | undefined {
+	if (depth > MAX_CANONICAL_DEPTH) return undefined;
+	if (Array.isArray(value)) {
+		const items: JsonValue[] = [];
+		for (const item of value) {
+			const canonical = canonicalJson(item, depth + 1);
+			if (canonical === undefined) return undefined;
+			items.push(canonical);
+		}
+		return items;
+	}
+	if (!isObject(value)) {
+		return typeof value === "string" ||
+			typeof value === "number" ||
+			typeof value === "boolean" ||
+			value === null
+			? value
+			: undefined;
+	}
+	const out: { [key: string]: JsonValue } = {};
+	for (const [key, raw] of Object.entries(value)) {
+		if (key === "_key" || raw === undefined) continue;
+		if (key === "marks" && Array.isArray(raw) && raw.length === 0) continue;
+		if (key === "blank" && raw === false && value._type === "link") continue;
+		const canonical = canonicalJson(raw, depth + 1);
+		if (canonical === undefined) return undefined;
+		out[key] = canonical;
+	}
+	return out;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** How a record shows a Portable Text value: `12 blocks, 2 images`, plus `(1 new)` for pending ones. */
+export function portableTextSummary(blocks: readonly unknown[], pending = 0): string {
+	const images = blocks.filter((b) => isObject(b) && b._type === "image").length + pending;
+	const parts = [plural(blocks.length + pending, "block")];
+	if (images > 0) parts.push(plural(images, "image") + (pending > 0 ? ` (${pending} new)` : ""));
+	return parts.join(", ");
+}
+
+/**
+ * The Portable Text changes: a field whose canonical stored value differs, or that has images
+ * not stored yet. An empty value equals nothing stored and an empty array.
+ */
+function portableTextChanges(
+	items: Readonly<Record<string, PortableTextPlanItem | null>>,
+	data: Readonly<Record<string, unknown>> | null,
+): Change[] {
+	const changes: Change[] = [];
+	for (const [field, item] of Object.entries(items)) {
+		const stored = data !== null && Object.hasOwn(data, field) ? data[field] : null;
+		const empty =
+			stored === null || stored === undefined || (Array.isArray(stored) && stored.length === 0);
+		const before = empty
+			? null
+			: Array.isArray(stored)
+				? portableTextSummary(stored)
+				: "a value that is not Portable Text";
+		if (item === null) {
+			if (!empty) changes.push({ field, before, after: null });
+			continue;
+		}
+		const same =
+			item.pending === 0 &&
+			!empty &&
+			deepEqual(canonicalPortableText(stored) ?? null, canonicalPortableText(item.blocks));
+		if (!same) changes.push({ field, before, after: item.text });
+	}
+	return changes;
+}
+
 /**
  * The record's plan: `create` without a current entry, else `update` when the slug, a data
- * field, a media field or a link differs, else `unchanged`. `links` is given when the template
- * maps links, `media` when it maps image or file fields.
+ * field, a media field, a Portable Text field or a link differs, else `unchanged`. `links` is
+ * given when the template maps links, `media` when it maps image or file fields, `portableText`
+ * when it maps `portableText` fields.
  */
 export function planRecord(
 	current: CurrentEntry | null,
@@ -193,6 +331,7 @@ export function planRecord(
 	comparisons: ReadonlyMap<string, Comparison>,
 	links?: LinkPlan,
 	media?: Readonly<Record<string, MediaPlanItem | null>>,
+	portableText?: Readonly<Record<string, PortableTextPlanItem | null>>,
 ): RecordPlan {
 	const changes: Change[] = [];
 	if (current === null) {
@@ -201,6 +340,7 @@ export function planRecord(
 			if (after !== null) changes.push({ field, before: null, after });
 		}
 		if (media) changes.push(...mediaChanges(media, null));
+		if (portableText) changes.push(...portableTextChanges(portableText, null));
 		if (links) changes.push(...linkChanges(links, false));
 		return { action: "create", changes };
 	}
@@ -213,6 +353,7 @@ export function planRecord(
 			changes.push({ field, before: before ?? null, after });
 	}
 	if (media) changes.push(...mediaChanges(media, current.data));
+	if (portableText) changes.push(...portableTextChanges(portableText, current.data));
 	if (links) changes.push(...linkChanges(links, true));
 	return { action: changes.length === 0 ? "unchanged" : "update", changes };
 }
