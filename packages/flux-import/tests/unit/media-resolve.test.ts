@@ -350,6 +350,27 @@ describe("record media", () => {
 		await obtainRecordMedia(deps, cache, ctx, lookups);
 		expect(cache.spent).toBe(2 * COST_CALL + 2 * COST_MEDIA);
 	});
+
+	it("defers a download that would bring the batch past its budget, never the batch's first", async () => {
+		const { deps, ctx } = setup();
+		// Two lookups and the first download make 62; a second download would make 122.
+		const cache = new LookupCache([], 100);
+		const { lookups } = await lookupRecordMedia(deps, cache, ctx, {
+			photo: image(A),
+			hero: image(B),
+		});
+		const deferred = await obtainRecordMedia(deps, cache, ctx, lookups).catch((e: unknown) => e);
+		expect(deferred).toBeInstanceOf(MediaDeferred);
+		expect((deferred as MediaDeferred).newMedia).toEqual([`photo: ${A}`]);
+		expect(cache.spent).toBe(2 * COST_CALL + COST_MEDIA);
+		expect(deps.mediaFetcher.urls()).toEqual([A]);
+		// The next batch finds A in the map and downloads B first, whatever it spent before.
+		const next = new LookupCache([], 100);
+		next.spend(99);
+		const retried = await lookupRecordMedia(deps, next, ctx, { photo: image(A), hero: image(B) });
+		expect(await obtainRecordMedia(deps, next, ctx, retried.lookups)).toMatchObject({ ok: true });
+		expect(deps.mediaFetcher.urls()).toEqual([A, B]);
+	});
 });
 
 describe("one fetch per URL and batch", () => {

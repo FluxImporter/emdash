@@ -313,7 +313,8 @@ function uploadError(field: string, e: MediaUploadError): LinkError {
  * The item for a looked-up request in a real run: a hit as it is, or a download (a conditional
  * one for a hit with `refresh`), whose type comes from its bytes, uploaded through EmDash and
  * written to the media map before anything else. Throws `MediaDeferred` when a download other
- * than the batch's first would start with less than `MEDIA_MIN_LEFT_MS` left.
+ * than the batch's first would start with less than `MEDIA_MIN_LEFT_MS` left, or would bring
+ * the batch's lookup cost past its budget (M4d).
  */
 export async function obtainMedia(
 	deps: MediaDeps,
@@ -349,7 +350,8 @@ export async function obtainMedia(
 	}
 	const now = deps.now();
 	const first = cache.mediaDownloads === 0;
-	if (!first && cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS) throw new MediaDeferred();
+	const late = cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS;
+	if (!first && (late || cache.spent + COST_MEDIA > cache.budget)) throw new MediaDeferred();
 	cache.mediaDownloads++;
 	cache.spend(COST_MEDIA);
 	try {
