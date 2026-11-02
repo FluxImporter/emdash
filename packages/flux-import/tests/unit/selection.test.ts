@@ -235,11 +235,11 @@ describe("filtered records", () => {
 		await runToEnd(deps, job.id);
 		const lines = (await buildLogCsv(deps, job.id)).trimEnd().split("\r\n");
 		expect(lines.slice(1, 6)).toEqual([
-			"1,filtered,,,,,,",
-			"2,filtered,,,,,,",
-			"3,filtered,,,,,,",
-			"4,filtered,,,,,,",
-			"5,created,SKU-4,e1,create,,,",
+			"1,filtered,,,,,,,",
+			"2,filtered,,,,,,,",
+			"3,filtered,,,,,,,",
+			"4,filtered,,,,,,,",
+			"5,created,SKU-4,e1,create,,,,",
 		]);
 		const only = (await buildLogCsv(deps, job.id, { status: "filtered" })).trimEnd().split("\r\n");
 		expect(only).toHaveLength(5);

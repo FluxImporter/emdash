@@ -134,6 +134,11 @@ export interface RecordRow {
 	 * already stored, or that a dry run would download. Absent when there are none.
 	 */
 	newMedia?: string[];
+	/**
+	 * What the record's latest conversion reported without failing it (M4d), at most
+	 * `MAX_RECORD_WARNINGS`. Absent when there are none.
+	 */
+	warnings?: RecordError[];
 	updatedAt: string;
 }
 
@@ -190,6 +195,20 @@ export function recordKey(jobId: string, seq: number): string {
 
 export function linkKey(collection: string, locale: string, sourceKey: string): string {
 	return `${collection}:${locale}:${sourceKey}`;
+}
+
+/** Warnings kept on one record row. */
+export const MAX_RECORD_WARNINGS = 20;
+
+/**
+ * At most `MAX_RECORD_WARNINGS` warnings: when there are more, the last one kept says how many
+ * were left out (`warnings_truncated`).
+ */
+export function capWarnings(warnings: readonly RecordError[]): RecordError[] {
+	if (warnings.length <= MAX_RECORD_WARNINGS) return [...warnings];
+	const kept = warnings.slice(0, MAX_RECORD_WARNINGS - 1);
+	const more = warnings.length - kept.length;
+	return [...kept, { code: "warnings_truncated", message: `${more} more warnings` }];
 }
 
 export function emptyCounters(): Counters {
