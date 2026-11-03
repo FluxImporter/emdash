@@ -33,6 +33,16 @@ import {
 	portableTextTemplate,
 	postsJson,
 } from "../fixtures/portable-text.js";
+import {
+	createTranslationSchema,
+	englishCsv,
+	englishTemplate,
+	listLocale,
+	translationCsv,
+	translationNames,
+	translationsOf,
+	translationTemplate,
+} from "../fixtures/translations.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
@@ -539,6 +549,64 @@ describe("workerd parity (D1, R2)", () => {
 		expect(
 			(stored?.c as { children: { text: string }[] }[] | undefined)?.[0]?.children[0]?.text,
 		).toBe(record.c);
+	});
+
+	it("imports M4e translations on D1: linked groups, shared values, re-run unchanged, retry", async () => {
+		const n = translationNames("cf_m4e");
+		await createTranslationSchema(client, n);
+		const run = async (csv: string, template: object) => {
+			const { uploadId } = await client.upload(csv);
+			const job = await client.plugin("jobs/create", {
+				uploadId,
+				template,
+				dryRun: false,
+				budgetMs: 20_000,
+			});
+			return client.runToEnd(job.id);
+		};
+		const en = await run(
+			englishCsv([
+				["E1", "Desk", "S1", 100],
+				["E2", "Lamp", "S2", 20],
+			]),
+			englishTemplate(n),
+		);
+		expect(en.counters).toMatchObject({ created: 2, failed: 0 });
+		const english = new Map(
+			(await listLocale(client, n.products, "en")).map((e) => [e.data.flux_source_id, e]),
+		);
+		const csv = translationCsv([
+			{ id: "F1", enId: "E1", name: "Bureau" },
+			{ id: "F2", enId: "E2", name: "Lampe" },
+			{ id: "F3", enId: "E3", name: "Chaise" },
+		]);
+		const fr = await run(csv, translationTemplate(n, "fr"));
+		expect(fr.counters).toMatchObject({ created: 2, failed: 1 });
+		const failed = await client.records(fr.id, "failed");
+		expect(failed.map((r) => r.errors?.[0]?.code)).toEqual(["translation_source_not_found"]);
+		const french = new Map((await listLocale(client, n.products, "fr")).map((e) => [e.slug, e]));
+		const desk = english.get("E1") as Product;
+		const bureau = french.get("bureau") as Product;
+		expect(bureau.data).toMatchObject({
+			title: "Bureau",
+			sku: "S1",
+			price: 100,
+			flux_source_id: "E1",
+		});
+		expect(await translationsOf(client, n.products, desk.id)).toEqual({
+			group: desk.id,
+			locales: { en: desk.id, fr: bureau.id },
+		});
+		expect(await client.entryTerms(n.products, bureau.id, n.tag)).toEqual(["new"]);
+
+		const again = await run(csv, translationTemplate(n, "fr"));
+		expect(again.counters).toMatchObject({ unchanged: 2, failed: 1 });
+		await run(englishCsv([["E3", "Chair", "S3", 30]]), englishTemplate(n));
+		await client.plugin("jobs/retry", { id: fr.id });
+		const retried = await client.runToEnd(fr.id);
+		expect(retried.counters).toMatchObject({ created: 3, failed: 0 });
+		const chaise = (await listLocale(client, n.products, "fr")).find((e) => e.slug === "chaise");
+		expect(chaise?.data).toMatchObject({ sku: "S3", price: 30, flux_source_id: "E3" });
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {
