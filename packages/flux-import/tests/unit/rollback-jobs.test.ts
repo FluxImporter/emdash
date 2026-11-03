@@ -1,0 +1,212 @@
+import { describe, expect, it } from "vitest";
+import { createRollback, rollbackRefusal } from "../../src/engine/rollback.js";
+import type { Job } from "../../src/engine/types.js";
+import { purgeExpired } from "../../src/plugin/retention.js";
+import {
+	WORKERS_LINKED_BATCH_CAP,
+	WORKERS_ROLLBACK_BATCH_CAP,
+	workersBatchCap,
+} from "../../src/plugin/service.js";
+import { type Deps, importRows, setup, url } from "./rollback-fixture.js";
+
+const desk = { sku: "A1", name: "Desk", price: 10, tags: "new" };
+const DAY = 24 * 60 * 60 * 1000;
+
+async function patch(deps: Deps, id: string, change: Partial<Job>) {
+	const job = (await deps.jobs.get(id)) as Job;
+	await deps.jobs.put(id, { ...job, ...change });
+}
+
+describe("jobs/rollback (M5a)", () => {
+	it("creates a rollback job that reads the journal newest first, and marks the original", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const { rollback, original: marked } = await createRollback(deps, {
+			id: original.id,
+			batchSize: 5,
+		});
+		expect(rollback).toMatchObject({
+			status: "created",
+			kind: "rollback",
+			rollbackOf: original.id,
+			uploadId: original.uploadId,
+			template: original.template,
+			targetFields: original.targetFields,
+			dryRun: false,
+			publish: false,
+			batchSize: 5,
+			budgetMs: 4000,
+			cursor: { offset: 0, seq: Number.MAX_SAFE_INTEGER },
+			counters: { reverted: 0, created: 0 },
+			phase: "import",
+			retryFromSeq: Number.MAX_SAFE_INTEGER,
+			schemaReady: true,
+			warnings: [],
+		});
+		expect(marked.rolledBackBy).toBe(rollback.id);
+		expect((await deps.jobs.get(original.id))?.rolledBackBy).toBe(rollback.id);
+		expect(await deps.jobs.get(rollback.id)).toEqual(rollback);
+	});
+
+	it("sets nothing for a dry run, and allows any number of them", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const first = await createRollback(deps, { id: original.id, dryRun: true });
+		const second = await createRollback(deps, { id: original.id, dryRun: true });
+		expect(first.rollback.dryRun).toBe(true);
+		expect(second.rollback.id).not.toBe(first.rollback.id);
+		expect(await deps.jobs.get(original.id)).not.toHaveProperty("rolledBackBy");
+	});
+
+	it("refuses dry runs, rollbacks, jobs without a journal, running jobs and a second rollback", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const refused = (id: string) =>
+			createRollback(deps, { id }).catch((e: { code: string; message: string }) => e);
+		const dry = await importRows(deps, [desk], { dryRun: true });
+		expect(await refused(dry.id)).toMatchObject({
+			code: "invalid_transition",
+			message: "Cannot roll back a dry-run job: it wrote nothing",
+		});
+		const plain = await importRows(deps, [desk], { journal: false });
+		expect(await refused(plain.id)).toMatchObject({
+			message:
+				"The job has no journal: it was created before rollback support or with journal: false",
+		});
+		const { rollback } = await createRollback(deps, { id: original.id });
+		expect(await refused(rollback.id)).toMatchObject({
+			message: "Cannot roll back a rollback job",
+		});
+		expect(await refused(original.id)).toMatchObject({
+			message: `The job was already rolled back (rollback job ${rollback.id})`,
+		});
+		expect(await refused("nope")).toMatchObject({ code: "not_found" });
+		await expect(createRollback(deps, { id: plain.id, batchSize: 0 })).rejects.toMatchObject({
+			code: "invalid_options",
+		});
+	});
+
+	it("refuses a job that may still write, until it is cancelled", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk]);
+		const now = deps.now();
+		for (const status of ["created", "running", "paused"] as const) {
+			expect(rollbackRefusal({ ...job, status }, now)).toBe(
+				`Cannot roll back a ${status} job: cancel it first`,
+			);
+		}
+		for (const status of ["completed", "cancelled", "failed"] as const) {
+			expect(rollbackRefusal({ ...job, status }, now)).toBeNull();
+		}
+		const leased = {
+			...job,
+			status: "failed" as const,
+			lease: { holder: "x", expiresAt: now + 1 },
+		};
+		expect(rollbackRefusal(leased, now)).toBe(
+			"Cannot roll back the job while one of its batches is running",
+		);
+		expect(rollbackRefusal({ ...job, journal: undefined as never }, now)).toContain("no journal");
+	});
+
+	it("deletes the new job when the original changed meanwhile", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const cas = deps.jobs.compareAndSet.bind(deps.jobs);
+		deps.jobs.compareAndSet = async (id, expected, data) =>
+			id === original.id ? { applied: false } : cas(id, expected, data);
+		await expect(createRollback(deps, { id: original.id })).rejects.toMatchObject({
+			code: "invalid_transition",
+			message: "The job changed while its rollback was being created; try again",
+		});
+		expect((await deps.jobs.query({ where: { kind: "rollback" } })).items).toEqual([]);
+	});
+
+	it("warns about the media and terms the import created, which are kept", async () => {
+		const { deps } = setup();
+		const original = await importRows(
+			deps,
+			[
+				{ ...desk, img: url("a.png"), tags: "fresh" },
+				{ sku: "A2", name: "Lamp", img: url("b.png"), tags: "fresh|bright" },
+			],
+			{ extra: { taxonomies: { tag: { from: "Tags", separator: "|", create: true } } } },
+		);
+		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
+		expect(rollback.warnings).toEqual([
+			"The import created 2 media items, which are kept (EmDash cannot tell whether other content uses them): m1, m2",
+			"The import created 2 terms, which are kept (EmDash 1.2.0 has no term deletion for plugins); the import's records list them under newTerms",
+		]);
+	});
+
+	it("lists at most 100 media IDs, then a count", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		for (let i = 0; i < 102; i++) {
+			await deps.journalMedia.put(`${original.id}:m${i}`, {
+				jobId: original.id,
+				mediaId: `m${i}`,
+				url: url(`${i}.png`),
+				seq: i,
+			});
+		}
+		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
+		const [warning] = rollback.warnings ?? [];
+		expect(warning).toMatch(
+			/^The import created 102 media items, .*: m0, m1, .*, m99, and 2 more$/,
+		);
+	});
+
+	it("caps a rollback batch on Workers at three rows", () => {
+		expect(WORKERS_ROLLBACK_BATCH_CAP).toBe(3);
+		const job = { template: { fields: {}, collection: "p", locale: "en" } } as unknown as Job;
+		expect(workersBatchCap({ ...job, kind: "rollback" })).toBe(3);
+		expect(workersBatchCap({ ...job, template: { ...job.template, taxonomies: {} } } as Job)).toBe(
+			WORKERS_LINKED_BATCH_CAP,
+		);
+	});
+});
+
+describe("retention of journals and rollbacks (M5a)", () => {
+	const purger = { purgeBefore: async () => 0 };
+
+	it("deletes an expired job's journal rows, and keeps an original whose rollback may still run", async () => {
+		const { deps, clock } = setup();
+		const kept = await importRows(deps, [desk]);
+		const gone = await importRows(deps, [{ sku: "B1", name: "Bench", img: url("a.png") }]);
+		clock.t += 31 * DAY;
+		const { rollback } = await createRollback(deps, { id: kept.id });
+		const result = await purgeExpired(deps, purger, 30);
+		// The original of a rollback job that may still run stays; the other job goes.
+		expect(result).toMatchObject({ jobs: 1, journal: 2 });
+		expect(await deps.jobs.get(gone.id)).toBeNull();
+		expect(await deps.jobs.get(kept.id)).not.toBeNull();
+		expect((await deps.journal.query({ where: { jobId: gone.id } })).items).toEqual([]);
+		expect((await deps.journalMedia.query({ where: { jobId: gone.id } })).items).toEqual([]);
+		expect((await deps.journal.query({ where: { jobId: kept.id } })).items).toHaveLength(1);
+		// Once the rollback is done, the original goes.
+		await patch(deps, rollback.id, { status: "completed" });
+		expect(await purgeExpired(deps, purger, 30)).toMatchObject({ jobs: 1, journal: 1 });
+		expect(await deps.jobs.get(kept.id)).toBeNull();
+	});
+
+	it("does not keep the original's file for a rollback job", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const { rollback } = await createRollback(deps, { id: original.id });
+		await deps.jobs.delete(original.id);
+		const keeps: ReadonlySet<string>[] = [];
+		await purgeExpired(
+			deps,
+			{
+				purgeBefore: async (_cutoff: Date, keep: ReadonlySet<string> = new Set()) => {
+					keeps.push(keep);
+					return 0;
+				},
+			},
+			30,
+		);
+		expect(await deps.jobs.get(rollback.id)).not.toBeNull();
+		expect(keeps[0]?.has(original.uploadId)).toBe(false);
+	});
+});

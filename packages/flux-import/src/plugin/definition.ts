@@ -95,9 +95,9 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 					const days = (await ctx.settings.get<number>("retentionDays")) ?? RETENTION_DAYS_DEFAULT;
 					const result = await withRuntime(async (runtime) => {
 						if (!runtime.storage) throw new Error("flux-import: EmDash storage is not configured");
-						const { jobs, records } = pluginCollections(ctx.storage);
+						const { jobs, records, journal, journalMedia } = pluginCollections(ctx.storage);
 						return purgeExpired(
-							{ jobs, records, now: Date.now },
+							{ jobs, records, journal, journalMedia, now: Date.now },
 							new EmDashUploads(runtime.storage),
 							days,
 							await latestSourceUploads(sourcesCollection(ctx.storage)),

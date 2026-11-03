@@ -13,6 +13,7 @@ import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
+import { createRollback } from "../engine/rollback.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { createMediaFetcher } from "../sources/media-fetch.js";
@@ -87,6 +88,7 @@ const RECORD_STATUSES = [
 	"failed",
 	"planned",
 	"filtered",
+	"reverted",
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
@@ -461,6 +463,30 @@ export const routes: Record<string, PluginRoute> = {
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 			}).then((jobs) => ({ ...jobs, items: jobs.items.map(withoutPlannedTerms) })),
 		),
+	),
+
+	// A real rollback marks the original rolled back and frees its URL source for a re-import.
+	"jobs/rollback": route(
+		z.object({
+			id: jobId,
+			dryRun: z.boolean().optional(),
+			batchSize: z.number().int().optional(),
+			budgetMs: z.number().int().optional(),
+		}),
+		(ctx) =>
+			withServices(ctx, async ({ deps, sources }) => {
+				const { id, dryRun, batchSize, budgetMs } = ctx.input;
+				const { rollback, original } = await createRollback(deps, {
+					id,
+					...(dryRun === undefined ? {} : { dryRun }),
+					...(batchSize === undefined ? {} : { batchSize }),
+					...(budgetMs === undefined ? {} : { budgetMs }),
+				});
+				if (!rollback.dryRun && original.sourceId !== undefined) {
+					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
+				}
+				return rollback;
+			}),
 	),
 
 	"jobs/pause": transition("pause"),

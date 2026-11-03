@@ -28,6 +28,7 @@ const ROUTES = [
 	"jobs/resume",
 	"jobs/cancel",
 	"jobs/retry",
+	"jobs/rollback",
 	"jobs/records",
 	"jobs/log.csv",
 	"schema/apply",

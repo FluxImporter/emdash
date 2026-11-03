@@ -36,7 +36,7 @@ describe("purgeExpired", () => {
 
 		const purger = new Purger();
 		const result = await purgeExpired(deps, purger, 30);
-		expect(result).toEqual({ jobs: 1, records: 2, uploads: 2 });
+		expect(result).toEqual({ jobs: 1, records: 2, journal: 2, uploads: 2 });
 		expect(await deps.jobs.get(old.id)).toBeNull();
 		expect(await deps.jobs.get(recent.id)).not.toBeNull();
 		expect((await deps.records.query({ where: { jobId: old.id } })).items).toEqual([]);

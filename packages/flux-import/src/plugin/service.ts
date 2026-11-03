@@ -44,6 +44,13 @@ export const WORKERS_BATCH_CAP = 20;
 export const WORKERS_LINKED_BATCH_CAP = 10;
 
 /**
+ * Rollback rows one jobs/next call reverts on Workers (M5a). A reverted update runs up to seven
+ * content calls, about 175-265 D1 queries with EmDash's own (spec M5a V5 results), so three rows
+ * stay under the 1,000-query limit.
+ */
+export const WORKERS_ROLLBACK_BATCH_CAP = 3;
+
+/**
  * The lookup cost one jobs/next call may spend on Workers (see `COST_READ`): D1 allows 1,000
  * queries per invocation, and EmDash's lookups run several queries per call.
  */
@@ -71,6 +78,7 @@ export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolea
 
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
+	if (job.kind === "rollback") return WORKERS_ROLLBACK_BATCH_CAP;
 	return usesLinks(job.template) || usesMedia(job.template)
 		? WORKERS_LINKED_BATCH_CAP
 		: WORKERS_BATCH_CAP;
