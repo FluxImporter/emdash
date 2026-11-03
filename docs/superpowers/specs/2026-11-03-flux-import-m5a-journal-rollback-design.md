@@ -172,9 +172,13 @@ interface JournalEntry {
 			references?: Record<string, string[]>;
 			bylines?: { bylineId: string; roleLabel: string | null }[];
 		};
+		/** A resumed write found the entry at another `_rev` than this pre-image's (Rollback 3a). */
+		uncertain?: true;
 	};
 	/** ISO time of the write-ahead put. */
 	at: string;
+	/** update: the term groups the job wrote, by changed taxonomy (Rollback 3a). */
+	wrote?: { taxonomies?: Record<string, string[]> };
 }
 
 // plugin storage `journalMedia`, key `${jobId}:${mediaId}`
@@ -192,7 +196,7 @@ Where the engine writes it:
 | --- | --- |
 | `writeRecord`, before the `writing` save, for a create | put-if-absent `{ kind: "create", entryId: null, sourceIdValue }` |
 | `writeRecord`, right after the create returns | put with `entryId` and `confirmed: true` |
-| `writeRecord`, before the `writing` save, for an update | put-if-absent `{ kind: "update", entryId, before }`; on an existing row, merge the new fields and links |
+| `writeRecord`, before the `writing` save, for an update | put-if-absent `{ kind: "update", entryId, before, wrote }`; `before.live` also holds every field of a pending draft whose value differs from the live one, whether or not the job publishes (rolling back publishes the restored live values, which must not make the rest of an earlier draft live); `wrote.taxonomies` holds the term groups the write gives each changed taxonomy. On an existing row, merge the new fields and links, and take the newer `wrote`. When the record's row was `writing` (a resumed write) and the entry's `_rev` is not the stored `before.rev`, set `before.uncertain` |
 | `finishUnchanged`, before publishing the importer's own draft | as for an update; `live` holds every field whose `liveData` differs from `data` |
 | Crash repair adopts an entry for a `create` row without `entryId` | put with `entryId` and `confirmed: false` |
 | `obtainRecordMedia` / Portable Text images, after an upload with `deduplicated: false` | put `journalMedia` |
@@ -266,10 +270,13 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    this rollback left it when the row is `writing` with `writtenRev === entry.rev` (resuming).
    Otherwise `conflict`, `rollback_changed`: "Not rolled back: the entry changed after the import
    wrote it (an editor or a later import); roll back later imports first or revert it by hand".
-   An `update` row whose job never wrote (a crash after the write-ahead put) has a link row from an
-   earlier job; it is `unchanged`, warning `nothing_to_roll_back` ("Nothing to roll back: the
-   import never wrote this entry"), when the entry's `rev` equals `before.link.writtenRev` or its
-   `updatedAt` is before the journal row's `at`, and `conflict` otherwise. A `create` row passes
+   An `update` row whose job never wrote (a crash after the write-ahead put) still has the link row
+   its pre-image read; it is `unchanged`, warning `nothing_to_roll_back` ("Nothing to roll back:
+   the import never wrote this entry"), only while the link row equals `before.link` (the same
+   `jobId` and `writtenRev`, or none for both) and the entry's `rev` equals `before.link.writtenRev`
+   or its `updatedAt` is before the journal row's `at`; `conflict` otherwise. A link that names any
+   other job is a change: reported as `rollback_changed`, the row can be retried once that job is
+   rolled back (an `unchanged` row cannot). A `create` row passes
    ownership without a matching link row when its entry was created at or after the journal row's
    `at` and never changed since (`updatedAt === createdAt`, V3): the step 1 adoption, or a create
    crash repair found before the link row was saved. This holds only when no link row names the
@@ -279,6 +286,15 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    an editor's draft. Such an entry is only moved to Trash unless the job's own create returned it
    (`confirmed`).
 3. **Lock.** `isLocked` true: `locked`.
+3a. **Changes the revision does not show** (changed entries, before step 1 is sent). A pre-image
+   with `before.uncertain` is `conflict`, `rollback_changed` ("Not rolled back: the import was
+   recovering from a stop when it wrote this entry, and the entry had changed since its first
+   read, so a later edit cannot be ruled out; revert it by hand"). This is deliberately
+   conservative: it also refuses a row whose own stopped write had landed. Term assignments do
+   not move `_rev`, so the entry's current terms (one `entryTerms` read, charged `COST_READ`) of
+   each taxonomy in `wrote.taxonomies` must equal what the job wrote; otherwise `rollback_changed`
+   ("Not rolled back: the entry's terms changed after the import wrote them (term edits do not
+   change the revision); revert it by hand").
 4. **Act**, saving the row as `writing` (with `action`) before every step, with the last step
    done (`step`), the `_rev` it returned (`writtenRev`) and the step about to be sent
    (`pendingStep`), so a resumed batch continues where it stopped. Each step sends the previous
@@ -290,8 +306,9 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    1's (the restored live values by `sameStored`, read from the draft for step 1 and from the live
    values after it, the slug when no draft hides it, the restored references, bylines and terms,
    which costs one more read), from step 5 on also the restored draft values, and the step's own
-   (2: published without a draft; 3: not published; 4: no draft; 6: the schedule); otherwise
-   `rollback_changed`. After the last step, and before the link moves, the row is saved once more
+   (2: published without a draft; 3: not published; 4: no draft; 6: the schedule), and from step
+   2 on, when `before.draft` is absent, no field outside `before.live` whose draft and live values
+   differ (any such difference is someone else's edit); otherwise `rollback_changed`. After the last step, and before the link moves, the row is saved once more
    as `writing` with the final step and `_rev` and no `pendingStep`, so a stop after the link put
    resumes by `writtenRev`. The saves cost one plugin storage write per step sent plus that one,
    as many as a save after each step and one before the first. Before step 1, a pre-image
@@ -307,6 +324,10 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
 
 ### Created entries
 
+0. An entry already in Trash that this rollback did not trash (its row records neither the trash
+   step done nor sent, `pendingStep: 1`): `conflict`, `rollback_changed` ("Not rolled back: the
+   entry was moved to Trash after the import created it; restore it from Trash or delete it by
+   hand"). It is never deleted for good.
 1. When the entry is its group's root and `translations()` lists another active entry:
    `conflict`, `rollback_has_translations`.
 2. Active: `handleContentDelete` (F6). `DELETE_BLOCKED` is `failed`, `rollback_blocked`, with the
@@ -446,6 +467,7 @@ extra content reads: everything in the pre-image comes from the reads the import
 | --- | --- | --- |
 | Journal row | `MAX_JOURNAL_BYTES` = 1 MiB of JSON | Within D1's row size (V6); the record row already holds up to 1 MiB values (M4a) |
 | Rollback batch on Workers | `WORKERS_ROLLBACK_BATCH_CAP` = 3 | Up to seven content calls per row, about 175-265 D1 queries (Results, V7) |
+| Rollback lookup cost | `COST_RECORD` per row, `COST_READ` per reference target looked up (one the entry still holds is not) and per term read, and per revert step update 35, publish 35, unpublish 15, discard 10, schedule 15; trash and permanent delete `COST_READ` x 5 each | V7's queries per call at the rate `COST_READ` (5) sets for a read of 10-12 queries, about 2.2 per unit. The budget is checked before each row, so a batch always reverts at least one; Task 9 measures |
 | Rollback batch on Node | the rollback job's `batchSize` (default 50, maximum 500) | As imports |
 | Media IDs in the warning | 100, then a count | Job size |
 | Rollbacks per job | One | `rolledBackBy` |
@@ -564,6 +586,32 @@ Each gets its own spec; these rulings fix the direction and the journal they wri
 ## Open issues carried forward
 
 - **New in this design.**
+  - A permanent delete also removes the references other entries hold to the deleted entry
+    (EmDash has no backlinks API to find them). A rollback that deletes entries for good gets the
+    job warning "Deleting an entry also removes references other entries hold to it."; there is no
+    Trash-only mode.
+  - `handleContentDelete` and `handleContentPermanentDelete` take no actor
+    (`src/emdash-runtime.ts:4093`, `:4163`), so the rollback cannot pass the route's user to them;
+    EmDash records them without one.
+  - A rollback job created by `jobs/rollback` stays behind, orphaned, when the process stops
+    between its create and the compare-and-set that marks the original `rolledBackBy`.
+  - The unit fakes stamp every write with the test clock, which stands still unless a test moves
+    it, so timestamp rules (V3 `updatedAt === createdAt`, "before the journal row's `at`") pass
+    there by coincidence. Unit tests run each of them under a clock that moves on every read too;
+    under it a published create is never adopted by timestamps, since the publish moves
+    `updated_at` (only an unpublished create left by a stop before the create returned is).
+  - A create costs three plugin storage calls for the journal (the put-if-absent, its read on a
+    retry, and the put with `entryId`).
+  - Jobs created before M5a have no `sourceId`, so cancelling one does not clear the URL source's
+    `lastImport`.
+  - A staged slug in an earlier pending draft is not journalled (F5): rolling back a later job
+    leaves that draft without its slug.
+  - On a collection without revisions, the draft an unpublish creates holds the first publish's
+    values (F18), so a resumed row stopped after step 3 can see a draft difference in a field the
+    journal does not hold and report `rollback_changed` where nobody edited (safe, not exact).
+  - EmDash's `required` check refuses only `null` or a missing value for a top-level field
+    (`src/schema/zod-generator.ts:57`, `:95-98`; only block sub-fields refuse `""`, `:224-225`), so
+    the rollback's `required` check treats only those as empty.
   - Media and terms the job created are kept (F13, F14); the rollback lists them. The importer's
     media map rows for kept media stay, so a re-import reuses those items.
   - A crash between a media upload and its `journalMedia` put leaves the item off the list.
