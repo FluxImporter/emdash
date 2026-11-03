@@ -26,8 +26,9 @@ Import translations of entries as EmDash translations, one template (and one job
   Decisions).
 
 A dry run resolves the source and checks the group, and writes nothing. The template stays
-`version: 1` and the addition is optional. Templates without `translationOf` behave exactly as in
-M4a–M4d.
+`version: 1` and the addition is optional. Templates without `translationOf` behave as in
+M4a–M4d, except that one which maps a shared value can no longer write it into an entry that is a
+translation (Decisions, "Templates without translationOf").
 
 ## Decisions
 
@@ -45,10 +46,11 @@ M4a–M4d.
 | Source in the same job, another job | The source can never be in the same job, because its locale differs from the job's. It must have been written by another (real) job, earlier. Two jobs running at the same time: records whose source does not exist yet fail as above and are retried. Documented as "import the source locale first". |
 | Source missing for an existing entry | The record has an entry already (from an earlier run): the update goes ahead over its translatable mappings, with a `translation_source_not_found` **warning**. The source is only needed for the group check, and a source deleted in the admin should not freeze its translations. |
 | Group check | When the entry exists and the source is found, the entry's translation group must equal the source's. If not (the entry was created on its own by an earlier run without a value, or the feed now names another source), the record gets a `translation_not_linked` warning and is updated, without its shared mappings. EmDash cannot move an entry into another group: `translation_group` is a system column and the update path has no `translationOf` (F2). The warning says to trash the entry so the next run creates it as a translation. |
-| Value removed from a translation | A record without a value whose existing entry is a translation of another entry (its group is not its own ID, F3) **fails** `translation_of_missing`: its shared values would overwrite the source's and the whole group's. A feed that drops the column for linked rows has to keep it. |
-| Existing translation | Before planning a create, the importer reads the source's group (`handleContentTranslations`, F10). If it already has an entry in the job's locale (an editor's translation, or one a cancelled job left without a link), the record fails `translation_exists` with that entry's ID. Adopting it is out of scope: its `flux_source_id` is the source's (F1), so the importer cannot tell its own entry from an editor's. A `CONFLICT` from the create itself (a race) is mapped to the same code after the same read. |
+| Value removed from a translation | A record without a value whose existing entry is a translation of another entry (its group is not its own ID, F3) **fails** `translation_of_missing`: its shared values would overwrite the source's and the whole group's. A feed that drops the column for linked rows has to keep it. In a template that maps `translationOf` this holds whatever the template maps. |
+| Templates without `translationOf` | A template that does not map `translationOf` but maps a shared value (a field whose snapshot says `translatable: false`, a `reference` field, or a `taxonomies` entry) **fails** `translation_of_missing` for a record whose entry is a translation: EmDash would sync the value to the whole group (F6, F7). The error reuses the code and the field `translationOf`, although the template does not map it, with the message "The entry is a translation of another entry: to update it, the template must map translationOf or drop its shared mappings, which would otherwise overwrite its translation group's values". It is fail-closed: the record fails even when its shared values already match the group's, where M4d planned `unchanged`. A template that maps only translatable fields (and bylines and the slug) updates a translation as before. An entry of its own (group equal to its ID, or no group) is not affected. |
+| Existing translation | Before planning a create, the importer reads the source's group (`handleContentTranslations`, F10). If it already has an entry in the job's locale (an editor's translation, or one a cancelled job left without a link), the record fails `translation_exists` with "The source entry already has a translation in fr (entry <id>), which is not this record's entry". Adopting it is out of scope: its `flux_source_id` is the source's (F1), so the importer cannot tell its own entry from an editor's. A `CONFLICT` from the create itself (a race) is mapped to the same code after the same read; when the re-read finds no entry in the locale, the error stays `emdash_conflict`. |
 | Writes | A linked create sends `translationOf: <source entry ID>`, the translatable data, the slug when mapped, `flux_source_id: <the translationOf value>` (the value EmDash copies from the source anyway, F1; sent so the stored value is the same on a collection whose `flux_source_id` is translatable, M2 review), no `taxonomies` and no `references`. When the template maps `bylines`, the create always sends them, an empty list included, because EmDash copies the source's credits when `bylines` is left out (F5) and the next run would then plan an update to clear them. Without a `bylines` mapping the copied credits stay and are never compared. Updates of linked records send only the translatable data, the slug and the bylines. |
-| Crash repair | A linked entry's `flux_source_id` is the source key, not the record's key (F1). Crash repair (an earlier row of this job, no link) therefore looks the entry up with `findBySourceId(collection, locale, <translationOf value>)` for a record with a value, and with the record's key otherwise. An entry found by the value is taken only when the earlier row is `writing` or names that entry: an editor's translation carries the source's `flux_source_id` too (F1), and a `jobs/retry` of its `translation_exists` row must not adopt it (Existing translation). The link row stays keyed by the record's own key (`collection:locale:key`). The unique index on (group, locale) (F8) means a missed repair ends in `translation_exists`, never a duplicate. |
+| Crash repair | A linked entry's `flux_source_id` is the source key, not the record's key (F1). Crash repair (an earlier row of this job, no link) therefore looks the entry up with `findBySourceId(collection, locale, <translationOf value>)` for a record with a value, and with the record's key otherwise. An entry found by the value is taken only when the earlier row is `writing` or names that entry, and only when it is in the source's group (any group when the source is not found): an editor's translation carries the source's `flux_source_id` too (F1), and a `jobs/retry` of its `translation_exists` row must not adopt it (Existing translation), while an entry of its own whose key equals the value is another record's. A record without a value in a template that maps `translationOf` is an entry of its own, so it never takes an entry that is a translation. The repaired link is saved only after the decisions below pass, so a record that fails them (for example `translation_of_missing`) leaves no link behind. The link row stays keyed by the record's own key (`collection:locale:key`). The unique index on (group, locale) (F8) means a missed repair ends in `translation_exists`, never a duplicate. A template without `translationOf` repairs by the record's key as in M2, which can find a translation whose source key equals the record's key; the check of "Templates without translationOf" then applies. |
 | Diff | Shared mappings of a linked record are not in the mapped record, so they are never compared and never in `changes`. A planned linked create adds `{ field: "translationOf", before: null, after: "en: SKU-1" }`. An existing entry in the right group adds nothing, so a re-run plans `unchanged`. |
 | Dry run | The same lookups as a real run (link row, `flux_source_id` when the collection already has the field, the group read), and no write. A missing source fails the record in a dry run too. A dry run cannot see what a dry run of the source locale would create (documented): dry-run the source locale for real first, or accept the failures. |
 | Publish | Unchanged. EmDash creates the translation as a draft (`status: "draft"` default, F11); with `publish: true` the importer publishes it as every other create. Each locale's status is its own. |
@@ -173,7 +175,8 @@ built once per batch from the job's snapshot.
    errors, collected with the others. A miss is kept until the entry is known.
 2. **Entry.** As today (link row, crash repair). Crash repair looks up the `translationOf` value as the
    `flux_source_id` when the record has one, and takes what it finds only for an earlier row that is
-   `writing` or names that entry (Decisions, "Crash repair").
+   `writing` or names that entry, in the source's group; a record without a value never takes a
+   translation. The repaired link is saved after step 3 passes (Decisions, "Crash repair").
 3. **Decide.**
 
    | Value | Entry | Source | Result |
@@ -189,6 +192,11 @@ built once per batch from the job's snapshot.
    | blank | exists, its own group | — | plan over all mappings (as today) |
 
    The `translation_exists` read happens in dry runs too, and only for planned creates.
+
+   For a template **without** `translationOf`, the only check is: an existing entry that is a
+   translation (its group is not its ID), with a template that maps a shared value, fails
+   `translation_of_missing` (Decisions, "Templates without translationOf"); otherwise the record is
+   planned as in M4d.
 4. **Downloads, pending-draft and lock checks, publish.** Unchanged (M2-M4d); the skipped mappings
    produce no lookups or downloads.
 5. **Write.** `content.create` gains `translationOf?: string` (the source's entry ID). A linked
@@ -201,7 +209,7 @@ built once per batch from the job's snapshot.
 | --- | --- | --- |
 | `translation_source_not_found` | error on create, warning on update | No entry in the source locale has the key |
 | `translation_exists` | error | The source's group already has an entry in the job's locale that is not this record's |
-| `translation_of_missing` | error | A record without a value whose entry is a translation of another entry |
+| `translation_of_missing` | error | A record without a value whose entry is a translation of another entry; also, field `translationOf`, a record of a template without `translationOf` that maps a shared value, when its entry is a translation |
 | `translation_not_linked` | warning | The entry exists but is not in the source's group; EmDash cannot move it |
 | `ambiguous_source_id` | error | More than one entry in the source locale has the key (as M2) |
 | `not_scalar`, `key_too_long` | error | The value, field `translationOf` |
@@ -226,7 +234,8 @@ Ports and engine types:
 Re-runs: a linked record in the right group compares only its translatable mappings and plans
 `unchanged` when they hold. When the source job later changes a shared value, EmDash syncs it into
 the translation (F6, F7); the translation job does not compare it, so its next run is still
-`unchanged` (V4 records whether the translation's `_rev` moves). `jobs/retry` re-processes
+`unchanged`. The sync moves the translation's `_rev` (V4), which matters only for the importer's
+own pending draft (Open issues). `jobs/retry` re-processes
 `translation_source_not_found` and `translation_exists` records like every other failure.
 
 ## Bounded work
@@ -308,6 +317,16 @@ the source locale would create. The production Cloudflare build blocker from M2 
   - Copied byline credits show only where the byline has a row in the translation's locale (F5).
   - A missed crash repair of a linked record ends in `translation_exists` naming the importer's own
     entry (Decisions, "Crash repair").
+  - Crash repair's adoption window: after a crash between the `writing` row's save and the
+    linked create, an editor's translation made before the retry is taken as the record's entry
+    (wider when the source is gone, since the group is then not checked); and a template without
+    `translationOf` that maps only translatable fields can be repaired, by its own key, into a
+    translation and overwrite its translatable content.
+  - On a site that turns i18n off after it had translations, the refusal of "Templates without
+    translationOf" is stricter than needed (EmDash no longer syncs shared values); it fails safe.
+  - A job created before M4e has no `translatable` in its field snapshot, so that refusal sees only
+    its references and taxonomies; resumed after the upgrade, it could still write a
+    non-translatable field into a translation.
 - **From M4d** (`2026-11-02-m4d-review.md`), unchanged: a persistently failing image re-plans
   `update`; refresh on a shared URL converges after one extra update; a field-dependent type
   refusal is fetched once per record; the open-block JSON estimate leaves out link definitions;
