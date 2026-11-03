@@ -59,6 +59,12 @@ export interface Job {
 	purging?: boolean;
 	/** An import job created from a URL source: the source's ID (M5a). */
 	sourceId?: string;
+	/**
+	 * Whether the collection keeps revisions (M5b, read at job creation when the template maps
+	 * `publishAt`): without them an update of a published entry is live at once and cannot be
+	 * scheduled. Absent when the template maps no `publishAt`.
+	 */
+	revisions?: boolean;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -203,12 +209,27 @@ export interface LinkRow {
 	writtenRev?: string;
 	/** The job that produced `writtenRev` (M5a); absent on links saved before M5a. */
 	jobId?: string;
+	/**
+	 * One fingerprint per mapping name, of the value the importer last wrote or found equal to its
+	 * feed (M5b); absent on links saved before M5b.
+	 */
+	fields?: Record<string, string>;
+	/**
+	 * The time the entry was scheduled for at `writtenRev`, as far as the importer knows (M5b):
+	 * the schedule it set, or one an update kept. Absent when none.
+	 */
+	scheduledAt?: string;
 }
 
 /** The pre-image of an entry a job updated (M5a): what the entry held before its first write. */
 export interface JournalBefore {
-	/** The link row before the job; null when there was none. */
-	link: { jobId?: string; writtenRev?: string } | null;
+	/** The link row before the job, its fingerprints and schedule included (M5b); null when none. */
+	link: {
+		jobId?: string;
+		writtenRev?: string;
+		fields?: Record<string, string>;
+		scheduledAt?: string;
+	} | null;
 	/**
 	 * The entry's `_rev` when the pre-image was read. When it is not `link.writtenRev`, someone
 	 * changed the entry after the earlier job, and a rollback hands the link back unchanged.

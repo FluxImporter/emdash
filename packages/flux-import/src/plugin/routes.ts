@@ -7,7 +7,7 @@ import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js
 import { isEntryLocked } from "../emdash/locks.js";
 import { EmDashLookups } from "../emdash/lookups.js";
 import { EmDashMedia } from "../emdash/media.js";
-import { listSchemaFields } from "../emdash/schema.js";
+import { collectionRevisions, listSchemaFields, publishAtCollection } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
 import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
@@ -404,6 +404,12 @@ export const routes: Record<string, PluginRoute> = {
 			const { input } = ctx;
 			// Read once here and stored on the job, so a resumed or retried job converts the same way.
 			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
+			// Read once here: whether a published entry's update can be scheduled (M5b).
+			const scheduled = publishAtCollection(input.template);
+			const revisions =
+				scheduled === null
+					? undefined
+					: await collectionRevisions(runtime.schemaRegistry, scheduled);
 			const start = (upload: string, fromSource?: string) => {
 				const options: StartJobInput = {
 					uploadId: upload,
@@ -413,6 +419,7 @@ export const routes: Record<string, PluginRoute> = {
 					...(input.journal === undefined ? {} : { journal: input.journal }),
 					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 					...(siteTimezone === undefined ? {} : { siteTimezone }),
+					...(revisions === undefined ? {} : { revisions }),
 					...(input.publish === undefined ? {} : { publish: input.publish }),
 					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
 					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),

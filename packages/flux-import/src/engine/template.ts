@@ -262,6 +262,27 @@ const bylinesMapping = z
 	.refine(hasOneSource, ONE_SOURCE);
 
 /**
+ * When the record's content goes live (M5b): a time read like a `date` mapping into a `datetime`
+ * field. A future time schedules the written content; a past or empty one publishes it now.
+ */
+const publishAtMapping = z
+	.object({ ...valueSource, format: z.string().min(1).optional(), tz: timezone.default("UTC") })
+	.strict()
+	.refine(hasOneSource, ONE_SOURCE);
+
+/** The most names `rules.updateFields` lists (M5b). */
+export const MAX_UPDATE_FIELDS = 200;
+
+/** How each record treats the entry it matches (M5b); every rule is optional. */
+const rulesSchema = z
+	.object({
+		mode: z.enum(["upsert", "create", "update"]).optional(),
+		updateFields: z.array(z.string().min(1).max(200)).min(1).max(MAX_UPDATE_FIELDS).optional(),
+		protectEdited: z.boolean().optional(),
+	})
+	.strict();
+
+/**
  * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
  * by `checkSource` (sources/readers.ts), so a misplaced one is reported as `invalid_source`.
  * `filter` is a JSONata expression evaluated per record, for every format.
@@ -333,10 +354,15 @@ export const templateSchema = z
 			.optional(),
 		/** Existing bylines to credit, in order; replaces the entry's bylines. */
 		bylines: bylinesMapping.optional(),
+		/** The record's publication time (M5b); only with the job option `publish: true`. */
+		publishAt: publishAtMapping.optional(),
+		/** Write mode, update scope and edit protection (M5b). */
+		rules: rulesSchema.optional(),
 	})
 	.strict();
 
 export type Template = z.infer<typeof templateSchema>;
+export type TemplateRules = NonNullable<Template["rules"]>;
 export type FieldMapping = Template["fields"][string];
 export type MappingType = FieldMapping["type"];
 export type TaxonomyMapping = NonNullable<Template["taxonomies"]>[string];
@@ -364,6 +390,8 @@ export type MappedRecord = {
 	key: string;
 	translationOf?: string;
 	slug?: string;
+	/** The publication time as UTC ISO (M5b); null when empty, absent when not mapped. */
+	publishAt?: string | null;
 	data: Record<string, FieldValue>;
 	links?: LinkRequests;
 	media?: Record<string, MediaRequest | null>;
@@ -507,6 +535,8 @@ export interface CompiledTemplate {
 	readonly slug: CompiledExpression | null;
 	/** The `translationOf` `expr`, or null when there is none or it reads `from`. */
 	readonly translationOf: CompiledExpression | null;
+	/** The `publishAt` `expr` and conversion (M5b), or null when the template maps none. */
+	readonly publishAt: { expr: CompiledExpression | null; convert: FieldConverter } | null;
 	/**
 	 * The fields a record with a `translationOf` value does not read (`isSharedMapping`): EmDash
 	 * shares their values across the translation group. Empty without `translationOf`.
@@ -561,6 +591,7 @@ export function compileTemplate(
 	const key = compile("key.expr", t.key.expr);
 	const slug = compile("slug.expr", t.slug?.expr);
 	const translationOf = compile("translationOf.expr", t.translationOf?.expr);
+	const publishAtExpr = compile("publishAt.expr", t.publishAt?.expr);
 	const fields = new Map<string, CompiledExpression>();
 	const converters = new Map<string, FieldConverter>();
 	const targets = context.targets ?? null;
@@ -618,6 +649,13 @@ export function compileTemplate(
 			key,
 			slug,
 			translationOf,
+			publishAt:
+				t.publishAt === undefined
+					? null
+					: {
+							expr: publishAtExpr,
+							convert: publishAtConverter(t.publishAt, context.siteTimezone ?? "UTC"),
+						},
 			shared,
 			sharedRequired: context.sharedRequired ?? [],
 			fields,
@@ -629,6 +667,18 @@ export function compileTemplate(
 			portableText,
 		},
 	};
+}
+
+/**
+ * The `publishAt` conversion (M5b): a `date` mapping into a `datetime` field, so the value is UTC
+ * ISO; `tz: "site"` reads `siteTimezone`.
+ */
+function publishAtConverter(
+	mapping: NonNullable<Template["publishAt"]>,
+	siteTimezone: string,
+): FieldConverter {
+	const tz = mapping.tz === SITE_TIMEZONE ? siteTimezone : mapping.tz;
+	return dateConverter({ format: mapping.format, tz }, "datetime");
 }
 
 /** A `portableText` mapping's options with their defaults filled in. */
@@ -777,6 +827,16 @@ export async function applyTemplate(
 		}
 	}
 
+	let publishAt: string | null | undefined;
+	if (c.publishAt !== null && t.publishAt !== undefined) {
+		const raw = await read("publishAt", t.publishAt.from, c.publishAt.expr);
+		if (raw !== FAILED) {
+			const result = c.publishAt.convert(raw);
+			if (result.ok) publishAt = result.value as string | null;
+			else errors.push({ field: "publishAt", code: result.code, message: result.message });
+		}
+	}
+
 	const data: Record<string, FieldValue> = {};
 	const links: LinkRequests = {};
 	const media: Record<string, MediaRequest | null> = {};
@@ -858,6 +918,7 @@ export async function applyTemplate(
 	if (errors.length > 0) return { ok: false, errors, ...reported };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
 	if (translationOf !== undefined) mapped.translationOf = translationOf;
+	if (publishAt !== undefined) mapped.publishAt = publishAt;
 	if (Object.keys(links).length > 0) mapped.links = links;
 	if (c.media.size > 0) mapped.media = media;
 	if (c.portableText.size > 0) mapped.portableText = portableText;
@@ -1022,6 +1083,7 @@ export function templatePaths(t: Template): string[] {
 		t.key.from,
 		t.translationOf?.from,
 		t.slug?.from,
+		t.publishAt?.from,
 		...Object.values(t.fields).flatMap((m) =>
 			m.type === "image" ? [m.from, m.alt?.from] : [m.from],
 		),
@@ -1318,6 +1380,49 @@ export function checkTemplate(
 			errors.push(`translationOf.locale must differ from locale ("${t.locale}")`);
 		}
 	}
+	errors.push(...rulesProblems(t));
+	return errors;
+}
+
+/**
+ * The template's mapping names (M5b), as a record's `changes` name them: each field, `slug`,
+ * `taxonomies.<name>` for each taxonomy and `bylines`. `rules.updateFields` lists these, and the
+ * link row keeps one fingerprint per name.
+ */
+export function mappingNames(t: Template): string[] {
+	return [
+		...Object.keys(t.fields),
+		...(t.slug === undefined ? [] : ["slug"]),
+		...Object.keys(t.taxonomies ?? {}).map((name) => `taxonomies.${name}`),
+		...(t.bylines === undefined ? [] : ["bylines"]),
+	];
+}
+
+/**
+ * What `rules` cannot ask (M5b): `updateFields` or `protectEdited` with `mode: "create"`, which
+ * never updates, and an `updateFields` name the template does not map or lists twice.
+ */
+export function rulesProblems(t: Template): string[] {
+	const rules = t.rules;
+	if (rules === undefined) return [];
+	const errors: string[] = [];
+	if (
+		rules.mode === "create" &&
+		(rules.updateFields !== undefined || rules.protectEdited === true)
+	) {
+		errors.push(
+			"rules.updateFields and rules.protectEdited apply to updates; mode create never updates",
+		);
+	}
+	const mapped = new Set(mappingNames(t));
+	const seen = new Set<string>();
+	for (const name of rules.updateFields ?? []) {
+		if (seen.has(name)) errors.push(`rules.updateFields lists "${name}" more than once`);
+		else if (!mapped.has(name)) {
+			errors.push(`rules.updateFields lists "${name}", which the template does not map`);
+		}
+		seen.add(name);
+	}
 	return errors;
 }
 
@@ -1478,5 +1583,8 @@ export function usesMedia(t: Template): boolean {
 
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */
 export function usesSiteTimezone(t: Template): boolean {
-	return Object.values(t.fields).some((m) => m.type === "date" && m.tz === SITE_TIMEZONE);
+	return (
+		t.publishAt?.tz === SITE_TIMEZONE ||
+		Object.values(t.fields).some((m) => m.type === "date" && m.tz === SITE_TIMEZONE)
+	);
 }

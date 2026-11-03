@@ -141,6 +141,8 @@ function linkBefore(link: LinkRow): NonNullable<JournalBefore["link"]> {
 	return {
 		...(link.jobId === undefined ? {} : { jobId: link.jobId }),
 		...(link.writtenRev === undefined ? {} : { writtenRev: link.writtenRev }),
+		...(link.fields === undefined ? {} : { fields: link.fields }),
+		...(link.scheduledAt === undefined ? {} : { scheduledAt: link.scheduledAt }),
 	};
 }
 

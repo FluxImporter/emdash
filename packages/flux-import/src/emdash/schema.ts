@@ -1,5 +1,10 @@
 import { ContentWriteError } from "../engine/ports.js";
-import { type FieldRules, type SchemaField, SOURCE_ID_FIELD } from "../engine/template.js";
+import {
+	type FieldRules,
+	type SchemaField,
+	SOURCE_ID_FIELD,
+	templateSchema,
+} from "../engine/template.js";
 import { emdashErrorCode } from "./errors.js";
 
 /**
@@ -21,7 +26,9 @@ export interface SchemaRegistryLike {
 		fieldSlug: string,
 		input: { indexed: boolean },
 	): Promise<unknown>;
-	getCollectionWithFields(slug: string): Promise<{ fields: RegistryField[] } | null>;
+	getCollectionWithFields(
+		slug: string,
+	): Promise<{ fields: RegistryField[]; supports?: readonly string[] } | null>;
 }
 
 /** The parts of EmDash's `Field` (src/schema/types.ts:320-344) the importer reads. */
@@ -124,6 +131,28 @@ function relationOf(
 			: {}),
 		...(typeof v.multiple === "boolean" ? { multiple: v.multiple } : {}),
 	};
+}
+
+/**
+ * Whether the collection keeps revisions (M5b): its `supports` lists `"revisions"`
+ * (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). False for a collection that does not
+ * exist, which job creation then refuses.
+ */
+export async function collectionRevisions(
+	registry: SchemaRegistryLike,
+	collection: string,
+): Promise<boolean> {
+	const found = await registry.getCollectionWithFields(collection);
+	return found?.supports?.includes("revisions") ?? false;
+}
+
+/**
+ * The collection of a template from a request that maps `publishAt` (M5b), whose revisions job
+ * creation reads; null otherwise. An invalid template has none: job creation reports it.
+ */
+export function publishAtCollection(template: unknown): string | null {
+	const parsed = templateSchema.safeParse(template);
+	return parsed.success && parsed.data.publishAt !== undefined ? parsed.data.collection : null;
 }
 
 /**
