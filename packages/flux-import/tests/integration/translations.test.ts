@@ -231,7 +231,7 @@ describe("M4e translations end to end", () => {
 			errors: [
 				{
 					code: "translation_exists",
-					message: `The source entry already has a translation in de (entry ${editor.item.id}) that this import did not create`,
+					message: `The source entry already has a translation in de (entry ${editor.item.id}), which is not this record's entry`,
 				},
 			],
 		});
