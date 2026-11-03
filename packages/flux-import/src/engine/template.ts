@@ -357,10 +357,12 @@ export type FieldValue = string | number | boolean | string[] | JsonValue | null
  * (reference fields, taxonomies, bylines) when the template maps any, and the media requests
  * when it maps image or file fields (null for an empty value), and the Portable Text drafts when
  * it maps `portableText` fields (null for an empty value). Reference, media and Portable Text
- * fields are kept out of `data`.
+ * fields are kept out of `data`. `translationOf` is the trimmed source key of the entry the
+ * record translates (M4e), absent when the template maps none or the value is blank.
  */
 export type MappedRecord = {
 	key: string;
+	translationOf?: string;
 	slug?: string;
 	data: Record<string, FieldValue>;
 	links?: LinkRequests;
@@ -503,6 +505,15 @@ export interface CompiledTemplate {
 	readonly key: CompiledExpression | null;
 	/** The slug's `expr`, or null when there is no slug or it reads `from`. */
 	readonly slug: CompiledExpression | null;
+	/** The `translationOf` `expr`, or null when there is none or it reads `from`. */
+	readonly translationOf: CompiledExpression | null;
+	/**
+	 * The fields a record with a `translationOf` value does not read (`isSharedMapping`): EmDash
+	 * shares their values across the translation group. Empty without `translationOf`.
+	 */
+	readonly shared: ReadonlySet<string>;
+	/** `Job.sharedRequired`: fields a record without a `translationOf` value fails `required` for. */
+	readonly sharedRequired: readonly string[];
 	/** Each field's `expr`, by field name; fields that read `from` are absent. */
 	readonly fields: ReadonlyMap<string, CompiledExpression>;
 	/** Each field's conversion, by field name. */
@@ -526,6 +537,8 @@ export interface CompileContext {
 	siteTimezone?: string | undefined;
 	/** The mapped taxonomies as they were at job creation (M4b); flat when absent. */
 	taxonomies?: Readonly<Record<string, TaxonomySnapshot>> | undefined;
+	/** `Job.sharedRequired` (M4e); none when absent. */
+	sharedRequired?: readonly string[] | undefined;
 }
 
 /**
@@ -547,6 +560,7 @@ export function compileTemplate(
 	const filter = compile("source.filter", t.source.filter);
 	const key = compile("key.expr", t.key.expr);
 	const slug = compile("slug.expr", t.slug?.expr);
+	const translationOf = compile("translationOf.expr", t.translationOf?.expr);
 	const fields = new Map<string, CompiledExpression>();
 	const converters = new Map<string, FieldConverter>();
 	const targets = context.targets ?? null;
@@ -572,6 +586,13 @@ export function compileTemplate(
 		}
 		if (mapping.type === "portableText") portableText.set(name, portableTextOptions(mapping));
 	}
+	const shared = new Set(
+		t.translationOf === undefined
+			? []
+			: Object.keys(t.fields).filter((name) =>
+					isSharedMapping(t.fields[name] as FieldMapping, targets?.[name]),
+				),
+	);
 	const taxonomies = new Map<string, LinkReader<TermRequest>>();
 	for (const [name, mapping] of Object.entries(t.taxonomies ?? {})) {
 		taxonomies.set(name, {
@@ -596,6 +617,9 @@ export function compileTemplate(
 			filter,
 			key,
 			slug,
+			translationOf,
+			shared,
+			sharedRequired: context.sharedRequired ?? [],
 			fields,
 			converters,
 			targets,
@@ -660,7 +684,10 @@ export type ValueWarning = { field: string; code: PortableTextCode; message: str
  * them, collecting every error. An expression result goes through the same conversion as a path
  * value, and `undefined` reads as a missing path. Reference fields and the other links go into
  * `links`, as lookup requests, and Portable Text into `portableText`, as drafts. `warnings` is
- * present when a Portable Text conversion reported something, also for a record that fails. Run
+ * present when a Portable Text conversion reported something, also for a record that fails.
+ * After the key it reads `translationOf` (M4e): a record with a value does not read the shared
+ * mappings (`CompiledTemplate.shared`, every taxonomy), so they can neither fail it nor be
+ * written; a record without one fails `required` for each of `sharedRequired`. Run
  * `filterRecord` first.
  */
 export async function applyTemplate(
@@ -710,6 +737,30 @@ export async function applyTemplate(
 		}
 	}
 
+	let translationOf: string | undefined;
+	// A value that cannot be read still names a source: the record fails, without reading the
+	// shared mappings.
+	let linked = false;
+	if (t.translationOf) {
+		const field = "translationOf";
+		const sourceRaw = await read(field, t.translationOf.from, c.translationOf);
+		linked = sourceRaw === FAILED;
+		if (sourceRaw !== FAILED) {
+			const sourceText = scalarText(sourceRaw);
+			const sourceKey = sourceText?.trim() ?? "";
+			if (sourceText === null) {
+				linked = true;
+				errors.push({ field, code: "not_scalar", message: NOT_SCALAR_MESSAGE });
+			} else if (sourceKey !== "") {
+				linked = true;
+				if (sourceKey.length > MAX_KEY_LENGTH) {
+					const message = `Keys are limited to ${MAX_KEY_LENGTH} characters`;
+					errors.push({ field, code: "key_too_long", message });
+				} else translationOf = sourceKey;
+			}
+		}
+	}
+
 	let slug: string | undefined;
 	if (t.slug) {
 		const slugRaw = await read("slug", t.slug.from, c.slug);
@@ -732,6 +783,7 @@ export async function applyTemplate(
 	const portableText: Record<string, PortableTextDraft | null> = {};
 	const sources: PortableTextSource[] = [];
 	for (const [field, mapping] of Object.entries(t.fields)) {
+		if (linked && c.shared.has(field)) continue;
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
 		const result = (c.converters.get(field) as FieldConverter)(raw);
@@ -774,7 +826,8 @@ export async function applyTemplate(
 		} else data[field] = result.value;
 	}
 	if (sources.length > 0) convertSources(sources, portableText, errors, warnings);
-	for (const [name, reader] of c.taxonomies) {
+	// Assignments are keyed by translation group: a translation shares its source's terms.
+	for (const [name, reader] of linked ? [] : c.taxonomies) {
 		const field = `taxonomies.${name}`;
 		const raw = await read(field, reader.from, reader.expr);
 		if (raw === FAILED) continue;
@@ -795,10 +848,16 @@ export async function applyTemplate(
 	}
 
 	if (c.portableText.size > 0) limitPortableText(c, portableText, errors, warnings);
+	if (!linked) {
+		for (const field of c.sharedRequired) {
+			errors.push({ field, code: "required", message: "The field is required" });
+		}
+	}
 
 	const reported = warnings.length > 0 ? { warnings } : {};
 	if (errors.length > 0) return { ok: false, errors, ...reported };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
+	if (translationOf !== undefined) mapped.translationOf = translationOf;
 	if (Object.keys(links).length > 0) mapped.links = links;
 	if (c.media.size > 0) mapped.media = media;
 	if (c.portableText.size > 0) mapped.portableText = portableText;
