@@ -16,6 +16,8 @@ const maxUploadSize = Number(process.env.FLUX_DEV_MAX_UPLOAD_SIZE) || undefined;
 
 export default defineConfig({
 	output: "server",
+	// Translation imports (M4e) need i18n with more than one locale.
+	i18n: { defaultLocale: "en", locales: ["en", "fr", "de"] },
 	adapter: node({
 		mode: "standalone",
 	}),
