@@ -28,7 +28,8 @@ export function deepEqual(a: unknown, b: unknown): boolean {
 	return ak.every((k) => Object.hasOwn(bo, k) && deepEqual(ao[k], bo[k]));
 }
 
-function same(before: unknown, after: FieldValue, how: Comparison): boolean {
+/** Whether a stored value equals a mapped one under the field's comparison. */
+export function same(before: unknown, after: FieldValue, how: Comparison): boolean {
 	const b = before ?? null;
 	if (b === null || after === null) return b === after;
 	// EmDash stores a boolean as 0 or 1 and reads it back as that number, in boolean fields and
