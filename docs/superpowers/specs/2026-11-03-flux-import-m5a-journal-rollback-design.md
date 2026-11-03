@@ -285,12 +285,16 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    step's `_rev`; a `CONFLICT` is `rollback_changed`, an editor's lock between two steps is
    `locked` (retried from the saved step). A resumed `writing` row whose entry's `_rev` is neither
    `writtenRev` nor the link row's is a step that reached EmDash before the stop: the entry is
-   adopted at its current `_rev`, with `pendingStep` done, only when it shows that step's result
-   (1: the restored live values by `sameStored`, the slug when no draft hides it, and the
-   restored references and bylines; 2: published without a draft; 3: not published; 4: no
-   draft; 5: the restored draft values; 6: the schedule); otherwise `rollback_changed`. The
-   saves cost one plugin storage write per step sent, as the save after each step did before:
-   nothing runs between a step's return and the next step's save. Before step 1, a pre-image
+   adopted at its current `_rev`, with `pendingStep` done, only when it shows the result of every
+   step up to that one, so an editor's change made after the stop is never adopted: always step
+   1's (the restored live values by `sameStored`, read from the draft for step 1 and from the live
+   values after it, the slug when no draft hides it, the restored references, bylines and terms,
+   which costs one more read), from step 5 on also the restored draft values, and the step's own
+   (2: published without a draft; 3: not published; 4: no draft; 6: the schedule); otherwise
+   `rollback_changed`. After the last step, and before the link moves, the row is saved once more
+   as `writing` with the final step and `_rev` and no `pendingStep`, so a stop after the link put
+   resumes by `writtenRev`. The saves cost one plugin storage write per step sent plus that one,
+   as many as a save after each step and one before the first. Before step 1, a pre-image
    value that is empty for a field the job's `targetFields` mark `required` fails the row with a
    `required` error naming the field (EmDash would refuse the restored value half way), with no
    other warnings and nothing written. A resumed row whose step 1 is done keeps the
@@ -307,9 +311,15 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    `conflict`, `rollback_has_translations`.
 2. Active: `handleContentDelete` (F6). `DELETE_BLOCKED` is `failed`, `rollback_blocked`, with the
    hook's message.
-3. `confirmed`: `handleContentPermanentDelete` (F8), `action: "delete"`. Not confirmed: stop in
-   Trash, `action: "trash"`, warning `rollback_trashed` ("Moved to Trash, not deleted: the import
-   found this entry by crash repair, so it may not have created it").
+3. `confirmed` and the link row names the entry with a `writtenRev`:
+   `handleContentPermanentDelete` (F8), `action: "delete"`. Otherwise stop in Trash, `action:
+   "trash"`, warning `rollback_trashed`: "Moved to Trash, not deleted: the import found this entry
+   by crash repair, so it may not have created it", or, for the job's own create whose link was
+   never saved (a stop before the link save, never resumed), "Moved to Trash, not deleted: the
+   import never saved its link to this entry, so a later edit cannot be ruled out". Without that
+   link only the timestamps vouch for the entry, and they miss an edit that staged a draft. Trash
+   keeps the slug, so a re-import of the same feed gives `SLUG_CONFLICT` for such an entry until it
+   is deleted from Trash by hand or purged.
 
 Trash keeps `_rev` (F6), so a batch that stops between the two calls passes ownership on resume
 and finishes the delete.

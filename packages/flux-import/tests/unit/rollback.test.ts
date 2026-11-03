@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { transitionJob } from "../../src/engine/jobs.js";
+import type { LinkWrites } from "../../src/engine/ports.js";
 import { createRollback } from "../../src/engine/rollback.js";
 import { sameStored } from "../../src/engine/rollback-values.js";
 import { type Job, journalKey, linkKey, recordKey } from "../../src/engine/types.js";
@@ -839,6 +840,41 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor title", price: 11 });
 	});
 
+	it("leaves a created entry an editor edited on a collection without revisions", async () => {
+		const { deps } = setup();
+		deps.content.plainCollections.add("products");
+		const job = await importRows(deps, [desk], { publish: false });
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(e.trashed).toBe(false);
+	});
+
+	it("only moves its own create to Trash when its link was never saved", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk], { publish: false });
+		// A crash before the link save, never resumed; then an editor stages a draft.
+		await deps.links.delete(linkKey("products", "en", "A1"));
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		expect(e.updatedAt).toBe(e.createdAt);
+		const done = await rollBack(deps, job.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({
+			status: "reverted",
+			action: "trash",
+			warnings: [
+				{
+					code: "rollback_trashed",
+					message:
+						"Moved to Trash, not deleted: the import never saved its link to this entry, so a later edit cannot be ruled out",
+				},
+			],
+		});
+		expect(deps.content.entries.get(e.id)).toMatchObject({ trashed: true });
+	});
+
 	it("checks the lock of a created entry before moving it to Trash", async () => {
 		const { deps } = setup();
 		const job = await importRows(deps, [desk]);
@@ -945,6 +981,157 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").data.price).toBe(77);
 	});
+
+	it("resumes a row stopped after its link was handed back, before the row was saved", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const before = stateOf(deps, "A1");
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		const key = linkKey("products", "en", "A1");
+		const put = deps.links.put.bind(deps.links);
+		let once = true;
+		deps.links.put = async (id, value) => {
+			await put(id, value);
+			if (id === key && once) {
+				once = false;
+				throw new Error("killed after the link put");
+			}
+		};
+		await crash(deps, rollback.id, "killed after the link put");
+		const stopped = await deps.records.get(recordKey(rollback.id, 0));
+		expect(stopped).toMatchObject({
+			status: "writing",
+			writtenRev: String(entryOf(deps, "A1").rev),
+		});
+		expect(stopped).not.toHaveProperty("pendingStep");
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "reverted" });
+		expectRestored(stateOf(deps, "A1"), before);
+	});
+
+	it("refuses an editor's published change after a stop before the publish applied", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.beforeStep = (step) => {
+			if (step === "publish") throw new Error("killed before the publish applied");
+		};
+		await crash(deps, rollback.id, "killed before the publish applied");
+		deps.content.beforeStep = () => {};
+		// Published without a draft, as step 2 would leave it, but with the editor's title.
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "published", data: { title: "Editor" } });
+	});
+
+	it("refuses a stop whose restored terms an editor changed since", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.afterStep = (step) => {
+			if (step === "update") throw new Error("killed after update");
+		};
+		await crash(deps, rollback.id, "killed after update");
+		deps.content.afterStep = () => {};
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), taxonomies: { tag: ["sale"] } });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").taxonomies.tag).toEqual(["sale"]);
+	});
+
+	it("refuses a stop after the draft step whose draft an editor changed since", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		await importRows(deps, [{ ...desk, price: 20 }], { publish: false });
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		let updates = 0;
+		deps.content.beforeStep = (step) => {
+			if (step === "update" && ++updates === 2) throw new Error("crash before the draft");
+		};
+		await crash(deps, rollback.id, "crash before the draft");
+		deps.content.beforeStep = () => {};
+		// Published with the restored live values, but the editor's draft instead of the importer's.
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { price: 55 } });
+		expect(await deps.records.get(recordKey(rollback.id, 0))).toMatchObject({ pendingStep: 5 });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").data.price).toBe(55);
+	});
+
+	it("refuses a stop whose entry an editor published and then gave a new draft", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.beforeStep = (step) => {
+			if (step === "publish") throw new Error("crash before publish");
+		};
+		await crash(deps, rollback.id, "crash before publish");
+		deps.content.beforeStep = () => {};
+		// The editor publishes step 1's values, then stages a draft of a field the import never wrote.
+		const e = entryOf(deps, "A1");
+		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { notes: "Editor" } });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").data.notes).toBe("Editor");
+	});
+
+	it("refuses a stop whose entry an editor published under another slug", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.beforeStep = (step) => {
+			if (step === "publish") throw new Error("crash before publish");
+		};
+		await crash(deps, rollback.id, "crash before publish");
+		deps.content.beforeStep = () => {};
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), slug: "editors-desk" });
+		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").slug).toBe("editors-desk");
+	});
+
+	for (const [what, edit] of [
+		["references", { references: { related: [] } }],
+		["bylines", { bylines: [] }],
+	] as [string, LinkWrites][]) {
+		it(`refuses a stop after the update whose ${what} an editor changed since`, async () => {
+			const { deps } = setup();
+			const others = [
+				{ sku: "A2", name: "Lamp" },
+				{ sku: "A3", name: "Shelf" },
+			];
+			await importRows(deps, [...others, { ...desk, related: "A2" }]);
+			const job = await importRows(deps, [...others, { ...changed, related: "A3" }]);
+			expect(job.counters).toMatchObject({ updated: 1, unchanged: 2 });
+			const { rollback } = await createRollback(deps, { id: job.id });
+			deps.content.afterStep = (step) => {
+				if (step === "update") throw new Error("killed after update");
+			};
+			await crash(deps, rollback.id, "killed after update");
+			deps.content.afterStep = () => {};
+			const e = entryOf(deps, "A1");
+			await deps.content.update({ id: e.id, rev: String(e.rev), ...edit });
+			const done = await runToEnd(deps, rollback.id);
+			const row = (await records(deps, done.id)).find((r) => r.entryId === e.id);
+			expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		});
+	}
 
 	it("finishes a permanent delete that went through before the row was saved", async () => {
 		const { deps } = setup();

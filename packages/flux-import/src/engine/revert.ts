@@ -34,6 +34,7 @@ import {
 	type JournalBefore,
 	type JournalEntry,
 	journalKey,
+	type LinkRow,
 	linkKey,
 	type RecordError,
 	type RecordRow,
@@ -55,6 +56,8 @@ const NOTHING_MESSAGE = "Nothing to roll back: the entry was never created, or w
 const NEVER_WRITTEN_MESSAGE = "Nothing to roll back: the import never wrote this entry";
 const TRASHED_MESSAGE =
 	"Moved to Trash, not deleted: the import found this entry by crash repair, so it may not have created it";
+const UNLINKED_MESSAGE =
+	"Moved to Trash, not deleted: the import never saved its link to this entry, so a later edit cannot be ruled out";
 const TRANSLATIONS_MESSAGE =
 	"Not rolled back: the entry has translations that are still active; roll back the jobs of its translations first";
 const REFERENCES_UNKNOWN_MESSAGE =
@@ -369,7 +372,7 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		return rowOf(ctx, "locked", { errors: [issue("locked", LOCKED_MESSAGE)] });
 	}
 	return journal.kind === "create"
-		? deleteCreated(ctx, entry, adopted, link?.entryId === entry.id)
+		? deleteCreated(ctx, entry, adopted, link)
 		: restoreChanged(ctx, entry, link?.entryId === entry.id, pending);
 }
 
@@ -378,10 +381,11 @@ async function deleteCreated(
 	ctx: RowCtx,
 	entry: Found,
 	adopted: boolean,
-	linked: boolean,
+	link: LinkRow | null,
 ): Promise<RowFields> {
 	const { deps, job, journal } = ctx;
 	const { collection } = journal;
+	const linked = link?.entryId === entry.id;
 	if (!entry.trashed && (entry.group ?? entry.id) === entry.id) {
 		const group = await deps.content.translations(collection, entry.id);
 		if (group.some((t) => t.id !== entry.id)) {
@@ -390,9 +394,19 @@ async function deleteCreated(
 			});
 		}
 	}
-	const confirmed = journal.confirmed === true && !adopted;
+	// Deleted for good only when the job's own create returned it and its link records the
+	// revision: without one, only timestamps vouch for it, and they miss a draft edit (spec F2).
+	const recorded = linked && link?.writtenRev !== undefined;
+	const confirmed = journal.confirmed === true && !adopted && recorded;
 	ctx.action = confirmed ? "delete" : "trash";
-	const warnings = confirmed ? [] : [issue("rollback_trashed", TRASHED_MESSAGE)];
+	const warnings = confirmed
+		? []
+		: [
+				issue(
+					"rollback_trashed",
+					journal.confirmed === true && !adopted ? UNLINKED_MESSAGE : TRASHED_MESSAGE,
+				),
+			];
 	if (job.dryRun)
 		return rowOf(ctx, "planned", { changes: [], ...(warnings.length ? { warnings } : {}) });
 	ctx.written = { rev: entry.rev, step: ctx.written?.step ?? 0 };
@@ -513,36 +527,60 @@ async function plannedChanges(
 }
 
 /**
- * Whether the entry shows what revert step `step` would have left (spec M5a "Per row", resuming):
- * 1 the restored live values (and the slug and links the read shows), 2 published without a
- * draft, 3 not published, 4 no draft, 5 the restored draft values, 6 the schedule.
+ * Whether the entry shows what revert steps 1 to `step` would have left it with (spec M5a "Per
+ * row", resuming). Cumulative, so an editor's change made after the stop is never adopted: every
+ * step needs step 1's result (the restored live values, the slug the read shows, the references,
+ * bylines and terms), steps 5 and 6 also the restored draft values, and each step its own
+ * result: 2 published without a draft, 3 not published, 4 no draft, 6 the schedule.
  */
-function reached(step: number, entry: Found, before: JournalBefore, links: LinkWrites): boolean {
-	const fieldsMatch = (values: Readonly<Record<string, unknown>>) =>
-		Object.entries(values).every(([field, value]) => sameStored(entry.data[field], value));
+async function reached(
+	ctx: RowCtx,
+	step: number,
+	entry: Found,
+	before: JournalBefore,
+	links: LinkWrites,
+): Promise<boolean> {
+	const same = (a: readonly string[], b: readonly string[]) =>
+		JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 	const ids = (list: readonly { id: string }[] | undefined) => (list ?? []).map((r) => r.id);
+	// Step 1 stages the live values in a draft on a revisioned collection; once a later step has
+	// published them they are the live ones, under any draft steps 3 and 5 leave.
+	const live = step === 1 ? entry.data : (entry.live ?? entry.data);
+	const fieldsMatch = (values: Readonly<Record<string, unknown>>, from: Record<string, unknown>) =>
+		Object.entries(values).every(([field, value]) => sameStored(from[field], value));
+	if (!fieldsMatch(before.live, live)) return false;
+	// A staged slug is in the draft, which the read does not show (spec F5).
+	if (before.slug !== undefined && !entry.hasDraft && entry.slug !== before.slug) return false;
+	for (const [field, want] of Object.entries(links.references ?? {})) {
+		if (JSON.stringify(ids(entry.references?.[field])) !== JSON.stringify(want)) return false;
+	}
+	if (
+		links.bylines !== undefined &&
+		JSON.stringify(ids(entry.bylines)) !== JSON.stringify(links.bylines.map((b) => b.bylineId))
+	) {
+		return false;
+	}
+	if (links.taxonomies !== undefined) {
+		ctx.cache.spend(COST_READ);
+		const assigned = await ctx.deps.lookups.entryTerms(ctx.journal.collection, entry.id);
+		for (const [taxonomy, slugs] of Object.entries(links.taxonomies)) {
+			const now = (assigned[taxonomy] ?? []).map(
+				(g) => termOfGroup(ctx.cache, taxonomy, g)?.slug ?? g,
+			);
+			if (!same(now, slugs)) return false;
+		}
+	}
+	if (step >= 5 && !fieldsMatch(before.draft ?? {}, entry.data)) return false;
 	switch (step) {
 		case 1:
-			return (
-				fieldsMatch(before.live) &&
-				// A staged slug is in the draft, which the read does not show (spec F5).
-				(before.slug === undefined || entry.hasDraft || entry.slug === before.slug) &&
-				Object.entries(links.references ?? {}).every(
-					([field, want]) =>
-						JSON.stringify(ids(entry.references?.[field])) === JSON.stringify(want),
-				) &&
-				(links.bylines === undefined ||
-					JSON.stringify(ids(entry.bylines)) ===
-						JSON.stringify(links.bylines.map((b) => b.bylineId)))
-			);
+		case 5:
+			return true;
 		case 2:
 			return entry.status === "published" && !entry.hasDraft;
 		case 3:
 			return entry.status !== "published";
 		case 4:
 			return !entry.hasDraft;
-		case 5:
-			return fieldsMatch(before.draft ?? {});
 		case 6:
 			return (
 				before.scheduledAt !== null &&
@@ -596,7 +634,10 @@ async function restoreChanged(
 		ctx.warnings.push(
 			...(ctx.existing?.warnings ?? []).filter((w) => w.code === "rollback_link_missing"),
 		);
-		if (pending === 1 && before.links) links = await restoredLinks(ctx, before.links, []);
+		// Only to check a lost step (`reached`); the warnings are the saved ones.
+		if (pending !== undefined && before.links) {
+			links = await restoredLinks(ctx, before.links, []);
+		}
 	} else if (before.links) {
 		links = await restoredLinks(ctx, before.links, ctx.warnings);
 	}
@@ -619,7 +660,7 @@ async function restoreChanged(
 		return rowOf(ctx, "planned", { changes: await plannedChanges(ctx, entry, before, links) });
 	}
 	if (pending !== undefined) {
-		if (!reached(pending, entry, before, links)) {
+		if (!(await reached(ctx, pending, entry, before, links))) {
 			return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", CHANGED_MESSAGE)] });
 		}
 		ctx.written = { rev: entry.rev, step: pending };
@@ -716,6 +757,9 @@ async function restoreChanged(
 			],
 		});
 	}
+	// Saved before the link moves, so a stop after the link put still resumes this row: its entry
+	// is at `writtenRev`, which the link no longer names for the original job.
+	await writing();
 	// The link goes back to the job before, at the rollback's revision, so that job's rollback
 	// and the next import see the entry as that job left it.
 	const id = linkKey(collection, locale, journal.sourceKey);
