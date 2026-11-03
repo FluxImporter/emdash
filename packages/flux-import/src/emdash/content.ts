@@ -21,7 +21,7 @@ export type HandlerResult = {
 /**
  * The part of `EmDashRuntime` (from `emdash/middleware`) this adapter calls; the runtime is
  * assignable to it. Signatures: src/emdash-runtime.ts:3336 (list), :3364 (get), :3455 (create),
- * :3649 (update), :4575 (publish), :759 (schemaRegistry).
+ * :3649 (update), :4575 (publish), :4776 (translations), :759 (schemaRegistry).
  */
 export interface ContentRuntime {
 	readonly schemaRegistry: SchemaRegistryLike;
@@ -42,6 +42,7 @@ export interface ContentRuntime {
 			slug?: string;
 			locale?: string;
 			authorId?: string;
+			translationOf?: string;
 			actor?: ActorInfo;
 		} & LinkWrites,
 	): Promise<HandlerResult>;
@@ -61,6 +62,7 @@ export interface ContentRuntime {
 		id: string,
 		options?: { _rev?: string; actor?: ActorInfo },
 	): Promise<HandlerResult>;
+	handleContentTranslations(collection: string, id: string): Promise<HandlerResult>;
 }
 
 /** Answers whether anyone but `userId` holds a live lease on the entry. */
@@ -104,6 +106,11 @@ const itemResult = z.object({
 
 /** `{ items, nextCursor? }` from list (src/api/types.ts:10). */
 const listResult = z.object({ items: z.array(z.object({ id: z.string() })) });
+
+/** `{ translationGroup, translations }` from translations (src/api/handlers/content.ts:2777-2840). */
+const translationsResult = z.object({
+	translations: z.array(z.object({ id: z.string(), locale: z.string().nullable() })),
+});
 
 function parse<T>(schema: z.ZodType<T>, data: unknown, op: string): T {
 	const parsed = schema.safeParse(data);
@@ -255,6 +262,7 @@ export class EmDashContent implements ContentPort {
 			locale: string;
 			slug?: string;
 			data: Record<string, FieldValue>;
+			translationOf?: string;
 		} & LinkWrites,
 	): Promise<{ id: string; rev: string }> {
 		const result = await this.runtime.handleContentCreate(input.collection, {
@@ -263,11 +271,23 @@ export class EmDashContent implements ContentPort {
 			authorId: this.actor.id,
 			actor: this.actor,
 			...(input.slug === undefined ? {} : { slug: input.slug }),
+			...(input.translationOf === undefined ? {} : { translationOf: input.translationOf }),
 			...linksOf(input),
 		});
 		if (!result.success) throw writeError("Creating the entry", result.error);
 		const { id, rev } = snapshotOf(result.data, "Creating the entry");
 		return { id, rev };
+	}
+
+	/** Rows without a locale (never written by EmDash with i18n) are left out. */
+	async translations(collection: string, id: string): Promise<{ id: string; locale: string }[]> {
+		const result = await this.runtime.handleContentTranslations(collection, id);
+		if (!result.success) {
+			if (result.error?.code === "NOT_FOUND") return [];
+			throw writeError("Reading the translations", result.error);
+		}
+		const { translations } = parse(translationsResult, result.data, "Reading the translations");
+		return translations.flatMap((t) => (t.locale === null ? [] : [{ id: t.id, locale: t.locale }]));
 	}
 
 	async update(

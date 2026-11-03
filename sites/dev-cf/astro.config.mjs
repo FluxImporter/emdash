@@ -8,6 +8,8 @@ import { fluxImport, fluxImportRoutes } from "flux-import";
 // Same plugin and routes as sites/dev, on D1 and R2 under workerd.
 export default defineConfig({
 	output: "server",
+	// Translation imports (M4e) need i18n with more than one locale.
+	i18n: { defaultLocale: "en", locales: ["en", "fr", "de"] },
 	adapter: cloudflare(),
 	integrations: [
 		react(),

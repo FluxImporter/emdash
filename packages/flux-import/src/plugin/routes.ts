@@ -3,7 +3,7 @@ import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
 import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/config.js";
 import { EmDashContent } from "../emdash/content.js";
-import { resolveSiteLocale } from "../emdash/locale.js";
+import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js";
 import { isEntryLocked } from "../emdash/locks.js";
 import { EmDashLookups } from "../emdash/lookups.js";
 import { EmDashMedia } from "../emdash/media.js";
@@ -411,6 +411,7 @@ export const routes: Record<string, PluginRoute> = {
 					options,
 					(collection) => listSchemaFields(runtime.schemaRegistry, collection),
 					(locale) => resolveSiteLocale(locale),
+					(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
 				);
 			};
 			if (input.sourceId !== undefined) {

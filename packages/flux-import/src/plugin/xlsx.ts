@@ -17,6 +17,7 @@ import {
 	type StartJobInput,
 	sampleSource,
 	startJob,
+	type TranslationLocaleResolver,
 } from "./service.js";
 
 /** On Workers the converted JSON Lines are held in memory to give R2 their length. */
@@ -174,9 +175,12 @@ export async function startImport(
 	input: StartJobInput,
 	lookupFields: FieldLookup,
 	resolveLocale?: LocaleResolver,
+	resolveTranslation?: TranslationLocaleResolver,
 ): Promise<Job> {
 	const source = xlsxSource(input.template);
-	if (source === null) return startJob(deps, input, lookupFields, resolveLocale);
+	if (source === null) {
+		return startJob(deps, input, lookupFields, resolveLocale, resolveTranslation);
+	}
 	const converted = await convertXlsx(deps, staging, input.uploadId, source);
 	try {
 		return await startJob(
@@ -190,6 +194,7 @@ export async function startImport(
 			},
 			lookupFields,
 			resolveLocale,
+			resolveTranslation,
 		);
 	} catch (e) {
 		await new EmDashUploads(staging.storage).delete(converted.uploadId).catch(() => {});

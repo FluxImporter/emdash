@@ -64,6 +64,12 @@ export interface Job {
 	 * filter by it. Absent before M4b: such a dry run never does.
 	 */
 	sourceIdField?: boolean;
+	/**
+	 * Required fields shared across a translation group that the template leaves unmapped
+	 * (`sharedRequiredOf`): a record without a `translationOf` value fails `required` for each.
+	 * Absent when there are none (M4e).
+	 */
+	sharedRequired?: string[];
 	/** The mapped taxonomies as they were at job creation; absent when none are mapped. */
 	taxonomies?: Record<string, TaxonomySnapshot>;
 	/**

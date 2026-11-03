@@ -1,4 +1,4 @@
-import type { LocaleResolution } from "../emdash/locale.js";
+import { I18N_REQUIRED_MESSAGE, type LocaleResolution } from "../emdash/locale.js";
 import { type StagedUpload, stageUpload, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
@@ -152,8 +152,18 @@ export async function stagePaste(storage: UploadStorage, text: string): Promise<
 export type StartJobInput = Omit<CreateJobInput, "schemaFields" | "linkSchema">;
 export type FieldLookup = (collection: string) => Promise<SchemaField[] | null>;
 export type LocaleResolver = (locale: string) => LocaleResolution;
+/** Resolves `translationOf.locale` (absent: the default locale) for a job in `locale`. */
+export type TranslationLocaleResolver = (
+	sourceLocale: string | undefined,
+	locale: string,
+) => LocaleResolution;
 
 const keepLocale: LocaleResolver = (locale) => ({ ok: true, locale });
+/** Without a site configuration there is no i18n, so `translationOf` is refused. */
+const noTranslations: TranslationLocaleResolver = () => ({
+	ok: false,
+	message: I18N_REQUIRED_MESSAGE,
+});
 
 function collectionOf(template: unknown): string | null {
 	return typeof template === "object" &&
@@ -166,10 +176,15 @@ function collectionOf(template: unknown): string | null {
 
 /**
  * Replaces the template's locale with the site's casing of it, so entries are stored and found
- * under the locale EmDash writes. A template without a string locale is left for createJob to
- * report.
+ * under the locale EmDash writes, and sets `translationOf.locale` the same way (the default
+ * locale when left out). A template without a string locale, or with a `translationOf` that is
+ * not an object or whose locale is not a string, is left for createJob to report.
  */
-function withSiteLocale(template: unknown, resolveLocale: LocaleResolver): unknown {
+function withSiteLocale(
+	template: unknown,
+	resolveLocale: LocaleResolver,
+	resolveTranslation: TranslationLocaleResolver,
+): unknown {
 	if (
 		typeof template !== "object" ||
 		template === null ||
@@ -184,7 +199,25 @@ function withSiteLocale(template: unknown, resolveLocale: LocaleResolver): unkno
 			`locale: ${resolved.message}`,
 		]);
 	}
-	return { ...template, locale: resolved.locale };
+	const source = prop(template, "translationOf");
+	const sourceLocale = prop(source, "locale");
+	if (
+		typeof source !== "object" ||
+		source === null ||
+		Array.isArray(source) ||
+		(sourceLocale !== undefined && typeof sourceLocale !== "string")
+	) {
+		return { ...template, locale: resolved.locale };
+	}
+	const translation = resolveTranslation(sourceLocale, resolved.locale);
+	if (!translation.ok) {
+		throw new JobError("invalid_template", "The template is invalid", [translation.message]);
+	}
+	return {
+		...template,
+		locale: resolved.locale,
+		translationOf: { ...source, locale: translation.locale },
+	};
 }
 
 /** The value of `key` on an object, or undefined. */
@@ -222,16 +255,18 @@ async function linkSchemaFor(
 }
 
 /**
- * Creates a job after resolving the template locale and reading the target collection's fields,
- * its reference targets' fields and, for templates that map taxonomies, the taxonomy definitions.
+ * Creates a job after resolving the template locale (and `translationOf.locale`) and reading the
+ * target collection's fields, its reference targets' fields and, for templates that map
+ * taxonomies, the taxonomy definitions.
  */
 export async function startJob(
 	deps: EngineDeps,
 	input: StartJobInput,
 	lookupFields: FieldLookup,
 	resolveLocale: LocaleResolver = keepLocale,
+	resolveTranslation: TranslationLocaleResolver = noTranslations,
 ): Promise<Job> {
-	const template = withSiteLocale(input.template, resolveLocale);
+	const template = withSiteLocale(input.template, resolveLocale, resolveTranslation);
 	const collection = collectionOf(template);
 	// Without a collection name the template is invalid; createJob reports that with details.
 	const schemaFields = collection === null ? [] : await lookupFields(collection);

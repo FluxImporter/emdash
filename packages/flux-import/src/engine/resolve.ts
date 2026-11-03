@@ -538,8 +538,8 @@ async function resolveTerms(
 	return items;
 }
 
-const referenceKey = (target: string, match: string, value: string) =>
-	`${target}\u0000${match}\u0000${value}`;
+const referenceKey = (target: string, match: string, value: string, locale: string) =>
+	`${target}\u0000${match}\u0000${locale}\u0000${value}`;
 
 /** One reference item: the hit from the batch cache, or a lookup; null when nothing matches. */
 async function findReference(
@@ -551,7 +551,8 @@ async function findReference(
 	locale: string,
 	sourceIdReady: boolean,
 ): Promise<{ id: string; group: string } | null> {
-	const key = referenceKey(target, match, value);
+	// The locale is part of the key: a translation source is looked up in another locale (M4e).
+	const key = referenceKey(target, match, value, locale);
 	const hit = cache.entries.get(key);
 	if (hit) return hit;
 	let found: { id: string; group: string } | null = null;
@@ -576,6 +577,24 @@ async function findReference(
 	return found;
 }
 
+/**
+ * The entry a record translates (M4e): the entry imported with `key` into `collection` in the
+ * source `locale`, found as a `match: "key"` reference is (the link row, verified, then the
+ * source ID when `sourceIdReady`), with its translation group; null when there is none. Hits
+ * are cached for the batch, misses are not. Throws `ContentWriteError` for an ambiguous source
+ * ID or an EmDash read error.
+ */
+export function findTranslationSource(
+	deps: ResolveDeps,
+	cache: LookupCache,
+	collection: string,
+	locale: string,
+	key: string,
+	sourceIdReady: boolean,
+): Promise<{ id: string; group: string } | null> {
+	return findReference(deps, cache, collection, "key", key, locale, sourceIdReady);
+}
+
 const NOT_FOUND_BY = {
 	id: (target: string, value: string) => `No entry in "${target}" has the ID "${value}"`,
 	slug: (target: string, value: string, locale: string) =>
@@ -583,6 +602,14 @@ const NOT_FOUND_BY = {
 	key: (target: string, value: string, locale: string) =>
 		`No entry in "${target}" (${locale}) was imported with the key "${value}"`,
 };
+
+/**
+ * The message for a source key that no entry was imported with. The key length is already
+ * capped upstream by `MAX_KEY_LENGTH` (256).
+ */
+export function sourceNotFoundMessage(collection: string, locale: string, key: string): string {
+	return NOT_FOUND_BY.key(collection, key, locale);
+}
 
 async function resolveReferences(
 	deps: ResolveDeps,

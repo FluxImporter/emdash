@@ -84,14 +84,27 @@ export interface ContentPort {
 	): Promise<EntrySnapshot | null>;
 	/** A lock held by the importing user counts as unlocked. */
 	isLocked(collection: string, locale: string, id: string): Promise<boolean>;
+	/**
+	 * `translationOf`: the ID of an entry of the same collection; the new entry joins its
+	 * translation group, and EmDash replaces every non-translatable field in `data` with the
+	 * source's value and copies its byline credits when `bylines` is not given (spec M4e F1, F5).
+	 * A source that does not exist is `emdash_not_found`; a group that already has an entry in the
+	 * locale is `emdash_conflict`.
+	 */
 	create(
 		input: {
 			collection: string;
 			locale: string;
 			slug?: string;
 			data: Record<string, FieldValue>;
+			translationOf?: string;
 		} & LinkWrites,
 	): Promise<{ id: string; rev: string }>;
+	/**
+	 * The active entries of the entry's translation group, the entry included (EmDash
+	 * `handleContentTranslations`); empty when the entry does not exist.
+	 */
+	translations(collection: string, id: string): Promise<{ id: string; locale: string }[]>;
 	/**
 	 * On revisioned collections `data`, `slug` and `references` are staged as a draft, which
 	 * `publish` makes live; `taxonomies` and `bylines` are written live at once (EmDash).

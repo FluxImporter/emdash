@@ -116,6 +116,8 @@ type StoredEntry = {
 	collection: string;
 	slug: string | null;
 	data: Record<string, unknown>;
+	/** The translation group: the entry's own ID, or its source's group (EmDash, spec M4e F3). */
+	group: string;
 	rev: number;
 	pendingPublish: boolean;
 	/** Term slugs by taxonomy, entry IDs by reference field, byline credits: as written. */
@@ -143,6 +145,11 @@ export class FakeContent implements ContentPort {
 	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
 	/** Called at the start of publish; throw from it to simulate a crash before publishing. */
 	beforePublish: (id: string) => void = () => {};
+	/**
+	 * The non-translatable fields: a create with `translationOf` takes their values from the
+	 * source, as EmDash does (spec M4e F1).
+	 */
+	readonly sharedFields = new Set<string>(["flux_source_id"]);
 	private next = 0;
 
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
@@ -151,7 +158,7 @@ export class FakeContent implements ContentPort {
 			rev: String(e.rev),
 			slug: e.slug,
 			data: structuredClone(e.data),
-			group: e.id,
+			group: e.group,
 			pendingPublish: e.pendingPublish,
 			...(options.references
 				? {
@@ -215,22 +222,49 @@ export class FakeContent implements ContentPort {
 			locale: string;
 			slug?: string;
 			data: Record<string, unknown>;
+			translationOf?: string;
 		} & LinkWrites,
 	) {
 		const failure = this.failWrite(input.data);
 		if (failure) throw failure;
+		const source =
+			input.translationOf === undefined ? undefined : this.entries.get(input.translationOf);
+		if (input.translationOf !== undefined) {
+			if (!source || source.collection !== input.collection) {
+				throw new ContentWriteError(
+					"emdash_not_found",
+					"Creating the entry failed: Translation source content not found",
+				);
+			}
+			const taken = [...this.entries.values()].some(
+				(e) => e.group === source.group && e.locale.toLowerCase() === input.locale.toLowerCase(),
+			);
+			if (taken) {
+				throw new ContentWriteError(
+					"emdash_conflict",
+					`Creating the entry failed: Translation already exists in locale "${input.locale}" for this content item`,
+				);
+			}
+		}
 		const id = `e${++this.next}`;
+		const data = structuredClone(input.data);
+		for (const field of source ? this.sharedFields : []) {
+			if (source && Object.hasOwn(source.data, field)) data[field] = source.data[field];
+			else delete data[field];
+		}
 		const entry: StoredEntry = {
 			id,
 			collection: input.collection,
 			locale: input.locale,
 			slug: input.slug ?? null,
-			data: structuredClone(input.data),
+			data,
+			group: source?.group ?? id,
 			rev: 1,
 			pendingPublish: true,
-			taxonomies: {},
-			references: {},
-			bylines: [],
+			// As EmDash: terms and references are the group's; credits are copied unless given.
+			taxonomies: structuredClone(source?.taxonomies ?? {}),
+			references: structuredClone(source?.references ?? {}),
+			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
 		};
 		this.writeLinks(entry, input);
 		this.entries.set(id, entry);
@@ -279,6 +313,14 @@ export class FakeContent implements ContentPort {
 	}
 	async ensureSourceIdField() {
 		this.sourceFieldEnsured = true;
+	}
+	async translations(collection: string, id: string) {
+		this.calls.push(`translations:${id}`);
+		const e = this.entries.get(id);
+		if (!e || e.collection !== collection) return [];
+		return [...this.entries.values()]
+			.filter((t) => t.collection === collection && t.group === e.group)
+			.map((t) => ({ id: t.id, locale: t.locale }));
 	}
 }
 
@@ -361,7 +403,11 @@ export class FakeLookups implements LookupPort {
 		return this.addTerm(taxonomy, slug, input.label, parentSlug, input.locale);
 	}
 
-	/** The groups of the term slugs the `FakeContent` entry was given, by taxonomy. */
+	/**
+	 * The groups of the term slugs the `FakeContent` entry was given, by taxonomy. Resolves the slugs
+	 * in the entry's own locale, whereas EmDash reads the source's terms for a translation (V1/E2);
+	 * tests must not rely on it for linked records.
+	 */
 	async entryTerms(_collection: string, entryId: string) {
 		this.calls.push(`entryTerms:${entryId}`);
 		const e = this.content.entries.get(entryId);
