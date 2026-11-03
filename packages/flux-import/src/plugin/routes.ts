@@ -7,7 +7,7 @@ import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js
 import { isEntryLocked } from "../emdash/locks.js";
 import { EmDashLookups } from "../emdash/lookups.js";
 import { EmDashMedia } from "../emdash/media.js";
-import { collectionRevisions, listSchemaFields, publishAtCollection } from "../emdash/schema.js";
+import { listSchemaFields, readPublishAtCollection } from "../emdash/schema.js";
 import { pluginCollections } from "../emdash/storage.js";
 import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
@@ -404,12 +404,10 @@ export const routes: Record<string, PluginRoute> = {
 			const { input } = ctx;
 			// Read once here and stored on the job, so a resumed or retried job converts the same way.
 			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
-			// Read once here: whether a published entry's update can be scheduled (M5b).
-			const scheduled = publishAtCollection(input.template);
-			const revisions =
-				scheduled === null
-					? undefined
-					: await collectionRevisions(runtime.schemaRegistry, scheduled);
+			// Read once here: whether a published entry's update can be scheduled (M5b). The same read
+			// serves the job's schema lookup for that collection.
+			const own = await readPublishAtCollection(runtime.schemaRegistry, input.template);
+			const revisions = own === null ? undefined : own.revisions;
 			const start = (upload: string, fromSource?: string) => {
 				const options: StartJobInput = {
 					uploadId: upload,
@@ -428,7 +426,10 @@ export const routes: Record<string, PluginRoute> = {
 					deps,
 					xlsx,
 					options,
-					(collection) => listSchemaFields(runtime.schemaRegistry, collection),
+					(collection) =>
+						own !== null && collection === own.collection
+							? Promise.resolve(own.fields)
+							: listSchemaFields(runtime.schemaRegistry, collection),
 					(locale) => resolveSiteLocale(locale),
 					(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
 				);

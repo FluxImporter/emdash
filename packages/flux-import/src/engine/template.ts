@@ -1336,6 +1336,11 @@ export function checkTemplate(
 			`The template maps ${rich.length} portableText fields; at most ${MAX_PORTABLE_TEXT_MAPPINGS} are allowed`,
 		);
 	}
+	if (t.publishAt?.tz === SITE_TIMEZONE && !IANAZone.isValidZone(siteTimezone)) {
+		errors.push(
+			`publishAt reads times in the site timezone, but "${siteTimezone}" is not a valid IANA timezone`,
+		);
+	}
 	const byslug = new Map(fields.map((f) => [f.slug, f]));
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const target = byslug.get(field);

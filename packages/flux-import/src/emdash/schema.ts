@@ -147,6 +147,20 @@ export async function collectionRevisions(
 }
 
 /**
+ * The collection a request's template maps `publishAt` into, read once: its fields and whether
+ * it keeps revisions (M5b). Null when the template maps no `publishAt` or the collection is missing.
+ */
+export async function readPublishAtCollection(
+	registry: SchemaRegistryLike,
+	template: unknown,
+): Promise<(CollectionRead & { collection: string }) | null> {
+	const collection = publishAtCollection(template);
+	if (collection === null) return null;
+	const read = await readCollection(registry, collection);
+	return read === null ? null : { ...read, collection };
+}
+
+/**
  * The collection of a template from a request that maps `publishAt` (M5b), whose revisions job
  * creation reads; null otherwise. An invalid template has none: job creation reports it.
  */
@@ -167,9 +181,21 @@ export async function listSchemaFields(
 	registry: SchemaRegistryLike,
 	collection: string,
 ): Promise<SchemaField[] | null> {
+	return (await readCollection(registry, collection))?.fields ?? null;
+}
+
+/** A collection's schema fields and whether it keeps revisions, from one registry read (M5b). */
+export type CollectionRead = { fields: SchemaField[]; revisions: boolean };
+
+/** `listSchemaFields` and `collectionRevisions` together; null when the collection does not exist. */
+export async function readCollection(
+	registry: SchemaRegistryLike,
+	collection: string,
+): Promise<CollectionRead | null> {
 	const found = await registry.getCollectionWithFields(collection);
 	if (!found) return null;
-	return found.fields.map((f) => {
+	const revisions = found.supports?.includes("revisions") ?? false;
+	const fields = found.fields.map((f) => {
 		const relation = f.validation?.relation;
 		return {
 			slug: f.slug,
@@ -185,4 +211,5 @@ export async function listSchemaFields(
 			...(f.translatable === false ? { translatable: false as const } : {}),
 		};
 	});
+	return { fields, revisions };
 }

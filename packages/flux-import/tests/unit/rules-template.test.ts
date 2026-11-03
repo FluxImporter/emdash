@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { collectionRevisions, publishAtCollection } from "../../src/emdash/schema.js";
+import {
+	collectionRevisions,
+	listSchemaFields,
+	publishAtCollection,
+	readPublishAtCollection,
+} from "../../src/emdash/schema.js";
 import { needsSiteTimezone } from "../../src/emdash/timezone.js";
 import { createJob, JobError } from "../../src/engine/jobs.js";
 import { preImage } from "../../src/engine/journal.js";
@@ -54,6 +59,7 @@ describe("the rules and publishAt schemas (M5b)", () => {
 			{ rules: { updateFields: [] } },
 			{ rules: { updateFields: Array.from({ length: 201 }, (_, i) => `f${i}`) } },
 			{ rules: { protectEdited: "yes" } },
+			{ rules: { updateFields: ["x".repeat(201)] } },
 			{ publishAt: { from: "a", expr: "b" } },
 			{ publishAt: {} },
 			{ publishAt: { from: "a", output: "yyyy" } },
@@ -102,6 +108,40 @@ describe("the rules and publishAt schemas (M5b)", () => {
 		).toEqual(['rules.updateFields lists "stock", which the template does not map']);
 	});
 
+	it("checks the site timezone for publishAt with tz site, as for date fields", () => {
+		const t = parse({ publishAt: { from: "go", tz: "site" } });
+		expect(checkTemplate(t, schemaFields, null, "Mars/Olympus")).toEqual([
+			'publishAt reads times in the site timezone, but "Mars/Olympus" is not a valid IANA timezone',
+		]);
+		expect(checkTemplate(t, schemaFields, null, "Europe/Chisinau")).toEqual([]);
+		const utc = parse({ publishAt: { from: "go" } });
+		expect(checkTemplate(utc, schemaFields, null, "Mars/Olympus")).toEqual([]);
+	});
+
+	it("accepts updateFields naming a shared mapping of a translation template", async () => {
+		const translated = {
+			...base,
+			locale: "fr",
+			translationOf: { from: "en_id", locale: "en" },
+			taxonomies: undefined,
+			bylines: undefined,
+			rules: { updateFields: ["price"] },
+		};
+		const fields: SchemaField[] = [
+			{ slug: "title", type: "string" },
+			{ slug: "price", type: "number", translatable: false },
+		];
+		expect(checkTemplate(templateSchema.parse(translated), fields, null)).toEqual([]);
+		const { deps } = makeDeps();
+		deps.source.add("u1", "sku,handle,Name,Price,en_id\nS1,s1,Desk,10,\n");
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template: translated,
+			schemaFields: fields,
+		});
+		expect((job.warnings ?? []).join("\n")).toContain('field "price"');
+	});
+
 	it("checks the publishAt column like the other paths", () => {
 		const t = parse({ publishAt: { from: "go_live" } });
 		expect(templatePaths(t)).toContain("go_live");
@@ -135,9 +175,22 @@ describe("publishAt conversion (M5b)", () => {
 		expect(constant).toMatchObject({ ok: true, value: { publishAt: "2026-12-01T09:00:00.000Z" } });
 	});
 
+	it("reads a unix time in seconds and an expression over a record path", async () => {
+		const seconds = Date.UTC(2026, 11, 1, 9) / 1000;
+		expect(await convert({ publishAt: { from: "go", format: "unix" } }, seconds)).toMatchObject({
+			ok: true,
+			value: { publishAt: "2026-12-01T09:00:00.000Z" },
+		});
+		expect(await convert({ publishAt: { expr: "go" } }, "2026-12-01T09:00:00Z")).toMatchObject({
+			ok: true,
+			value: { publishAt: "2026-12-01T09:00:00.000Z" },
+		});
+	});
+
 	it("leaves publishAt out of a record whose template does not map it", async () => {
 		const mapped = await convert({}, "2026-12-01");
-		expect(mapped.ok && mapped.value).not.toHaveProperty("publishAt");
+		expect(mapped.ok).toBe(true);
+		if (mapped.ok) expect(mapped.value).not.toHaveProperty("publishAt");
 	});
 
 	it("fails the record with invalid_date or not_scalar, field publishAt", async () => {
@@ -212,6 +265,28 @@ describe("collectionRevisions and publishAtCollection (M5b)", () => {
 		expect(await collectionRevisions(registry(["drafts"]), "products")).toBe(false);
 		expect(await collectionRevisions(registry(), "products")).toBe(false);
 		expect(await collectionRevisions(registry(["revisions"]), "missing")).toBe(false);
+	});
+
+	it("reads fields and revisions in one registry call, and passes revisions: false on", async () => {
+		let calls = 0;
+		const counting = {
+			...registry(["drafts"]),
+			getCollectionWithFields: async () => {
+				calls += 1;
+				return { fields: [], supports: ["drafts"] };
+			},
+		};
+		const read = await readPublishAtCollection(counting, { ...base, publishAt: { from: "go" } });
+		expect(read).toEqual({ collection: "products", fields: [], revisions: false });
+		expect(calls).toBe(1);
+		expect(await readPublishAtCollection(counting, base)).toBeNull();
+		expect(await listSchemaFields(registry(["revisions"]), "products")).toEqual([]);
+		expect(
+			await readPublishAtCollection(registry(["drafts", "revisions"]), {
+				...base,
+				publishAt: { from: "go" },
+			}),
+		).toMatchObject({ revisions: true });
 	});
 
 	it("names the collection only for a valid template that maps publishAt", () => {
