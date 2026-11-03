@@ -78,8 +78,10 @@ import {
 	sameInstant,
 	scheduleLanded,
 	schedulePlan,
+	sweptSince,
 	type Target,
 	targetOf,
+	unconfirmedOf,
 } from "./rules.js";
 import {
 	applyTemplate,
@@ -260,6 +262,8 @@ type RecordCtx = {
 	stored: LinkRow | null;
 	/** The fingerprints every link save of this record carries (M5b); absent in a dry run. */
 	fields?: Record<string, string>;
+	/** The names of `fields` that the saved revision does not vouch for (M5b, `unconfirmedOf`). */
+	unconfirmed?: string[];
 	/** A link save of this record carried `fields` (M5b), so no refresh is needed. */
 	linkSaved: boolean;
 	/** When the record's content goes live (M5b). */
@@ -347,6 +351,7 @@ function putLink(
 		writtenRev,
 		jobId: ctx.job.id,
 		...(ctx.fields === undefined ? {} : { fields: ctx.fields }),
+		...(ctx.unconfirmed?.length ? { unconfirmed: ctx.unconfirmed } : {}),
 		...(scheduledAt === null ? {} : { scheduledAt }),
 	});
 }
@@ -391,19 +396,20 @@ function scheduleFailed(
 }
 
 /**
- * The fingerprints the record's link saves carry (spec M5b "When they are recorded"): each
+ * Sets the fingerprints the record's link saves carry (spec M5b "When they are recorded"): each
  * mapping the record compared gets the fingerprint of the value it writes, or, when the entry
  * already holds the feed's value, of that value; `kept` mappings and the ones the record does not
- * carry (unlisted, a linked record's shared ones) keep the stored link's.
+ * carry (unlisted, a linked record's shared ones) keep the stored link's, named in `unconfirmed`
+ * unless the saved revision still vouches for them (`unconfirmedOf`).
  */
-async function nextFields(
+async function setFields(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
 	record: MappedRecord,
 	plan: RecordPlan,
 	links: LinkPlan | undefined,
 	kept: ReadonlySet<string> = new Set(),
-): Promise<Record<string, string>> {
+): Promise<void> {
 	const comparisons = comparisonsOf(ctx.job.template, ctx.job.targetFields);
 	const childSide = links?.childSide ?? new Set<string>();
 	const changed = new Set(plan.changes.map((c) => mappingOf(c, record)));
@@ -418,9 +424,11 @@ async function nextFields(
 	}
 	// A stored link's fingerprints describe its entry: they carry over only to that entry, never to
 	// one created because the linked entry is gone.
-	const carried =
-		entry !== null && ctx.stored?.entryId === entry.id ? ctx.stored.fields : undefined;
-	return { ...(carried ?? {}), ...(await fingerprintsOf(forms)) };
+	const own = entry !== null && ctx.stored?.entryId === entry.id ? ctx.stored : null;
+	const carried = Object.keys(own?.fields ?? {}).filter((name) => !Object.hasOwn(forms, name));
+	ctx.fields = { ...(own?.fields ?? {}), ...(await fingerprintsOf(forms)) };
+	const swept = own !== null && entry !== null && sweptSince(own, entry);
+	ctx.unconfirmed = unconfirmedOf(carried, kept, own, entry?.rev ?? null, swept);
 }
 
 /**
@@ -434,8 +442,16 @@ async function refreshFields(ctx: RecordCtx, entry: EntrySnapshot): Promise<void
 	// Someone else's draft may yet be discarded (EmDash `discardDraft` clears `draftRevisionId`
 	// and keeps the columns), so its values are not recorded as the entry's.
 	if (entry.hasDraft && entry.rev !== stored.writtenRev) return;
-	if (sameFields(stored.fields, ctx.fields)) return;
-	await ctx.deps.links.put(ctx.linkId, { ...stored, fields: ctx.fields });
+	const unconfirmed = ctx.unconfirmed ?? [];
+	const was = new Set(stored.unconfirmed);
+	const same = was.size === unconfirmed.length && unconfirmed.every((name) => was.has(name));
+	if (same && sameFields(stored.fields, ctx.fields)) return;
+	const { unconfirmed: _old, ...rest } = stored;
+	await ctx.deps.links.put(ctx.linkId, {
+		...rest,
+		fields: ctx.fields,
+		...(unconfirmed.length > 0 ? { unconfirmed } : {}),
+	});
 }
 
 async function publishRev(ctx: RecordCtx, id: string, rev: string) {
@@ -812,7 +828,11 @@ async function decideRecord(
 			const comparisons = comparisonsOf(job.template, job.targetFields);
 			const childSide = childSideOf(job, record.links);
 			held = await fingerprintsOf(currentForms(entry, record, comparisons, known, childSide));
-			edited = editedMappings(recordMappings(record), link, entry.rev, held);
+			// Reference edges set from the other entry or a translation leave `_rev` (F15).
+			const references = new Set(Object.keys(record.links?.references ?? {}));
+			// The scheduler's publish of the importer's own schedule is no edit (Ruling 9).
+			const swept = sweptSince(link, entry);
+			edited = editedMappings(recordMappings(record), link, entry.rev, held, references, swept);
 		}
 		const own = edited.size > 0 ? narrowRecord(record, (name) => !edited.has(name)) : record;
 		const quiet = edited.size > 0 ? narrowRecord(record, (name) => edited.has(name)) : null;
@@ -1032,7 +1052,7 @@ async function decideRecord(
 		}
 		if (entry) {
 			if (plan.action === "unchanged") {
-				ctx.fields = await nextFields(ctx, entry, record, plan, links, guarded);
+				await setFields(ctx, entry, record, plan, links, guarded);
 				return await finishUnchanged(ctx, entry, link, existing, repaired);
 			}
 			// A schedule someone else set is pending too (M5b): a publish would clear it.
@@ -1053,7 +1073,7 @@ async function decideRecord(
 			}
 		}
 		if (!lookups && misses.length === 0) {
-			ctx.fields = await nextFields(ctx, entry, record, plan, links, guarded);
+			await setFields(ctx, entry, record, plan, links, guarded);
 			return await writeRecord(ctx, entry, plan, unprotected(ctx, record, guarded));
 		}
 		// Downloads only for a record that will be written, after the draft and lock checks: field
@@ -1113,7 +1133,7 @@ async function decideRecord(
 			const warned = scheduled !== null && "warning" in scheduled;
 			if (again !== null && "warning" in again && !warned) found.warnings.push(again.warning);
 		}
-		ctx.fields = await nextFields(ctx, entry, record, final, links, guarded);
+		await setFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
 		}

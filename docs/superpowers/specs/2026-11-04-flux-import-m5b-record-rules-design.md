@@ -74,6 +74,7 @@ are **confirmed** from source unless marked otherwise.
 | F12 | A collection's `supports` (with `"revisions"`) is part of its definition and is what publish reads to decide whether it promotes a revision | `src/schema/types.ts:264-272`; `src/schema/registry.ts:380-386`; `src/api/handlers/content.ts:254-270` |
 | F13 | `handleContentGet` returns `data` as `{ ...liveData, ...draftData }` when a draft exists, `liveData` as the columns, and `_rev` from the row (M5a F5). The slug staged in a draft is not returned | `src/emdash-runtime.ts:3364-3453` |
 | F14 | `handleContentDiscardDraft` keeps `scheduled_at` and `status`, with `version + 1` | `src/database/repositories/content.ts:2863-2905` |
+| F15 | Reference edges live in `_emdash_content_references`, keyed by the two entries' **translation groups**, and are written without touching either entry's row. A field bound to the parent end replaces that entry's children (`setChildren`), one bound to the child end replaces its parents (`setParents`), each addressed by the selecting entry's group. So an edge set from the other entry of the relation, or through a translation of the entry, changes what the entry's reference field reads while its `version`, `updated_at` and `_rev` stay. Added in the Task 5 review | `src/api/handlers/relations.ts:782-812` ("no row of either collection has changed"); `src/database/repositories/relation.ts:612-658`, `:679-736`; `dist/staged-DboEaWsV.mjs:332-370`, `:390` |
 
 ### Unconfirmed, to be proven by Task 0
 
@@ -265,6 +266,8 @@ it, with three amendments.
   the same reason.
 - **Amendment 3: a rollback rewrites values.** The link row's fingerprints must go back with the
   rest of the link, so the journal's link snapshot gains `fields` (Journal and rollback).
+- **Amendment 4 (Task 5 review): reference edges set elsewhere do not move `_rev` (F15).** Like
+  taxonomies, reference fields are always compared with their fingerprints.
 
 ### Fingerprints
 
@@ -297,7 +300,19 @@ it, with three amendments.
   fingerprint: a written mapping gets the fingerprint of the value sent; a mapping equal to the
   feed gets the fingerprint of its current value; a protected mapping that differs keeps its old
   fingerprint, or stays without one. Unlisted mappings, and a linked record's shared mappings,
-  keep theirs. Every `putLink` carries them.
+  keep theirs. Every `putLink` carries them, with `unconfirmed` (below).
+- **Unconfirmed fingerprints** (Task 5 review). A link save moves `writtenRev`, and an unmoved
+  `_rev` vouches for every fingerprint but the always-compared ones. So a fingerprint the save
+  only carries must not be vouched for unless it describes the entry at the new `writtenRev`.
+  `LinkRow.unconfirmed` lists the mappings whose fingerprint does not:
+  - a protected mapping's kept fingerprint (the editor's value differs from it);
+  - a carried fingerprint of a mapping the record does not carry (unlisted, another template's),
+    unless it was confirmed and the entry, as read, was still at the stored `writtenRev` or showed
+    only the scheduler's publish of the link's own schedule (Ruling 9, `sweptSince`).
+
+  A recomputed fingerprint (written, or found equal to the feed) is confirmed, so a mapping leaves
+  the list once the importer writes it or its current fingerprint equals the stored one. The list
+  is omitted when empty, and the journal's link snapshot carries it.
 - **Refresh.** A record that writes nothing but would change the fingerprint set (a pre-M5b link
   row, or a protection that lifted) puts the link once with the new `fields`. It keeps
   `writtenRev`, `jobId` and `scheduledAt`, because ownership did not change. A refresh is not
@@ -309,16 +324,25 @@ it, with three amendments.
 With `protectEdited`, for an existing entry found through its link row (crash repair entries are
 the job's own, above):
 
-| The link row has | A mapping counts as edited when |
-| --- | --- |
-| `fields` (written by M5b) | its fingerprint is missing; or it differs from the current value's, and either the mapping is a taxonomy or `entry.rev !== writtenRev` |
-| no `fields` (written before M5b) and `writtenRev === entry.rev` | it is a taxonomy (term edits do not move `_rev`, F8); every other mapping counts as unedited |
-| no `fields` and no matching `writtenRev` (an edit since, or a repaired link) | always |
+A mapping is **always compared** when it is a taxonomy (term edits leave `_rev`, F8), a reference
+field (edges set elsewhere leave it, F15) or listed in `unconfirmed`. The entry is **unmoved** when
+`entry.rev === writtenRev`, or when it shows only the scheduler's publish of the link's own
+schedule (Ruling 9).
 
-Amended in planning: an unmoved `_rev` vouches for every mapping but the taxonomies, also when the
-link has `fields`. Only term edits leave `_rev` (F8), and a fingerprint can differ without an edit:
-the importer's own pending draft stages a slug the read cannot show (F13), so comparing alone would
-call the importer's own slug edited.
+| The mapping on the link row | It counts as edited when |
+| --- | --- |
+| has a fingerprint | it differs from the current value's, and the mapping is always compared or the entry has moved |
+| has none (every mapping of a link from before M5b, or one a link with `fields` lacks) | the mapping is always compared, or the entry has moved |
+
+Amended in the Task 5 review: a missing fingerprint applies the pre-M5b rule to that mapping alone
+(I1). Counting it as always edited would keep it protected forever, since only a write gives it a
+fingerprint.
+
+Amended in planning: an unmoved `_rev` vouches for every mapping that is not always compared, also
+when the link has `fields`. Only term edits and edges set elsewhere leave `_rev` (F8, F15), and a
+fingerprint can differ without an edit: the importer's own pending draft stages a slug the read
+cannot show (F13), so comparing alone would call the importer's own slug edited. The Task 5 review
+added references and `unconfirmed` to the always-compared mappings.
 
 A mapping that counts as edited is resolved without side effects (Decisions) and compared:
 
@@ -423,7 +447,8 @@ For a template with `rules` or `publishAt` (others keep M5a's order):
 | Schedule or reschedule only (unchanged data) | `update` row written like `finishUnchanged`'s publish: `before.live` holds every field whose draft and live values differ, plus status, schedule and the link snapshot | Steps as needed: 6 puts back an earlier schedule, 7 removes the job's own |
 | Fingerprint refresh | none | The link snapshot of a later job holds it |
 
-**Journal format.** `before.link` gains the link row's `fields` and `scheduledAt` when present.
+**Journal format.** `before.link` gains the link row's `fields`, `unconfirmed` and `scheduledAt`
+when present.
 Both are optional, so M5a rows read as before and an M5a rollback ignores them. No new journal
 kind is needed.
 
@@ -442,7 +467,8 @@ meaning. A dry-run rollback plans it as M5a's schedule change, `{ field: "schedu
 <current>, after: null }` (amended in planning: M5a's dry run already reports a schedule
 difference that way, so a second `publishAt` change would report it twice).
 
-**Link hand-back.** The restored link carries `before.link.fields` and `before.link.scheduledAt`.
+**Link hand-back.** The restored link carries `before.link.fields`, `before.link.unconfirmed` and
+`before.link.scheduledAt`.
 When `before.link` was null, the link is deleted (M5a).
 
 **Ownership after the scheduler published.** A rollback row whose link names the job
@@ -567,9 +593,22 @@ plugins, translation sync), which counts as edits; predicting duplicate keys in 
     edited. This fails safe.
   - A change to a canonical form in a later version makes stored fingerprints differ, so the
     affected mappings read as edited until they equal the feed. This fails safe.
-  - On link rows from before M5b, the first protected run cannot see term edits (F8), so every
-    mapped taxonomy that differs from the feed is protected until a job without `protectEdited`
-    writes it or its value equals the feed.
+  - On link rows from before M5b, the first protected run cannot see term edits (F8) or reference
+    edits made elsewhere (F15), so every mapped taxonomy and reference field that differs from the
+    feed is protected until a job without `protectEdited` writes it or its value equals the feed.
+  - A slug staged in the importer's own draft is not readable (F13). Once an editor saves another
+    field into that draft, `_rev` moves, the live slug differs from the staged slug's fingerprint,
+    and the run warns `field_edited` for the slug although only the other field was edited. This
+    fails safe: the slug is not written, and the draft is someone else's pending state anyway.
+    The same holds after an editor discards the importer's draft, where the dropped values count as
+    edits.
+  - A reference field with more selections than the read returns (50, `referencesTruncated`) has a
+    canonical form no written value has, so with `protectEdited` it never lifts: it stays protected
+    until a job without `protectEdited` writes it.
+  - Terms and reference edges are read before the write and are not fenced by `_rev` (F8, F15). A
+    term or edge an editor changes between the importer's read and its write is not seen: when the
+    write changes that taxonomy or reference field, it replaces the editor's change. The window is
+    one record's processing time.
   - `publish: false` over an entry the importer scheduled earlier keeps the schedule, so the new
     draft goes live at that time (F5, F7).
   - A past `publishAt` publishes now: `publishedAt` is the import time, not the feed's.

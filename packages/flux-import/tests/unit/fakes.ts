@@ -204,6 +204,11 @@ type StoredEntry = {
 	pendingPublish: boolean;
 	/** Term slugs by taxonomy, entry IDs by reference field, byline credits: as written. */
 	taxonomies: Record<string, string[]>;
+	/**
+	 * Shared by the translation group's entries (one object), as EmDash keys reference edges by
+	 * translation group (`_emdash_content_references`, `writeReferenceSelection` with the entry's
+	 * group, src/api/handlers/relations.ts:782-812; spec M5b F15).
+	 */
 	references: Record<string, string[]>;
 	bylines: { bylineId: string; roleLabel: string | null }[];
 	/** M5a: `draft`, `scheduled` or `published`, and the schedule. */
@@ -592,7 +597,7 @@ export class FakeContent implements ContentPort {
 			pendingPublish: true,
 			// As EmDash: terms and references are the group's; credits are copied unless given.
 			taxonomies: structuredClone(source?.taxonomies ?? {}),
-			references: structuredClone(source?.references ?? {}),
+			references: source?.references ?? {},
 			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
 			status: "draft",
 			scheduledAt: null,
@@ -740,6 +745,18 @@ export class FakeContent implements ContentPort {
 		const e = this.entries.get(id);
 		if (!e) throw new Error(`No entry ${id}`);
 		e.taxonomies[taxonomy] = [...slugs];
+	}
+
+	/**
+	 * An edit of the entry's reference edges made from elsewhere (spec M5b F15): from the other
+	 * entry of the relation (`setChildren` or `setParents` on its side,
+	 * src/database/repositories/relation.ts:612-658, :679-736), or through a translation. Only the
+	 * edge table changes, so no entry's `_rev` moves; the group's entries all see it.
+	 */
+	setEdges(id: string, field: string, ids: string[]): void {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		e.references[field] = [...ids];
 	}
 
 	/**

@@ -97,30 +97,75 @@ export function sameFields(
 
 /**
  * The mappings that count as edited outside the import (spec M5b "Protection"), from the link row
- * and the fingerprints of the entry's current values. With fingerprints, a mapping counts as
- * edited when its fingerprint is missing or differs; but a mapping other than a taxonomy whose
- * entry is still at the link's `writtenRev` is not edited, since only term edits leave `_rev` (F8)
- * and the read cannot show a slug staged in the importer's own draft (F13). Without fingerprints
- * (a link from before M5b), taxonomies always count as edited, and the rest unless the entry is
- * still at `writtenRev`.
+ * and the fingerprints of the entry's current values. A mapping is always compared with its
+ * fingerprint when it is a taxonomy (term edits leave `_rev`, F8), a reference field (edges set
+ * from the other entry or through a translation leave it too, F19) or unconfirmed (its
+ * fingerprint is not the value at `writtenRev`); it is edited when they differ. Any other
+ * mapping is edited only once the entry has moved past `writtenRev` and its fingerprint differs:
+ * an unmoved `_rev` vouches for it, also when the read cannot show a slug staged in the
+ * importer's own draft (F13). A mapping without a fingerprint (every mapping of a link from
+ * before M5b) is edited when it is always compared, or when the entry has moved. `swept`: the
+ * entry shows only the scheduler's publish of the link's schedule (`sweptSince`), which vouches
+ * as an unmoved `_rev` does.
  */
 export function editedMappings(
 	names: readonly string[],
 	link: LinkRow,
 	rev: string,
 	current: Readonly<Record<string, string>>,
+	references: ReadonlySet<string> = new Set(),
+	swept = false,
 ): Set<string> {
-	const unmoved = link.writtenRev !== undefined && link.writtenRev === rev;
+	const unmoved = swept || (link.writtenRev !== undefined && link.writtenRev === rev);
+	const unconfirmed = new Set(link.unconfirmed);
 	const edited = new Set<string>();
 	for (const name of names) {
-		const taxonomy = name.startsWith("taxonomies.");
+		const compared =
+			name.startsWith("taxonomies.") || references.has(name) || unconfirmed.has(name);
 		const stored = link.fields?.[name];
-		if (link.fields === undefined) {
-			if (taxonomy || !unmoved) edited.add(name);
-		} else if (stored === undefined) edited.add(name);
-		else if ((taxonomy || !unmoved) && stored !== current[name]) edited.add(name);
+		if (!compared && unmoved) continue;
+		if (stored === undefined || stored !== current[name]) edited.add(name);
 	}
 	return edited;
+}
+
+/**
+ * Whether the entry shows the scheduler's publish of the link's own schedule and nothing since
+ * (Ruling 9, spec M5b F6): its `_rev` decodes to exactly one `version` past `writtenRev`, with
+ * `updatedAt` at or after the link's `scheduledAt`, published, without a draft or a schedule. A
+ * `writtenRev` that does not decode never passes.
+ */
+export function sweptSince(link: LinkRow, entry: EntrySnapshot): boolean {
+	if (link.scheduledAt === undefined || link.writtenRev === undefined) return false;
+	const now = decodeRev(entry.rev);
+	const wrote = decodeRev(link.writtenRev);
+	if (now === null || wrote === null) return false;
+	return (
+		now.version === wrote.version + 1 &&
+		Date.parse(now.updatedAt) >= Date.parse(link.scheduledAt) &&
+		entry.status === "published" &&
+		!entry.hasDraft &&
+		entry.scheduledAt === null
+	);
+}
+
+/**
+ * The carried fingerprints of a link save that `writtenRev` does not vouch for (spec M5b
+ * "Unconfirmed fingerprints"): a protected mapping's old one (`kept`), and one the record does
+ * not carry unless it was confirmed and the entry, at `rev`, had not moved since the stored
+ * link's `writtenRev` (or only the scheduler had published its schedule, `swept`). Recomputed
+ * fingerprints describe what the importer wrote or found, so they are confirmed.
+ */
+export function unconfirmedOf(
+	carried: readonly string[],
+	kept: ReadonlySet<string>,
+	stored: LinkRow | null,
+	rev: string | null,
+	swept = false,
+): string[] {
+	const was = new Set(stored?.unconfirmed);
+	const unmoved = swept || (stored?.writtenRev !== undefined && stored.writtenRev === rev);
+	return carried.filter((name) => kept.has(name) || was.has(name) || !unmoved);
 }
 
 /**

@@ -215,6 +215,12 @@ export interface LinkRow {
 	 */
 	fields?: Record<string, string>;
 	/**
+	 * The mappings whose fingerprint is not vouched for by `writtenRev` (M5b): an old one a
+	 * protected mapping kept, or one carried over after the entry's revision had moved. They are
+	 * always compared, as taxonomies are. Absent when none.
+	 */
+	unconfirmed?: string[];
+	/**
 	 * The time the entry was scheduled for at `writtenRev`, as far as the importer knows (M5b):
 	 * the schedule it set, or one an update kept. Absent when none.
 	 */
@@ -223,11 +229,15 @@ export interface LinkRow {
 
 /** The pre-image of an entry a job updated (M5a): what the entry held before its first write. */
 export interface JournalBefore {
-	/** The link row before the job, its fingerprints and schedule included (M5b); null when none. */
+	/**
+	 * The link row before the job, its fingerprints (unconfirmed ones named) and schedule included
+	 * (M5b); null when none.
+	 */
 	link: {
 		jobId?: string;
 		writtenRev?: string;
 		fields?: Record<string, string>;
+		unconfirmed?: string[];
 		scheduledAt?: string;
 	} | null;
 	/**
