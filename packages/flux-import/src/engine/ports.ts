@@ -38,7 +38,7 @@ export type LinkWrites = {
 	bylines?: { bylineId: string; roleLabel: string | null }[];
 };
 
-/** `rev`, `slug` and `data` reflect the latest revision, draft included. */
+/** `rev` and `data` reflect the latest revision, draft included; `slug` is the live slug. */
 export interface EntrySnapshot {
 	id: string;
 	rev: string;
@@ -89,11 +89,12 @@ export type EntryState = {
 
 /**
  * A rollback step's outcome (M5a): a stale `rev` is `conflict`; a plugin hook's refusal
- * (`PUBLISH_REJECTED`, `UNPUBLISH_REJECTED`, `SCHEDULE_REJECTED`) is `blocked` with its message.
+ * (`PUBLISH_REJECTED`, `UNPUBLISH_REJECTED`, `SCHEDULE_REJECTED`) is `blocked` with its message;
+ * an editor's lease on the entry is `locked`.
  */
 export type StepResult =
 	| { ok: true; state: EntryState }
-	| { ok: false; reason: "conflict" | "blocked"; message: string };
+	| { ok: false; reason: "conflict" | "blocked" | "locked"; message: string };
 
 /** The rollback's writes to a changed entry (spec M5a "Revert sequence"). */
 export type RevertStep = "update" | "publish" | "unpublish" | "discard" | "schedule";

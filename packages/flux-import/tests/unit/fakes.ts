@@ -143,6 +143,16 @@ type StoredEntry = {
 	 * always hold the latest values, the draft's included.
 	 */
 	live: { data: Record<string, unknown>; slug: string | null } | null;
+	/**
+	 * M5a: the live revision saved at the last publish (as EmDash's `live_revision_id`); an
+	 * unpublish creates a draft from it (spec F18).
+	 */
+	published: { data: Record<string, unknown> } | null;
+	/**
+	 * M5a: on a collection without revisions, the draft an unpublish created: its stale values
+	 * hide the columns in `get` until a discard, while later updates still write the columns.
+	 */
+	stale: { data: Record<string, unknown> } | null;
 	trashed: boolean;
 	createdAt: string;
 	updatedAt: string;
@@ -194,18 +204,46 @@ export class FakeContent implements ContentPort {
 		e.updatedAt = this.stamp();
 	}
 
+	/** As EmDash: a slug is unique per collection and locale, and Trash still holds it. */
+	private checkSlug(
+		collection: string,
+		locale: string,
+		slug: string | null | undefined,
+		id?: string,
+	) {
+		if (slug === undefined || slug === null) return;
+		const taken = [...this.entries.values()].some(
+			(o) => o.id !== id && o.collection === collection && o.locale === locale && o.slug === slug,
+		);
+		if (taken) {
+			throw new ContentWriteError(
+				"emdash_slug_conflict",
+				`Writing the entry failed: Slug "${slug}" already exists in this collection`,
+			);
+		}
+	}
+
+	private hasDraft(e: StoredEntry): boolean {
+		return e.live !== null || e.stale !== null;
+	}
+
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
 			id: e.id,
 			rev: String(e.rev),
-			slug: e.slug,
-			data: structuredClone(e.data),
+			// As hydrateDraftData: a pending draft changes the data, never the live slug.
+			slug: e.live?.slug ?? e.slug,
+			data: structuredClone(e.stale?.data ?? e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
 			status: e.status,
 			scheduledAt: e.scheduledAt,
-			hasDraft: e.live !== null,
-			...(e.live ? { live: structuredClone(e.live.data) } : {}),
+			hasDraft: this.hasDraft(e),
+			...(e.live
+				? { live: structuredClone(e.live.data) }
+				: e.stale
+					? { live: structuredClone(e.data) }
+					: {}),
 			createdAt: e.createdAt,
 			updatedAt: e.updatedAt,
 			...(options.references
@@ -235,25 +273,28 @@ export class FakeContent implements ContentPort {
 	async getIncludingTrashed(collection: string, locale: string, id: string) {
 		const e = this.entries.get(id);
 		return e && e.collection === collection && e.locale === locale
-			? { ...this.snap(e, { references: true }), trashed: e.trashed }
+			? { ...this.snap(e), trashed: e.trashed }
 			: null;
 	}
-	async trash(_collection: string, id: string) {
+	async trash(collection: string, id: string) {
 		this.beforeStep("trash", id);
 		const e = this.entries.get(id);
-		if (!e || e.trashed) return { ok: false as const, reason: "not_found" as const, message: "" };
+		// As EmDash: the beforeDelete hook runs before the entry is looked up.
 		const blocked = this.blockDelete(id);
 		if (blocked !== null)
 			return { ok: false as const, reason: "blocked" as const, message: blocked };
+		if (!e || e.trashed || e.collection !== collection) {
+			return { ok: false as const, reason: "not_found" as const, message: "" };
+		}
 		// As EmDash: only deleted_at is set, so the revision stays (spec M5a F6).
 		e.trashed = true;
 		this.calls.push(`trash:${id}`);
 		return { ok: true as const };
 	}
-	async permanentDelete(_collection: string, id: string) {
+	async permanentDelete(collection: string, id: string) {
 		this.beforeStep("delete", id);
 		const e = this.entries.get(id);
-		if (!e?.trashed) return false;
+		if (!e?.trashed || e.collection !== collection) return false;
 		this.entries.delete(id);
 		this.calls.push(`delete:${id}`);
 		return true;
@@ -261,6 +302,7 @@ export class FakeContent implements ContentPort {
 	async revertStep(
 		input: {
 			collection: string;
+			locale: string;
 			id: string;
 			rev: string;
 			step: RevertStep;
@@ -271,19 +313,20 @@ export class FakeContent implements ContentPort {
 	): Promise<StepResult> {
 		this.beforeStep(input.step, input.id);
 		const e = this.entries.get(input.id);
-		if (!e || e.trashed) throw new ContentWriteError("emdash_not_found", "Entry not found");
+		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			throw new ContentWriteError("emdash_not_found", "Entry not found");
+		}
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
 		if (String(e.rev) !== input.rev) {
 			return { ok: false, reason: "conflict", message: "Revision precondition did not match" };
 		}
-		const blocked = input.step === "update" ? null : this.blockStep(input.step, e.id);
+		// Only publish, unpublish and schedule run policy hooks; a discard cannot be refused.
+		const blocked =
+			input.step === "update" || input.step === "discard" ? null : this.blockStep(input.step, e.id);
 		if (blocked !== null) return { ok: false, reason: "blocked", message: blocked };
 		switch (input.step) {
 			case "update": {
-				const { slug, ...rest } = input;
-				const written = await this.update({
-					...rest,
-					...(slug === undefined || slug === null ? {} : { slug }),
-				});
+				const written = await this.update(input);
 				if (!written.ok) return { ok: false, reason: "conflict", message: written.reason };
 				break;
 			}
@@ -294,8 +337,13 @@ export class FakeContent implements ContentPort {
 			}
 			case "unpublish":
 				if (e.status !== "draft" || e.scheduledAt !== null) {
-					// As EmDash, also without revisions: a draft is created from the live revision (F18).
-					e.live ??= { data: structuredClone(e.data), slug: e.slug };
+					// As EmDash, also without revisions: a draft is created from the live revision, and
+					// only when one exists (F18). Without revisions its stale values hide the columns.
+					if (e.published !== null || e.status === "published") {
+						const liveData = structuredClone(e.published?.data ?? e.data);
+						if (this.plainCollections.has(e.collection)) e.stale ??= { data: liveData };
+						else e.live ??= { data: liveData, slug: e.slug };
+					}
 					e.status = "draft";
 					e.scheduledAt = null;
 					e.pendingPublish = true;
@@ -303,10 +351,13 @@ export class FakeContent implements ContentPort {
 				}
 				break;
 			case "discard":
-				if (e.live) {
-					e.data = e.live.data;
-					e.slug = e.live.slug;
+				if (e.live || e.stale) {
+					if (e.live) {
+						e.data = e.live.data;
+						e.slug = e.live.slug;
+					}
 					e.live = null;
+					e.stale = null;
 					e.pendingPublish = e.status !== "published";
 					e.rev++;
 				}
@@ -334,7 +385,7 @@ export class FakeContent implements ContentPort {
 				rev: String(e.rev),
 				status: e.status,
 				scheduledAt: e.scheduledAt,
-				hasDraft: e.live !== null,
+				hasDraft: this.hasDraft(e),
 			},
 		};
 	}
@@ -394,7 +445,10 @@ export class FakeContent implements ContentPort {
 				);
 			}
 			const taken = [...this.entries.values()].some(
-				(e) => e.group === source.group && e.locale.toLowerCase() === input.locale.toLowerCase(),
+				(e) =>
+					!e.trashed &&
+					e.group === source.group &&
+					e.locale.toLowerCase() === input.locale.toLowerCase(),
 			);
 			if (taken) {
 				throw new ContentWriteError(
@@ -403,6 +457,7 @@ export class FakeContent implements ContentPort {
 				);
 			}
 		}
+		this.checkSlug(input.collection, input.locale, input.slug);
 		const id = `e${++this.next}`;
 		const data = structuredClone(input.data);
 		const created = this.stamp();
@@ -426,6 +481,8 @@ export class FakeContent implements ContentPort {
 			status: "draft",
 			scheduledAt: null,
 			live: null,
+			published: null,
+			stale: null,
 			trashed: false,
 			createdAt: created,
 			updatedAt: created,
@@ -440,7 +497,7 @@ export class FakeContent implements ContentPort {
 		input: {
 			id: string;
 			rev: string;
-			slug?: string;
+			slug?: string | null;
 			data?: Record<string, unknown>;
 		} & LinkWrites,
 	): Promise<WriteResult> {
@@ -450,6 +507,7 @@ export class FakeContent implements ContentPort {
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
+		this.checkSlug(e.collection, e.locale, input.slug, e.id);
 		const staged = input.data !== undefined || input.slug !== undefined || input.references;
 		const plain = this.plainCollections.has(e.collection);
 		// On revisioned collections data, slug and references are staged in a draft (spec M5a F17).
@@ -476,6 +534,8 @@ export class FakeContent implements ContentPort {
 		e.status = "published";
 		e.scheduledAt = null;
 		e.live = null;
+		e.stale = null;
+		e.published = { data: structuredClone(e.data) };
 		this.touch(e);
 		this.calls.push(`publish:${e.id}`);
 		return { ok: true, rev: String(e.rev) };

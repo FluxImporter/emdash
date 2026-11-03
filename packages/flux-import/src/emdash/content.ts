@@ -55,7 +55,7 @@ export interface ContentRuntime {
 		id: string,
 		body: {
 			data?: Record<string, unknown>;
-			slug?: string;
+			slug?: string | null;
 			locale?: string;
 			_rev?: string;
 			actor?: ActorInfo;
@@ -333,6 +333,10 @@ export class EmDashContent implements ContentPort {
 		} & LinkWrites,
 	): Promise<StepResult> {
 		const { collection, id, rev } = input;
+		// As publish: an editor's lease stops every step, not only the publish (spec M5a).
+		if (await this.lockReader(collection, id, this.actor.id)) {
+			return { ok: false, reason: "locked", message: "The entry is being edited" };
+		}
 		const options = { _rev: rev, actor: this.actor };
 		let result: HandlerResult;
 		switch (input.step) {
@@ -342,7 +346,7 @@ export class EmDashContent implements ContentPort {
 					locale: input.locale,
 					_rev: rev,
 					actor: this.actor,
-					...(input.slug === undefined || input.slug === null ? {} : { slug: input.slug }),
+					...(input.slug === undefined ? {} : { slug: input.slug }),
 					...linksOf(input),
 				});
 				break;

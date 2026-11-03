@@ -661,6 +661,28 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 		]);
 	});
 
+	it("checks the lock before every step and writes a null slug through", async () => {
+		const locked = new Set<string>();
+		const { runtime, content, lockCalls } = setup((_c, id) => locked.has(id));
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		const base = { collection: "products", locale: "en", id: "e1" };
+		const steps = ["update", "publish", "unpublish", "discard", "schedule"] as const;
+		locked.add("e1");
+		const before = runtime.calls.length;
+		for (const step of steps) {
+			expect(await content.revertStep({ ...base, rev: "rev-1", step })).toEqual({
+				ok: false,
+				reason: "locked",
+				message: "The entry is being edited",
+			});
+		}
+		expect(lockCalls).toHaveLength(steps.length);
+		expect(runtime.calls).toHaveLength(before);
+		locked.clear();
+		await content.revertStep({ ...base, rev: "rev-1", step: "update", slug: null });
+		expect(runtime.calls.at(-1)).toMatchObject(["update", "products", "e1", { slug: null }]);
+	});
+
 	it("maps a stale revision to conflict and hook refusals to blocked", async () => {
 		const { runtime, content } = setup();
 		await content.create({ collection: "products", locale: "en", data: { title: "A" } });

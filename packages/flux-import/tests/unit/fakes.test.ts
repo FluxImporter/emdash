@@ -194,4 +194,140 @@ describe("FakeContent for rollbacks (M5a)", () => {
 		expect(updated).toMatchObject({ ok: true, state: { hasDraft: true } });
 		expect(content.entries.get(id)).toMatchObject({ slug: "b", data: { title: "B" } });
 	});
+
+	const stepOf =
+		(content: FakeContent, id: string, collection = "products") =>
+		(rev: number, s: Parameters<FakeContent["revertStep"]>[0]["step"], extra = {}) =>
+			content.revertStep({ collection, locale: "en", id, rev: String(rev), step: s, ...extra });
+
+	it("answers locked before any step, not conflict", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, data: {} });
+		content.locked.add(id);
+		const step = stepOf(content, id);
+		for (const s of ["update", "publish", "unpublish", "discard"] as const) {
+			expect(await step(1, s)).toMatchObject({ ok: false, reason: "locked" });
+			expect(await step(99, s)).toMatchObject({ ok: false, reason: "locked" });
+		}
+	});
+
+	it("unpublishes a published entry without revisions into a draft of stale values", async () => {
+		const { content } = setup();
+		content.plainCollections.add("plain");
+		const { id } = await content.create({
+			...base,
+			collection: "plain",
+			slug: "a",
+			data: { t: "A" },
+		});
+		const step = stepOf(content, id, "plain");
+		await step(1, "publish");
+		await content.update({ id, rev: "2", data: { t: "B" } });
+		expect((await content.get("plain", "en", id))?.data).toEqual({ t: "B" });
+		await step(3, "unpublish");
+		const drafted = await content.get("plain", "en", id);
+		// The draft is the live revision saved at the publish; it hides the columns (F18).
+		expect(drafted).toMatchObject({ status: "draft", hasDraft: true, data: { t: "A" } });
+		expect(drafted?.live).toEqual({ t: "B" });
+		await content.update({ id, rev: "4", data: { t: "C" } });
+		expect((await content.get("plain", "en", id))?.data).toEqual({ t: "A" });
+		expect(content.entries.get(id)?.data).toEqual({ t: "C" });
+		await step(5, "discard");
+		expect(await content.get("plain", "en", id)).toMatchObject({
+			hasDraft: false,
+			data: { t: "C" },
+		});
+	});
+
+	it("creates no draft on unpublish when no live revision exists", async () => {
+		const { content, clock } = setup();
+		content.plainCollections.add("plain");
+		for (const collection of ["products", "plain"]) {
+			const { id } = await content.create({ ...base, collection, data: {} });
+			const step = stepOf(content, id, collection);
+			clock.t += 1;
+			await step(1, "schedule", { scheduledAt: at(60_000) });
+			expect(await step(2, "unpublish")).toMatchObject({
+				ok: true,
+				state: { status: "draft", scheduledAt: null, hasDraft: false },
+			});
+		}
+	});
+
+	it("reads the live slug while a draft is pending", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: {} });
+		await content.publish({ id, rev: "1" });
+		await content.update({ id, rev: "2", slug: "b" });
+		expect(await content.get("products", "en", id)).toMatchObject({ slug: "a", hasDraft: true });
+		expect(content.entries.get(id)?.slug).toBe("b");
+	});
+
+	it("writes a null slug", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: {} });
+		await stepOf(content, id)(1, "update", { slug: null });
+		// The slug is staged in a draft, so the live slug is still read.
+		expect(content.entries.get(id)?.slug).toBeNull();
+	});
+
+	it("frees a translation locale in Trash", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, data: {} });
+		const fr = await content.create({ ...base, locale: "fr", data: {}, translationOf: id });
+		await expect(
+			content.create({ ...base, locale: "fr", data: {}, translationOf: id }),
+		).rejects.toMatchObject({ code: "emdash_conflict" });
+		await content.trash("products", fr.id);
+		await expect(
+			content.create({ ...base, locale: "fr", data: {}, translationOf: id }),
+		).resolves.toMatchObject({ rev: "1" });
+	});
+
+	it("keeps slugs unique per collection and locale, Trash included", async () => {
+		const { content } = setup();
+		const a = await content.create({ ...base, slug: "a", data: {} });
+		await expect(content.create({ ...base, slug: "a", data: {} })).rejects.toMatchObject({
+			code: "emdash_slug_conflict",
+		});
+		await content.create({ ...base, locale: "fr", slug: "a", data: {} });
+		const b = await content.create({ ...base, slug: "b", data: {} });
+		await expect(content.update({ id: b.id, rev: "1", slug: "a" })).rejects.toMatchObject({
+			code: "emdash_slug_conflict",
+		});
+		await content.trash("products", a.id);
+		await expect(content.create({ ...base, slug: "a", data: {} })).rejects.toMatchObject({
+			code: "emdash_slug_conflict",
+		});
+		await content.permanentDelete("products", a.id);
+		await expect(content.create({ ...base, slug: "a", data: {} })).resolves.toBeDefined();
+	});
+
+	it("runs the delete hook before the lookup, and checks collection and locale", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, data: {} });
+		content.blockDelete = () => "Never";
+		expect(await content.trash("products", "nope")).toMatchObject({ reason: "blocked" });
+		content.blockDelete = () => null;
+		expect(await content.trash("other", id)).toMatchObject({ reason: "not_found" });
+		await content.trash("products", id);
+		expect(await content.permanentDelete("other", id)).toBe(false);
+		expect(await content.getIncludingTrashed("products", "fr", id)).toBeNull();
+		expect(await content.getIncludingTrashed("other", "en", id)).toBeNull();
+		expect(await content.getIncludingTrashed("products", "en", id)).not.toHaveProperty(
+			"references",
+		);
+		await expect(
+			content.revertStep({ collection: "products", locale: "en", id, rev: "1", step: "discard" }),
+		).rejects.toMatchObject({ code: "emdash_not_found" });
+	});
+
+	it("never lets a hook refuse a discard or an update", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, data: {} });
+		content.blockStep = () => "No";
+		const step = stepOf(content, id);
+		expect(await step(1, "update", { data: { a: 1 } })).toMatchObject({ ok: true });
+		expect(await step(2, "discard")).toMatchObject({ ok: true });
+	});
 });
