@@ -4,9 +4,6 @@ import { type EngineDeps, emptyCounters, type Job } from "./types.js";
 /** Media IDs the rollback job's warning lists; past them it says there are more. */
 const MAX_LISTED_MEDIA = 100;
 
-/** A job retention is deleting (`Job.purging`); the name is kept for `retention.ts`. */
-export type PurgingJob = Job;
-
 export function isPurging(job: Job): boolean {
 	return job.purging === true;
 }

@@ -1665,3 +1665,81 @@ describe("final review: more guards (M5a)", () => {
 		expectRestored(stateOf(deps, "A1"), before);
 	});
 });
+
+describe("final review, second pass (M5a)", () => {
+	it("refuses a stop just after step 1 whose entry an editor gave a draft of another field", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk]);
+		clock.t += 1000;
+		const job = await importRows(deps, [{ ...desk, price: 12 }]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		// Killed at the save before step 2: the row still says step 1 was sent.
+		const put = deps.records.put.bind(deps.records);
+		let once = true;
+		deps.records.put = async (key, row) => {
+			if (once && row.pendingStep === 2) {
+				once = false;
+				throw new Error("killed after step 1");
+			}
+			return put(key, row);
+		};
+		await crash(deps, rollback.id, "killed after step 1");
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor draft" } });
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		expect(liveOf(deps, "A1").title).toBe("Desk");
+		expect(entryOf(deps, "A1").data.title).toBe("Editor draft");
+	});
+
+	it("rolls back a duplicate key whose second write stopped and resumed", async () => {
+		const { deps, clock } = setup();
+		const { start, csv } = await import("./rollback-fixture.js");
+		await importRows(deps, [desk]);
+		const before = stateOf(deps, "A1");
+		clock.t += 1000;
+		const job = await start(
+			deps,
+			csv([
+				{ ...desk, price: 12 },
+				{ ...desk, price: 13 },
+			]),
+		);
+		const update = deps.content.update.bind(deps.content);
+		let n = 0;
+		deps.content.update = async (input) => {
+			if (++n === 2) throw new Error("killed in the second write");
+			return update(input);
+		};
+		await crash(deps, job.id, "killed in the second write");
+		deps.content.update = update;
+		await runToEnd(deps, job.id);
+		expect(entryOf(deps, "A1").data.price).toBe(13);
+		const [journal] = (await deps.journal.query({ where: { jobId: job.id } })).items;
+		expect(journal?.data.before).not.toHaveProperty("uncertain");
+		expect((await rollBack(deps, job.id)).counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expectRestored(stateOf(deps, "A1"), before);
+	});
+
+	it("does not start a row the batch budget cannot cover", async () => {
+		// The first row spends 95 (25 + update 35 + publish 35); the second needs 135 more.
+		for (const [budget, reverted] of [
+			[229, 1],
+			[230, 2],
+		] as const) {
+			const { deps } = setup();
+			await importRows(deps, [
+				{ sku: "A1", name: "Desk" },
+				{ sku: "A2", name: "Lamp" },
+			]);
+			const job = await importRows(deps, [
+				{ sku: "A1", name: "Desk", price: 1 },
+				{ sku: "A2", name: "Lamp", price: 2 },
+			]);
+			const { rollback } = await createRollback(deps, { id: job.id });
+			const first = await runBatch(deps, rollback.id, "driver", Number.POSITIVE_INFINITY, budget);
+			expect(first.counters, `budget ${budget}`).toMatchObject({ reverted });
+		}
+	});
+});

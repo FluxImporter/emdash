@@ -62,6 +62,7 @@ import {
 	termPath,
 } from "./resolve.js";
 import { rollbackPass, rollbackRetryPass } from "./revert.js";
+import { originalProblem } from "./rollback.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -1466,10 +1467,17 @@ export async function runBatch(
 	try {
 		// A rollback reads its original's journal, not a source file (M5a).
 		if (job.kind === "rollback") {
-			outcome =
-				job.phase === "retry"
-					? await rollbackRetryPass(deps, job, started, limit, cache)
-					: await rollbackPass(deps, job, started, limit, cache);
+			// An original gone or being deleted leaves an empty or partial journal: the rollback fails
+			// with that reason rather than completing with no rows (spec M5a "Retention").
+			const problem = await originalProblem(deps, job);
+			if (problem !== null) {
+				outcome = { done: false, error: { code: "rollback_original_gone", message: problem } };
+			} else {
+				outcome =
+					job.phase === "retry"
+						? await rollbackRetryPass(deps, job, started, limit, cache)
+						: await rollbackPass(deps, job, started, limit, cache);
+			}
 		} else {
 			outcome = await importBatch(deps, job, started, limit, cache);
 		}

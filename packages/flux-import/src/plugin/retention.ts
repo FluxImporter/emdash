@@ -1,5 +1,5 @@
 import type { KvCollection } from "../engine/ports.js";
-import { isPurging, type PurgingJob } from "../engine/rollback.js";
+import { isPurging } from "../engine/rollback.js";
 import type { EngineDeps, Job } from "../engine/types.js";
 
 export const RETENTION_TASK = "retention";
@@ -77,7 +77,7 @@ export async function purgeExpired(
 		if (job.kind !== "rollback" && job.rolledBackBy !== undefined) {
 			if (await deps.jobs.get(job.rolledBackBy)) return false;
 		}
-		const next: PurgingJob = { ...job, purging: true };
+		const next: Job = { ...job, purging: true };
 		return (await deps.jobs.compareAndSet(id, current.revision, next)).applied;
 	};
 	const prune = async (id: string): Promise<void> => {

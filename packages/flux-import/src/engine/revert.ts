@@ -132,8 +132,8 @@ export async function rollbackPass(
 		});
 		if (page.items.length === 0) return { done: true };
 		for (const { data } of page.items) {
-			// Checked before each row: a batch always reverts at least one.
-			if (processed > 0 && cache.exhausted) return { done: false };
+			// Reserved before each row: a batch always reverts at least one.
+			if (processed > 0 && !affordable(cache, data)) return { done: false };
 			await revertRow(deps, job, data, { retry: false, cache });
 			job.cursor = { offset: 0, seq: data.seq };
 			processed++;
@@ -167,9 +167,9 @@ export async function rollbackRetryPass(
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {
-			if (processed > 0 && cache.exhausted) return { done: false };
 			const key = journalKey(originalOf(job), linkKey(collection, locale, row.sourceKey ?? ""));
 			const entry = await deps.journal.get(key);
+			if (processed > 0 && entry && !affordable(cache, entry)) return { done: false };
 			// A journal row is only deleted with its job, which retention keeps meanwhile.
 			if (entry) await revertRow(deps, job, entry, { retry: true, cache });
 			job.retryFromSeq = row.seq;
@@ -177,6 +177,23 @@ export async function rollbackRetryPass(
 			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 		}
 	}
+}
+
+/**
+ * What a row may spend at most before its references: `COST_RECORD` (25), a full revert sequence
+ * of update, publish, unpublish, discard and schedule (35 + 35 + 15 + 10 + 15), a term read (5) and
+ * the trash and delete (none of those with the sequence), rounded up.
+ */
+const ROW_RESERVE = 135;
+
+/**
+ * Whether the batch's budget still covers a row: `ROW_RESERVE` plus a read for each reference ID
+ * the pre-image restores. The ones the entry still holds are not looked up, but which those are
+ * is only known after its read, so every ID counts here (an upper bound).
+ */
+function affordable(cache: LookupCache, journal: JournalEntry): boolean {
+	const ids = Object.values(journal.before?.links?.references ?? {}).flat().length;
+	return cache.spent + ROW_RESERVE + COST_READ * ids <= cache.budget;
 }
 
 /** Rebuilds a rollback job's counters from its rows, as an import's retry does. */
@@ -625,9 +642,9 @@ async function reached(
 		}
 	}
 	if (step >= 5 && !fieldsMatch(before.draft ?? {}, entry.data)) return false;
-	// From step 2 on, nothing of the import's is left in a draft but what the journal holds: any
+	// Nothing of the import's or this rollback's is in a draft but what the journal holds: any
 	// other field whose draft and live values differ is someone else's edit (final review I1).
-	if (step >= 2 && before.draft === undefined && entry.live !== undefined) {
+	if (before.draft === undefined && entry.live !== undefined) {
 		const current = entry.live;
 		const fields = new Set([...Object.keys(entry.data), ...Object.keys(current)]);
 		fields.delete(SOURCE_ID_FIELD);

@@ -35,6 +35,8 @@ export type JournalTarget = {
 	mayHaveWritten: boolean;
 	/** The record's earlier row was `writing`: this write resumes a stopped one (final review I2). */
 	resuming?: boolean;
+	/** The link row read before this write; a resumed write it names at the entry's `_rev` is known. */
+	link?: LinkRow | null;
 };
 
 const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
@@ -218,7 +220,10 @@ export async function journalUpdate(
 		let merged = mergeBefore(first, before);
 		// Resuming a stopped write: when the entry moved since the first read, the stopped write
 		// may have landed, or someone may have edited the entry meanwhile; neither can be told.
-		if (t.resuming && first.rev !== before.rev && !first.uncertain) {
+		// Not when the link names this job at the entry's revision: the entry is as this job (an
+		// earlier record of it, or the stopped write itself) left it.
+		const ownRev = t.link?.jobId === t.job.id && t.link.writtenRev === before.rev;
+		if (t.resuming && first.rev !== before.rev && !ownRev && !first.uncertain) {
 			merged = { ...(merged ?? structuredClone(first)), uncertain: true };
 		}
 		const terms = wrote?.taxonomies
