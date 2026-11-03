@@ -84,6 +84,8 @@ Checked against `emdash@1.2.0` (package `src/`) and the docs on 2026-11-03.
 | F14 | No term deletion is available to the importer: the runtime has no taxonomy-term handlers, `ctx.taxonomies` offers `createTerm`, `addEntryTerms` and `removeEntryTerms` only, and `handleTermDelete` is neither on the runtime nor exported | `src/emdash-runtime.ts` (handler list, no term methods); `src/api/handlers/taxonomies.ts:1328`; `src/index.ts`; [capabilities](https://docs.emdashcms.com/plugins/creating-plugins/capabilities/#creating-and-assigning-taxonomy-terms) |
 | F15 | Plugins on `ctx.content` get publish, unpublish, schedule and unschedule with `content:publish`, Trash reads and restore with `content:restore`, revision reads with `content:revisions:read`. The importer does not use `ctx.content` (roadmap, Architecture) | [capabilities](https://docs.emdashcms.com/plugins/creating-plugins/capabilities/) |
 | F16 | One active entry per (translation group, locale): the unique index has `WHERE deleted_at IS NULL`, so a trashed translation frees its locale | `src/schema/registry.ts:1970-1972`; M4e V2 |
+| F17 | On a collection with revisions an update writes no columns: `data`, `slug` and `references` are staged in a draft revision (only publish writes the columns and the slug), whatever the entry's status. An update with only `taxonomies` and `bylines` stages no draft; one with only `references` does | `src/emdash-runtime.ts:3649-3990` ("Content table columns = published data"); plan V5 |
+| F18 | Unpublish creates a draft from the live revision when the entry has none, also on a collection without revisions, where publish keeps the live revision of the first publish (`promoteRevision`): there the new draft holds stale values and hides the columns. `handleContentDiscardDraft(collection, id, { _rev })` clears the draft pointer and keeps `updated_at` | `src/database/repositories/content.ts:2450-2560`, `:2727-2790`, `:2863-2903`; plan V5 |
 
 ### Unconfirmed, to be proven by Task 0
 
@@ -113,6 +115,22 @@ Checked against `emdash@1.2.0` (package `src/`) and the docs on 2026-11-03.
 
 If V1, V2 or V5 fail, the plan stops and this spec is amended before Task 1. V7 sets the Workers
 cap: if 10 rows exceed the limit, the cap is lowered to what fits.
+
+**Results (plan drafting, 2026-11-03, amended here).** V1, V2, V3, V4 and V6 hold on SQLite and
+D1. V1 holds under a comparison where booleans compare by truth value (EmDash returns `1`/`0`), an
+object's key order is ignored (an image value reads back with its keys in another order) and a
+`null` written reads back as an absent key. V5 **failed** for the sequence first specified (step 2
+only publish or unpublish) in two of the four pre-states, "a draft never published that the run
+published" and "a future-scheduled draft that the run published", on both collections and both
+databases: without revisions every field read back with the run's values (the unpublish turned
+the run's live revision into a draft, F18); with revisions the slug stayed the run's and the live
+columns kept the run's values (F17). The amended sequence below restored all four pre-states on
+both collections exactly, the draft pointer and the live columns included. V7 could not be
+measured before the rollback exists; per call, D1 ran 62-80 queries for an update with every
+field and link, 76 for a publish, 25-35 for an unpublish, 23 for a discard, 28-29 for a schedule
+and 10-12 for a read, so a reverted update costs about 175-265 queries and 10 rows would exceed
+the 1,000-query limit. The Workers cap is 3 (`WORKERS_ROLLBACK_BATCH_CAP`); the plan's review task
+re-measures it with the real rollback (V7) and the import's linked batch (V8).
 
 ## The journal
 
@@ -270,16 +288,24 @@ and finishes the delete.
 | Step | When | Call |
 | --- | --- | --- |
 | 1 restore live | `before.live`, `before.slug` or `before.links` is not empty | `update` with `data = before.live` (booleans by the job's `targetFields`, V1), `slug = before.slug` when present, and the links in `before.links` (term groups resolved to slugs in the entry's locale with `lookups.terms`, cached per batch) |
-| 2 status | `before.status === "published"` and the entry has a pending draft or is not published | `publish` |
-| | `before.status !== "published"` and the entry is published | `unpublish` (F10) |
-| 3 restore draft | `before.draft` | `update` with `data = before.draft` |
-| 4 schedule | `before.scheduledAt` later than now and not equal to the entry's | `schedule(before.scheduledAt)` (F11) |
+| 2 publish | `before.status === "published"` and the entry has a pending draft or is not published; or `before.status !== "published"` and the entry is published with a draft (revisioned collections: it makes step 1's values and slug live, F17) | `publish` |
+| 3 unpublish | `before.status !== "published"` and the entry is published | `unpublish` (F10) |
+| 4 discard | `before.draft` is absent and the entry has a draft (the draft step 3's unpublish created, F18, or one step 1 staged on a never-published entry) | `discardDraft` |
+| 5 restore draft | `before.draft` | `update` with `data = before.draft` |
+| 6 schedule | `before.scheduledAt` later than now and not equal to the entry's | `schedule(before.scheduledAt)` (F11) |
+
+Steps 2-4 were amended after V5 (see "Results" above). Their side effects: an entry the run
+published for the first time is published once more before it is unpublished, so the publish
+hooks (`content:beforePublish`, `content:afterPublish`) run again for it, and its `publishedAt`
+stays set (F12). A step is chosen from the entry's state after the previous step, so a resumed row
+re-derives the same choices.
 
 A term, byline or reference target that no longer exists is left out of the links with a warning
 `rollback_link_missing`. A `before.scheduledAt` already past is not rescheduled: warning
 `rollback_schedule_passed` ("The entry was scheduled for <time>, which has passed; it is left as a
 draft"). On collections without revisions step 1 writes the live columns, step 2 changes only the
-status, and step 3 never applies (no drafts). `content:beforePublish`, `content:beforeUnpublish`
+status, step 4 discards the stale draft step 3's unpublish created (F18), and step 5 never applies
+(no drafts). `content:beforePublish`, `content:beforeUnpublish`
 and `content:beforeSchedule` refusals (`PUBLISH_REJECTED` and the others) make the row `failed`,
 `rollback_blocked`, with the hook's reason; earlier steps stay done and `jobs/retry` continues from
 the saved step.
@@ -289,7 +315,7 @@ the saved step.
 Restoring the link row to `before.link` (with the rollback's final `_rev`) is what lets rollbacks
 chain: after rolling back job B, an entry B changed is again "as job A left it" for A's rollback,
 because its link row names A and its `_rev`. The importer's own pending draft that the rollback
-restores (step 3) is then recognised as the importer's by the next import (M2 `writtenRev` rule).
+restores (step 5) is then recognised as the importer's by the next import (M2 `writtenRev` rule).
 
 ### Dry run
 
@@ -335,6 +361,12 @@ deletion for plugins); the import's records list them under newTerms", from the 
   translations' `_rev` (M4e V4): the translation job's rollback then reports those entries
   `rollback_changed`. Documented: roll back translation jobs before the source job, and do not
   re-run the source job in between.
+- **Reference-only changes (F17).** An import that changed only an entry's references staged a
+  draft on a collection with revisions (and published it with `publish: true`). Its pre-image has
+  `links.references` and no `live`; step 1 sends only the references, which stages a draft again,
+  and step 2 publishes it when the entry was published before, or step 4 discards it when it was a
+  draft without one. The ownership check compares revisions, so it treats this entry like any
+  other.
 - **Pending drafts.** The importer writes over a pending draft only when it is its own (M2), so a
   pre-image's `draft` is always the importer's earlier draft; an editor's pending draft is never in
   a journal.
@@ -348,8 +380,8 @@ resumable. D1 runs a handler's statements without a transaction (M4e review), so
 after a partial write; the next attempt sees a `_rev` that is neither the link's nor the row's and
 reports `rollback_changed` (documented, as for partial creates).
 
-On Workers one `jobs/next` processes at most `WORKERS_ROLLBACK_BATCH_CAP` (10) rows, from V7's
-measurement, with `WORKERS_LOOKUP_BUDGET` for term lookups. On Node the job's `batchSize` applies.
+On Workers one `jobs/next` processes at most `WORKERS_ROLLBACK_BATCH_CAP` (3) rows, from the
+per-call D1 counts (Results; re-measured as V7 in the plan's review task), with `WORKERS_LOOKUP_BUDGET` for term lookups. On Node the job's `batchSize` applies.
 
 Import cost: a create adds two storage calls (the write-ahead put and the `entryId` put), an update
 one (the put-if-absent; a get and put more when the row exists), a created media item one. No
@@ -360,7 +392,7 @@ extra content reads: everything in the pre-image comes from the reads the import
 | Bound | Value | Why |
 | --- | --- | --- |
 | Journal row | `MAX_JOURNAL_BYTES` = 1 MiB of JSON | Within D1's row size (V6); the record row already holds up to 1 MiB values (M4a) |
-| Rollback batch on Workers | `WORKERS_ROLLBACK_BATCH_CAP` = 10 | Up to about six content calls per row (V7) |
+| Rollback batch on Workers | `WORKERS_ROLLBACK_BATCH_CAP` = 3 | Up to seven content calls per row, about 175-265 D1 queries (Results, V7) |
 | Rollback batch on Node | the rollback job's `batchSize` (default 50, maximum 500) | As imports |
 | Media IDs in the warning | 100, then a count | Job size |
 | Rollbacks per job | One | `rolledBackBy` |
