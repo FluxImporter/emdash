@@ -61,6 +61,18 @@ describe("the journal of a real import (M5a)", () => {
 		const first = await importRows(deps, [desk]);
 		const entry = entryOf(deps, "A1");
 		const rev = deps.content.revOf(entry.id);
+		// The first job's fingerprints (M5b), which the snapshot keeps with the link.
+		const fields = (await deps.links.get("products:en:A1"))?.fields;
+		expect(Object.keys(fields ?? {}).sort()).toEqual([
+			"bylines",
+			"featured",
+			"photo",
+			"price",
+			"related",
+			"slug",
+			"taxonomies.tag",
+			"title",
+		]);
 		const second = await importRows(deps, [
 			{ ...desk, name: "Table", price: 12, tags: "sale", authors: "sam" },
 		]);
@@ -75,7 +87,7 @@ describe("the journal of a real import (M5a)", () => {
 			kind: "update",
 			entryId: entry.id,
 			before: {
-				link: { jobId: first.id, writtenRev: rev },
+				link: { jobId: first.id, writtenRev: rev, fields },
 				// The entry is as the first job left it.
 				rev,
 				status: "published",
