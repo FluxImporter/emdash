@@ -534,4 +534,98 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 		});
 		expect(content.entries.get(id)?.rev).toBe(1);
 	});
+
+	it("sets publishedAt at the first publish and keeps it through later publishes and an unpublish", async () => {
+		const { content, clock } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: {} });
+		expect(content.entries.get(id)?.publishedAt).toBeNull();
+		clock.t += 1000;
+		await content.publish({ id, rev: content.revOf(id) });
+		expect(content.entries.get(id)?.publishedAt).toBe(at(1000));
+		clock.t += 1000;
+		await content.update({ id, rev: content.revOf(id), data: { title: "B" } });
+		await content.publish({ id, rev: content.revOf(id) });
+		expect(content.entries.get(id)?.publishedAt).toBe(at(1000));
+		await content.revertStep({ ...base, id, rev: content.revOf(id), step: "unpublish" });
+		expect(content.entries.get(id)).toMatchObject({ status: "draft", publishedAt: at(1000) });
+	});
+
+	it("gives a first publication by the sweep the scheduled time, and keeps an earlier one", async () => {
+		const { content, clock } = setup();
+		const fresh = await content.create({ ...base, slug: "a", data: {} });
+		const live = await content.create({ ...base, slug: "b", data: {} });
+		await content.publish({ id: live.id, rev: content.revOf(live.id) });
+		await content.update({ id: live.id, rev: content.revOf(live.id), data: { title: "B" } });
+		clock.t += 1;
+		for (const id of [fresh.id, live.id]) {
+			await content.schedule({ ...base, id, rev: content.revOf(id), scheduledAt: at(60_000) });
+		}
+		// The sweep runs late; the first publication still records the time it was due.
+		clock.t = Date.parse(at(90_000));
+		expect(content.runScheduled()).toEqual([fresh.id, live.id]);
+		expect(content.entries.get(fresh.id)).toMatchObject({
+			publishedAt: at(60_000),
+			updatedAt: at(90_000),
+		});
+		expect(content.entries.get(live.id)?.publishedAt).toBe(at(0));
+	});
+
+	it("normalises the scheduled time as EmDash does: UTC with milliseconds, naive in the site's zone", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: {} });
+		const schedule = (scheduledAt: string) =>
+			content.schedule({ ...base, id, rev: content.revOf(id), scheduledAt });
+		await schedule("2026-10-07T14:00:00+02:00");
+		expect(content.entries.get(id)?.scheduledAt).toBe("2026-10-07T12:00:00.000Z");
+		await schedule("2026-10-07 11:30");
+		expect(content.entries.get(id)?.scheduledAt).toBe("2026-10-07T11:30:00.000Z");
+		await content.revertStep({
+			...base,
+			id,
+			rev: content.revOf(id),
+			step: "schedule",
+			scheduledAt: "2026-10-08T00:00Z",
+		});
+		expect(content.entries.get(id)?.scheduledAt).toBe("2026-10-08T00:00:00.000Z");
+		for (const bad of ["tomorrow", "2026-02-30T10:00", "2026-10-08T10:00:00 UTC"]) {
+			await expect(schedule(bad)).rejects.toMatchObject({
+				code: "emdash_validation_error",
+				message: `Scheduling the entry failed: Datetime ${JSON.stringify(bad)} is not a valid ISO 8601 datetime`,
+			});
+		}
+	});
+
+	it("sweeps collection by collection, then by scheduled time, then by ID", async () => {
+		const { content, clock } = setup();
+		const make = async (collection: string, slug: string, ms: number) => {
+			const { id } = await content.create({ ...base, collection, slug, data: {} });
+			await content.schedule({
+				...base,
+				collection,
+				id,
+				rev: content.revOf(id),
+				scheduledAt: at(ms),
+			});
+			return id;
+		};
+		clock.t += 1;
+		const late = await make("products", "a", 90_000);
+		const early = await make("products", "b", 60_000);
+		// Unscheduled entries, so the tied pair gets e9 and e10: SQL's text order puts e10 first.
+		for (const slug of ["f3", "f4", "f5", "f6", "f7", "f8"]) {
+			await content.create({ ...base, slug, data: {} });
+		}
+		const tieInsertedFirst = await make("products", "c", 75_000);
+		const tieInsertedSecond = await make("products", "d", 75_000);
+		expect([tieInsertedFirst, tieInsertedSecond]).toEqual(["e9", "e10"]);
+		const other = await make("articles", "e", 120_000);
+		clock.t = Date.parse(at(120_000));
+		expect(content.runScheduled()).toEqual([
+			other,
+			early,
+			tieInsertedSecond,
+			tieInsertedFirst,
+			late,
+		]);
+	});
 });

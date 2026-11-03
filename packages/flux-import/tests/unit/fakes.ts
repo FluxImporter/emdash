@@ -121,6 +121,67 @@ export class MemoryKv<T> implements KvCollection<T> {
 	}
 }
 
+/** SQL's binary text order, which `ORDER BY` uses on SQLite and D1. */
+function compareText(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * EmDash's `normalizeDatetime` for a site in UTC (`datetimes.normalizeValue`,
+ * database/content-datetime.ts:176-186; datetime-normalization.ts:209-250), as `schedule` applies
+ * it (repositories/content.ts:2106): a naive time is read in the site's zone, here UTC; an
+ * explicit offset is converted to UTC with milliseconds; anything else is a validation error. The
+ * fake's check of the explicit form approximates EmDash's zod `iso.datetime` schema.
+ */
+function normalizeScheduledAt(value: string, op: string): string {
+	const naive =
+		/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/.exec(value);
+	let ms = Number.NaN;
+	if (naive) {
+		const [, y, mo, d, h = "0", mi = "0", s = "0", frac = "0"] = naive;
+		const parts = [y, mo, d, h, mi, s].map(Number) as [
+			number,
+			number,
+			number,
+			number,
+			number,
+			number,
+		];
+		const t = Date.UTC(
+			parts[0],
+			parts[1] - 1,
+			parts[2],
+			parts[3],
+			parts[4],
+			parts[5],
+			Number(frac.padEnd(3, "0")),
+		);
+		// As parseNaiveDatetime: a date that rolls over (Feb 30, 24:00) is not valid.
+		const back = new Date(t);
+		if (
+			back.getUTCFullYear() === parts[0] &&
+			back.getUTCMonth() + 1 === parts[1] &&
+			back.getUTCDate() === parts[2] &&
+			back.getUTCHours() === parts[3] &&
+			back.getUTCMinutes() === parts[4] &&
+			back.getUTCSeconds() === parts[5]
+		) {
+			ms = t;
+		}
+	} else if (
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)
+	) {
+		ms = Date.parse(value);
+	}
+	if (Number.isNaN(ms)) {
+		throw new ContentWriteError(
+			"emdash_validation_error",
+			`${op} failed: Datetime ${JSON.stringify(value)} is not a valid ISO 8601 datetime`,
+		);
+	}
+	return new Date(ms).toISOString();
+}
+
 type StoredEntry = {
 	id: string;
 	locale: string;
@@ -139,6 +200,11 @@ type StoredEntry = {
 	/** M5a: `draft`, `scheduled` or `published`, and the schedule. */
 	status: string;
 	scheduledAt: string | null;
+	/**
+	 * M5b: EmDash's `published_at`. Set at the first publish (the sweep's first publication sets
+	 * it to the scheduled time), kept by later publishes and by an unpublish (spec M5a F12).
+	 */
+	publishedAt: string | null;
 	/**
 	 * M5a: the live data and slug while a draft revision is pending (on a collection with
 	 * revisions, a write staged after the entry's columns); null without one. `data` and `slug`
@@ -503,6 +569,7 @@ export class FakeContent implements ContentPort {
 			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
 			status: "draft",
 			scheduledAt: null,
+			publishedAt: null,
 			live: null,
 			published: null,
 			stale: null,
@@ -567,8 +634,13 @@ export class FakeContent implements ContentPort {
 		return { ok: true, rev: this.encoded(e) };
 	}
 
-	/** EmDash's publish (F4): status, draft and schedule cleared, a new version and `updated_at`. */
-	private makeLive(e: StoredEntry): void {
+	/**
+	 * EmDash's publish (F4): status, draft and schedule cleared, a new version and `updated_at`.
+	 * `published_at` is the requested time, else the current one, else now
+	 * (repositories/content.ts:2608).
+	 */
+	private makeLive(e: StoredEntry, publishedAt?: string): void {
+		e.publishedAt = publishedAt ?? e.publishedAt ?? this.stamp();
 		e.pendingPublish = false;
 		e.status = "published";
 		e.scheduledAt = null;
@@ -587,7 +659,8 @@ export class FakeContent implements ContentPort {
 	 * `scheduled` and a published entry stays published; `version` is kept and only `updated_at`
 	 * moves, so at a clock that has not moved the `_rev` stays the same, as in EmDash.
 	 */
-	private setSchedule(e: StoredEntry, at: string, op: string): void {
+	private setSchedule(e: StoredEntry, value: string, op: string): void {
+		const at = normalizeScheduledAt(value, op);
 		if (!(Date.parse(at) > this.now())) {
 			throw new ContentWriteError(
 				"emdash_validation_error",
@@ -637,19 +710,32 @@ export class FakeContent implements ContentPort {
 	/**
 	 * One pass of EmDash's scheduler (`publishDueContent`, spec M5b F5): every active entry due by
 	 * now is published without a revision check; a publish hook's refusal unschedules it instead.
-	 * Returns the IDs published.
+	 * As EmDash, collection by collection in slug order (`listCollections`, schema/registry.ts:366,
+	 * which puts its own collection order first; the fake has none), and within one by
+	 * `scheduled_at`, then `id` (`findReadyToPublish`, repositories/content.ts:2212). A first
+	 * publication gets the scheduled time as `published_at` (scheduled-publish.ts). Returns the
+	 * IDs published, in that order.
 	 */
 	runScheduled(): string[] {
 		const published: string[] = [];
-		for (const e of this.entries.values()) {
-			if (e.trashed || e.scheduledAt === null || Date.parse(e.scheduledAt) > this.now()) continue;
+		const now = this.now();
+		const due = [...this.entries.values()]
+			.filter((e) => !e.trashed && e.scheduledAt !== null && Date.parse(e.scheduledAt) <= now)
+			.sort(
+				(a, b) =>
+					compareText(a.collection, b.collection) ||
+					compareText(a.scheduledAt ?? "", b.scheduledAt ?? "") ||
+					compareText(a.id, b.id),
+			);
+		for (const e of due) {
+			const firstAt = e.publishedAt === null ? (e.scheduledAt ?? undefined) : undefined;
 			if (this.blockStep("publish", e.id) !== null) {
 				e.scheduledAt = null;
 				if (e.status !== "published") e.status = "draft";
 				e.updatedAt = this.stamp();
 				continue;
 			}
-			this.makeLive(e);
+			this.makeLive(e, firstAt);
 			this.calls.push(`scheduled:${e.id}`);
 			published.push(e.id);
 		}
