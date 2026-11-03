@@ -241,13 +241,16 @@ describe.each([
 		expect(dry.job.counters).toMatchObject({ reverted: 30, conflict: 0, failed: 0 });
 		expect(dry.rows.every((r) => r.status === "planned")).toBe(true);
 		// The second collection's job reuses the photo and the term the first one created.
+		// The job creates entries, so the rollback also says their references go with them.
+		const deleting = "Deleting an entry also removes references other entries hold to it.";
 		expect(dry.job.warnings).toEqual(
 			firstRun
 				? [
 						expect.stringMatching(/^The import created 1 media items, which are kept .*: \S+$/),
 						expect.stringMatching(/^The import created 1 terms, which are kept/),
+						deleting,
 					]
-				: [],
+				: [deleting],
 		);
 		expect(await statesOf(collection)).toEqual(after);
 		expect(await client.plugin("jobs/get", { id: job.id })).not.toHaveProperty("rolledBackBy");
@@ -346,6 +349,34 @@ describe("M5a rollback order and drafts", () => {
 			t,
 		);
 		expect(again.counters).toMatchObject({ conflict: 0, failed: 0 });
+	});
+
+	it("keeps the importer's earlier draft unpublished when a publish: false job over it is rolled back", async () => {
+		await client.createProducts("it_rb_draft2");
+		const t = template("it_rb_draft2");
+		await importCsv(productsCsv(2), t);
+		// The importer's own draft renames the products; the next draft-only job changes prices.
+		const renamed = (price?: (i: number) => string) =>
+			productsCsv(2, price).replaceAll("Product ", "Draft ");
+		await importCsv(renamed(), t, { publish: false });
+		const pending = await statesOf("it_rb_draft2");
+		const job = await importCsv(
+			renamed((i) => `${i + 40}`),
+			t,
+			{ publish: false },
+		);
+		expect(job.counters).toMatchObject({ updated: 2 });
+		expect((await rollBack(job.id)).job.counters).toMatchObject({ reverted: 2 });
+		for (const e of await client.listAll("it_rb_draft2")) {
+			const { item } = await client.api<{
+				item: Product & { liveData?: Record<string, unknown> };
+			}>("GET", `/_emdash/api/content/it_rb_draft2/${e.id}?locale=en`);
+			// The rollback published the restored live values, not the earlier draft's names.
+			expect(item.draftRevisionId).not.toBeNull();
+			expect(String(item.liveData?.title)).toMatch(/^Product /);
+		}
+		const now = await statesOf("it_rb_draft2");
+		for (const [key, state] of pending) expectSame(now.get(key) as State, state);
 	});
 
 	it("schedules a scheduled entry again", async () => {

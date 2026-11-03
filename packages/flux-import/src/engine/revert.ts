@@ -23,6 +23,7 @@ import {
 	termOfGroup,
 } from "./resolve.js";
 import { restoredData, sameStored } from "./rollback-values.js";
+import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	bump,
 	type Counters,
@@ -56,6 +57,29 @@ const NOTHING_MESSAGE = "Nothing to roll back: the entry was never created, or w
 const NEVER_WRITTEN_MESSAGE = "Nothing to roll back: the import never wrote this entry";
 const TRASHED_MESSAGE =
 	"Moved to Trash, not deleted: the import found this entry by crash repair, so it may not have created it";
+const TRASHED_ELSEWHERE =
+	"Not rolled back: the entry was moved to Trash after the import created it; restore it from Trash or delete it by hand";
+const UNCERTAIN_MESSAGE =
+	"Not rolled back: the import was recovering from a stop when it wrote this entry, and the entry had changed since its first read, so a later edit cannot be ruled out; revert it by hand";
+const TERMS_CHANGED_MESSAGE =
+	"Not rolled back: the entry's terms changed after the import wrote them (term edits do not change the revision); revert it by hand";
+/** A job warning (final review I5). */
+export const REFERENCES_DELETED_WARNING =
+	"Deleting an entry also removes references other entries hold to it.";
+/**
+ * What one revert step costs the batch's lookup budget, from the D1 queries per call (spec M5a
+ * V7) at the rate `COST_READ` (5) sets for a read of 10-12: about 2.2 queries per unit. Update
+ * 62-80, publish 76, unpublish 25-35, discard 23, schedule 28-29.
+ */
+const STEP_COST: Readonly<Record<RevertStep, number>> = {
+	update: 35,
+	publish: 35,
+	unpublish: 15,
+	discard: 10,
+	schedule: 15,
+};
+/** Trash and permanent delete, which V7 did not measure: `COST_READ` x 5. */
+const COST_DELETE = COST_READ * 5;
 const UNLINKED_MESSAGE =
 	"Moved to Trash, not deleted: the import never saved its link to this entry, so a later edit cannot be ruled out";
 const TRANSLATIONS_MESSAGE =
@@ -108,12 +132,12 @@ export async function rollbackPass(
 		});
 		if (page.items.length === 0) return { done: true };
 		for (const { data } of page.items) {
+			// Checked before each row: a batch always reverts at least one.
+			if (processed > 0 && cache.exhausted) return { done: false };
 			await revertRow(deps, job, data, { retry: false, cache });
 			job.cursor = { offset: 0, seq: data.seq };
 			processed++;
-			if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
-				return { done: false };
-			}
+			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 		}
 	}
 }
@@ -143,15 +167,14 @@ export async function rollbackRetryPass(
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {
+			if (processed > 0 && cache.exhausted) return { done: false };
 			const key = journalKey(originalOf(job), linkKey(collection, locale, row.sourceKey ?? ""));
 			const entry = await deps.journal.get(key);
 			// A journal row is only deleted with its job, which retention keeps meanwhile.
 			if (entry) await revertRow(deps, job, entry, { retry: true, cache });
 			job.retryFromSeq = row.seq;
 			processed++;
-			if (processed >= limit || cache.exhausted || deps.now() - started >= job.budgetMs) {
-				return { done: false };
-			}
+			if (processed >= limit || deps.now() - started >= job.budgetMs) return { done: false };
 		}
 	}
 }
@@ -356,9 +379,19 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 			: undefined;
 	if (!resumed && !owned && !untouched && pending === undefined) {
 		const before = journal.before;
+		// Only while the link is still the one the pre-image read: a link naming any other job
+		// (a later import, or an earlier one this job's write replaced) is a change to report, and
+		// reporting it keeps the row for a retry once that job is rolled back.
+		const sameLink =
+			before !== undefined &&
+			(link === null
+				? before.link === null
+				: before.link !== null &&
+					link.jobId === before.link.jobId &&
+					link.writtenRev === before.link.writtenRev);
 		const neverWritten =
 			journal.kind === "update" &&
-			link?.jobId !== job.rollbackOf &&
+			sameLink &&
 			(entry.rev === before?.link?.writtenRev ||
 				(entry.updatedAt !== undefined && entry.updatedAt < journal.at));
 		if (neverWritten) {
@@ -386,6 +419,12 @@ async function deleteCreated(
 	const { deps, job, journal } = ctx;
 	const { collection } = journal;
 	const linked = link?.entryId === entry.id;
+	// In Trash, and not by this rollback (its row records the trash step, done or sent): someone
+	// trashed it, and may want it back.
+	const ours = (ctx.existing?.step ?? 0) >= 1 || ctx.existing?.pendingStep === 1;
+	if (entry.trashed && !ours) {
+		return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", TRASHED_ELSEWHERE)] });
+	}
 	if (!entry.trashed && (entry.group ?? entry.id) === entry.id) {
 		const group = await deps.content.translations(collection, entry.id);
 		if (group.some((t) => t.id !== entry.id)) {
@@ -407,11 +446,16 @@ async function deleteCreated(
 					journal.confirmed === true && !adopted ? UNLINKED_MESSAGE : TRASHED_MESSAGE,
 				),
 			];
+	// There is no backlinks API, so the job says once that references to deleted entries go too.
+	if (confirmed && !job.warnings?.includes(REFERENCES_DELETED_WARNING)) {
+		job.warnings = [...(job.warnings ?? []), REFERENCES_DELETED_WARNING];
+	}
 	if (job.dryRun)
 		return rowOf(ctx, "planned", { changes: [], ...(warnings.length ? { warnings } : {}) });
 	ctx.written = { rev: entry.rev, step: ctx.written?.step ?? 0 };
-	await ctx.save(rowOf(ctx, "writing"));
+	await ctx.save(rowOf(ctx, "writing", entry.trashed ? {} : { pendingStep: 1 }));
 	if (!entry.trashed) {
+		ctx.cache.spend(COST_DELETE);
 		const trashed = await deps.content.trash(collection, entry.id);
 		if (!trashed.ok) {
 			if (trashed.reason === "blocked") {
@@ -430,7 +474,10 @@ async function deleteCreated(
 		ctx.written = { rev: entry.rev, step: 1 };
 		await ctx.save(rowOf(ctx, "writing"));
 	}
-	if (confirmed) await deps.content.permanentDelete(collection, entry.id);
+	if (confirmed) {
+		ctx.cache.spend(COST_DELETE);
+		await deps.content.permanentDelete(collection, entry.id);
+	}
 	if (linked) await deps.links.delete(linkKey(collection, journal.locale, journal.sourceKey));
 	return rowOf(ctx, "reverted", warnings.length ? { warnings } : {});
 }
@@ -438,6 +485,7 @@ async function deleteCreated(
 /** The links of the pre-image as an update writes them; missing targets are left out and warned. */
 async function restoredLinks(
 	ctx: RowCtx,
+	entry: Found,
 	links: NonNullable<JournalBefore["links"]>,
 	warnings: RecordError[],
 ): Promise<LinkWrites> {
@@ -464,7 +512,13 @@ async function restoredLinks(
 	for (const [field, ids] of Object.entries(links.references ?? {})) {
 		const target = job.targetFields?.[field]?.targetCollection ?? journal.collection;
 		const kept: string[] = [];
+		// An ID the entry still holds exists; only the others are looked up.
+		const held = new Set((entry.references?.[field] ?? []).map((r) => r.id));
 		for (const id of ids) {
+			if (held.has(id)) {
+				kept.push(id);
+				continue;
+			}
 			cache.spend(COST_READ);
 			if (await deps.lookups.findEntry(target, "id", id, journal.locale)) kept.push(id);
 			else missing(field, `the entry ${id}`);
@@ -571,6 +625,17 @@ async function reached(
 		}
 	}
 	if (step >= 5 && !fieldsMatch(before.draft ?? {}, entry.data)) return false;
+	// From step 2 on, nothing of the import's is left in a draft but what the journal holds: any
+	// other field whose draft and live values differ is someone else's edit (final review I1).
+	if (step >= 2 && before.draft === undefined && entry.live !== undefined) {
+		const current = entry.live;
+		const fields = new Set([...Object.keys(entry.data), ...Object.keys(current)]);
+		fields.delete(SOURCE_ID_FIELD);
+		for (const field of fields) {
+			if (Object.hasOwn(before.live, field)) continue;
+			if (!sameStored(entry.data[field], current[field])) return false;
+		}
+	}
 	switch (step) {
 		case 1:
 		case 5:
@@ -611,8 +676,25 @@ async function restoreChanged(
 	if (before === undefined || entry.trashed) {
 		return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", CHANGED_MESSAGE)] });
 	}
-	// EmDash refuses an empty required field, so the restore would stop half way: refuse it first.
+	if (before.uncertain) {
+		return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", UNCERTAIN_MESSAGE)] });
+	}
 	const resumedAt = ctx.written?.step ?? 0;
+	// Term edits leave `_rev` alone, so ownership cannot see them: the terms must still be those the
+	// job wrote. Not once step 1 was sent, which changed them itself.
+	const wrote = journal.wrote?.taxonomies;
+	if (wrote && resumedAt === 0 && pending === undefined) {
+		ctx.cache.spend(COST_READ);
+		const assigned = await deps.lookups.entryTerms(collection, entry.id);
+		const sorted = (groups: readonly string[]) => JSON.stringify([...groups].sort());
+		const moved = Object.entries(wrote).some(
+			([taxonomy, groups]) => sorted(assigned[taxonomy] ?? []) !== sorted(groups),
+		);
+		if (moved) {
+			return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", TERMS_CHANGED_MESSAGE)] });
+		}
+	}
+	// EmDash refuses an empty required field, so the restore would stop half way: refuse it first.
 	const emptied = [
 		...(resumedAt < 1 ? Object.entries(before.live) : []),
 		...(resumedAt < 5 ? Object.entries(before.draft ?? {}) : []),
@@ -636,10 +718,10 @@ async function restoreChanged(
 		);
 		// Only to check a lost step (`reached`); the warnings are the saved ones.
 		if (pending !== undefined && before.links) {
-			links = await restoredLinks(ctx, before.links, []);
+			links = await restoredLinks(ctx, entry, before.links, []);
 		}
 	} else if (before.links) {
-		links = await restoredLinks(ctx, before.links, ctx.warnings);
+		links = await restoredLinks(ctx, entry, before.links, ctx.warnings);
 	}
 	const passed =
 		before.scheduledAt !== null && !(Date.parse(before.scheduledAt) > deps.now())
@@ -690,6 +772,7 @@ async function restoreChanged(
 		// tells this step's result from someone else's change (`reached`). Nothing runs between a
 		// step's return and the next save, so a save after each step would add nothing.
 		await writing({ pendingStep: step });
+		ctx.cache.spend(STEP_COST[input.step]);
 		const result = await deps.content.revertStep({
 			...input,
 			collection,
