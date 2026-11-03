@@ -63,7 +63,12 @@ async function seed(deps: Deps) {
 async function start(
 	deps: Deps,
 	csv: string,
-	opts: { dryRun?: boolean; publish?: boolean; extra?: Record<string, unknown> } = {},
+	opts: {
+		dryRun?: boolean;
+		publish?: boolean;
+		journal?: boolean;
+		extra?: Record<string, unknown>;
+	} = {},
 ) {
 	const upload = `u${deps.source.uploads.size + 1}`;
 	deps.source.add(upload, csv);
@@ -268,7 +273,7 @@ describe("importing links", () => {
 		expect(entry.taxonomies).toEqual({ category: ["phones"], tag: [] });
 	});
 
-	it("rewrites a reference field whose selection was read only in part", async () => {
+	it("rewrites a reference field whose selection was read only in part (without a journal)", async () => {
 		const { deps } = makeDeps();
 		await seed(deps);
 		const first = await start(deps, CSV);
@@ -282,7 +287,8 @@ describe("importing links", () => {
 				: entry;
 		};
 		deps.content.linkWrites.length = 0;
-		const second = await start(deps, CSV);
+		// A journal could not restore the field (M5a journal_incomplete), so the job keeps none.
+		const second = await start(deps, CSV, { journal: false });
 		const done = await runToEnd(deps, second.id);
 		expect(done.counters).toMatchObject({ updated: 1, unchanged: 1 });
 		const [, row] = await rows(deps, second.id);

@@ -18,6 +18,14 @@ import {
 	upgradeJob,
 	withoutPlannedTerms,
 } from "./jobs.js";
+import {
+	draftFields,
+	journalCreate,
+	journalCreated,
+	journaling,
+	journalUpdate,
+	preImage,
+} from "./journal.js";
 import type { ResolvedLinks } from "./links.js";
 import {
 	DEFAULT_MAX_UPLOAD_SIZE,
@@ -217,8 +225,14 @@ export async function processRecord(
 type RecordCtx = {
 	deps: EngineDeps;
 	job: Job;
+	/** The record's sequence number, which orders its journal row (M5a). */
+	seq: number;
 	sourceKey: string;
 	linkId: string;
+	/** The link row as read before any write of this record; null when there is none. */
+	link: LinkRow | null;
+	/** The entry's current links, as the plan compared them; absent when the template maps none. */
+	current?: CurrentLinks;
 	save: (fields: RowFields) => Promise<void>;
 	/** The record's resolved links; absent when the template maps none. */
 	links?: ResolvedLinks;
@@ -283,6 +297,7 @@ function putLink(ctx: RecordCtx, entryId: string, writtenRev: string): Promise<v
 		sourceKey: ctx.sourceKey,
 		entryId,
 		writtenRev,
+		jobId: ctx.job.id,
 	});
 }
 
@@ -458,12 +473,13 @@ async function decide(
 	};
 }
 
-function mediaContext(job: Job): MediaContext {
+function mediaContext(job: Job, seq: number): MediaContext {
 	return {
 		jobId: job.id,
 		dryRun: job.dryRun,
 		maxBytes: job.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE,
 		targets: job.targetFields ?? {},
+		...(journaling(job) ? { journal: { seq } } : {}),
 	};
 }
 
@@ -529,8 +545,10 @@ async function decideRecord(
 	const ctx: RecordCtx = {
 		deps,
 		job,
+		seq: rec.seq,
 		sourceKey,
 		linkId: linkKey(collection, locale, sourceKey),
+		link: null,
 		save,
 	};
 	// Known so far, so that a ContentWriteError from any content call still reports it.
@@ -586,7 +604,12 @@ async function decideRecord(
 		// Media is looked up even when a link failed, so the record reports every error.
 		let lookups: Record<string, MediaLookup | null> | undefined;
 		if (mediaRequests) {
-			const looked = await lookupRecordMedia(deps, cache, mediaContext(job), mediaRequests);
+			const looked = await lookupRecordMedia(
+				deps,
+				cache,
+				mediaContext(job, rec.seq),
+				mediaRequests,
+			);
 			lookups = looked.lookups;
 			errors.push(...looked.errors);
 		}
@@ -595,7 +618,7 @@ async function decideRecord(
 			const looked = await lookupPortableTextImages(
 				deps,
 				cache,
-				mediaContext(job),
+				mediaContext(job, rec.seq),
 				drafts,
 				template.portableText,
 			);
@@ -655,8 +678,14 @@ async function decideRecord(
 			return { status: "failed", sourceKey, entryId, errors: [sharedOnTranslation()] };
 		}
 		// A repaired link is saved only for an entry the record may write.
-		if (repaired && link) await deps.links.put(ctx.linkId, link);
+		if (repaired && link) {
+			await deps.links.put(ctx.linkId, link);
+			// Crash repair may have found an editor's entry: a rollback only moves it to Trash.
+			if (entry && journaling(job)) await journalCreated(ctx, entry.id, false);
+		}
+		ctx.link = link;
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
+		if (links) ctx.current = links.current;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
 		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
@@ -708,7 +737,7 @@ async function decideRecord(
 		// Downloads only for a record that will be written, after the draft and lock checks: field
 		// media first, then Portable Text images in document order.
 		if (lookups) {
-			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
+			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job, rec.seq), lookups);
 			found.newMedia = obtained.newMedia;
 			if (!obtained.ok) {
 				return {
@@ -725,7 +754,7 @@ async function decideRecord(
 			const obtained = await obtainPortableTextImages(
 				deps,
 				cache,
-				mediaContext(job),
+				mediaContext(job, rec.seq),
 				images,
 				found.newMedia,
 			);
@@ -908,6 +937,9 @@ async function finishUnchanged(
 		// A pending draft at the revision this importer last produced is its own (an earlier
 		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
 		if (job.publish && entry.pendingPublish && link?.writtenRev === entry.rev) {
+			// Publishing makes the draft's values live: the journal keeps the live ones first.
+			const failure = journaling(job) ? await journalPublish(ctx, entry, link) : null;
+			if (failure) return { status: "failed", sourceKey, entryId, errors: [failure] };
 			const published = await publishRev(ctx, entryId, entry.rev);
 			if (!published.ok)
 				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
@@ -1015,6 +1047,64 @@ function updateLinks(
 	return writes;
 }
 
+/** Journals the publish of the importer's own pending draft: every field it makes live (M5a). */
+async function journalPublish(
+	ctx: RecordCtx,
+	entry: EntrySnapshot,
+	link: LinkRow | null,
+): Promise<RecordError | null> {
+	const touched = {
+		fields: draftFields(entry),
+		slug: false,
+		taxonomies: [],
+		references: [],
+		bylines: false,
+	};
+	const before = preImage(entry, link, touched, undefined);
+	if ("code" in before) return before;
+	return journalUpdate(ctx, entry.id, before);
+}
+
+/**
+ * The write-ahead journal row of a write (M5a): a create's source ID, or the pre-image of every
+ * field and link an update changes and, when it publishes, of every field its publish makes live.
+ */
+async function journalWrite(
+	ctx: RecordCtx,
+	entry: EntrySnapshot | null,
+	plan: RecordPlan,
+	data: Readonly<Record<string, FieldValue>>,
+	media: Readonly<Record<string, FieldValue>>,
+): Promise<RecordError | null> {
+	if (!entry) {
+		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey);
+		return null;
+	}
+	const changed = new Set(plan.changes.map((c) => c.field));
+	const fields = new Set<string>();
+	for (const field of changed) {
+		if (Object.hasOwn(data, field)) fields.add(field);
+		else if (field.endsWith(".alt") && Object.hasOwn(media, field.slice(0, -4))) {
+			fields.add(field.slice(0, -4));
+		}
+	}
+	if (ctx.job.publish) for (const field of draftFields(entry)) fields.add(field);
+	fields.delete(SOURCE_ID_FIELD);
+	const resolved = ctx.links;
+	const touched = {
+		fields: [...fields],
+		slug: changed.has("slug"),
+		taxonomies: Object.keys(resolved?.taxonomies ?? {}).filter((t) =>
+			changed.has(`taxonomies.${t}`),
+		),
+		references: Object.keys(resolved?.references ?? {}).filter((f) => changed.has(f)),
+		bylines: resolved?.bylines !== undefined && changed.has("bylines"),
+	};
+	const before = preImage(entry, ctx.link, touched, ctx.current);
+	if ("code" in before) return before;
+	return journalUpdate(ctx, entry.id, before);
+}
+
 async function writeRecord(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
@@ -1023,7 +1113,6 @@ async function writeRecord(
 ): Promise<RowFields> {
 	const { deps, job, sourceKey, save } = ctx;
 	const { collection, locale } = job.template;
-	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
 	// Media and Portable Text fields are data fields: their values (null clears one) are written
 	// with the rest.
@@ -1033,6 +1122,20 @@ async function writeRecord(
 		media[field] = item?.blocks ?? null;
 	}
 	const data = { ...mapped.data, ...media };
+	// The journal row comes before the first write, so a crash leaves nothing it does not know of.
+	if (journaling(job)) {
+		const failure = await journalWrite(ctx, entry, plan, data, media);
+		if (failure) {
+			return {
+				status: "failed",
+				sourceKey,
+				entryId: entry?.id ?? null,
+				action: plan.action,
+				errors: [failure],
+			};
+		}
+	}
+	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	let written: { id: string; rev: string };
 	if (!entry && ctx.translationOf !== undefined) {
 		const { sourceId, value } = ctx.translationOf;
@@ -1086,6 +1189,7 @@ async function writeRecord(
 		}
 		written = { id: entry.id, rev: result.rev };
 	}
+	if (!entry && journaling(job)) await journalCreated(ctx, written.id, true);
 	// Record the revision we wrote before anything else, so crash repair can prove a draft is ours
 	// and publishes or links only that revision.
 	await save({
