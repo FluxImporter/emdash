@@ -133,6 +133,15 @@ and 10-12 for a read, so a reverted update costs about 175-265 queries and 10 ro
 the 1,000-query limit. The Workers cap is 3 (`WORKERS_ROLLBACK_BATCH_CAP`); the plan's review task
 re-measures it with the real rollback (V7) and the import's linked batch (V8).
 
+**Measured in the review (Task 9, 2026-11-03, local D1).** V7 holds: a rollback batch of three
+scheduled updates with every link kind (the five-step sequence 1, 2, 3, 4, 6, three references,
+two taxonomies and two bylines each) ran 744 queries, three permanent deletes 214, three plain
+updates 264-271, three updates restoring 15 references each 546. The cap stays 3. V8 did not hold
+for the import caps set before M5a: 20 unlinked published updates ran 1,377 queries and 10 linked
+updates 1,331 (1,357 and 1,287 with `journal: false`, so the journal adds about one to five
+queries per record). `WORKERS_BATCH_CAP` is now 11 (at most 864) and `WORKERS_LINKED_BATCH_CAP` 6
+(at most 855). See the [review note](../notes/2026-11-03-m5a-review.md).
+
 ## The journal
 
 ```ts
@@ -172,6 +181,11 @@ interface JournalEntry {
 			references?: Record<string, string[]>;
 			bylines?: { bylineId: string; roleLabel: string | null }[];
 		};
+		/**
+		 * The write published a pending draft and the template maps references: the read returned
+		 * the draft's selection, not the live one (`references_not_restored`, Open issues).
+		 */
+		referencesUnknown?: true;
 		/** A resumed write found the entry at another `_rev` than this pre-image's (Rollback 3a). */
 		uncertain?: true;
 	};
@@ -196,7 +210,7 @@ Where the engine writes it:
 | --- | --- |
 | `writeRecord`, before the `writing` save, for a create | put-if-absent `{ kind: "create", entryId: null, sourceIdValue }` |
 | `writeRecord`, right after the create returns | put with `entryId` and `confirmed: true` |
-| `writeRecord`, before the `writing` save, for an update | put-if-absent `{ kind: "update", entryId, before, wrote }`; `before.live` also holds every field of a pending draft whose value differs from the live one, whether or not the job publishes (rolling back publishes the restored live values, which must not make the rest of an earlier draft live); `wrote.taxonomies` holds the term groups the write gives each changed taxonomy. On an existing row, merge the new fields and links, and take the newer `wrote`. When the record's row was `writing` (a resumed write) and the entry's `_rev` is not the stored `before.rev`, set `before.uncertain` |
+| `writeRecord`, before the `writing` save, for an update | put-if-absent `{ kind: "update", entryId, before, wrote }`; `before.live` also holds every field of a pending draft whose value differs from the live one, whether or not the job publishes (rolling back publishes the restored live values, which must not make the rest of an earlier draft live); `wrote.taxonomies` holds the term groups the write gives each changed taxonomy. On an existing row, merge the new fields and links, and take the newer `wrote`. When the record's row was `writing` (a resumed write) and the entry's `_rev` is not the stored `before.rev`, set `before.uncertain`, unless the link row read before this write names this job at the entry's `_rev` (the entry is as this job left it) |
 | `finishUnchanged`, before publishing the importer's own draft | as for an update; `live` holds every field whose `liveData` differs from `data` |
 | Crash repair adopts an entry for a `create` row without `entryId` | put with `entryId` and `confirmed: false` |
 | `obtainRecordMedia` / Portable Text images, after an upload with `deduplicated: false` | put `journalMedia` |
@@ -232,13 +246,16 @@ original.
 //   rolledBackBy?: string                (originals)
 //   journal?: boolean                    (import jobs; absent before M5a: no journal)
 //   sourceId?: string                    (import jobs from a URL source)
+//   created?: { terms: string[]; termCount: number }   (import jobs: terms created, "Job warnings")
+//   purging?: boolean                    (set by retention before it deletes the job's rows)
 // A rollback job copies collection and locale from the original's template for display, has
 // `uploadId` of the original (unused), `cursor.seq` = the journal seq it continues below
 // (Number.MAX_SAFE_INTEGER at start), and `dryRun`.
 // Counters gain `reverted` (absent: 0). RecordStatus gains "reverted". `counterFor` counts a
 //   rollback row that is `reverted`, or `planned` with a rollback action, as `reverted`.
 // RecordRow.action also takes "delete" | "trash" | "revert" on rollback rows; RecordRow gains
-//   step?: number (the last revert step done).
+//   step?: number (the last revert step done) and pendingStep?: number (the step sent and not
+//   yet saved as done); `writtenRev` holds the `_rev` the last step returned.
 // LinkRow gains jobId?: string.
 ```
 
@@ -306,9 +323,9 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    1's (the restored live values by `sameStored`, read from the draft for step 1 and from the live
    values after it, the slug when no draft hides it, the restored references, bylines and terms,
    which costs one more read), from step 5 on also the restored draft values, and the step's own
-   (2: published without a draft; 3: not published; 4: no draft; 6: the schedule), and from step
-   2 on, when `before.draft` is absent, no field outside `before.live` whose draft and live values
-   differ (any such difference is someone else's edit); otherwise `rollback_changed`. After the last step, and before the link moves, the row is saved once more
+   (2: published without a draft; 3: not published; 4: no draft; 6: the schedule), and, from
+   step 1 on, when `before.draft` is absent, no field outside `before.live` whose draft and live
+   values differ (any such difference is someone else's edit); otherwise `rollback_changed`. After the last step, and before the link moves, the row is saved once more
    as `writing` with the final step and `_rev` and no `pendingStep`, so a stop after the link put
    resumes by `writtenRev`. The saves cost one plugin storage write per step sent plus that one,
    as many as a save after each step and one before the first. Before step 1, a pre-image
@@ -417,6 +434,7 @@ has created a term; a job without a journal cannot be rolled back.
 | `locked` | locked | Another user holds the entry's lock |
 | `journal_too_large` | import error | The record's pre-image is over `MAX_JOURNAL_BYTES` |
 | `journal_incomplete` | import error | A changed reference field's current selection was truncated |
+| `rollback_original_gone` | job error | The original job is gone or retention is deleting it (`purging`); the rollback job fails when it next runs (Retention) |
 | `journal_kind_unknown` | failed | A journal row of a kind this version does not know (a downgrade) |
 | `nothing_to_roll_back` | warning (`unchanged`) | The job never wrote the entry, or the entry it created is gone |
 
@@ -455,7 +473,7 @@ after a partial write; the next attempt sees a `_rev` that is neither the link's
 reports `rollback_changed` (documented, as for partial creates).
 
 On Workers one `jobs/next` processes at most `WORKERS_ROLLBACK_BATCH_CAP` (3) rows, from the
-per-call D1 counts (Results; re-measured as V7 in the plan's review task), with `WORKERS_LOOKUP_BUDGET` for term lookups. On Node the job's `batchSize` applies.
+per-call D1 counts (Results; re-measured as V7 in the review: at most 744 queries for three rows), with `WORKERS_LOOKUP_BUDGET` for term lookups. On Node the job's `batchSize` applies.
 
 Import cost: a create adds two storage calls (the write-ahead put and the `entryId` put), an update
 one (the put-if-absent; a get and put more when the row exists), a created media item one. No
@@ -466,8 +484,8 @@ extra content reads: everything in the pre-image comes from the reads the import
 | Bound | Value | Why |
 | --- | --- | --- |
 | Journal row | `MAX_JOURNAL_BYTES` = 1 MiB of JSON | Within D1's row size (V6); the record row already holds up to 1 MiB values (M4a) |
-| Rollback batch on Workers | `WORKERS_ROLLBACK_BATCH_CAP` = 3 | Up to seven content calls per row, about 175-265 D1 queries (Results, V7) |
-| Rollback lookup cost | `COST_RECORD` per row, `COST_READ` per reference target looked up (one the entry still holds is not) and per term read, and per revert step update 35, publish 35, unpublish 15, discard 10, schedule 15; trash and permanent delete `COST_READ` x 5 each | V7's queries per call at the rate `COST_READ` (5) sets for a read of 10-12 queries, about 2.2 per unit. The budget is checked before each row, so a batch always reverts at least one; Task 9 measures |
+| Rollback batch on Workers | `WORKERS_ROLLBACK_BATCH_CAP` = 3 | Up to seven content calls per row, about 175-265 D1 queries (Results, V7); measured at most 744 queries for three rows |
+| Rollback lookup cost | `COST_RECORD` per row, `COST_READ` per reference target looked up (one the entry still holds is not) and per term read, and per revert step update 35, publish 35, unpublish 15, discard 10, schedule 15; trash and permanent delete `COST_READ` x 5 each | V7's queries per call at the rate `COST_READ` (5) sets for a read of 10-12 queries, about 2.2 per unit. Before each row after the first, the batch reserves the row's worst case (`ROW_RESERVE` = 135, plus `COST_READ` for every reference ID in the pre-image) and stops when the budget would not cover it, so a batch always reverts at least one. Measured in the review: 0.94-1.53 queries per unit (the most for the five-step sequence), so 600 units are at most about 920 queries, and the 3-row cap stopped every measured batch first |
 | Rollback batch on Node | the rollback job's `batchSize` (default 50, maximum 500) | As imports |
 | Media IDs in the warning | 100, then a count | Job size |
 | Rollbacks per job | One | `rolledBackBy` |
@@ -637,13 +655,14 @@ Each gets its own spec; these rulings fix the direction and the journal they wri
     imports rely on this to avoid a second job for content a running job is importing.
 - **Settled by this design.** M4c's "M5 rollback needs its own record of job-created media"
   (`journalMedia`); the `lastImport` skip after a cancelled run; M4e's partial creates on D1 can now
-  be cleaned up by a rollback (moved to Trash).
+  be cleaned up by a rollback (moved to Trash); M4e's unmeasured D1 query count for linked
+  batches, measured in the review (V8), which lowered `WORKERS_LINKED_BATCH_CAP` to 6 and
+  `WORKERS_BATCH_CAP` to 11.
 - **From M4e** (`2026-11-03-m4e-review.md`), unchanged: the crash repair adoption window (narrowed
   for rollback: adopted entries are never permanently deleted), the ambiguous `flux_source_id`
   in the job's locale, the partial linked create's `translation_exists` loop on re-runs, the dry run
   that cannot predict two rows naming one source, V4's outcome, i18n turned off, jobs created
-  before M4e, the fail-closed refusal, the spec-listed issues, the unmeasured D1 query count for
-  linked batches, the parity gaps, the minor test gaps, the known flakes (F1, F2, port 4397), and
+  before M4e, the fail-closed refusal, the spec-listed issues, the parity gaps, the minor test gaps, the known flakes (F1, F2, port 4397), and
   the known gaps from the spec and plan.
 - **From M4d, M4c and earlier**, as carried in the M4e review, unchanged; the production Cloudflare
   build blocker from M2 still stands.

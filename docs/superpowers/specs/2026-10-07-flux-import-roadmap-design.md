@@ -217,7 +217,7 @@ tests, and M5a alone meets the milestone's acceptance for the writes M2-M4e make
 
 | Part | Scope | Status |
 | --- | --- | --- |
-| **M5a** ([spec](./2026-11-03-flux-import-m5a-journal-rollback-design.md)) | Run journal and rollback: a write-ahead pre-image of every entry a job creates or changes (data, slug, links, status, schedule, pending draft), a record of the media it creates, the job that last wrote each link; `jobs/rollback` as a resumable, dry-runnable job that deletes created entries and restores changed ones, refusing entries changed since; `lastImport` cleared on cancel and rollback | Spec |
+| **M5a** ([spec](./2026-11-03-flux-import-m5a-journal-rollback-design.md)) | Run journal and rollback: a write-ahead pre-image of every entry a job creates or changes (data, slug, links, status, schedule, pending draft), a record of the media it creates, the job that last wrote each link; `jobs/rollback` as a resumable, dry-runnable job that deletes created entries and restores changed ones, refusing entries changed since; `lastImport` cleared on cancel and rollback | Done ([review](../notes/2026-11-03-m5a-review.md)) |
 | **M5b** | Record rules: create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" through per-field fingerprints on the link row; publish, draft or schedule, with a per-record schedule; all journalled | Planned |
 | **M5c** | Missing entries: trash or unpublish entries this import created that a completed run did not see, behind a safety threshold; journalled, and rolled back by restoring from Trash or republishing | Planned |
 
