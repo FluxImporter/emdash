@@ -66,7 +66,7 @@ are **confirmed** from source unless marked otherwise.
 | F4 | Publish (both collection kinds) sets `status = 'published'`, `draft_revision_id = NULL` and `scheduled_at = NULL`, sets `updated_at` to now and runs `version + 1`. Revisioned collections copy the draft (or live) revision into the columns and apply a staged slug | `src/database/repositories/content.ts:2486-2525`, `:2583`, `:2620-2635` |
 | F5 | Due entries are published by `publishDueContent`, which calls the runtime's `handleContentPublish` with `origin: { source: "scheduler" }`, so `content:beforePublish` runs again and a refusal unschedules the entry. It selects `scheduled_at <= now AND deleted_at IS NULL` (trashed entries are skipped), whatever the status. On first publication it sets `publishedAt` to the scheduled time. Edits after scheduling keep the schedule, and the draft as it is at due time is what goes live. Node runs the sweep on a timer; Workers need a Cron Trigger; `runtime.runScheduledTasks()` runs one pass | `src/emdash-runtime.ts:898-914`, `:933-975`; `src/scheduled-publish.ts:113-225` (`:165`); `src/database/repositories/content.ts:2231-2239`; [working with content: publish or schedule](https://docs.emdashcms.com/guides/working-with-content/#publish-or-schedule-changes) |
 | F6 | So a scheduled entry that the sweep publishes, with no other change in between, ends up exactly one `version` past the `_rev` its schedule returned, `published`, with no draft, no `scheduledAt`, and `updatedAt` at or after the scheduled time (F2, F4, F5). Any edit adds at least one more `version` (F7, F8) | derived from F2, F4, F5, F7, F8; **unconfirmed** until V4 |
-| F7 | On a revisioned collection, a save that touches only `data`, `slug` or `references` stages a draft revision with `version + 1` and leaves `updated_at` alone. `_rev` therefore moves on every admin draft save, autosave included (the admin autosaves through the same `PUT`). On a collection without revisions an update writes the columns, stays `published` and is live at once, with `version + 1` and a new `updated_at`. An update keeps `status` and `scheduled_at` | `src/database/repositories/content.ts:1034-1076`, `:2831-2855` (`:2840-2841`); `src/emdash-runtime.ts:3943-4037` |
+| F7 | On a revisioned collection, a save that touches only `data`, `slug` or `references` stages a draft revision with `version + 1` and leaves `updated_at` alone. `_rev` therefore moves on every admin draft save, autosave included (the admin autosaves through the same `PUT`). On a collection without revisions an update writes the columns, stays `published` and is live at once, with `version + 1` and a new `updated_at`. An update keeps `status` and `scheduled_at`. Measured in planning (V3): a revisioned update that sends data and links together moves `version` by 2; no rule depends on the step | `src/database/repositories/content.ts:1034-1076`, `:2831-2855` (`:2840-2841`); `src/emdash-runtime.ts:3943-4037` |
 | F8 | Term assignments made through the admin's terms route (`setTermsForEntry`) touch only `content_taxonomies`, so `version`, `updated_at` and `_rev` do not move. `taxonomies`, `bylines` and `references` sent in a `PUT` body do move `version` | `src/astro/routes/api/content/[collection]/[id]/terms/[taxonomy].ts:180`; `src/database/repositories/taxonomy.ts:802-837`; `src/database/repositories/byline.ts:1405-1409`; `src/database/repositories/content.ts:1072-1076`; M5a review I3 |
 | F9 | The admin's `PUT /content/{collection}/{id}` calls the same runtime `handleContentUpdate` the importer calls, with `actor = { id, role }` and the lock check added. Content rows have no `updated_by` or source column. Revisions store only `author_id` (M5a F3), and the importer passes its route user as `actor` too | `src/astro/routes/api/content/[collection]/[id].ts:69-151` (`:134`); `src/schema/registry.ts:1871-1885`; `src/emdash-runtime.ts:3943-3948`; `packages/flux-import/src/emdash/content.ts` (`actor: this.actor`) |
 | F10 | `content:afterSave` gets the saved item (draft-hydrated), `isNew`, `actor`, `locale` and `translationOf`, but not the previous data. `content:beforeSave` gets only the incoming data. Both fire for trusted runtime writes, and update has no option to skip them. `afterSave` runs deferred in `after()` | `src/plugins/hooks.ts:76-92`, `:561-667`; `src/plugins/types.ts:1408-1434`; `src/emdash-runtime.ts:3742-3760`, `:4074-4085`, `:6105-6130` |
@@ -222,8 +222,10 @@ field `publishAt`, before any lookup or write.
 | Image, file | Not looked up in the media map, not downloaded, not compared, not written |
 | Portable Text | Converted, images not looked up or downloaded, not compared, not written |
 
-- An update's `data` holds only the listed data fields that changed, plus their media and Portable
-  Text values. The M5a rule stays: data and slug are left out when only links changed.
+- An update's `data` holds the listed data fields that are not protected, plus their media and
+  Portable Text values. Unchanged ones are sent back equal, as in M2-M5a. The M5a rule stays: data
+  and slug are left out when only links changed. (Amended in planning: "only the listed data
+  fields that changed" would have changed how M2-M5a write an update for no gain.)
 - **Required fields.** Required-field checks (M4a, `emptiedRequired`) apply to written fields
   only. An unlisted field keeps its stored value, which EmDash already accepted.
 - **Journal.** The pre-image holds what the update changes, as in M5a, plus every pending-draft
@@ -309,9 +311,14 @@ the job's own, above):
 
 | The link row has | A mapping counts as edited when |
 | --- | --- |
-| `fields` (written by M5b) | its fingerprint is missing, or differs from the current value's |
+| `fields` (written by M5b) | its fingerprint is missing; or it differs from the current value's, and either the mapping is a taxonomy or `entry.rev !== writtenRev` |
 | no `fields` (written before M5b) and `writtenRev === entry.rev` | it is a taxonomy (term edits do not move `_rev`, F8); every other mapping counts as unedited |
 | no `fields` and no matching `writtenRev` (an edit since, or a repaired link) | always |
+
+Amended in planning: an unmoved `_rev` vouches for every mapping but the taxonomies, also when the
+link has `fields`. Only term edits leave `_rev` (F8), and a fingerprint can differ without an edit:
+the importer's own pending draft stages a slug the read cannot show (F13), so comparing alone would
+call the importer's own slug edited.
 
 A mapping that counts as edited is resolved without side effects (Decisions) and compared:
 
@@ -350,7 +357,7 @@ nothing changes (draft).
 | Entry before the record | Data plan | Target `now` | Target `at T` |
 | --- | --- | --- | --- |
 | none | create | create, publish (as today) | create, `schedule(T)` |
-| published, no draft | update | update, publish (as today) | revisioned: update (stages a draft), `schedule(T)`; without revisions: update (live at once), warning `not_scheduled` |
+| published, no draft | update | update, publish (as today) | revisioned: update (stages a draft), `schedule(T)`; without revisions, or when only terms and bylines change (no draft is staged, M5a V5): update (live at once), warning `not_scheduled` |
 | published, no draft | unchanged | `unchanged` | `unchanged` (nothing pending to schedule) |
 | the importer's own pending state (`writtenRev === entry.rev`: a draft, a scheduled draft, or a published entry with its draft) | update | update, publish | update, then `schedule(T)` unless the entry is already scheduled for exactly `T` (an update keeps the schedule, F7) |
 | the importer's own pending state | unchanged | publish (as today; it also clears an earlier schedule, F4) | `schedule(T)`; `unchanged` when it is already scheduled for exactly `T` |
@@ -431,8 +438,9 @@ runs only for an entry the rollback leaves unpublished or published without repu
 example a draft the job scheduled. Unschedule has no hook and cannot be refused. It is
 lock-checked like every step. `reached()` (the resumed-step check) treats step 7 as reached when
 `scheduledAt` is null. The step is numbered 7 so that M5a rows' saved `step` numbers keep their
-meaning. A dry-run rollback plans it as a change `{ field: "publishAt", before: <current>, after:
-null }`.
+meaning. A dry-run rollback plans it as M5a's schedule change, `{ field: "scheduledAt", before:
+<current>, after: null }` (amended in planning: M5a's dry run already reports a schedule
+difference that way, so a second `publishAt` change would report it twice).
 
 **Link hand-back.** The restored link carries `before.link.fields` and `before.link.scheduledAt`.
 When `before.link` was null, the link is deleted (M5a).
@@ -459,7 +467,7 @@ the revert sequence then runs from the published state. A row that fails it stay
 | `exists` | warning (`unchanged`) | `mode: "create"` and the entry exists |
 | `not_found` | warning (`unchanged`) | `mode: "update"` and no entry has the key |
 | `field_edited` | warning | A protected mapping differs from the feed; not written |
-| `not_scheduled` | warning | The collection has no revisions and the published entry's update went live at once |
+| `not_scheduled` | warning | The published entry's update went live at once: the collection has no revisions, or only terms and bylines changed (amended in planning) |
 | `schedule_conflict`, `schedule_locked` | conflict, locked | The schedule call met a stale `_rev` or an editor's lock; saved as a draft |
 | `schedule_unverified` | conflict | A resumed schedule cannot be proven to be the importer's |
 | `invalid_date`, `not_scalar` | failed, field `publishAt` | The `publishAt` value cannot be read |
