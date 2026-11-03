@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	MAX_PORTABLE_TEXT_IMAGES,
+	MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES,
+} from "../../src/engine/portable-text.js";
+import {
 	applyTemplate,
 	type CompiledTemplate,
 	compileTemplate,
@@ -200,5 +204,137 @@ describe("applyTemplate with translationOf", () => {
 	it("shares nothing without translationOf", () => {
 		const t = templateSchema.parse({ ...template, locale: "en", translationOf: undefined });
 		expect([...compiled(t).shared]).toEqual([]);
+	});
+});
+
+describe("applyTemplate with translationOf: shared mappings stay unread", () => {
+	const rich: SchemaField[] = [
+		{ slug: "title", type: "string" },
+		{ slug: "body", type: "portableText" },
+		{ slug: "notes", type: "portableText", translatable: false },
+		{ slug: "badge", type: "image", translatable: false },
+	];
+
+	function build(extra: Record<string, unknown>, context: { sharedRequired?: string[] } = {}) {
+		const t = templateSchema.parse({
+			version: 1,
+			collection: "products",
+			locale: "fr",
+			key: { from: "id" },
+			translationOf: { from: "en_id", locale: "en" },
+			...extra,
+		});
+		const result = compileTemplate(t, { targets: targetFieldsOf(t, rich), ...context });
+		if (!result.ok) throw new Error(result.problems.join("; "));
+		return result.compiled;
+	}
+
+	const html = { type: "portableText", format: "html" };
+	const big = (bytes: number) => `<p>${"a".repeat(bytes)}</p>`;
+
+	it("does not count a shared Portable Text field against the record's source bytes", async () => {
+		const c = build({
+			fields: { body: { from: "Body", ...html }, notes: { from: "Notes", ...html } },
+		});
+		const half = Math.floor(MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES * 0.6);
+		const data = { id: "F1", Body: big(half), Notes: big(half) };
+		const linked = await applyTemplate(c, { ...data, en_id: "E1" });
+		expect(linked.ok).toBe(true);
+		expect(linked).not.toHaveProperty("warnings");
+		expect(await applyTemplate(c, { ...data, en_id: "" })).toMatchObject({
+			ok: false,
+			errors: [{ field: "notes", code: "portable_text_too_large" }],
+		});
+	});
+
+	it("does not count a shared Portable Text field's images against the record's limit", async () => {
+		const c = build({ fields: { notes: { from: "Notes", ...html } } });
+		const images = Array.from({ length: MAX_PORTABLE_TEXT_IMAGES + 1 }, (_, n) => {
+			return `<img src="https://example.com/${n}.png">`;
+		}).join("");
+		const data = { id: "F1", Notes: `<p>x</p>${images}` };
+		const linked = await applyTemplate(c, { ...data, en_id: "E1" });
+		expect(linked.ok).toBe(true);
+		expect(linked).not.toHaveProperty("warnings");
+		const standalone = await applyTemplate(c, { ...data, en_id: "" });
+		expect(standalone).toMatchObject({
+			ok: true,
+			warnings: [{ field: "notes", code: "image_dropped" }],
+		});
+	});
+
+	it("does not evaluate a taxonomy expression or a shared image alt expression", async () => {
+		const c = build({
+			fields: {
+				title: { from: "Nom", type: "text" },
+				badge: { from: "Badge", type: "image", alt: { expr: "Alt + 1" } },
+			},
+			taxonomies: { category: { expr: "Category + 1" } },
+		});
+		const data = {
+			id: "F1",
+			Nom: "Bureau",
+			Badge: "https://example.com/b.png",
+			Alt: "x",
+			Category: "Office",
+		};
+		expect(await applyTemplate(c, { ...data, en_id: "E1" })).toEqual({
+			ok: true,
+			value: { key: "F1", translationOf: "E1", data: { title: "Bureau" }, media: {} },
+		});
+		const standalone = await applyTemplate(c, { ...data, en_id: "" });
+		expect(standalone).toMatchObject({ ok: false });
+		const codes = standalone.ok ? [] : standalone.errors.map((e) => [e.field, e.code]);
+		expect(codes).toEqual([
+			["badge.alt", "expr_error"],
+			["taxonomies.category", "expr_error"],
+		]);
+	});
+
+	it("reports only the translationOf error, not required, for a bad value", async () => {
+		const c = build(
+			{ fields: { title: { from: "Nom", type: "text" } } },
+			{ sharedRequired: ["sku"] },
+		);
+		const data = { id: "F1", Nom: "Bureau" };
+		for (const [en_id, code] of [
+			["x".repeat(257), "key_too_long"],
+			[{ id: "E1" }, "not_scalar"],
+			[["E1"], "not_scalar"],
+		] as const) {
+			expect(await applyTemplate(c, { ...data, en_id })).toEqual({
+				ok: false,
+				errors: [{ field: "translationOf", code, message: expect.any(String) }],
+			});
+		}
+	});
+
+	it("treats an expression that returns an empty string as a standalone record", async () => {
+		const t = templateSchema.parse({ ...template, translationOf: { expr: '""', locale: "en" } });
+		const result = await applyTemplate(compiled(t), {
+			...row,
+			SKU: "S1",
+			Prix: "12,5",
+			Badge: "https://example.com/badge.png",
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			value: {
+				key: "F1",
+				data: { title: "Bureau", sku: "S1", price: 12.5 },
+				links: { taxonomies: { category: [{ path: ["Office"] }] } },
+			},
+		});
+		expect(result.ok && "translationOf" in result.value).toBe(false);
+		// Standalone, so the shared required fields the template does not map fail.
+		const unmapped = templateSchema.parse({
+			...t,
+			fields: { title: { from: "Nom", type: "text" } },
+			taxonomies: undefined,
+		});
+		expect(await applyTemplate(compiled(unmapped, ["sku"]), row)).toEqual({
+			ok: false,
+			errors: [{ field: "sku", code: "required", message: "The field is required" }],
+		});
 	});
 });
