@@ -61,6 +61,7 @@ import {
 	sourceNotFoundMessage,
 	termPath,
 } from "./resolve.js";
+import { rollbackPass, rollbackRetryPass } from "./revert.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -1365,6 +1366,37 @@ async function retryPass(
 	}
 }
 
+/** An import job's batch: the source-ID field, the compiled template, then a pass. */
+async function importBatch(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+	cache: LookupCache,
+): Promise<Outcome> {
+	if (!job.dryRun && !job.schemaReady) {
+		await deps.content.ensureSourceIdField(job.template.collection);
+		job.schemaReady = true;
+	}
+	// Parsed once per batch and reused for every record; job creation already checked them.
+	const compiled = compileTemplate(jobTemplate(job), {
+		targets: job.targetFields,
+		siteTimezone: job.siteTimezone,
+		taxonomies: job.taxonomies,
+		sharedRequired: job.sharedRequired,
+	});
+	if (!compiled.ok) {
+		return {
+			done: false,
+			error: { code: "invalid_template", message: compiled.problems.join("; ") },
+		};
+	}
+	const template = compiled.compiled;
+	return job.phase === "retry"
+		? retryPass(deps, job, template, started, limit, cache)
+		: importPass(deps, job, template, started, limit, cache);
+}
+
 /**
  * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
@@ -1392,28 +1424,14 @@ export async function runBatch(
 	cache.mediaDeadline = started + job.budgetMs + MEDIA_GRACE_MS;
 	let outcome: Outcome;
 	try {
-		if (!job.dryRun && !job.schemaReady) {
-			await deps.content.ensureSourceIdField(job.template.collection);
-			job.schemaReady = true;
-		}
-		// Parsed once per batch and reused for every record; job creation already checked them.
-		const compiled = compileTemplate(jobTemplate(job), {
-			targets: job.targetFields,
-			siteTimezone: job.siteTimezone,
-			taxonomies: job.taxonomies,
-			sharedRequired: job.sharedRequired,
-		});
-		if (!compiled.ok) {
-			outcome = {
-				done: false,
-				error: { code: "invalid_template", message: compiled.problems.join("; ") },
-			};
-		} else {
-			const template = compiled.compiled;
+		// A rollback reads its original's journal, not a source file (M5a).
+		if (job.kind === "rollback") {
 			outcome =
 				job.phase === "retry"
-					? await retryPass(deps, job, template, started, limit, cache)
-					: await importPass(deps, job, template, started, limit, cache);
+					? await rollbackRetryPass(deps, job, started, limit, cache)
+					: await rollbackPass(deps, job, started, limit, cache);
+		} else {
+			outcome = await importBatch(deps, job, started, limit, cache);
 		}
 	} catch (e) {
 		if (e instanceof SourceMissingError) {

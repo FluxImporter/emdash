@@ -826,6 +826,29 @@ export async function loadTerms(
 	await termIndex(deps, cache, taxonomy, locale);
 }
 
+/** A loaded taxonomy's term with this translation group (M5a rollback); undefined when none. */
+export function termOfGroup(
+	cache: LookupCache,
+	taxonomy: string,
+	group: string,
+): TermInfo | undefined {
+	return cache.terms.get(taxonomy)?.byGroup.get(group);
+}
+
+/**
+ * The IDs of the locale's bylines, loaded once per batch (M5a rollback); null when the locale has
+ * more than `MAX_BYLINE_LOOKUP`, so a byline not loaded may still exist.
+ */
+export async function bylineIdsOf(
+	deps: ResolveDeps,
+	cache: LookupCache,
+	locale: string,
+): Promise<ReadonlySet<string> | null> {
+	const index = await bylineIndex(deps, cache, locale);
+	if (!index.complete) return null;
+	return new Set([...index.byName.values()].flat().map((b) => b.id));
+}
+
 /**
  * How the record log shows an assigned term: its slug path when the batch loaded it (the
  * template's locale), else its translation group.
