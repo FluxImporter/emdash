@@ -610,19 +610,23 @@ async function decideRecord(
 		if (!entry && existing !== null && sourceIdReady(job)) {
 			if (lookingUp) cache.spend(COST_READ);
 			// A translation's source ID is its source's key (spec M4e F1), which an editor's
-			// translation carries too: such an entry is taken only for a row this job was writing.
-			const found = await deps.content.findBySourceId(
+			// translation carries too: such an entry is taken only for a row this job was writing
+			// or that names it, and only in the source's group (an entry of its own whose key
+			// equals the value is another record's).
+			const byValue = await deps.content.findBySourceId(
 				collection,
 				locale,
 				translates ?? sourceKey,
 				read,
 			);
 			if (
-				found &&
-				(translates === undefined || existing.status === "writing" || existing.entryId === found.id)
+				byValue &&
+				(translates === undefined ||
+					((existing.status === "writing" || existing.entryId === byValue.id) &&
+						(source === null || (byValue.group ?? byValue.id) === source.group)))
 			) {
-				entry = found;
-				link = { collection, locale, sourceKey, entryId: found.id };
+				entry = byValue;
+				link = { collection, locale, sourceKey, entryId: byValue.id };
 				await deps.links.put(ctx.linkId, link);
 				repaired = true;
 			}

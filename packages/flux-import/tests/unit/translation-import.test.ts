@@ -3,7 +3,7 @@ import { LEASE_GRACE_MS, runBatch } from "../../src/engine/batch.js";
 import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
 import type { SchemaField } from "../../src/engine/template.js";
-import { type Job, linkKey, type RecordRow } from "../../src/engine/types.js";
+import { type Job, linkKey, type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
 type Deps = ReturnType<typeof makeDeps>["deps"];
@@ -501,5 +501,198 @@ describe("importing translations", () => {
 		expect(await deps.links.get(linkKey("products", "fr", "F1"))).toMatchObject({
 			entryId: fr[0]?.id,
 		});
+	});
+	it("repairs a crash only into the source's group, never adopting another record's entry", async () => {
+		const { deps, clock } = setup();
+		const en = await importEnglish(deps);
+		// A French record keyed E1 imported as an entry of its own: its source ID is "E1" too.
+		await run(deps, french(), FR_HEADER + frRow("E1", "", "Autre", ",S7,70,,,,"));
+		const other = frEntry(deps, "autre")!;
+		const job = await start(deps, french(), FR_HEADER + frRow("F1", "E1", "Bureau"));
+		const create = deps.content.create.bind(deps.content);
+		let crash = true;
+		deps.content.create = async (input) => {
+			if (crash) {
+				crash = false;
+				throw new Error("process killed");
+			}
+			return create(input);
+		};
+		await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+		expect((await rows(deps, job.id))[0]).toMatchObject({ status: "writing", entryId: null });
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 1, failed: 0 });
+		const bureau = frEntry(deps, "bureau")!;
+		expect(bureau.group).toBe(en.get("E1")!.id);
+		expect(await deps.links.get(linkKey("products", "fr", "F1"))).toMatchObject({
+			entryId: bureau.id,
+		});
+		expect(deps.content.entries.get(other.id)).toMatchObject({
+			slug: "autre",
+			data: { title: "Autre", sku: "S7", price: 70 },
+		});
+	});
+
+	it("repairs from an earlier row that names the entry, whatever its status", async () => {
+		const { deps } = setup();
+		const en = await importEnglish(deps);
+		// F3 has no source, so the job keeps its file for a retry.
+		const csv = FR_HEADER + frRow("F1", "E1", "Bureau") + frRow("F3", "E3", "Chaise");
+		const first = await run(deps, french(), csv);
+		const bureau = frEntry(deps, "bureau")!;
+		// The link is lost and the row failed after the write: only its entry ID names the entry.
+		await deps.links.delete(linkKey("products", "fr", "F1"));
+		const row = first.rows[0]!;
+		await deps.records.put(recordKey(first.job.id, row.seq), {
+			...row,
+			status: "failed",
+			errors: [{ field: "title", code: "emdash_error", message: "Lost" }],
+		});
+		await transitionJob(deps, first.job.id, "retry");
+		await runToEnd(deps, first.job.id);
+		expect([...deps.content.entries.values()].filter((e) => e.locale === "fr")).toHaveLength(1);
+		expect(bureau.group).toBe(en.get("E1")!.id);
+		expect(await deps.links.get(linkKey("products", "fr", "F1"))).toMatchObject({
+			entryId: bureau.id,
+		});
+		const [retried] = await rows(deps, first.job.id);
+		expect(retried).toMatchObject({ entryId: bureau.id });
+		expect(retried?.status).not.toBe("failed");
+	});
+
+	const plain = () =>
+		french({
+			fields: { title: { from: "Nom", type: "text" } },
+			taxonomies: undefined,
+			bylines: undefined,
+		});
+	const twoLinked = FR_HEADER + frRow("F1", "E1", "Bureau") + frRow("F2", "E2", "Lampe");
+
+	it("charges the entry read through the link row without link mappings", async () => {
+		// Per re-run record: COST_RECORD 25, the source's link row 1 and read 5, the entry's read 5.
+		for (const [budget, seq] of [
+			[36, 1],
+			[37, 2],
+		] as const) {
+			const { deps } = setup();
+			await importEnglish(deps);
+			await run(deps, plain(), twoLinked);
+			const job = await start(deps, plain(), twoLinked);
+			const after = await runBatch(deps, job.id, "driver", Number.POSITIVE_INFINITY, budget);
+			expect([budget, after.cursor.seq]).toEqual([budget, seq]);
+		}
+	});
+
+	it("charges crash repair's read without link mappings", async () => {
+		// The repaired record: COST_RECORD 25, the source's link row 1 and read 5, the repair read 5.
+		for (const [budget, seq] of [
+			[36, 1],
+			[37, 2],
+		] as const) {
+			const { deps, clock } = setup();
+			await importEnglish(deps);
+			const job = await start(deps, plain(), twoLinked);
+			let crash = true;
+			deps.content.afterWrite = () => {
+				if (crash) {
+					crash = false;
+					throw new Error("process killed");
+				}
+			};
+			await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+			clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+			const after = await runBatch(deps, job.id, "driver", Number.POSITIVE_INFINITY, budget);
+			expect([budget, after.cursor.seq]).toEqual([budget, seq]);
+		}
+	});
+
+	it("keeps emdash_conflict for a CONFLICT whose re-read finds no translation", async () => {
+		const { deps } = setup();
+		await importEnglish(deps);
+		deps.content.failWrite = (data) =>
+			data.title === "Bureau" ? new ContentWriteError("emdash_conflict", "Slug taken") : null;
+		const {
+			rows: [row],
+		} = await run(deps, french(), FR_HEADER + frRow("F1", "E1", "Bureau"));
+		expect(row).toMatchObject({
+			action: "create",
+			errors: [{ code: "emdash_conflict", message: "Slug taken" }],
+		});
+		expect(frEntry(deps, "bureau")).toBeUndefined();
+	});
+
+	it("retries a CONFLICT row as translation_exists and a NOT_FOUND row as a linked create", async () => {
+		const { deps } = setup();
+		const en = await importEnglish(deps);
+		const desk = en.get("E1")!;
+		const lamp = en.get("E2")!;
+		let raced = false;
+		let trashed = false;
+		deps.content.failWrite = (data) => {
+			if (data.title === "Bureau" && !raced) {
+				raced = true;
+				void deps.content.create({
+					collection: "products",
+					locale: "fr",
+					data: { title: "Racer" },
+					translationOf: desk.id,
+				});
+				return new ContentWriteError("emdash_conflict", "Translation already exists");
+			}
+			if (data.title === "Lampe" && !trashed) {
+				// The source goes between its lookup and the create, so EmDash answers NOT_FOUND.
+				trashed = true;
+				deps.content.entries.delete(lamp.id);
+			}
+			return null;
+		};
+		const first = await run(deps, french(), twoLinked);
+		expect(first.rows.map((r) => r.errors?.[0]?.code)).toEqual([
+			"translation_exists",
+			"translation_source_not_found",
+		]);
+		const newLamp = (await importEnglish(deps)).get("E2")!;
+		expect(newLamp.id).not.toBe(lamp.id);
+		await transitionJob(deps, first.job.id, "retry");
+		const retried = await runToEnd(deps, first.job.id);
+		expect(retried.counters).toMatchObject({ created: 1, failed: 1 });
+		const racer = [...deps.content.entries.values()].find((e) => e.data.title === "Racer")!;
+		const [conflict, created] = await rows(deps, first.job.id);
+		// Found by the group read before the create this time, so the row has no action.
+		expect(conflict).toMatchObject({
+			status: "failed",
+			errors: [{ code: "translation_exists", message: expect.stringContaining(racer.id) }],
+		});
+		expect(racer.data.title).toBe("Racer");
+		expect(created).toMatchObject({ status: "created", entryId: frEntry(deps, "lampe")?.id });
+		expect(frEntry(deps, "lampe")?.group).toBe(newLamp.id);
+	});
+
+	it("reports sharedRequired errors after the record's other errors", async () => {
+		const { deps } = setup();
+		await importEnglish(deps);
+		const fields = schemaFields.map((f) => (f.slug === "sku" ? { ...f, required: true } : f));
+		const template = french({
+			fields: {
+				title: { from: "Nom", type: "text" },
+				price: { from: "Prix", type: "number" },
+			},
+			taxonomies: undefined,
+			bylines: undefined,
+		});
+		const job = await start(deps, template, FR_HEADER + frRow("F4", "", "Tabouret", ",,abc,,,,"), {
+			fields,
+		});
+		await runToEnd(deps, job.id);
+		const [row] = await rows(deps, job.id);
+		expect(row).toMatchObject({
+			status: "failed",
+			errors: [
+				{ field: "price", code: expect.any(String) },
+				{ field: "sku", code: "required" },
+			],
+		});
+		expect(row?.errors?.[0]?.code).not.toBe("required");
 	});
 });
