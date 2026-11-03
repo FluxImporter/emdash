@@ -122,6 +122,7 @@ export function preImage(
 	}
 	return {
 		link: link === null ? null : linkBefore(link),
+		rev: entry.rev,
 		status: entry.status,
 		scheduledAt: entry.scheduledAt,
 		...(touched.slug ? { slug: entry.slug } : {}),

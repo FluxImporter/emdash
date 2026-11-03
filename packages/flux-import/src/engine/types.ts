@@ -177,6 +177,11 @@ export interface RecordRow {
 	warnings?: RecordError[];
 	/** Rollback rows: the last revert step done (M5a); absent before the first. */
 	step?: number;
+	/**
+	 * Rollback rows: the step sent to EmDash and not yet saved as done (M5a). A resumed row whose
+	 * entry moved past `writtenRev` adopts the entry when it shows this step's result.
+	 */
+	pendingStep?: number;
 	updatedAt: string;
 }
 
@@ -198,6 +203,11 @@ export interface LinkRow {
 export interface JournalBefore {
 	/** The link row before the job; null when there was none. */
 	link: { jobId?: string; writtenRev?: string } | null;
+	/**
+	 * The entry's `_rev` when the pre-image was read. When it is not `link.writtenRev`, someone
+	 * changed the entry after the earlier job, and a rollback hands the link back unchanged.
+	 */
+	rev?: string;
 	status: string;
 	scheduledAt: string | null;
 	/** The live slug, when the job changed the slug. */

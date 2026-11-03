@@ -16,6 +16,7 @@ import {
 import {
 	bylineIdsOf,
 	COST_CALL,
+	COST_READ,
 	COST_RECORD,
 	type LookupCache,
 	loadTerms,
@@ -326,15 +327,31 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		link.entryId === entry.id &&
 		link.writtenRev === entry.rev;
 	// A create made after the write-ahead row and never changed since (spec M5a V3): found by
-	// source ID after a crash, or one whose link was never saved or names no job.
+	// source ID after a crash, or one whose link was never saved. A link that names the entry and a
+	// revision settles it: EmDash keeps `updated_at` when an edit only stages a draft
+	// (repositories/content.ts:2831-2846), so the timestamps cannot tell an edit there.
 	const untouched =
 		journal.kind === "create" &&
+		(link?.entryId !== entry.id || link.writtenRev === undefined) &&
 		(adopted ||
 			(entry.createdAt !== undefined &&
 				entry.createdAt >= journal.at &&
 				entry.updatedAt === entry.createdAt));
 	if (resumed && existing) ctx.written = { rev: entry.rev, step: existing.step ?? 0 };
-	if (!resumed && !owned && !untouched) {
+	// A step sent to EmDash whose row save was lost: the entry moved past both revisions this
+	// rollback and the import know, and is adopted only when it shows that step's result.
+	const pending =
+		!resumed &&
+		!owned &&
+		journal.kind === "update" &&
+		existing?.status === "writing" &&
+		existing.pendingStep !== undefined &&
+		existing.entryId === entry.id &&
+		existing.writtenRev !== entry.rev &&
+		link?.writtenRev !== entry.rev
+			? existing.pendingStep
+			: undefined;
+	if (!resumed && !owned && !untouched && pending === undefined) {
 		const before = journal.before;
 		const neverWritten =
 			journal.kind === "update" &&
@@ -353,7 +370,7 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 	}
 	return journal.kind === "create"
 		? deleteCreated(ctx, entry, adopted, link?.entryId === entry.id)
-		: restoreChanged(ctx, entry, link?.entryId === entry.id);
+		: restoreChanged(ctx, entry, link?.entryId === entry.id, pending);
 }
 
 /** "Created entries": Trash, then a permanent delete when the import's own create made it. */
@@ -408,11 +425,12 @@ async function deleteCreated(
 async function restoredLinks(
 	ctx: RowCtx,
 	links: NonNullable<JournalBefore["links"]>,
+	warnings: RecordError[],
 ): Promise<LinkWrites> {
 	const { deps, job, journal, cache } = ctx;
 	const writes: LinkWrites = {};
 	const missing = (field: string, what: string) =>
-		ctx.warnings.push(
+		warnings.push(
 			issue(
 				"rollback_link_missing",
 				`Left out: ${what} no longer exists, so the entry does not get it back`,
@@ -433,7 +451,7 @@ async function restoredLinks(
 		const target = job.targetFields?.[field]?.targetCollection ?? journal.collection;
 		const kept: string[] = [];
 		for (const id of ids) {
-			cache.spend(COST_CALL);
+			cache.spend(COST_READ);
 			if (await deps.lookups.findEntry(target, "id", id, journal.locale)) kept.push(id);
 			else missing(field, `the entry ${id}`);
 		}
@@ -495,34 +513,65 @@ async function plannedChanges(
 }
 
 /**
+ * Whether the entry shows what revert step `step` would have left (spec M5a "Per row", resuming):
+ * 1 the restored live values (and the slug and links the read shows), 2 published without a
+ * draft, 3 not published, 4 no draft, 5 the restored draft values, 6 the schedule.
+ */
+function reached(step: number, entry: Found, before: JournalBefore, links: LinkWrites): boolean {
+	const fieldsMatch = (values: Readonly<Record<string, unknown>>) =>
+		Object.entries(values).every(([field, value]) => sameStored(entry.data[field], value));
+	const ids = (list: readonly { id: string }[] | undefined) => (list ?? []).map((r) => r.id);
+	switch (step) {
+		case 1:
+			return (
+				fieldsMatch(before.live) &&
+				// A staged slug is in the draft, which the read does not show (spec F5).
+				(before.slug === undefined || entry.hasDraft || entry.slug === before.slug) &&
+				Object.entries(links.references ?? {}).every(
+					([field, want]) =>
+						JSON.stringify(ids(entry.references?.[field])) === JSON.stringify(want),
+				) &&
+				(links.bylines === undefined ||
+					JSON.stringify(ids(entry.bylines)) ===
+						JSON.stringify(links.bylines.map((b) => b.bylineId)))
+			);
+		case 2:
+			return entry.status === "published" && !entry.hasDraft;
+		case 3:
+			return entry.status !== "published";
+		case 4:
+			return !entry.hasDraft;
+		case 5:
+			return fieldsMatch(before.draft ?? {});
+		case 6:
+			return (
+				before.scheduledAt !== null &&
+				entry.scheduledAt !== null &&
+				Date.parse(entry.scheduledAt) === Date.parse(before.scheduledAt)
+			);
+		default:
+			return false;
+	}
+}
+
+/**
  * "Revert sequence": 1 restore the live values, slug and links; 2 publish; 3 unpublish; 4 discard
  * the draft the entry did not have; 5 restore the draft; 6 schedule. Each step is chosen from the
  * entry's state after the previous one and saved with the revision it returned, so a resumed row
  * skips the steps done and re-derives the rest.
  */
-async function restoreChanged(ctx: RowCtx, entry: Found, linked: boolean): Promise<RowFields> {
+async function restoreChanged(
+	ctx: RowCtx,
+	entry: Found,
+	linked: boolean,
+	pending: number | undefined,
+): Promise<RowFields> {
 	const { deps, job, journal } = ctx;
 	const { collection, locale } = journal;
 	const before = journal.before;
 	ctx.action = "revert";
 	if (before === undefined || entry.trashed) {
 		return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", CHANGED_MESSAGE)] });
-	}
-	const links = before.links ? await restoredLinks(ctx, before.links) : {};
-	const passed =
-		before.scheduledAt !== null && !(Date.parse(before.scheduledAt) > deps.now())
-			? [
-					issue(
-						"rollback_schedule_passed",
-						`The entry was scheduled for ${before.scheduledAt}, which has passed; it is left as a draft`,
-					),
-				]
-			: [];
-	ctx.warnings.push(...passed);
-	// The import published a pending draft over live references it could not read (spec "Open
-	// issues"). An entry never published had no live selection, so the read one is all it had.
-	if (before.referencesUnknown && before.status === "published") {
-		ctx.warnings.push(issue("references_not_restored", REFERENCES_UNKNOWN_MESSAGE));
 	}
 	// EmDash refuses an empty required field, so the restore would stop half way: refuse it first.
 	const resumedAt = ctx.written?.step ?? 0;
@@ -539,8 +588,41 @@ async function restoreChanged(ctx: RowCtx, entry: Found, linked: boolean): Promi
 			errors: [...new Set(emptied)].map((field) => issue("required", REQUIRED_MESSAGE, field)),
 		});
 	}
+	// Once step 1 was sent, its links and their warnings are the row's: they are not derived again
+	// (a target may have come back since), except to check a lost step 1 below.
+	const sentLinks = resumedAt >= 1 || (pending ?? 0) >= 1;
+	let links: LinkWrites = {};
+	if (sentLinks) {
+		ctx.warnings.push(
+			...(ctx.existing?.warnings ?? []).filter((w) => w.code === "rollback_link_missing"),
+		);
+		if (pending === 1 && before.links) links = await restoredLinks(ctx, before.links, []);
+	} else if (before.links) {
+		links = await restoredLinks(ctx, before.links, ctx.warnings);
+	}
+	const passed =
+		before.scheduledAt !== null && !(Date.parse(before.scheduledAt) > deps.now())
+			? [
+					issue(
+						"rollback_schedule_passed",
+						`The entry was scheduled for ${before.scheduledAt}, which has passed; it is left as a draft`,
+					),
+				]
+			: [];
+	ctx.warnings.push(...passed);
+	// The import published a pending draft over live references it could not read (spec "Open
+	// issues"). An entry never published had no live selection, so the read one is all it had.
+	if (before.referencesUnknown && before.status === "published") {
+		ctx.warnings.push(issue("references_not_restored", REFERENCES_UNKNOWN_MESSAGE));
+	}
 	if (job.dryRun) {
 		return rowOf(ctx, "planned", { changes: await plannedChanges(ctx, entry, before, links) });
+	}
+	if (pending !== undefined) {
+		if (!reached(pending, entry, before, links)) {
+			return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", CHANGED_MESSAGE)] });
+		}
+		ctx.written = { rev: entry.rev, step: pending };
 	}
 	let state: EntryState = {
 		rev: entry.rev,
@@ -550,12 +632,23 @@ async function restoreChanged(ctx: RowCtx, entry: Found, linked: boolean): Promi
 	};
 	let done = ctx.written?.step ?? 0;
 	ctx.written = { rev: state.rev, step: done };
-	await ctx.save(rowOf(ctx, "writing"));
+	const writing = (extra: Partial<RowFields> = {}) =>
+		ctx.save(
+			rowOf(ctx, "writing", {
+				...(ctx.warnings.length > 0 ? { warnings: ctx.warnings } : {}),
+				...extra,
+			}),
+		);
 	const run = async (
 		step: number,
 		input: { step: RevertStep } & Partial<Parameters<EngineDeps["content"]["revertStep"]>[0]>,
 	): Promise<StepFailure | null> => {
 		if (done >= step) return null;
+		// One save per step, before it: the step done last and its revision, and this step as sent.
+		// A crash after EmDash applied it leaves the entry past `writtenRev`, and the resumed row
+		// tells this step's result from someone else's change (`reached`). Nothing runs between a
+		// step's return and the next save, so a save after each step would add nothing.
+		await writing({ pendingStep: step });
 		const result = await deps.content.revertStep({
 			...input,
 			collection,
@@ -567,7 +660,6 @@ async function restoreChanged(ctx: RowCtx, entry: Found, linked: boolean): Promi
 		state = result.state;
 		done = step;
 		ctx.written = { rev: state.rev, step };
-		await ctx.save(rowOf(ctx, "writing"));
 		return null;
 	};
 	const hasLive = Object.keys(before.live).length > 0;
@@ -635,7 +727,15 @@ async function restoreChanged(ctx: RowCtx, entry: Found, linked: boolean): Promi
 			locale,
 			sourceKey: journal.sourceKey,
 			entryId: entry.id,
-			...(before.link.writtenRev === undefined ? {} : { writtenRev: state.rev }),
+			// Only when the entry was as that job left it: an editor's change in between stays one.
+			...(before.link.writtenRev === undefined
+				? {}
+				: {
+						writtenRev:
+							before.rev !== undefined && before.rev === before.link.writtenRev
+								? state.rev
+								: before.link.writtenRev,
+					}),
 			...(before.link.jobId === undefined ? {} : { jobId: before.link.jobId }),
 		});
 	}

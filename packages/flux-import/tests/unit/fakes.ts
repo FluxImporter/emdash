@@ -190,6 +190,8 @@ export class FakeContent implements ContentPort {
 	blockStep: (step: RevertStep, id: string) => string | null = () => null;
 	/** M5a: called at the start of every rollback step; throw from it to simulate a crash. */
 	beforeStep: (step: RevertStep | "trash" | "delete", id: string) => void = () => {};
+	/** M5a: called after a rollback step changed the entry; throw from it to simulate a crash. */
+	afterStep: (step: RevertStep, id: string) => void = () => {};
 	/** The clock for timestamps and schedules; `makeDeps` gives it the test clock. */
 	now: () => number = () => Date.parse("2026-10-07T10:00:00Z");
 	private next = 0;
@@ -381,6 +383,7 @@ export class FakeContent implements ContentPort {
 		if (input.step !== "update" && input.step !== "publish") {
 			this.calls.push(`${input.step}:${e.id}`);
 		}
+		this.afterStep(input.step, e.id);
 		return {
 			ok: true,
 			state: {
@@ -517,7 +520,16 @@ export class FakeContent implements ContentPort {
 		e.data = { ...e.data, ...structuredClone(input.data ?? {}) };
 		if (input.slug !== undefined) e.slug = input.slug;
 		this.writeLinks(e, input);
-		this.touch(e);
+		// As EmDash: `updated_at` moves only when a column of the row changes
+		// (repositories/content.ts:1072-1075). With revisions data, slug and references go to the
+		// draft revision, which leaves it alone unless the slug is cleared (:1405-1432, and :2831-2846
+		// for the runtime's draft staging); terms and bylines live in other tables. Publish,
+		// unpublish and schedule set it (:2514, :2633, :2767, :2127); a discard keeps it (:2883).
+		const columns = plain
+			? input.data !== undefined || input.slug !== undefined
+			: input.slug === null;
+		e.rev++;
+		if (columns) e.updatedAt = this.stamp();
 		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
 		if (staged && !plain) e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);

@@ -61,6 +61,9 @@ async function crash(deps: Deps, id: string, message: string) {
 	await deps.jobs.put(id, { ...job, lease: null });
 }
 
+const CHANGED =
+	"Not rolled back: the entry changed after the import wrote it (an editor or a later import); roll back later imports first or revert it by hand";
+
 const count = (deps: Deps, call: string) => deps.content.calls.filter((c) => c === call).length;
 
 describe("rolling back an import (M5a)", () => {
@@ -301,6 +304,28 @@ describe("ownership (M5a)", () => {
 		]);
 		expect(entryOf(deps, "A1").data.price).toBe(10);
 		expect(first.id).toBeDefined();
+	});
+
+	it("leaves an update row the job never wrote when only the timestamps tell (link lost)", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk]);
+		clock.t += 1000;
+		const ghost = await importRows(deps, [desk]);
+		const e = entryOf(deps, "A1");
+		// The pre-image names a link revision the entry no longer has; updatedAt is older than the row.
+		await deps.journal.put(journalKey(ghost.id, linkKey("products", "en", "A1")), {
+			jobId: ghost.id,
+			seq: 0,
+			collection: "products",
+			locale: "en",
+			sourceKey: "A1",
+			kind: "update",
+			entryId: e.id,
+			before: { link: { writtenRev: "0" }, status: "published", scheduledAt: null, live: {} },
+			at: new Date(clock.t).toISOString(),
+		});
+		const done = await rollBack(deps, ghost.id);
+		expect(done.counters).toMatchObject({ unchanged: 1, conflict: 0 });
 	});
 
 	it("finds a create whose write-ahead row has no entry, and only moves it to Trash", async () => {
@@ -698,5 +723,353 @@ describe("dry-run rollback (M5a)", () => {
 		expect(await deps.jobs.get(job.id)).not.toHaveProperty("rolledBackBy");
 		// A real rollback afterwards does what the dry run planned.
 		expect((await rollBack(deps, job.id)).counters).toMatchObject({ reverted: 2 });
+	});
+});
+
+/** Makes the imported draft A1 scheduled, as a scheduling import (M5b) would leave it. */
+async function scheduleDraft(deps: Deps, at: string) {
+	const e = entryOf(deps, "A1");
+	await deps.content.revertStep({
+		collection: "products",
+		locale: "en",
+		id: e.id,
+		rev: String(e.rev),
+		step: "schedule",
+		scheduledAt: at,
+	});
+	const link = await linkOf(deps, "A1");
+	await deps.links.put(linkKey("products", "en", "A1"), { ...link!, writtenRev: String(e.rev) });
+}
+
+type Shape = { name: string; plain: boolean; prepare: (deps: Deps, t: number) => Promise<void> };
+
+/** Pre-run states whose revert sequences between them send every step. */
+const shapes: Shape[] = [
+	{
+		name: "a scheduled draft (update, publish, unpublish, discard, schedule)",
+		plain: false,
+		prepare: async (deps, t) => {
+			await importRows(deps, [desk], { publish: false });
+			await scheduleDraft(deps, new Date(t + 60_000).toISOString());
+		},
+	},
+	{
+		name: "a scheduled draft without revisions (update, unpublish, discard, schedule)",
+		plain: true,
+		prepare: async (deps, t) => {
+			await importRows(deps, [desk], { publish: false });
+			await scheduleDraft(deps, new Date(t + 60_000).toISOString());
+		},
+	},
+	{
+		name: "the importer's pending draft (update, publish, update)",
+		plain: false,
+		prepare: async (deps) => {
+			await importRows(deps, [desk]);
+			await importRows(deps, [{ ...desk, price: 20 }], { publish: false });
+		},
+	},
+];
+
+describe("ownership by revision, not timestamps (M5a)", () => {
+	it("leaves a created entry an editor edited in a draft, which keeps updatedAt (EmDash)", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk], { publish: false });
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor's work" } });
+		// As EmDash 1.2.0: staging a draft leaves updated_at alone.
+		expect(e.updatedAt).toBe(e.createdAt);
+		const done = await rollBack(deps, job.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({
+			status: "conflict",
+			action: "delete",
+			errors: [{ code: "rollback_changed", message: CHANGED }],
+		});
+		expect(deps.content.entries.get(e.id)?.trashed).toBe(false);
+	});
+
+	it("keeps a created entry made before its journal row when its link is gone", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk]);
+		const key = journalKey(job.id, linkKey("products", "en", "A1"));
+		const row = await deps.journal.get(key);
+		const e = entryOf(deps, "A1");
+		await deps.links.delete(linkKey("products", "en", "A1"));
+		await deps.journal.put(key, {
+			...row!,
+			at: new Date(Date.parse(e.createdAt) + 1000).toISOString(),
+		});
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(deps.content.entries.get(e.id)?.trashed).toBe(false);
+	});
+
+	it("does not take an edit of the job's own draft for a write it never made", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk]);
+		clock.t += 1000;
+		// The job stages a draft, which leaves updatedAt before its journal row's time.
+		const job = await importRows(deps, [{ ...desk, price: 12 }], { publish: false });
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		const done = await rollBack(deps, job.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor", price: 12 });
+	});
+
+	it("hands the link back unchanged when an editor changed the entry between two jobs", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const a = await importRows(deps, [{ ...desk, price: 11 }]);
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor title" } });
+		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		const writtenByA = (await linkOf(deps, "A1"))?.writtenRev;
+		expect((await rollBack(deps, a.id, { dryRun: true })).counters).toMatchObject({ conflict: 1 });
+		const b = await importRows(deps, [{ ...desk, price: 12 }]);
+		expect((await rollBack(deps, b.id)).counters).toMatchObject({ reverted: 1 });
+		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor title", price: 11 });
+		expect(await linkOf(deps, "A1")).toMatchObject({ jobId: a.id, writtenRev: writtenByA });
+		// A's rollback would undo the editor's title: it is refused.
+		const ra = await rollBack(deps, a.id);
+		const [row] = await records(deps, ra.id);
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor title", price: 11 });
+	});
+
+	it("checks the lock of a created entry before moving it to Trash", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk]);
+		const e = entryOf(deps, "A1");
+		deps.content.locked.add(e.id);
+		const done = await rollBack(deps, job.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "locked", action: "delete", errors: [{ code: "locked" }] });
+		expect(e.trashed).toBe(false);
+	});
+});
+
+describe("a crash after a step reached EmDash (M5a)", () => {
+	for (const shape of shapes) {
+		it(`continues without repeating the step: ${shape.name}`, async () => {
+			// A clean run first, for the number of steps.
+			const clean = setup();
+			if (shape.plain) clean.deps.content.plainCollections.add("products");
+			await shape.prepare(clean.deps, clean.clock.t);
+			const cleanJob = await importRows(clean.deps, [changed]);
+			let steps = 0;
+			clean.deps.content.afterStep = () => {
+				steps++;
+			};
+			await rollBack(clean.deps, cleanJob.id);
+			expect(steps).toBeGreaterThanOrEqual(3);
+			for (let k = 1; k <= steps; k++) {
+				const { deps, clock } = setup();
+				if (shape.plain) deps.content.plainCollections.add("products");
+				await shape.prepare(deps, clock.t);
+				const before = stateOf(deps, "A1");
+				const job = await importRows(deps, [changed]);
+				const { rollback } = await createRollback(deps, { id: job.id });
+				let sent = 0;
+				deps.content.beforeStep = (step) => {
+					if (step !== "trash" && step !== "delete") sent++;
+				};
+				let reachedSteps = 0;
+				deps.content.afterStep = (step) => {
+					if (++reachedSteps === k) throw new Error(`killed after ${step}`);
+				};
+				await crash(deps, rollback.id, "killed after");
+				const stopped = await deps.records.get(recordKey(rollback.id, 0));
+				expect(stopped).toMatchObject({ status: "writing", pendingStep: expect.any(Number) });
+				const done = await runToEnd(deps, rollback.id);
+				const [row] = await records(deps, done.id);
+				expect(row, `crash after step call ${k}`).toMatchObject({ status: "reverted" });
+				expect(row).not.toHaveProperty("pendingStep");
+				expectRestored(stateOf(deps, "A1"), before);
+				expect(sent, `crash after step call ${k}`).toBe(steps);
+			}
+		});
+	}
+
+	it("refuses an entry an editor changed after the crash", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.afterStep = (step) => {
+			if (step === "update") throw new Error("killed after update");
+		};
+		await crash(deps, rollback.id, "killed after update");
+		deps.content.afterStep = () => {};
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
+		expect(entryOf(deps, "A1").data.title).toBe("Editor");
+	});
+
+	it("refuses an entry an editor changed after a crash before the step reached EmDash", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.beforeStep = (step) => {
+			if (step === "update") throw new Error("crash before update");
+		};
+		await crash(deps, rollback.id, "crash before update");
+		deps.content.beforeStep = () => {};
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").data.title).toBe("Editor");
+	});
+
+	it("refuses an editor's draft staged on a published entry after a stop before the publish", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const { rollback } = await createRollback(deps, { id: job.id });
+		deps.content.beforeStep = (step) => {
+			if (step === "publish") throw new Error("crash before publish");
+		};
+		await crash(deps, rollback.id, "crash before publish");
+		deps.content.beforeStep = () => {};
+		// Published with a draft, as step 1 left it, but at the editor's revision.
+		const e = entryOf(deps, "A1");
+		await deps.content.update({ id: e.id, rev: String(e.rev), data: { price: 77 } });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(entryOf(deps, "A1").data.price).toBe(77);
+	});
+
+	it("finishes a permanent delete that went through before the row was saved", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk]);
+		const id = entryOf(deps, "A1").id;
+		const original = deps.content.permanentDelete.bind(deps.content);
+		let once = true;
+		deps.content.permanentDelete = async (collection, entryId) => {
+			const deleted = await original(collection, entryId);
+			if (once) {
+				once = false;
+				throw new Error("killed after the delete");
+			}
+			return deleted;
+		};
+		const { rollback } = await createRollback(deps, { id: job.id });
+		await crash(deps, rollback.id, "killed after the delete");
+		expect(deps.content.entries.has(id)).toBe(false);
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "reverted", action: "delete", entryId: id });
+		expect(await linkOf(deps, "A1")).toBeNull();
+	});
+
+	it("finds an adopted create again after a crash during its trash", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk]);
+		const key = journalKey(job.id, linkKey("products", "en", "A1"));
+		const { confirmed: _, ...unconfirmed } = (await deps.journal.get(key))!;
+		await deps.journal.put(key, { ...unconfirmed, entryId: null });
+		await deps.links.delete(linkKey("products", "en", "A1"));
+		const id = entryOf(deps, "A1").id;
+		const original = deps.content.trash.bind(deps.content);
+		let once = true;
+		deps.content.trash = async (collection, entryId) => {
+			const trashed = await original(collection, entryId);
+			if (once) {
+				once = false;
+				throw new Error("killed during the trash");
+			}
+			return trashed;
+		};
+		const { rollback } = await createRollback(deps, { id: job.id });
+		await crash(deps, rollback.id, "killed during the trash");
+		// In Trash, so a lookup by source ID no longer finds it: the saved row names it.
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "reverted", action: "trash", entryId: id });
+		expect(deps.content.entries.get(id)?.trashed).toBe(true);
+	});
+
+	it("keeps the link warnings of a step 1 done before a stop", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [changed]);
+		const index = deps.lookups.storedTerms.findIndex((t) => t.slug === "new");
+		const [gone] = deps.lookups.storedTerms.splice(index, 1);
+		deps.content.beforeStep = (step) => {
+			if (step === "publish") throw new Error("crash before publish");
+		};
+		const { rollback } = await createRollback(deps, { id: job.id });
+		await crash(deps, rollback.id, "crash before publish");
+		deps.content.beforeStep = () => {};
+		// The term is back: the restored update left it out, and the row still says so.
+		deps.lookups.storedTerms.push(gone!);
+		const calls = deps.lookups.calls.length;
+		const done = await runToEnd(deps, rollback.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({
+			status: "reverted",
+			warnings: [{ code: "rollback_link_missing", field: "taxonomies.tag" }],
+		});
+		expect(deps.lookups.calls.slice(calls).filter((c) => c.startsWith("terms:"))).toEqual([]);
+	});
+});
+
+describe("revert steps that are not needed (M5a)", () => {
+	it("restores the draft of a never-published entry without discarding the unpublish's draft", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk], { publish: false });
+		await importRows(deps, [{ ...desk, price: 20 }], { publish: false });
+		const before = stateOf(deps, "A1");
+		expect(before).toMatchObject({
+			status: "draft",
+			live: { data: { price: 10 } },
+			data: { price: 20 },
+		});
+		const job = await importRows(deps, [changed]);
+		const id = entryOf(deps, "A1").id;
+		const calls = deps.content.calls.length;
+		await rollBack(deps, job.id);
+		expectRestored(stateOf(deps, "A1"), before);
+		expect(deps.content.calls.slice(calls).filter((c) => !/^(find|translations):/.test(c))).toEqual(
+			[`update:${id}`, `publish:${id}`, `unpublish:${id}`, `update:${id}`],
+		);
+	});
+
+	it("does not schedule an entry again that still has its schedule", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk], { publish: false });
+		await scheduleDraft(deps, new Date(clock.t + 60_000).toISOString());
+		const before = stateOf(deps, "A1");
+		const job = await importRows(deps, [changed], { publish: false });
+		const id = entryOf(deps, "A1").id;
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "scheduled" });
+		const calls = deps.content.calls.length;
+		await rollBack(deps, job.id);
+		expectRestored(stateOf(deps, "A1"), before);
+		expect(deps.content.calls.slice(calls).filter((c) => !/^(find|translations):/.test(c))).toEqual(
+			[`update:${id}`, `discard:${id}`],
+		);
+	});
+
+	it("keeps the counters right while a retry is still running", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk, { sku: "A2", name: "Lamp" }]);
+		const job = await importRows(deps, [changed, { sku: "A2", name: "Lamp", price: 3 }]);
+		deps.content.blockStep = (step) => (step === "publish" ? "Publishing is frozen" : null);
+		const { rollback } = await createRollback(deps, { id: job.id, batchSize: 1 });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ failed: 2, reverted: 0 });
+		deps.content.blockStep = () => null;
+		await transitionJob(deps, done.id, "retry");
+		const first = await runBatch(deps, done.id, "driver");
+		expect(first).toMatchObject({ status: "running", counters: { failed: 1, reverted: 1 } });
+		expect((await runToEnd(deps, done.id)).counters).toMatchObject({ failed: 0, reverted: 2 });
 	});
 });

@@ -76,6 +76,8 @@ describe("the journal of a real import (M5a)", () => {
 			entryId: entry.id,
 			before: {
 				link: { jobId: first.id, writtenRev: rev },
+				// The entry is as the first job left it.
+				rev,
 				status: "published",
 				scheduledAt: null,
 				slug: "desk",
