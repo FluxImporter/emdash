@@ -77,6 +77,10 @@ export type CreateJobInput = {
 	publish?: boolean;
 	batchSize?: number;
 	budgetMs?: number;
+	/** Keep a journal so the job can be rolled back (M5a); a real run only, default true. */
+	journal?: boolean;
+	/** The URL source the job's file was fetched from (M5a). */
+	sourceId?: string;
 };
 
 /** Records read at job creation to warn about JSON and XML paths that none of them has. */
@@ -85,7 +89,11 @@ const BUDGET_MS_MIN = 500;
 const BUDGET_MS_MAX = 25_000;
 const CAS_ATTEMPTS = 5;
 
-export async function createJob(deps: EngineDeps, input: CreateJobInput): Promise<Job> {
+/** The batch size and budget, defaulted and checked (`invalid_options`). */
+export function batchOptions(input: { batchSize?: number; budgetMs?: number }): {
+	batchSize: number;
+	budgetMs: number;
+} {
 	const batchSize = input.batchSize ?? BATCH_SIZE_DEFAULT;
 	const budgetMs = input.budgetMs ?? BUDGET_MS_DEFAULT;
 	if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > BATCH_SIZE_MAX) {
@@ -100,6 +108,11 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			`budgetMs must be an integer from ${BUDGET_MS_MIN} to ${BUDGET_MS_MAX}`,
 		);
 	}
+	return { batchSize, budgetMs };
+}
+
+export async function createJob(deps: EngineDeps, input: CreateJobInput): Promise<Job> {
+	const { batchSize, budgetMs } = batchOptions(input);
 
 	const parsed = templateSchema.safeParse(input.template);
 	if (!parsed.success) {
@@ -161,13 +174,17 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const sharedRequired = sharedRequiredOf(template, input.schemaFields);
 
 	const now = new Date(deps.now()).toISOString();
+	const dryRun = input.dryRun ?? false;
 	const job: Job = {
 		id: deps.newId(),
 		status: "created",
+		// A dry run writes nothing, so it keeps no journal.
+		...(dryRun ? {} : { journal: input.journal ?? true }),
+		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
 		uploadId: input.uploadId,
 		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,
-		dryRun: input.dryRun ?? false,
+		dryRun,
 		publish: input.publish ?? true,
 		batchSize,
 		budgetMs,
@@ -307,6 +324,20 @@ export function transitionJob(
 				`Cannot ${action} a ${job.status}${job.dryRun ? " dry-run" : ""} job`,
 			);
 		}
+		const rollback = job.kind === "rollback";
+		if (action === "cancel" && rollback) {
+			// Rows it reverted no longer match the original's links, so it could not start over.
+			throw new JobError(
+				"invalid_transition",
+				"Cannot cancel a rollback job: pause it, or resume it to finish",
+			);
+		}
+		if ((action === "resume" || action === "retry") && job.rolledBackBy !== undefined) {
+			throw new JobError(
+				"invalid_transition",
+				`Cannot ${action} a job that was rolled back (rollback job ${job.rolledBackBy})`,
+			);
+		}
 		switch (action) {
 			case "pause":
 				return { ...job, status: "paused" };
@@ -315,7 +346,14 @@ export function transitionJob(
 			case "cancel":
 				return { ...withoutPlannedTerms(job), status: "cancelled" };
 			case "retry":
-				return { ...job, status: "running", phase: "retry", retryFromSeq: 0, error: null };
+				// A rollback retries its rows newest first, like its first pass.
+				return {
+					...job,
+					status: "running",
+					phase: "retry",
+					retryFromSeq: rollback ? Number.MAX_SAFE_INTEGER : 0,
+					error: null,
+				};
 		}
 	});
 }

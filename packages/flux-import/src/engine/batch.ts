@@ -65,6 +65,7 @@ import {
 	SOURCE_ID_FIELD,
 } from "./template.js";
 import {
+	bump,
 	type Counters,
 	capErrors,
 	capWarnings,
@@ -186,7 +187,7 @@ export async function processRecord(
 	if (existing && existing.status !== "writing" && !opts.retry) {
 		// Only reached after a crash: the batch that wrote this row never saved its cursor and counters.
 		const counter = counterFor(existing);
-		if (counter) job.counters[counter]++;
+		if (counter) bump(job.counters, counter);
 		return;
 	}
 
@@ -206,10 +207,10 @@ export async function processRecord(
 	await save(row);
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
-		if (old) job.counters[old]--;
+		if (old) bump(job.counters, old, -1);
 	}
 	const counter = counterFor(row);
-	if (counter) job.counters[counter]++;
+	if (counter) bump(job.counters, counter);
 }
 
 /** What the write helpers need about the record being processed. */
@@ -252,7 +253,7 @@ function publishFailed(
 	reason: "conflict" | "locked",
 	sourceKey: string,
 	id: string,
-	action: PlanAction | undefined,
+	action: RecordRow["action"],
 	writtenRev: string | undefined,
 ): RowFields {
 	return {
@@ -1204,7 +1205,7 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 		});
 		for (const { data } of page.items) {
 			const counter = counterFor(data);
-			if (counter) counters[counter]++;
+			if (counter) bump(counters, counter);
 		}
 		if (!page.hasMore || !page.cursor) return counters;
 		cursor = page.cursor;

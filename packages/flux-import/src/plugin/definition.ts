@@ -16,6 +16,8 @@ export type FluxImportOptions = Record<string, never>;
  * finished job check whether another job still needs its staged file (or the workbook an XLSX
  * job was converted from) before deleting it. `media` is the site-wide media map; its
  * `jobId` and `mediaId` indexes let a job's own media be listed (M5 rollback, audit).
+ * `journal` holds what each real job changed, one row per (job, entry), read newest first by a
+ * rollback (`["jobId", "seq"]`); `journalMedia` the media items each job's uploads created (M5a).
  */
 export const STORAGE = {
 	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
@@ -31,6 +33,8 @@ export const STORAGE = {
 	links: { indexes: ["entryId"] },
 	sources: { indexes: ["name", "createdAt"] },
 	media: { indexes: ["jobId", "mediaId"] },
+	journal: { indexes: ["jobId", ["jobId", "seq"]] },
+	journalMedia: { indexes: ["jobId", ["jobId", "seq"]] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {

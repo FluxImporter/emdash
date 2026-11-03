@@ -283,8 +283,12 @@ export async function getJob(deps: EngineDeps, id: string): Promise<Job> {
 	return upgradeJob(job);
 }
 
-/** Whether a job may still read its staged file (resume, retry, or a real run after a dry run). */
+/**
+ * Whether a job may still read its staged file (resume, retry, or a real run after a dry run).
+ * A rollback job never reads it, and a rolled-back job can no longer be resumed or retried.
+ */
 export function uploadNeeded(job: Job): boolean {
+	if (job.kind === "rollback" || job.rolledBackBy !== undefined) return false;
 	switch (job.status) {
 		case "cancelled":
 			return false;

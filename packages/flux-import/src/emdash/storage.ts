@@ -1,6 +1,13 @@
 import type { StorageCollection } from "emdash";
 import type { KvCollection } from "../engine/ports.js";
-import type { Job, LinkRow, MediaMapRow, RecordRow } from "../engine/types.js";
+import type {
+	Job,
+	JournalEntry,
+	JournalMedia,
+	LinkRow,
+	MediaMapRow,
+	RecordRow,
+} from "../engine/types.js";
 
 type StorageWhere = NonNullable<NonNullable<Parameters<StorageCollection["query"]>[0]>["where"]>;
 
@@ -34,16 +41,18 @@ export interface PluginCollections {
 	records: KvCollection<RecordRow>;
 	links: KvCollection<LinkRow>;
 	mediaMap: KvCollection<MediaMapRow>;
+	journal: KvCollection<JournalEntry>;
+	journalMedia: KvCollection<JournalMedia>;
 }
 
 /** The engine's collections declared in the plugin definition (`media` is the media map), typed. */
 export function pluginCollections(
 	storage: Record<string, StorageCollection | undefined>,
 ): PluginCollections {
-	const { jobs, records, links, media } = storage;
-	if (!jobs || !records || !links || !media) {
+	const { jobs, records, links, media, journal, journalMedia } = storage;
+	if (!jobs || !records || !links || !media || !journal || !journalMedia) {
 		throw new Error(
-			"flux-import: the jobs, records, links and media storage collections are missing",
+			"flux-import: the jobs, records, links, media, journal and journalMedia storage collections are missing",
 		);
 	}
 	return {
@@ -51,5 +60,7 @@ export function pluginCollections(
 		records: kvCollection<RecordRow>(records),
 		links: kvCollection<LinkRow>(links),
 		mediaMap: kvCollection<MediaMapRow>(media),
+		journal: kvCollection<JournalEntry>(journal),
+		journalMedia: kvCollection<JournalMedia>(journalMedia),
 	};
 }

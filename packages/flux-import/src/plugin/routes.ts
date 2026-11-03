@@ -46,6 +46,7 @@ import {
 	type UploadKeeper,
 } from "./service.js";
 import {
+	clearLastImport,
 	createSource,
 	deleteSource,
 	fetchSource,
@@ -250,6 +251,8 @@ const createInput = z
 		publish: z.boolean().optional(),
 		batchSize: z.number().int().optional(),
 		budgetMs: z.number().int().optional(),
+		/** Keep a journal so the job can be rolled back (M5a); default true. */
+		journal: z.boolean().optional(),
 	})
 	.refine((input) => (input.uploadId === undefined) !== (input.sourceId === undefined), {
 		message: "Set exactly one of uploadId and sourceId",
@@ -283,9 +286,14 @@ const applyInput = z
 
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads, keep }) =>
-			changeJob(deps, uploads, ctx.input.id, action, keep).then(withoutPlannedTerms),
-		),
+		withServices(ctx, async ({ deps, uploads, keep, sources }) => {
+			const job = await changeJob(deps, uploads, ctx.input.id, action, keep);
+			// A cancelled job no longer makes its source skip the next import of the same content.
+			if (action === "cancel" && job.sourceId !== undefined) {
+				await clearLastImport(sources, job.sourceId, job.id).catch(() => {});
+			}
+			return withoutPlannedTerms(job);
+		}),
 	);
 }
 
@@ -394,11 +402,13 @@ export const routes: Record<string, PluginRoute> = {
 			const { input } = ctx;
 			// Read once here and stored on the job, so a resumed or retried job converts the same way.
 			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
-			const start = (upload: string) => {
+			const start = (upload: string, fromSource?: string) => {
 				const options: StartJobInput = {
 					uploadId: upload,
 					template: input.template,
 					dryRun: input.dryRun,
+					...(fromSource === undefined ? {} : { sourceId: fromSource }),
+					...(input.journal === undefined ? {} : { journal: input.journal }),
 					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 					...(siteTimezone === undefined ? {} : { siteTimezone }),
 					...(input.publish === undefined ? {} : { publish: input.publish }),

@@ -20,7 +20,15 @@ import {
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
-import type { EngineDeps, Job, LinkRow, MediaMapRow, RecordRow } from "../../src/engine/types.js";
+import type {
+	EngineDeps,
+	Job,
+	JournalEntry,
+	JournalMedia,
+	LinkRow,
+	MediaMapRow,
+	RecordRow,
+} from "../../src/engine/types.js";
 import type { CredentialSettings } from "../../src/plugin/credentials.js";
 import { dropBytes } from "../../src/sources/csv.js";
 import {
@@ -590,6 +598,8 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 		records: new MemoryKv<RecordRow>(),
 		links: new MemoryKv<LinkRow>(),
 		mediaMap: new MemoryKv<MediaMapRow>(),
+		journal: new MemoryKv<JournalEntry>(),
+		journalMedia: new MemoryKv<JournalMedia>(),
 		content,
 		lookups,
 		media: new FakeMedia(),
