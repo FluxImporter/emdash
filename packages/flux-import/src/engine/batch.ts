@@ -59,6 +59,7 @@ import {
 	compileTemplate,
 	type FieldValue,
 	filterRecord,
+	isSharedMapping,
 	type MappedRecord,
 	type MediaRequest,
 	SOURCE_ID_FIELD,
@@ -224,8 +225,11 @@ type RecordCtx = {
 	media?: Record<string, MediaPlanItem | null>;
 	/** The record's Portable Text values, written with the data; absent when it maps none. */
 	portableText?: Record<string, PortableTextPlanItem | null>;
-	/** A create's translation source (its entry ID, M4e); absent for an entry of its own. */
-	translationOf?: string;
+	/**
+	 * A linked create's source (M4e): its entry ID and the record's `translationOf` value;
+	 * absent for an entry of its own.
+	 */
+	translationOf?: { sourceId: string; value: string };
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -569,7 +573,7 @@ async function decideRecord(
 					deps,
 					cache,
 					collection,
-					job.template.translationOf?.locale ?? "",
+					sourceLocaleOf(job),
 					translates,
 					sourceIdReady(job),
 				);
@@ -612,22 +616,23 @@ async function decideRecord(
 			// A translation's source ID is its source's key (spec M4e F1), which an editor's
 			// translation carries too: such an entry is taken only for a row this job was writing
 			// or that names it, and only in the source's group (an entry of its own whose key
-			// equals the value is another record's).
+			// equals the value is another record's). A record without a value in such a template
+			// is an entry of its own, so it never takes a translation.
 			const byValue = await deps.content.findBySourceId(
 				collection,
 				locale,
 				translates ?? sourceKey,
 				read,
 			);
-			if (
-				byValue &&
-				(translates === undefined ||
-					((existing.status === "writing" || existing.entryId === byValue.id) &&
-						(source === null || (byValue.group ?? byValue.id) === source.group)))
-			) {
+			const adopt =
+				byValue !== null &&
+				(translates === undefined
+					? !translating || !isTranslation(byValue)
+					: (existing.status === "writing" || existing.entryId === byValue.id) &&
+						(source === null || (byValue.group ?? byValue.id) === source.group));
+			if (byValue && adopt) {
 				entry = byValue;
 				link = { collection, locale, sourceKey, entryId: byValue.id };
-				await deps.links.put(ctx.linkId, link);
 				repaired = true;
 			}
 		}
@@ -639,11 +644,17 @@ async function decideRecord(
 				return { status: "failed", sourceKey, entryId, errors: [verdict.error] };
 			}
 			found.warnings.push(...verdict.warnings);
-			if (verdict.change && source) {
-				ctx.translationOf = source.id;
+			if (verdict.change && source && translates !== undefined) {
+				ctx.translationOf = { sourceId: source.id, value: translates };
 				translationChange = verdict.change;
 			}
+		} else if (entry && isTranslation(entry) && mapsShared(job)) {
+			// A template without translationOf would send shared values that EmDash then syncs to
+			// the whole group (M4e).
+			return { status: "failed", sourceKey, entryId, errors: [sharedOnTranslation()] };
 		}
+		// A repaired link is saved only for an entry the record may write.
+		if (repaired && link) await deps.links.put(ctx.linkId, link);
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
@@ -776,8 +787,41 @@ function translationExists(locale: string, id: string): RecordError {
 	return {
 		field: "translationOf",
 		code: "translation_exists",
-		message: `The source entry already has a translation in ${locale} (entry ${id}) that this import did not create`,
+		message: `The source entry already has a translation in ${locale} (entry ${id}), which is not this record's entry`,
 	};
+}
+
+/** Whether EmDash created the entry as a translation: its group is another entry's (spec M4e F3). */
+function isTranslation(entry: EntrySnapshot): boolean {
+	return (entry.group ?? entry.id) !== entry.id;
+}
+
+/**
+ * Whether the template maps a value EmDash shares across a translation group: a field that is
+ * not translatable (per the job's snapshot), a reference field or a taxonomy.
+ */
+function mapsShared(job: Job): boolean {
+	const t = job.template;
+	if (Object.keys(t.taxonomies ?? {}).length > 0) return true;
+	return Object.entries(t.fields).some(([name, m]) => isSharedMapping(m, job.targetFields?.[name]));
+}
+
+function sharedOnTranslation(): RecordError {
+	return {
+		field: "translationOf",
+		code: "translation_of_missing",
+		message:
+			"The entry is a translation of another entry: to update it, the template must map translationOf or drop its shared mappings, which would otherwise overwrite its translation group's values",
+	};
+}
+
+/** The source locale of a template that maps `translationOf`; job creation always stores it. */
+function sourceLocaleOf(job: Job): string {
+	const locale = job.template.translationOf?.locale;
+	if (locale === undefined) {
+		throw new Error("Internal error: the job's template has no translationOf locale");
+	}
+	return locale;
 }
 
 /**
@@ -794,11 +838,11 @@ async function checkTranslation(
 	source: { id: string; group: string } | null,
 ): Promise<{ error: RecordError } | { warnings: RecordError[]; change?: Change }> {
 	const { collection, locale } = job.template;
-	const sourceLocale = job.template.translationOf?.locale ?? "";
+	const sourceLocale = sourceLocaleOf(job);
 	const field = "translationOf";
 	if (value === undefined) {
 		// EmDash sets a translation's group to its source's (spec M4e F3).
-		if (entry?.group !== undefined && entry.group !== entry.id) {
+		if (entry !== null && isTranslation(entry)) {
 			return {
 				error: {
 					field,
@@ -990,8 +1034,8 @@ async function writeRecord(
 	const data = { ...mapped.data, ...media };
 	let written: { id: string; rev: string };
 	if (!entry && ctx.translationOf !== undefined) {
-		const value = mapped.translationOf ?? sourceKey;
-		const created = await createTranslation(ctx, ctx.translationOf, value, plan, {
+		const { sourceId, value } = ctx.translationOf;
+		const created = await createTranslation(ctx, sourceId, value, plan, {
 			collection,
 			locale,
 			...slugPart,
@@ -1090,7 +1134,7 @@ async function createTranslation(
 			errors: [error],
 		});
 		if (e.code === "emdash_not_found") {
-			const sourceLocale = ctx.job.template.translationOf?.locale ?? "";
+			const sourceLocale = sourceLocaleOf(ctx.job);
 			const message = `The source entry ${sourceId} (${sourceLocale}: ${value}) no longer exists`;
 			return failed({ field: "translationOf", code: "translation_source_not_found", message });
 		}

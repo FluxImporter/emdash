@@ -225,7 +225,7 @@ describe("importing translations", () => {
 		expect(frEntry(deps, "chaise")?.data).toMatchObject({ sku: "S3", price: 30 });
 	});
 
-	it("fails translation_exists for a translation it did not create, also on retry", async () => {
+	it("fails translation_exists for a translation that is not the record's entry, also on retry", async () => {
 		const { deps } = setup();
 		const en = await importEnglish(deps);
 		const editor = await deps.content.create({
@@ -241,7 +241,7 @@ describe("importing translations", () => {
 				{
 					field: "translationOf",
 					code: "translation_exists",
-					message: `The source entry already has a translation in fr (entry ${editor.id}) that this import did not create`,
+					message: `The source entry already has a translation in fr (entry ${editor.id}), which is not this record's entry`,
 				},
 			],
 		};
@@ -694,5 +694,136 @@ describe("importing translations", () => {
 			],
 		});
 		expect(row?.errors?.[0]?.code).not.toBe("required");
+	});
+	const plainFrench = (fields: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+		version: 1,
+		collection: "products",
+		locale: "fr",
+		key: { from: "id" },
+		slug: { from: "handle" },
+		fields: { title: { from: "Nom", type: "text" }, ...fields },
+		...extra,
+	});
+
+	/** Makes the next create throw before it writes, as a crash would. */
+	function crashOnNextCreate(deps: Deps) {
+		const create = deps.content.create.bind(deps.content);
+		let crash = true;
+		deps.content.create = async (input) => {
+			if (crash) {
+				crash = false;
+				throw new Error("process killed");
+			}
+			return create(input);
+		};
+	}
+
+	const SHARED_MESSAGE =
+		"The entry is a translation of another entry: to update it, the template must map translationOf or drop its shared mappings, which would otherwise overwrite its translation group's values";
+
+	it("fails translation_of_missing when a template without translationOf maps shared values onto a translation", async () => {
+		const { deps } = setup();
+		await importEnglish(deps);
+		await run(deps, french(), FR_HEADER + frRow("F1", "E1", "Bureau"));
+		const bureau = frEntry(deps, "bureau")!;
+		const before = structuredClone(bureau.data);
+		const csv = FR_HEADER + frRow("F1", "", "Bureau neuf", ",S9,99,,,new,");
+		for (const template of [
+			plainFrench({ price: { from: "Prix", type: "number" } }),
+			plainFrench({}, { taxonomies: { tag: { from: "Tags" } } }),
+		]) {
+			const {
+				rows: [row],
+			} = await run(deps, template, csv);
+			expect(row).toMatchObject({
+				status: "failed",
+				entryId: bureau.id,
+				errors: [
+					{ field: "translationOf", code: "translation_of_missing", message: SHARED_MESSAGE },
+				],
+			});
+		}
+		expect(deps.content.entries.get(bureau.id)?.data).toEqual(before);
+	});
+
+	it("updates a translation from a template without translationOf that maps only translatable fields", async () => {
+		const { deps } = setup();
+		await importEnglish(deps);
+		await run(deps, french(), FR_HEADER + frRow("F1", "E1", "Bureau"));
+		const {
+			rows: [row],
+		} = await run(deps, plainFrench({}), FR_HEADER + frRow("F1", "", "Bureau neuf"));
+		expect(row).toMatchObject({ status: "updated" });
+		expect(frEntry(deps, "bureau-neuf")?.data).toMatchObject({ title: "Bureau neuf", price: 10 });
+	});
+
+	it("saves no link when crash repair finds a translation for a template without translationOf", async () => {
+		const { deps, clock } = setup();
+		const en = await importEnglish(deps);
+		// An editor's translation of E1 carries the source ID "E1", the French record's key.
+		const editor = await deps.content.create({
+			collection: "products",
+			locale: "fr",
+			data: { title: "Bureau (éditeur)" },
+			translationOf: en.get("E1")!.id,
+		});
+		const template = plainFrench({ price: { from: "Prix", type: "number" } });
+		const job = await start(deps, template, FR_HEADER + frRow("E1", "", "Bureau", ",,99,,,,"));
+		crashOnNextCreate(deps);
+		await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		await runToEnd(deps, job.id);
+		expect((await rows(deps, job.id))[0]).toMatchObject({
+			status: "failed",
+			errors: [{ code: "translation_of_missing", message: SHARED_MESSAGE }],
+		});
+		expect(await deps.links.get(linkKey("products", "fr", "E1"))).toBeNull();
+		expect(deps.content.entries.get(editor.id)?.data).toMatchObject({
+			title: "Bureau (éditeur)",
+			price: 10,
+		});
+	});
+
+	it("creates an entry of its own when crash repair finds a translation for a record without a value", async () => {
+		const { deps, clock } = setup();
+		const en = await importEnglish(deps);
+		const editor = await deps.content.create({
+			collection: "products",
+			locale: "fr",
+			data: { title: "Bureau (éditeur)" },
+			translationOf: en.get("E1")!.id,
+		});
+		// Keyed E1 with no value: its source ID is "E1", as the editor's translation's is.
+		const job = await start(deps, french(), FR_HEADER + frRow("E1", "", "Tabouret", ",S4,40,,,,"));
+		crashOnNextCreate(deps);
+		await expect(runBatch(deps, job.id, "first")).rejects.toThrow("process killed");
+		clock.t += job.budgetMs + LEASE_GRACE_MS + 1;
+		await runToEnd(deps, job.id);
+		const own = frEntry(deps, "tabouret")!;
+		expect(own.group).toBe(own.id);
+		expect((await rows(deps, job.id))[0]).toMatchObject({ status: "created", entryId: own.id });
+		expect(await deps.links.get(linkKey("products", "fr", "E1"))).toMatchObject({
+			entryId: own.id,
+		});
+		expect(deps.content.entries.get(editor.id)?.data.title).toBe("Bureau (éditeur)");
+	});
+
+	it("fails the second of two records that name the same source", async () => {
+		const { deps } = setup();
+		await importEnglish(deps);
+		const csv = FR_HEADER + frRow("F1", "E1", "Bureau") + frRow("F2", "E1", "Bureau 2");
+		const { rows: done } = await run(deps, french(), csv);
+		const bureau = frEntry(deps, "bureau")!;
+		expect(done[0]).toMatchObject({ status: "created", entryId: bureau.id });
+		expect(done[1]).toMatchObject({
+			status: "failed",
+			errors: [
+				{
+					field: "translationOf",
+					code: "translation_exists",
+					message: `The source entry already has a translation in fr (entry ${bureau.id}), which is not this record's entry`,
+				},
+			],
+		});
 	});
 });
