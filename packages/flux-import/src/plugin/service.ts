@@ -204,6 +204,7 @@ function withSiteLocale(
 	if (
 		typeof source !== "object" ||
 		source === null ||
+		Array.isArray(source) ||
 		(sourceLocale !== undefined && typeof sourceLocale !== "string")
 	) {
 		return { ...template, locale: resolved.locale };

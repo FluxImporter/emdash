@@ -5,6 +5,7 @@ import {
 	resolveTranslationLocale,
 } from "../../src/emdash/locale.js";
 import { listSchemaFields, type SchemaRegistryLike } from "../../src/emdash/schema.js";
+import { EmDashUploads, stageUpload } from "../../src/emdash/uploads.js";
 import { createJob, JobError } from "../../src/engine/jobs.js";
 import {
 	checkTemplate,
@@ -18,7 +19,10 @@ import {
 	usesLinks,
 } from "../../src/engine/template.js";
 import { startJob, WORKERS_LINKED_BATCH_CAP, workersBatchCap } from "../../src/plugin/service.js";
-import { makeDeps } from "./fakes.js";
+import { startImport, XLSX_WORKERS_BUFFER, type XlsxStaging } from "../../src/plugin/xlsx.js";
+import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
+import { FakeStorage, makeDeps } from "./fakes.js";
+import { streamOf } from "./helpers.js";
 
 const i18n = { defaultLocale: "en", locales: ["en", "fr", "de"] };
 
@@ -135,6 +139,26 @@ describe("translationOf in the template", () => {
 			fields: { price: { from: "Prix", type: "number" } },
 		});
 		expect(translationWarnings(plain, targetFieldsOf(plain, fields))).toEqual([]);
+	});
+
+	it("warns about non-translatable image and portableText mappings", () => {
+		const schema: SchemaField[] = [
+			{ slug: "title", type: "string", required: true },
+			{ slug: "hero", type: "image", translatable: false },
+			{ slug: "body", type: "portableText", translatable: false },
+			{ slug: "notes", type: "portableText" },
+		];
+		const t = parse({
+			fields: {
+				title: { from: "Nom", type: "text" },
+				hero: { from: "Photo", type: "image" },
+				body: { from: "Body", type: "portableText", format: "html" },
+				notes: { from: "Notes", type: "portableText", format: "text" },
+			},
+		});
+		expect(translationWarnings(t, targetFieldsOf(t, schema))).toEqual([
+			'Records with a translationOf value leave these to EmDash, which shares them across the translation group: fields "hero", "body"',
+		]);
 	});
 
 	it("counts as a template with links", () => {
@@ -279,5 +303,81 @@ describe("startJob and createJob with translationOf", () => {
 		});
 		const job = await createJob(deps, { uploadId: "u1", template, schemaFields: fields });
 		expect(job.sharedRequired).toBeUndefined();
+	});
+
+	it("leaves an array translationOf to the template schema", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv);
+		const error = await startJob(
+			deps,
+			{ uploadId: "u1", template: raw({ translationOf: [] }), dryRun: false },
+			lookup,
+			resolveLocale,
+			resolveTranslation,
+		).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(JobError);
+		expect((error as JobError).details).toEqual([
+			"translationOf: Invalid input: expected object, received array",
+		]);
+	});
+
+	describe("through startImport", () => {
+		const calls: Array<[string | undefined, string]> = [];
+		const spy = (source: string | undefined, locale: string) => {
+			calls.push([source, locale]);
+			return resolveTranslationLocale(source, locale, i18n);
+		};
+
+		it("passes the resolver on for an XLSX template and for a plain one", async () => {
+			const storage = new FakeStorage();
+			const uploads = new EmDashUploads(storage);
+			const deps = { ...makeDeps().deps, source: uploads };
+			const staging: XlsxStaging = {
+				storage,
+				maxXlsxBytes: 10 * 1024 * 1024,
+				maxSourceBytes: 50 * 1024 * 1024,
+				workers: false,
+				bufferBytes: XLSX_WORKERS_BUFFER,
+			};
+			const bytes = await productsXlsx(2);
+			const book = (await stageUpload(storage, streamOf(bytes), 100 * 1024 * 1024, bytes.length))
+				.uploadId;
+			const schema = async () => [
+				{ slug: "title", type: "string" },
+				{ slug: "price", type: "number" },
+				{ slug: "released", type: "datetime" },
+			];
+			const xlsx = await startImport(
+				deps,
+				staging,
+				{
+					uploadId: book,
+					template: {
+						...xlsxTemplate("products"),
+						locale: "FR",
+						translationOf: { from: "Handle" },
+					},
+					dryRun: false,
+				},
+				schema,
+				resolveLocale,
+				spy,
+			);
+			expect(xlsx.template.translationOf).toEqual({ from: "Handle", locale: "en" });
+			expect(calls).toEqual([[undefined, "fr"]]);
+
+			const fake = makeDeps().deps;
+			fake.source.add("u1", csv);
+			const plain = await startImport(
+				fake,
+				staging,
+				{ uploadId: "u1", template: raw({ translationOf: { from: "en_id" } }), dryRun: false },
+				lookup,
+				resolveLocale,
+				spy,
+			);
+			expect(plain.template.translationOf).toEqual({ from: "en_id", locale: "en" });
+			expect(calls).toHaveLength(2);
+		});
 	});
 });
