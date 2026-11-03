@@ -72,6 +72,29 @@ describe("findTranslationSource", () => {
 		expect(await find(deps, cache, "E1", "en")).toEqual({ id: desk.id, group: desk.id });
 	});
 
+	it("keeps one cached hit per locale for the same key", async () => {
+		const { deps, desk, fr } = await setup();
+		for (const [locale, entry] of [
+			["en", desk],
+			["fr", fr],
+		] as const) {
+			await deps.links.put(linkKey("products", locale, "E1"), {
+				collection: "products",
+				locale,
+				sourceKey: "E1",
+				entryId: entry.id,
+			});
+		}
+		const cache = new LookupCache();
+		expect(await find(deps, cache, "E1", "en")).toEqual({ id: desk.id, group: desk.id });
+		expect(await find(deps, cache, "E1", "fr")).toEqual({ id: fr.id, group: fr.id });
+		expect(cache.entries.size).toBe(2);
+		const spent = cache.spent;
+		expect(await find(deps, cache, "E1", "en")).toEqual({ id: desk.id, group: desk.id });
+		expect(await find(deps, cache, "E1", "fr")).toEqual({ id: fr.id, group: fr.id });
+		expect(cache.spent).toBe(spent);
+	});
+
 	it("does not cache a miss, and reads link rows only before the source ID field exists", async () => {
 		const { deps } = await setup();
 		const cache = new LookupCache();

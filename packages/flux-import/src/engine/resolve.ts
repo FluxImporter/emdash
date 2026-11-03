@@ -603,7 +603,10 @@ const NOT_FOUND_BY = {
 		`No entry in "${target}" (${locale}) was imported with the key "${value}"`,
 };
 
-/** The message for a source key that no entry was imported with. */
+/**
+ * The message for a source key that no entry was imported with. The key length is already
+ * capped upstream by `MAX_KEY_LENGTH` (256).
+ */
 export function sourceNotFoundMessage(collection: string, locale: string, key: string): string {
 	return NOT_FOUND_BY.key(collection, key, locale);
 }
