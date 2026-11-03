@@ -95,3 +95,103 @@ describe("FakeContent translations", () => {
 		await expect(create(source.id)).rejects.toMatchObject({ code: "emdash_conflict" });
 	});
 });
+
+describe("FakeContent for rollbacks (M5a)", () => {
+	const at = (ms: number) => new Date(Date.parse("2026-10-07T10:00:00Z") + ms).toISOString();
+	function setup() {
+		const clock = { t: Date.parse("2026-10-07T10:00:00Z") };
+		const content = new FakeContent();
+		content.now = () => clock.t;
+		return { content, clock };
+	}
+	const base = { collection: "products", locale: "en" };
+
+	it("stamps creates and writes, and stages drafts only on collections with revisions", async () => {
+		const { content, clock } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: { title: "A" } });
+		expect(await content.get("products", "en", id)).toMatchObject({
+			status: "draft",
+			scheduledAt: null,
+			hasDraft: false,
+			createdAt: at(0),
+			updatedAt: at(0),
+		});
+		clock.t += 1000;
+		await content.publish({ id, rev: "1" });
+		await content.update({ id, rev: "2", data: { title: "B" } });
+		expect(await content.get("products", "en", id)).toMatchObject({
+			status: "published",
+			hasDraft: true,
+			live: { title: "A" },
+			data: { title: "B" },
+			updatedAt: at(1000),
+		});
+		await content.update({ id, rev: "3", taxonomies: { tag: ["new"] } });
+		expect((await content.get("products", "en", id))?.live).toEqual({ title: "A" });
+
+		content.plainCollections.add("plain");
+		const plain = await content.create({ ...base, collection: "plain", data: { title: "A" } });
+		await content.publish({ id: plain.id, rev: "1" });
+		await content.update({ id: plain.id, rev: "2", data: { title: "B" } });
+		expect(await content.get("plain", "en", plain.id)).toMatchObject({
+			hasDraft: false,
+			pendingPublish: false,
+			data: { title: "B" },
+		});
+	});
+
+	it("moves entries to Trash, hides them from reads and deletes them for good", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, data: { flux_source_id: "K" } });
+		content.blockDelete = () => "Not today";
+		expect(await content.trash("products", id)).toEqual({
+			ok: false,
+			reason: "blocked",
+			message: "Not today",
+		});
+		content.blockDelete = () => null;
+		expect(await content.permanentDelete("products", id)).toBe(false);
+		expect(await content.trash("products", id)).toEqual({ ok: true });
+		expect(await content.get("products", "en", id)).toBeNull();
+		expect(await content.findBySourceId("products", "en", "K")).toBeNull();
+		expect(await content.getIncludingTrashed("products", "en", id)).toMatchObject({
+			rev: "1",
+			trashed: true,
+		});
+		expect((await content.trash("products", id)).ok).toBe(false);
+		expect(await content.permanentDelete("products", id)).toBe(true);
+		expect(content.entries.has(id)).toBe(false);
+	});
+
+	it("runs revert steps with revision checks, hook refusals and EmDash's draft rules", async () => {
+		const { content, clock } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: { title: "A" } });
+		const step = (rev: string, s: Parameters<FakeContent["revertStep"]>[0]["step"], extra = {}) =>
+			content.revertStep({ ...base, id, rev, step: s, ...extra });
+		expect(await step("9", "publish")).toMatchObject({ ok: false, reason: "conflict" });
+		const published = await step("1", "publish");
+		expect(published).toMatchObject({ ok: true, state: { status: "published", hasDraft: false } });
+		const unpublished = await step("2", "unpublish");
+		// As EmDash: the unpublish creates a draft from the live revision (spec M5a F18).
+		expect(unpublished).toMatchObject({ ok: true, state: { status: "draft", hasDraft: true } });
+		expect(await step("3", "discard")).toMatchObject({ ok: true, state: { hasDraft: false } });
+		await expect(step("4", "schedule", { scheduledAt: at(0) })).rejects.toMatchObject({
+			code: "emdash_validation_error",
+		});
+		clock.t += 1;
+		const scheduled = await step("4", "schedule", { scheduledAt: at(60_000) });
+		expect(scheduled).toMatchObject({
+			ok: true,
+			state: { status: "scheduled", scheduledAt: at(60_000) },
+		});
+		content.blockStep = (s) => (s === "publish" ? "Not on Fridays" : null);
+		expect(await step("5", "publish")).toEqual({
+			ok: false,
+			reason: "blocked",
+			message: "Not on Fridays",
+		});
+		const updated = await step("5", "update", { data: { title: "B" }, slug: "b" });
+		expect(updated).toMatchObject({ ok: true, state: { hasDraft: true } });
+		expect(content.entries.get(id)).toMatchObject({ slug: "b", data: { title: "B" } });
+	});
+});

@@ -13,8 +13,10 @@ import {
 	type MediaInfo,
 	type MediaPort,
 	type MediaUploadError,
+	type RevertStep,
 	SourceMissingError,
 	type SourcePort,
+	type StepResult,
 	type TaxonomyDef,
 	type TermInfo,
 	type Where,
@@ -132,6 +134,18 @@ type StoredEntry = {
 	taxonomies: Record<string, string[]>;
 	references: Record<string, string[]>;
 	bylines: { bylineId: string; roleLabel: string | null }[];
+	/** M5a: `draft`, `scheduled` or `published`, and the schedule. */
+	status: string;
+	scheduledAt: string | null;
+	/**
+	 * M5a: the live data and slug while a draft revision is pending (on a collection with
+	 * revisions, a write staged after the entry's columns); null without one. `data` and `slug`
+	 * always hold the latest values, the draft's included.
+	 */
+	live: { data: Record<string, unknown>; slug: string | null } | null;
+	trashed: boolean;
+	createdAt: string;
+	updatedAt: string;
 };
 
 export class FakeContent implements ContentPort {
@@ -158,7 +172,27 @@ export class FakeContent implements ContentPort {
 	 * source, as EmDash does (spec M4e F1).
 	 */
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
+	/** M5a: collections without revisions, whose writes go straight to the live columns. */
+	readonly plainCollections = new Set<string>();
+	/** M5a: return a message to make a `content:beforeDelete` hook refuse the trash. */
+	blockDelete: (id: string) => string | null = () => null;
+	/** M5a: return a message to make a policy hook refuse a publish, unpublish or schedule. */
+	blockStep: (step: RevertStep, id: string) => string | null = () => null;
+	/** M5a: called at the start of every rollback step; throw from it to simulate a crash. */
+	beforeStep: (step: RevertStep | "trash" | "delete", id: string) => void = () => {};
+	/** The clock for timestamps and schedules; `makeDeps` gives it the test clock. */
+	now: () => number = () => Date.parse("2026-10-07T10:00:00Z");
 	private next = 0;
+
+	private stamp(): string {
+		return new Date(this.now()).toISOString();
+	}
+
+	/** A write that changes the row: a new revision and `updatedAt`. */
+	private touch(e: StoredEntry): void {
+		e.rev++;
+		e.updatedAt = this.stamp();
+	}
 
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
@@ -168,6 +202,12 @@ export class FakeContent implements ContentPort {
 			data: structuredClone(e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
+			status: e.status,
+			scheduledAt: e.scheduledAt,
+			hasDraft: e.live !== null,
+			...(e.live ? { live: structuredClone(e.live.data) } : {}),
+			createdAt: e.createdAt,
+			updatedAt: e.updatedAt,
 			...(options.references
 				? {
 						references: Object.fromEntries(
@@ -188,7 +228,115 @@ export class FakeContent implements ContentPort {
 	}
 	async get(collection: string, locale: string, id: string, options?: GetOptions) {
 		const e = this.entries.get(id);
-		return e && e.collection === collection && e.locale === locale ? this.snap(e, options) : null;
+		return e && !e.trashed && e.collection === collection && e.locale === locale
+			? this.snap(e, options)
+			: null;
+	}
+	async getIncludingTrashed(collection: string, locale: string, id: string) {
+		const e = this.entries.get(id);
+		return e && e.collection === collection && e.locale === locale
+			? { ...this.snap(e, { references: true }), trashed: e.trashed }
+			: null;
+	}
+	async trash(_collection: string, id: string) {
+		this.beforeStep("trash", id);
+		const e = this.entries.get(id);
+		if (!e || e.trashed) return { ok: false as const, reason: "not_found" as const, message: "" };
+		const blocked = this.blockDelete(id);
+		if (blocked !== null)
+			return { ok: false as const, reason: "blocked" as const, message: blocked };
+		// As EmDash: only deleted_at is set, so the revision stays (spec M5a F6).
+		e.trashed = true;
+		this.calls.push(`trash:${id}`);
+		return { ok: true as const };
+	}
+	async permanentDelete(_collection: string, id: string) {
+		this.beforeStep("delete", id);
+		const e = this.entries.get(id);
+		if (!e?.trashed) return false;
+		this.entries.delete(id);
+		this.calls.push(`delete:${id}`);
+		return true;
+	}
+	async revertStep(
+		input: {
+			collection: string;
+			id: string;
+			rev: string;
+			step: RevertStep;
+			slug?: string | null;
+			data?: Record<string, unknown>;
+			scheduledAt?: string;
+		} & LinkWrites,
+	): Promise<StepResult> {
+		this.beforeStep(input.step, input.id);
+		const e = this.entries.get(input.id);
+		if (!e || e.trashed) throw new ContentWriteError("emdash_not_found", "Entry not found");
+		if (String(e.rev) !== input.rev) {
+			return { ok: false, reason: "conflict", message: "Revision precondition did not match" };
+		}
+		const blocked = input.step === "update" ? null : this.blockStep(input.step, e.id);
+		if (blocked !== null) return { ok: false, reason: "blocked", message: blocked };
+		switch (input.step) {
+			case "update": {
+				const { slug, ...rest } = input;
+				const written = await this.update({
+					...rest,
+					...(slug === undefined || slug === null ? {} : { slug }),
+				});
+				if (!written.ok) return { ok: false, reason: "conflict", message: written.reason };
+				break;
+			}
+			case "publish": {
+				const published = await this.publish({ id: e.id, rev: input.rev });
+				if (!published.ok) return { ok: false, reason: "conflict", message: published.reason };
+				break;
+			}
+			case "unpublish":
+				if (e.status !== "draft" || e.scheduledAt !== null) {
+					// As EmDash, also without revisions: a draft is created from the live revision (F18).
+					e.live ??= { data: structuredClone(e.data), slug: e.slug };
+					e.status = "draft";
+					e.scheduledAt = null;
+					e.pendingPublish = true;
+					this.touch(e);
+				}
+				break;
+			case "discard":
+				if (e.live) {
+					e.data = e.live.data;
+					e.slug = e.live.slug;
+					e.live = null;
+					e.pendingPublish = e.status !== "published";
+					e.rev++;
+				}
+				break;
+			case "schedule": {
+				const at = input.scheduledAt ?? "";
+				if (!(Date.parse(at) > this.now())) {
+					throw new ContentWriteError(
+						"emdash_validation_error",
+						"Rolling back the entry (schedule) failed: Scheduled date must be in the future",
+					);
+				}
+				e.scheduledAt = at;
+				if (e.status !== "published") e.status = "scheduled";
+				this.touch(e);
+				break;
+			}
+		}
+		if (input.step !== "update" && input.step !== "publish") {
+			this.calls.push(`${input.step}:${e.id}`);
+		}
+		return {
+			ok: true,
+			state: {
+				rev: String(e.rev),
+				status: e.status,
+				scheduledAt: e.scheduledAt,
+				hasDraft: e.live !== null,
+			},
+		};
 	}
 	async findBySourceId(collection: string, locale: string, sourceId: string, options?: GetOptions) {
 		this.calls.push(`find:${sourceId}`);
@@ -200,6 +348,7 @@ export class FakeContent implements ContentPort {
 		}
 		for (const e of this.entries.values()) {
 			if (
+				!e.trashed &&
 				e.collection === collection &&
 				e.locale === locale &&
 				e.data.flux_source_id === sourceId
@@ -256,6 +405,7 @@ export class FakeContent implements ContentPort {
 		}
 		const id = `e${++this.next}`;
 		const data = structuredClone(input.data);
+		const created = this.stamp();
 		for (const field of source ? this.sharedFields : []) {
 			if (source && Object.hasOwn(source.data, field)) data[field] = source.data[field];
 			else delete data[field];
@@ -273,6 +423,12 @@ export class FakeContent implements ContentPort {
 			taxonomies: structuredClone(source?.taxonomies ?? {}),
 			references: structuredClone(source?.references ?? {}),
 			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
+			status: "draft",
+			scheduledAt: null,
+			live: null,
+			trashed: false,
+			createdAt: created,
+			updatedAt: created,
 		};
 		this.writeLinks(entry, input);
 		this.entries.set(id, entry);
@@ -294,14 +450,16 @@ export class FakeContent implements ContentPort {
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
+		const staged = input.data !== undefined || input.slug !== undefined || input.references;
+		const plain = this.plainCollections.has(e.collection);
+		// On revisioned collections data, slug and references are staged in a draft (spec M5a F17).
+		if (staged && !plain) e.live ??= { data: structuredClone(e.data), slug: e.slug };
 		e.data = { ...e.data, ...structuredClone(input.data ?? {}) };
 		if (input.slug !== undefined) e.slug = input.slug;
 		this.writeLinks(e, input);
-		e.rev++;
+		this.touch(e);
 		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
-		if (input.data !== undefined || input.slug !== undefined || input.references) {
-			e.pendingPublish = true;
-		}
+		if (staged && !plain) e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
 		return { ok: true, rev: String(e.rev) };
@@ -315,7 +473,10 @@ export class FakeContent implements ContentPort {
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
 		e.pendingPublish = false;
-		e.rev++;
+		e.status = "published";
+		e.scheduledAt = null;
+		e.live = null;
+		this.touch(e);
 		this.calls.push(`publish:${e.id}`);
 		return { ok: true, rev: String(e.rev) };
 	}
@@ -325,9 +486,9 @@ export class FakeContent implements ContentPort {
 	async translations(collection: string, id: string) {
 		this.calls.push(`translations:${id}`);
 		const e = this.entries.get(id);
-		if (!e || e.collection !== collection) return [];
+		if (!e || e.trashed || e.collection !== collection) return [];
 		return [...this.entries.values()]
-			.filter((t) => t.collection === collection && t.group === e.group)
+			.filter((t) => !t.trashed && t.collection === collection && t.group === e.group)
 			.map((t) => ({ id: t.id, locale: t.locale }));
 	}
 }
@@ -591,6 +752,7 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 	const clock = opts.clock ?? { t: Date.parse("2026-10-07T10:00:00Z") };
 	let id = 0;
 	const content = new FakeContent();
+	content.now = () => clock.t;
 	const lookups = new FakeLookups(content);
 	content.bylineSlug = (id) => lookups.storedBylines.find((b) => b.id === id)?.slug ?? id;
 	const deps = {
