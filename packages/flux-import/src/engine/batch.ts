@@ -76,6 +76,7 @@ import {
 import {
 	bump,
 	type Counters,
+	CREATED_LISTED,
 	capErrors,
 	capWarnings,
 	type EngineDeps,
@@ -169,6 +170,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.plannedTerms ? { plannedTerms: job.plannedTerms } : {}),
 			...(job.deferred ? { deferred: job.deferred } : {}),
 			...(job.warnings ? { warnings: job.warnings } : {}),
+			...(job.created ? { created: job.created } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
@@ -476,13 +478,31 @@ async function decide(
 	};
 }
 
+/**
+ * Adds terms or media a real job created to the job's summary, which the batch's save keeps for
+ * the rollback job's warnings (M5a). Names beyond `CREATED_LISTED` are only counted.
+ */
+export function noteCreated(job: Job, kind: "terms" | "media", names: readonly string[]): void {
+	job.created ??= { terms: [], termCount: 0, media: [], mediaCount: 0 };
+	const created = job.created;
+	const list = kind === "terms" ? created.terms : created.media;
+	for (const name of names) {
+		if (list.includes(name)) continue;
+		if (list.length < CREATED_LISTED) list.push(name);
+		if (kind === "terms") created.termCount++;
+		else created.mediaCount++;
+	}
+}
+
 function mediaContext(job: Job, seq: number): MediaContext {
 	return {
 		jobId: job.id,
 		dryRun: job.dryRun,
 		maxBytes: job.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE,
 		targets: job.targetFields ?? {},
-		...(journaling(job) ? { journal: { seq } } : {}),
+		...(journaling(job)
+			? { journal: { seq, created: (id: string) => noteCreated(job, "media", [id]) } }
+			: {}),
 	};
 }
 
@@ -583,6 +603,7 @@ async function decideRecord(
 				requests,
 			);
 			found.newTerms = resolution.newTerms;
+			if (journaling(job)) noteCreated(job, "terms", resolution.newTerms);
 			if (resolution.ok) ctx.links = resolution.links;
 			else errors.push(...resolution.errors);
 		}
@@ -1065,7 +1086,9 @@ async function journalPublish(
 		taxonomies: [],
 		references: [],
 		bylines: false,
-		referencesUnknown: ctx.links?.references !== undefined,
+		// Only a published entry with a pending draft: the read gave the draft's selection.
+		referencesUnknown:
+			entry.status === "published" && entry.hasDraft && ctx.links?.references !== undefined,
 	};
 	const before = preImage(entry, link, touched, undefined);
 	if ("code" in before) return before;
@@ -1108,7 +1131,10 @@ async function journalWrite(
 		bylines: resolved?.bylines !== undefined && changed.has("bylines"),
 		// The read gives the draft's selection only, and the publish makes it live.
 		referencesUnknown:
-			ctx.job.publish && entry.pendingPublish && resolved?.references !== undefined,
+			ctx.job.publish &&
+			entry.status === "published" &&
+			entry.hasDraft &&
+			resolved?.references !== undefined,
 	};
 	const before = preImage(entry, ctx.link, touched, ctx.current);
 	if ("code" in before) return before;

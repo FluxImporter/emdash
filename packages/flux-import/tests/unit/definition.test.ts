@@ -119,9 +119,9 @@ describe("createPlugin", () => {
 			plugin.routes["jobs/records"]!.input!.safeParse({ id: "J1", status: "bogus" }).success,
 		).toBe(false);
 		for (const route of ["jobs/records", "jobs/log.csv"]) {
-			expect(plugin.routes[route]!.input!.safeParse({ id: "J1", status: "filtered" }).success).toBe(
-				true,
-			);
+			for (const status of ["filtered", "reverted"]) {
+				expect(plugin.routes[route]!.input!.safeParse({ id: "J1", status }).success).toBe(true);
+			}
 		}
 	});
 

@@ -46,6 +46,11 @@ export interface Job {
 	 * on dry runs and on jobs created before M5a, which have no journal.
 	 */
 	journal?: boolean;
+	/**
+	 * What a real job created and a rollback keeps (M5a): term names and media IDs (at most
+	 * `CREATED_LISTED` of each) and the totals. Saved with each batch; absent until it creates one.
+	 */
+	created?: { terms: string[]; termCount: number; media: string[]; mediaCount: number };
 	/** An import job created from a URL source: the source's ID (M5a). */
 	sourceId?: string;
 	uploadId: string;
@@ -301,6 +306,9 @@ export function journalKey(jobId: string, linkId: string): string {
 export function journalMediaKey(jobId: string, mediaId: string): string {
 	return `${jobId}:${mediaId}`;
 }
+
+/** Names and IDs `Job.created` lists of each kind; past them it counts only. */
+export const CREATED_LISTED = 100;
 
 /** The largest journal row, in bytes of JSON (M5a); D1 stores more (spec V6). */
 export const MAX_JOURNAL_BYTES = 1024 * 1024;

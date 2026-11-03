@@ -203,7 +203,10 @@ export type MediaContext = {
 	/** The job's target field snapshot: each media field's `allowedMimeTypes`. */
 	targets: Readonly<Record<string, TargetField>>;
 	/** A real job with a journal (M5a): items its uploads create are journalled under `seq`. */
-	journal?: { seq: number };
+	journal?: {
+		seq: number /** Called with the ID of each item the upload created. */;
+		created?: (id: string) => void;
+	};
 };
 
 /** One media field after the map lookup. */
@@ -412,6 +415,7 @@ export async function obtainMedia(
 		cache.mediaItems.set(item.id, item);
 		// Before the map row, so the item is on the job's list whatever happens next (M5a).
 		if (!deduplicated && ctx.journal) {
+			ctx.journal.created?.(item.id);
 			await deps.journalMedia.put(journalMediaKey(ctx.jobId, item.id), {
 				jobId: ctx.jobId,
 				mediaId: item.id,

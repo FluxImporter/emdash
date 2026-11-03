@@ -336,10 +336,12 @@ would get back (`before` the current value, `after` the journal's), and the same
 ### Job warnings
 
 At creation the rollback job gets, when they apply: "The import created <n> media items, which are
-kept (EmDash cannot tell whether other content uses them): <ids>, …" (at most 100 IDs), from
-`journalMedia`; and "The import created <n> terms, which are kept (EmDash 1.2.0 has no term
-deletion for plugins); the import's records list them under newTerms", from the original's records
-(`newTerms`, counted over pages of 100).
+kept (EmDash cannot tell whether other content uses them): <ids>, …" (at most 100 IDs); and
+"The import created <n> terms, which are kept (EmDash 1.2.0 has no term deletion for plugins);
+the import's records list them under newTerms". Both come from `Job.created`, a summary the
+import job keeps while it runs (term names and media IDs, at most 100 of each, with totals),
+saved with each batch, so creating the rollback job scans no rows. A job with a journal always
+has it once it has created anything; a job without one cannot be rolled back.
 
 | Code | Kind | When |
 | --- | --- | --- |
@@ -405,12 +407,15 @@ extra content reads: everything in the pre-image comes from the reads the import
 | Rollback batch on Node | the rollback job's `batchSize` (default 50, maximum 500) | As imports |
 | Media IDs in the warning | 100, then a count | Job size |
 | Rollbacks per job | One | `rolledBackBy` |
-| Rollback window | The retention period (`retentionDays`, default 30) | Journal rows are deleted with their job; an original whose rollback job is still `created`, `running` or `paused` is kept |
+| Rollback window | The retention period (`retentionDays`, default 30) | Journal rows are deleted with their job; an original that a rollback job names in `rollbackOf` (real or dry run, in any status) is kept until that rollback job is pruned |
 
 ## Retention
 
-`purgeExpired` deletes an expired job's `journal` and `journalMedia` rows with its records, and
-skips an original whose rollback job is not terminal. Link rows are kept, as before.
+`purgeExpired` deletes an expired job's `journal` and `journalMedia` rows with its records. An
+original that a rollback job names (`rollbackOf`, real or dry run, in any status) is kept while
+that rollback job exists; when the rollback job has expired and is pruned, its original goes in
+the same run if it has also expired. A job whose rows could not all be deleted stays for the next
+run. Link rows are kept, as before.
 
 ## Testing
 
@@ -518,7 +523,7 @@ Each gets its own spec; these rulings fix the direction and the journal they wri
   - `publishedAt` stays set on an entry the run published for the first time (F12).
   - A staged slug in a pending draft is not in the pre-image (F5): rollback restores the live slug.
   - Likewise, `handleContentGet` returns a pending draft's reference selection, not the live one.
-    When a publishing job writes or publishes an entry with a pending draft and the template maps
+    When a publishing job writes or publishes a published entry with a pending draft and the template maps
     references, the pre-image has `referencesUnknown: true` and holds the draft's selection; the
     rollback reports `references_not_restored` for it instead of a plain `reverted` (Task 6).
   - Rollbacks must go newest first across jobs, and translation jobs before their source job;

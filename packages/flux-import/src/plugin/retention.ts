@@ -23,31 +23,25 @@ export interface UploadPurger {
 
 type JobRows = Pick<KvCollection<unknown>, "query" | "deleteMany">;
 
-/** Deletes a job's rows of one collection (records, journal or journalMedia). */
-async function deleteRows(rows: JobRows, jobId: string): Promise<number> {
-	let deleted = 0;
+/** Deletes a job's rows of one collection; false when it stopped with rows left. */
+async function deleteRows(rows: JobRows, jobId: string, count: { n: number }): Promise<boolean> {
 	for (;;) {
 		const page = await rows.query({ where: { jobId }, limit: PAGE });
-		if (page.items.length === 0) return deleted;
+		if (page.items.length === 0) return true;
 		const n = await rows.deleteMany(page.items.map((i) => i.id));
+		count.n += n;
 		// Nothing deleted means the same page would come back forever; the next run tries again.
-		if (n === 0) return deleted;
-		deleted += n;
+		if (n === 0) return false;
 	}
-}
-
-/** A rollback job that may still run, which needs its original's journal. */
-async function rollbackPending(deps: Pick<EngineDeps, "jobs">, job: Job): Promise<boolean> {
-	if (job.rolledBackBy === undefined) return false;
-	const rollback = await deps.jobs.get(job.rolledBackBy);
-	return rollback !== null && ["created", "running", "paused"].includes(rollback.status);
 }
 
 /**
  * Deletes jobs created before the cutoff with their record and journal rows, and staged files
- * last modified before it, except files in `keepUploads`. A job with a live lease, or whose
- * rollback job may still run, is left for the next run. Links are kept: they map source keys to
- * entries across runs.
+ * last modified before it, except files in `keepUploads`. A job with a live lease is left for the
+ * next run. An original job stays while a rollback job (real or dry run, in any status) names it
+ * in `rollbackOf`, and goes in the same run as that rollback job once both have expired. A job
+ * whose rows could not all be deleted stays too, so the next run retries it. Links are kept: they
+ * map source keys to entries across runs.
  */
 export async function purgeExpired(
 	deps: Pick<EngineDeps, "jobs" | "records" | "journal" | "journalMedia" | "now">,
@@ -57,49 +51,51 @@ export async function purgeExpired(
 	keepUploads: ReadonlySet<string> = new Set(),
 ): Promise<PurgeResult> {
 	const now = deps.now();
-	const cutoff = new Date(now - retentionDays * DAY_MS);
-	const expired: string[] = [];
+	const cutoff = new Date(now - retentionDays * DAY_MS).toISOString();
+	const all: { id: string; data: Job }[] = [];
 	let cursor: string | undefined;
 	do {
-		const page = await deps.jobs.query({
-			where: { createdAt: { lt: cutoff.toISOString() } },
-			limit: PAGE,
-			...(cursor ? { cursor } : {}),
-		});
-		for (const { id, data } of page.items) {
-			if (data.lease && data.lease.expiresAt > now) continue;
-			if (await rollbackPending(deps, data)) continue;
-			expired.push(id);
-		}
+		const page = await deps.jobs.query({ limit: PAGE, ...(cursor ? { cursor } : {}) });
+		all.push(...page.items);
 		cursor = page.hasMore ? page.cursor : undefined;
 	} while (cursor);
 
-	let records = 0;
-	let journal = 0;
-	for (const id of expired) {
-		records += await deleteRows(deps.records, id);
-		journal += await deleteRows(deps.journal, id);
-		journal += await deleteRows(deps.journalMedia, id);
+	const due = (data: Job) => data.createdAt < cutoff && !(data.lease && data.lease.expiresAt > now);
+	// Rollback jobs go first (when due), so an original they held can go in the same run.
+	const rollbacks = all.filter(({ data }) => data.kind === "rollback");
+	const originals = all.filter(({ data }) => data.kind !== "rollback");
+	const pruned = new Set<string>();
+	const counts = { records: { n: 0 }, journal: { n: 0 } };
+	const prune = async (id: string): Promise<void> => {
+		const complete =
+			(await deleteRows(deps.records, id, counts.records)) &&
+			(await deleteRows(deps.journal, id, counts.journal)) &&
+			(await deleteRows(deps.journalMedia, id, counts.journal));
+		if (!complete) return;
 		await deps.jobs.delete(id);
-	}
+		pruned.add(id);
+	};
+	for (const { id, data } of rollbacks) if (due(data)) await prune(id);
+	const held = new Set(
+		rollbacks.flatMap(({ id, data }) =>
+			!pruned.has(id) && data.rollbackOf !== undefined ? [data.rollbackOf] : [],
+		),
+	);
+	for (const { id, data } of originals) if (due(data) && !held.has(id)) await prune(id);
 
 	// Surviving jobs still read their source file (and an XLSX job's workbook), however old it is.
 	const keep = new Set<string>(keepUploads);
-	cursor = undefined;
-	do {
-		const page = await deps.jobs.query({ limit: PAGE, ...(cursor ? { cursor } : {}) });
-		for (const { data } of page.items) {
-			// A rollback job names its original's file but never reads it.
-			if (data.kind === "rollback") continue;
-			keep.add(data.uploadId);
-			if (data.sourceUploadId !== undefined) keep.add(data.sourceUploadId);
-		}
-		cursor = page.hasMore ? page.cursor : undefined;
-	} while (cursor);
+	for (const { id, data } of all) {
+		if (pruned.has(id)) continue;
+		// A rollback job names its original's file but never reads it.
+		if (data.kind === "rollback") continue;
+		keep.add(data.uploadId);
+		if (data.sourceUploadId !== undefined) keep.add(data.sourceUploadId);
+	}
 	return {
-		jobs: expired.length,
-		records,
-		journal,
-		uploads: await uploads.purgeBefore(cutoff, keep),
+		jobs: pruned.size,
+		records: counts.records.n,
+		journal: counts.journal.n,
+		uploads: await uploads.purgeBefore(new Date(cutoff), keep),
 	};
 }

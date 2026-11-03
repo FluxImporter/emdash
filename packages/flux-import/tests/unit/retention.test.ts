@@ -85,7 +85,7 @@ describe("purgeExpired", () => {
 		expect(await deps.jobs.get(job.id)).not.toBeNull();
 	});
 
-	it("stops deleting a job's records when a round deletes nothing", async () => {
+	it("stops deleting a job's records when a round deletes nothing, and keeps the job", async () => {
 		const { deps, clock } = makeDeps();
 		deps.source.add("u1", "sku,Name\nA,1\n");
 		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
@@ -98,8 +98,10 @@ describe("purgeExpired", () => {
 			if (++queries > 5) throw new Error("deleteRecords did not stop");
 			return query(opts);
 		};
-		expect(await purgeExpired(deps, new Purger(), 0)).toMatchObject({ jobs: 1, records: 0 });
+		// The job stays, so the next run retries its rows.
+		expect(await purgeExpired(deps, new Purger(), 0)).toMatchObject({ jobs: 0, records: 0 });
 		expect(queries).toBe(1);
+		expect(await deps.jobs.get(job.id)).not.toBeNull();
 	});
 
 	it("pages through more records than one query returns", async () => {

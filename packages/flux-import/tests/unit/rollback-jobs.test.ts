@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { noteCreated } from "../../src/engine/batch.js";
 import { createRollback, rollbackRefusal } from "../../src/engine/rollback.js";
 import type { Job } from "../../src/engine/types.js";
 import { purgeExpired } from "../../src/plugin/retention.js";
@@ -142,19 +143,78 @@ describe("jobs/rollback (M5a)", () => {
 	it("lists at most 100 media IDs, then a count", async () => {
 		const { deps } = setup();
 		const original = await importRows(deps, [desk]);
-		for (let i = 0; i < 102; i++) {
-			await deps.journalMedia.put(`${original.id}:m${i}`, {
-				jobId: original.id,
-				mediaId: `m${i}`,
-				url: url(`${i}.png`),
-				seq: i,
-			});
-		}
+		const media = Array.from({ length: 100 }, (_, i) => `m${i}`);
+		await patch(deps, original.id, {
+			created: { terms: [], termCount: 0, media, mediaCount: 102 },
+		});
 		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
 		const [warning] = rollback.warnings ?? [];
 		expect(warning).toMatch(
 			/^The import created 102 media items, .*: m0, m1, .*, m99, and 2 more$/,
 		);
+	});
+
+	it("keeps the summary on the job while it imports, one entry per term and media item", async () => {
+		const { deps } = setup();
+		const original = await importRows(
+			deps,
+			[
+				{ ...desk, img: url("a.png"), tags: "fresh" },
+				{ sku: "A2", name: "Lamp", img: url("b.png"), tags: "fresh|bright" },
+				{ sku: "A3", name: "Sofa", img: url("copy.png"), tags: "bright" },
+			],
+			{ extra: { taxonomies: { tag: { from: "Tags", separator: "|", create: true } } } },
+		);
+		const stored = await deps.jobs.get(original.id);
+		// "fresh" is created once although two records use it; copy.png dedupes onto a.png.
+		expect(stored?.created).toEqual({
+			terms: ["tag: fresh", "tag: bright"],
+			termCount: 2,
+			media: ["m1", "m2"],
+			mediaCount: 2,
+		});
+	});
+
+	it("counts a term once however often it is noted, and lists at most 100", () => {
+		const job = {} as Job;
+		noteCreated(job, "terms", ["a", "b"]);
+		noteCreated(job, "terms", ["b", "c"]);
+		expect(job.created).toMatchObject({ terms: ["a", "b", "c"], termCount: 3, mediaCount: 0 });
+		const many = {} as Job;
+		noteCreated(
+			many,
+			"media",
+			Array.from({ length: 105 }, (_, i) => `m${i}`),
+		);
+		expect(many.created?.media).toHaveLength(100);
+		expect(many.created?.mediaCount).toBe(105);
+	});
+
+	it("scans no rows to build the warnings", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [{ ...desk, img: url("a.png") }]);
+		for (const rows of [deps.records, deps.journal, deps.journalMedia]) {
+			rows.query = () => {
+				throw new Error("scanned");
+			};
+		}
+		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
+		expect(rollback.warnings).toHaveLength(1);
+	});
+
+	it("still reports the conflict when deleting the orphan rollback job fails", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		const cas = deps.jobs.compareAndSet.bind(deps.jobs);
+		deps.jobs.compareAndSet = async (id, expected, data) =>
+			id === original.id ? { applied: false } : cas(id, expected, data);
+		deps.jobs.delete = async () => {
+			throw new Error("storage down");
+		};
+		await expect(createRollback(deps, { id: original.id })).rejects.toMatchObject({
+			code: "invalid_transition",
+			message: "The job changed while its rollback was being created; try again",
+		});
 	});
 
 	it("caps a rollback batch on Workers at three rows", () => {
@@ -170,24 +230,85 @@ describe("jobs/rollback (M5a)", () => {
 describe("retention of journals and rollbacks (M5a)", () => {
 	const purger = { purgeBefore: async () => 0 };
 
-	it("deletes an expired job's journal rows, and keeps an original whose rollback may still run", async () => {
+	async function pair(deps: Deps, clock: { t: number }, opts: { dryRun?: boolean } = {}) {
+		const original = await importRows(deps, [{ ...desk, img: url("a.png") }]);
+		const { rollback } = await createRollback(deps, { id: original.id, ...opts });
+		clock.t += 31 * DAY;
+		return { original, rollback };
+	}
+
+	it("deletes an expired job's journal rows, records and media rows", async () => {
 		const { deps, clock } = setup();
-		const kept = await importRows(deps, [desk]);
 		const gone = await importRows(deps, [{ sku: "B1", name: "Bench", img: url("a.png") }]);
 		clock.t += 31 * DAY;
-		const { rollback } = await createRollback(deps, { id: kept.id });
+		const kept = await importRows(deps, [desk]);
 		const result = await purgeExpired(deps, purger, 30);
-		// The original of a rollback job that may still run stays; the other job goes.
 		expect(result).toMatchObject({ jobs: 1, journal: 2 });
 		expect(await deps.jobs.get(gone.id)).toBeNull();
 		expect(await deps.jobs.get(kept.id)).not.toBeNull();
 		expect((await deps.journal.query({ where: { jobId: gone.id } })).items).toEqual([]);
 		expect((await deps.journalMedia.query({ where: { jobId: gone.id } })).items).toEqual([]);
 		expect((await deps.journal.query({ where: { jobId: kept.id } })).items).toHaveLength(1);
-		// Once the rollback is done, the original goes.
+	});
+
+	it("keeps an original while its rollback job exists, whatever the status", async () => {
+		for (const status of ["created", "failed", "completed", "cancelled"] as const) {
+			const { deps, clock } = setup();
+			const { original, rollback } = await pair(deps, clock);
+			await patch(deps, rollback.id, { status });
+			// The rollback job is recent: the original stays, with its journal.
+			const fresh = await deps.jobs.get(rollback.id);
+			await deps.jobs.put(rollback.id, {
+				...(fresh as Job),
+				createdAt: new Date(clock.t).toISOString(),
+			});
+			const result = await purgeExpired(deps, purger, 30);
+			expect(result.jobs, status).toBe(0);
+			expect(await deps.jobs.get(original.id), status).not.toBeNull();
+			expect((await deps.journal.query({ where: { jobId: original.id } })).items).toHaveLength(1);
+		}
+	});
+
+	it("keeps an original while a dry-run rollback job names it", async () => {
+		const { deps, clock } = setup();
+		const { original, rollback } = await pair(deps, clock, { dryRun: true });
+		await patch(deps, rollback.id, { createdAt: new Date(clock.t).toISOString() });
+		expect((await purgeExpired(deps, purger, 30)).jobs).toBe(0);
+		expect(await deps.jobs.get(original.id)).not.toBeNull();
+		expect((await deps.journal.query({ where: { jobId: original.id } })).items).toHaveLength(1);
+	});
+
+	it("prunes an expired rollback job with its expired original and their rows", async () => {
+		const { deps, clock } = setup();
+		const { original, rollback } = await pair(deps, clock);
 		await patch(deps, rollback.id, { status: "completed" });
-		expect(await purgeExpired(deps, purger, 30)).toMatchObject({ jobs: 1, journal: 1 });
-		expect(await deps.jobs.get(kept.id)).toBeNull();
+		await deps.records.put(`${rollback.id}:1`, {
+			jobId: rollback.id,
+			seq: 1,
+			start: 0,
+			end: 0,
+			status: "reverted",
+			updatedAt: new Date(clock.t).toISOString(),
+		} as never);
+		const result = await purgeExpired(deps, purger, 30);
+		expect(result).toMatchObject({ jobs: 2, journal: 2 });
+		expect(await deps.jobs.get(rollback.id)).toBeNull();
+		expect(await deps.jobs.get(original.id)).toBeNull();
+		expect((await deps.records.query({ where: { jobId: rollback.id } })).items).toEqual([]);
+		expect((await deps.records.query({ where: { jobId: original.id } })).items).toEqual([]);
+		expect((await deps.journal.query({ where: { jobId: original.id } })).items).toEqual([]);
+	});
+
+	it("keeps a job whose rows could not all be deleted, for the next run", async () => {
+		const { deps, clock } = setup();
+		const job = await importRows(deps, [desk]);
+		clock.t += 31 * DAY;
+		const deleteMany = deps.journal.deleteMany.bind(deps.journal);
+		deps.journal.deleteMany = async () => 0;
+		expect((await purgeExpired(deps, purger, 30)).jobs).toBe(0);
+		expect(await deps.jobs.get(job.id)).not.toBeNull();
+		deps.journal.deleteMany = deleteMany;
+		expect((await purgeExpired(deps, purger, 30)).jobs).toBe(1);
 	});
 
 	it("does not keep the original's file for a rollback job", async () => {

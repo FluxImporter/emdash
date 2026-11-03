@@ -1,9 +1,8 @@
 import { batchOptions, JobError, upgradeJob } from "./jobs.js";
-import { type EngineDeps, emptyCounters, type Job } from "./types.js";
+import { CREATED_LISTED, type EngineDeps, emptyCounters, type Job } from "./types.js";
 
 /** Media IDs the rollback job's warning lists; past them it gives a count. */
-export const MAX_LISTED_MEDIA = 100;
-const PAGE = 100; // plugin storage query limit
+export const MAX_LISTED_MEDIA = CREATED_LISTED;
 
 export type RollbackInput = {
 	/** The import job to roll back. */
@@ -33,47 +32,25 @@ export function rollbackRefusal(job: Job, now: number): string | null {
 }
 
 /**
- * The rollback job's warnings: the media items the import created and the terms it created,
- * both kept (spec M5a F13, F14).
+ * The rollback job's warnings: the media items the import created and the terms it created, both
+ * kept (spec M5a F13, F14). Read from the summary the import job kept while it ran, so the call
+ * costs no row scan. A job with a journal always has one once it has created anything.
  */
-export async function rollbackWarnings(deps: EngineDeps, jobId: string): Promise<string[]> {
+export function rollbackWarnings(original: Job): string[] {
 	const warnings: string[] = [];
-	const media: string[] = [];
-	let count = 0;
-	let cursor: string | undefined;
-	do {
-		const page = await deps.journalMedia.query({
-			where: { jobId },
-			orderBy: { seq: "asc" },
-			limit: PAGE,
-			...(cursor ? { cursor } : {}),
-		});
-		for (const { data } of page.items) {
-			count++;
-			if (media.length < MAX_LISTED_MEDIA) media.push(data.mediaId);
-		}
-		cursor = page.hasMore ? page.cursor : undefined;
-	} while (cursor);
-	if (count > 0) {
-		const more = count > media.length ? `, and ${count - media.length} more` : "";
+	const created = original.created;
+	if (!created) return warnings;
+	if (created.mediaCount > 0) {
+		const listed = created.media.slice(0, MAX_LISTED_MEDIA);
+		const more =
+			created.mediaCount > listed.length ? `, and ${created.mediaCount - listed.length} more` : "";
 		warnings.push(
-			`The import created ${count} media items, which are kept (EmDash cannot tell whether other content uses them): ${media.join(", ")}${more}`,
+			`The import created ${created.mediaCount} media items, which are kept (EmDash cannot tell whether other content uses them): ${listed.join(", ")}${more}`,
 		);
 	}
-	const terms = new Set<string>();
-	cursor = undefined;
-	do {
-		const page = await deps.records.query({
-			where: { jobId },
-			limit: PAGE,
-			...(cursor ? { cursor } : {}),
-		});
-		for (const { data } of page.items) for (const term of data.newTerms ?? []) terms.add(term);
-		cursor = page.hasMore ? page.cursor : undefined;
-	} while (cursor);
-	if (terms.size > 0) {
+	if (created.termCount > 0) {
 		warnings.push(
-			`The import created ${terms.size} terms, which are kept (EmDash 1.2.0 has no term deletion for plugins); the import's records list them under newTerms`,
+			`The import created ${created.termCount} terms, which are kept (EmDash 1.2.0 has no term deletion for plugins); the import's records list them under newTerms`,
 		);
 	}
 	return warnings;
@@ -95,7 +72,7 @@ export async function createRollback(
 	const refusal = rollbackRefusal(original, deps.now());
 	if (refusal !== null) throw new JobError("invalid_transition", refusal);
 	const dryRun = input.dryRun ?? false;
-	const warnings = await rollbackWarnings(deps, original.id);
+	const warnings = rollbackWarnings(original);
 	const now = new Date(deps.now()).toISOString();
 	const rollback: Job = {
 		id: deps.newId(),
@@ -132,7 +109,8 @@ export async function createRollback(
 		updatedAt: now,
 	});
 	if (!marked.applied) {
-		await deps.jobs.delete(rollback.id);
+		// A failed clean-up must not hide the conflict.
+		await deps.jobs.delete(rollback.id).catch(() => {});
 		throw new JobError(
 			"invalid_transition",
 			"The job changed while its rollback was being created; try again",

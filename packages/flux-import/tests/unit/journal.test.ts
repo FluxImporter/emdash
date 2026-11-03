@@ -374,6 +374,24 @@ describe("the journal of a real import (M5a)", () => {
 		const [staged] = await journalOf(deps, draftOnly.id);
 		expect(staged?.before).not.toHaveProperty("referencesUnknown");
 	});
+
+	it("flags no references for an entry that was never published", async () => {
+		const { deps } = setup();
+		const desk = { sku: "A1", name: "Desk", price: 10 };
+		const lamp = { sku: "A2", name: "Lamp", price: 5, related: "A1" };
+		await importRows(deps, [desk]);
+		// A draft-status entry: its draft is all there is, so the read is not hiding a live selection.
+		await importRows(deps, [lamp], { publish: false });
+		const write = await importRows(deps, [{ ...lamp, price: 6 }]);
+		const [row] = await journalOf(deps, write.id);
+		expect(row?.before).not.toHaveProperty("referencesUnknown");
+		// The same for a publish of the importer's own draft over a never-published entry.
+		await importRows(deps, [{ sku: "A3", name: "Sofa", related: "A1" }], { publish: false });
+		const publish = await importRows(deps, [{ sku: "A3", name: "Sofa", related: "A1" }]);
+		for (const entry of (await journalOf(deps, publish.id)) ?? []) {
+			expect(entry.before).not.toHaveProperty("referencesUnknown");
+		}
+	});
 });
 
 /** An editor's published change of the desk's price. */
