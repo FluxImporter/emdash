@@ -63,7 +63,7 @@ export function canonicalData(value: unknown, how: Comparison): unknown {
 		case "instant": {
 			if (typeof v !== "string") return v;
 			const t = Date.parse(v);
-			return Number.isNaN(t) ? v : t;
+			return Number.isNaN(t) ? v : { instant: t };
 		}
 		default: {
 			const x = how === "boolean" ? asBoolean(v) : v;
@@ -105,9 +105,14 @@ export function canonicalRichText(value: unknown): unknown {
 }
 
 /** Linked items' translation groups, in order or sorted (a set); null when there are none. */
-export function canonicalGroups(groups: readonly string[], ordered: boolean): unknown {
+export function canonicalGroups(groups: readonly unknown[], ordered: boolean): unknown {
 	if (groups.length === 0) return null;
-	return ordered ? [...groups] : [...groups].sort();
+	if (ordered) return [...groups];
+	return [...groups].sort((a, b) => {
+		const x = stableJson(a);
+		const y = stableJson(b);
+		return x < y ? -1 : x > y ? 1 : 0;
+	});
 }
 
 /** The mapping names a mapped record carries, as `rules.updateFields` and the link row name them. */
@@ -166,8 +171,9 @@ export function currentForms(
 	return forms;
 }
 
+/** An item with no group yet (a term a dry run would create) gets a form no stored value has. */
 const resolvedGroups = (items: readonly ResolvedItem[]) =>
-	items.flatMap((i) => (i.group === null ? [] : [i.group]));
+	items.map((i) => (i.group === null ? { unresolved: i.text } : i.group));
 
 /**
  * The canonical form of each mapping as the record writes it: the mapped data and slug, the
@@ -186,10 +192,14 @@ export function sentForms(
 		forms[field] = canonicalData(value, comparisons.get(field) ?? "plain");
 	}
 	for (const [field, item] of Object.entries(media ?? {})) {
-		forms[field] = canonicalMedia(item?.value ?? null);
+		forms[field] =
+			item && item.value === null ? { unresolved: item.text } : canonicalMedia(item?.value ?? null);
 	}
 	for (const [field, item] of Object.entries(portableText ?? {})) {
-		forms[field] = canonicalRichText(item?.blocks ?? null);
+		forms[field] =
+			item && item.pending > 0
+				? { unresolved: item.text }
+				: canonicalRichText(item?.blocks ?? null);
 	}
 	if (record.slug !== undefined) forms.slug = record.slug;
 	for (const [field, items] of Object.entries(links?.references ?? {})) {

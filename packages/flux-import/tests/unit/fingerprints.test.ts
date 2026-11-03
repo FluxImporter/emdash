@@ -78,10 +78,49 @@ describe("canonical forms agree with the plan's comparison (M5b)", () => {
 		expect(pairs).toBeGreaterThan(100);
 	});
 
+	it("gives different fingerprints to values the plan tells apart", async () => {
+		const cases: [Comparison, unknown, unknown][] = [
+			["plain", "", null],
+			["plain", 0, false],
+			["plain", 1, "1"],
+			["boolean", "", null],
+			["deep", [], undefined],
+			["deep", 1, "1"],
+			["instant", "2026-12-01T07:00:00.000Z", Date.parse("2026-12-01T07:00:00.000Z")],
+			["instant", "2026-12-01T07:00:00.000Z", "2026-12-01T07:00:00.000Z".length],
+		];
+		for (const [how, a, b] of cases) {
+			expect(same(a, b as FieldValue, how), `${how}: same`).toBe(false);
+			expect(
+				await fingerprint(canonicalData(a, how)),
+				`${how}: ${stableJson(a)} vs ${stableJson(b)}`,
+			).not.toBe(await fingerprint(canonicalData(b, how)));
+		}
+	});
+
+	it("never gives equal fingerprints to values the plan tells apart", async () => {
+		const extra: unknown[] = [1796108400000, Date.parse("2026-12-01T07:00:00.000Z"), "0", "null"];
+		for (const how of KINDS) {
+			for (const a of [...VALUES, ...extra]) {
+				for (const b of [...MAPPED, ...extra] as FieldValue[]) {
+					const fa = await fingerprint(canonicalData(a, how));
+					const fb = await fingerprint(canonicalData(b, how));
+					// Identical values are equal whatever the plan says of them.
+					if (fa === fb && stableJson(a) !== stableJson(b)) {
+						expect(
+							same(a, b, how) || same(b, a as FieldValue, how),
+							`${how}: ${stableJson(a)} vs ${stableJson(b)}`,
+						).toBe(true);
+					}
+				}
+			}
+		}
+	});
+
 	it("reads back what EmDash stores as the value sent (spec V1)", () => {
 		expect(canonicalData(1, "boolean")).toBe(canonicalData(true, "boolean"));
 		expect(canonicalData(0, "deep")).toBe(canonicalData(false, "deep"));
-		expect(canonicalData("2026-12-01T07:00:00.000Z", "instant")).toBe(
+		expect(canonicalData("2026-12-01T07:00:00.000Z", "instant")).toEqual(
 			canonicalData("2026-12-01T09:00:00+02:00", "instant"),
 		);
 		expect(canonicalData({ b: 2, a: 1 }, "plain")).toBe('{"b":2,"a":1}');
@@ -208,6 +247,16 @@ describe("a record's forms (M5b)", () => {
 			photo: { mediaId: "m1", value: { id: "m1", provider: "local" }, text: "m1", alt: null },
 		};
 		const sent = sentForms(record, comparisons, links, media, { body: null }, childSide);
+		const blocks = [{ _type: "block", style: "normal", children: [{ _type: "span", text: "Hi" }] }];
+		const withBody = sentForms(
+			{ ...record, portableText: { body: null } },
+			comparisons,
+			links,
+			media,
+			{ body: { blocks, pending: 0, text: "1 block" } },
+			childSide,
+		);
+		expect(withBody.body).not.toBe(sent.body);
 		const entry = {
 			slug: "desk",
 			data: {
@@ -215,6 +264,7 @@ describe("a record's forms (M5b)", () => {
 				featured: 1,
 				released: "2026-12-01T07:00:00.000Z",
 				photo: { id: "m1", blurhash: "x", meta: { caption: null } },
+				body: null,
 			},
 		};
 		const current = {
@@ -231,9 +281,21 @@ describe("a record's forms (M5b)", () => {
 		const read = currentForms(entry, record, comparisons, current, childSide);
 		expect(await fingerprintsOf(read)).toEqual(await fingerprintsOf(sent));
 		// A plan of the same values is unchanged.
-		const plain: MappedRecord = { key: "S1", slug: "desk", data: record.data };
 		const plan: LinkPlan = { resolved: links, current, childSide };
-		expect(planRecord(entry, plain, comparisons, plan).action).toBe("unchanged");
+		expect(planRecord(entry, record, comparisons, plan, media, { body: null }).action).toBe(
+			"unchanged",
+		);
+		// An unresolved term, entry or media item never matches what is stored.
+		const unresolved = sentForms(
+			record,
+			comparisons,
+			{ ...links, taxonomies: { tag: [{ group: null, value: "", text: "new" }] } },
+			{ photo: { mediaId: null, value: null, text: "new media from u", alt: null } },
+			{ body: null },
+			childSide,
+		);
+		expect(unresolved["taxonomies.tag"]).toEqual([{ unresolved: "new" }]);
+		expect(unresolved.photo).toEqual({ unresolved: "new media from u" });
 	});
 
 	it("never matches a truncated selection", async () => {
@@ -245,5 +307,14 @@ describe("a record's forms (M5b)", () => {
 			new Set(),
 		);
 		expect(read.related).toEqual({ truncated: [] });
+		const sent = sentForms(
+			{ key: "S1", data: {}, links: { references: { related: [] } } },
+			comparisons,
+			{ references: { related: [] } },
+			undefined,
+			undefined,
+			new Set(),
+		);
+		expect(await fingerprint(read.related)).not.toBe(await fingerprint(sent.related));
 	});
 });
