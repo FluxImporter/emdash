@@ -28,6 +28,8 @@ class FakeRuntime implements ContentRuntime {
 	readonly items = new Map<string, Item>();
 	readonly calls: unknown[] = [];
 	listOverride: HandlerResult | null = null;
+	/** What handleContentTranslations answers. */
+	translationsResult: HandlerResult = fail("NOT_FOUND", "Content item not found");
 	private next = 0;
 	readonly schemaRegistry = {} as SchemaRegistryLike;
 
@@ -86,6 +88,10 @@ class FakeRuntime implements ContentRuntime {
 		item.draftRevisionId = null;
 		item.version++;
 		return this.envelope(item);
+	}
+	async handleContentTranslations(collection: string, id: string) {
+		this.calls.push(["translations", collection, id]);
+		return this.translationsResult;
 	}
 }
 
@@ -402,5 +408,63 @@ describe("EmDashContent links", () => {
 			"e1",
 			{ locale: "en", _rev: "rev-1", actor, taxonomies: { category: [] } },
 		]);
+	});
+});
+
+describe("EmDashContent translations (M4e)", () => {
+	it("sends translationOf on create", async () => {
+		const { runtime, content } = setup();
+		await content.create({
+			collection: "products",
+			locale: "fr",
+			data: { title: "Bureau", flux_source_id: "E1" },
+			translationOf: "e0",
+			bylines: [],
+		});
+		expect(runtime.calls[0]).toEqual([
+			"create",
+			"products",
+			{
+				data: { title: "Bureau", flux_source_id: "E1" },
+				locale: "fr",
+				authorId: "u1",
+				actor,
+				translationOf: "e0",
+				bylines: [],
+			},
+		]);
+	});
+
+	it("lists the group's entries and locales, and nothing for a missing entry", async () => {
+		const { runtime, content } = setup();
+		expect(await content.translations("products", "nope")).toEqual([]);
+		runtime.translationsResult = ok({
+			translationGroup: "e1",
+			translations: [
+				{ id: "e1", locale: "en", slug: "desk", status: "published", updatedAt: "t" },
+				{ id: "e2", locale: "fr", slug: "bureau", status: "draft", updatedAt: "t" },
+				{ id: "e3", locale: null, slug: null, status: "draft", updatedAt: "t" },
+			],
+		});
+		expect(await content.translations("products", "e2")).toEqual([
+			{ id: "e1", locale: "en" },
+			{ id: "e2", locale: "fr" },
+		]);
+		expect(runtime.calls.at(-1)).toEqual(["translations", "products", "e2"]);
+	});
+
+	it("reports other translation read errors and bad responses as ContentWriteError", async () => {
+		const { runtime, content } = setup();
+		runtime.translationsResult = fail("INTERNAL_ERROR", "boom");
+		const failed = await content.translations("products", "e1").catch((e: unknown) => e);
+		expect(failed).toBeInstanceOf(ContentWriteError);
+		expect(failed).toMatchObject({
+			code: "emdash_internal_error",
+			message: "Reading the translations failed: boom",
+		});
+		runtime.translationsResult = ok({ translations: [{ locale: "en" }] });
+		await expect(content.translations("products", "e1")).rejects.toMatchObject({
+			code: "emdash_bad_response",
+		});
 	});
 });
