@@ -56,6 +56,8 @@ export type TargetField = {
 	multiple?: boolean;
 	/** Image and file fields: the types the field accepts (EmDash checks them on save). */
 	allowedMimeTypes?: string[];
+	/** EmDash shares the field's value across a translation group (`translatable: false`, M4e). */
+	translatable?: false;
 };
 
 export interface NumberOptions {

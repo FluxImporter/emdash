@@ -284,6 +284,15 @@ export const templateSchema = z
 		locale: z.string().min(1),
 		key: valueMapping,
 		slug: valueMapping.optional(),
+		/**
+		 * The source key of the entry this record translates, in `locale` (the site's default
+		 * locale when left out; job creation always stores it). M4e.
+		 */
+		translationOf: z
+			.object({ ...valueSource, locale: z.string().min(1).optional() })
+			.strict()
+			.refine(hasOneSource, ONE_SOURCE)
+			.optional(),
 		fields: z.record(z.string(), fieldMapping).superRefine((fields, ctx) => {
 			const names = Object.keys(fields);
 			if (names.length === 0) ctx.addIssue({ code: "custom", message: "Map at least one field" });
@@ -952,6 +961,7 @@ function withoutImages(
 export function templatePaths(t: Template): string[] {
 	const froms = [
 		t.key.from,
+		t.translationOf?.from,
 		t.slug?.from,
 		...Object.values(t.fields).flatMap((m) =>
 			m.type === "image" ? [m.from, m.alt?.from] : [m.from],
@@ -1014,6 +1024,8 @@ export type SchemaField = {
 	targetCollection?: string;
 	/** Reference fields: the parent side takes more than one entry. */
 	multiple?: boolean;
+	/** EmDash shares the field's value across a translation group (`Field.translatable: false`). */
+	translatable?: false;
 };
 
 /** What job creation reads besides the collection's fields, for links (M4b). */
@@ -1167,7 +1179,9 @@ function fieldProblems(
  * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
  * to the collection, more than five image and file mappings, more than three `portableText`
  * mappings, and image or file fields whose `allowedMimeTypes` EmDash's upload can never
- * satisfy. The link checks run only on what `links` carries.
+ * satisfy. A template that maps `translationOf` needs its source locale set and different from
+ * `locale`, and leaves required non-translatable fields to EmDash (`sharedRequiredOf`). The link
+ * checks run only on what `links` carries.
  */
 export function checkTemplate(
 	t: Template,
@@ -1229,11 +1243,20 @@ export function checkTemplate(
 			f.required &&
 			!f.hasDefault &&
 			!Object.hasOwn(t.fields, f.slug) &&
-			f.slug !== SOURCE_ID_FIELD
+			f.slug !== SOURCE_ID_FIELD &&
+			// A translation takes the value from its source (spec M4e F1).
+			!(t.translationOf !== undefined && f.translatable === false)
 		) {
 			errors.push(
 				`Field "${f.slug}" is required and has no default, but the template does not map it`,
 			);
+		}
+	}
+	const source = t.translationOf;
+	if (source !== undefined) {
+		if (source.locale === undefined) errors.push("translationOf.locale is not set");
+		else if (source.locale.toLowerCase() === t.locale.toLowerCase()) {
+			errors.push(`translationOf.locale must differ from locale ("${t.locale}")`);
 		}
 	}
 	return errors;
@@ -1241,7 +1264,8 @@ export function checkTemplate(
 
 /**
  * The snapshot of each mapped field stored on the job (`Job.targetFields`): its type, `required`,
- * and the validation keys EmDash enforces. Run `checkTemplate` first; unknown fields are skipped.
+ * the validation keys EmDash enforces, and `translatable: false`. Run `checkTemplate` first;
+ * unknown fields are skipped.
  */
 export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<string, TargetField> {
 	const byslug = new Map(fields.map((f) => [f.slug, f]));
@@ -1265,6 +1289,7 @@ export function targetFieldsOf(t: Template, fields: SchemaField[]): Record<strin
 			...(v.allowedMimeTypes && v.allowedMimeTypes.length > 0
 				? { allowedMimeTypes: v.allowedMimeTypes }
 				: {}),
+			...(f.translatable === false ? { translatable: false as const } : {}),
 		};
 	}
 	return targets;
@@ -1307,9 +1332,72 @@ export function linkWarnings(t: Template, defs: readonly TaxonomyDef[]): string[
 	return warnings;
 }
 
-/** Whether the template maps reference fields, taxonomies or bylines. */
+/**
+ * The required fields EmDash shares across a translation group (`translatable: false`) that have
+ * no default and that a template mapping `translationOf` leaves unmapped: a linked record takes
+ * them from its source, and a record without a value fails `required` for them
+ * (`Job.sharedRequired`). Empty for other templates.
+ */
+export function sharedRequiredOf(t: Template, fields: readonly SchemaField[]): string[] {
+	if (t.translationOf === undefined) return [];
+	return fields
+		.filter(
+			(f) =>
+				f.required === true &&
+				!f.hasDefault &&
+				f.translatable === false &&
+				!Object.hasOwn(t.fields, f.slug) &&
+				f.slug !== SOURCE_ID_FIELD,
+		)
+		.map((f) => f.slug);
+}
+
+/**
+ * Whether a mapping holds a value EmDash shares across a translation group: a field that is not
+ * translatable, or any reference field (edges are keyed by translation group, spec M4e F4).
+ */
+export function isSharedMapping(mapping: FieldMapping, target: TargetField | undefined): boolean {
+	return mapping.type === "reference" || target?.translatable === false;
+}
+
+/**
+ * The job warning for a template that maps `translationOf` and shared mappings (fields that are
+ * not translatable, reference fields, taxonomies), which records with a value leave to EmDash.
+ */
+export function translationWarnings(
+	t: Template,
+	targets: Readonly<Record<string, TargetField>>,
+): string[] {
+	if (t.translationOf === undefined) return [];
+	const fields: string[] = [];
+	const references: string[] = [];
+	for (const [field, mapping] of Object.entries(t.fields)) {
+		if (mapping.type === "reference") references.push(field);
+		else if (isSharedMapping(mapping, targets[field])) fields.push(field);
+	}
+	const taxonomies = Object.keys(t.taxonomies ?? {});
+	const part = (one: string, many: string, names: readonly string[]) =>
+		names.length === 0
+			? []
+			: [`${names.length === 1 ? one : many} ${names.map((n) => `"${n}"`).join(", ")}`];
+	const parts = [
+		...part("field", "fields", fields),
+		...part("reference field", "reference fields", references),
+		...part("taxonomy", "taxonomies", taxonomies),
+	];
+	if (parts.length === 0) return [];
+	return [
+		`Records with a translationOf value leave these to EmDash, which shares them across the translation group: ${parts.join("; ")}`,
+	];
+}
+
+/**
+ * Whether the template maps reference fields, taxonomies or bylines, or finds a translation
+ * source (`translationOf`, M4e): each record then looks entries up.
+ */
 export function usesLinks(t: Template): boolean {
 	return (
+		t.translationOf !== undefined ||
 		t.taxonomies !== undefined ||
 		t.bylines !== undefined ||
 		Object.values(t.fields).some((m) => m.type === "reference")

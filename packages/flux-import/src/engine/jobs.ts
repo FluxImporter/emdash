@@ -16,11 +16,13 @@ import {
 	noRecordsWarning,
 	type SchemaField,
 	SOURCE_ID_FIELD,
+	sharedRequiredOf,
 	type Template,
 	targetFieldsOf,
 	taxonomiesOf,
 	templatePaths,
 	templateSchema,
+	translationWarnings,
 	unresolvedPaths,
 	usesMedia,
 	usesSiteTimezone,
@@ -149,7 +151,14 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 					sampleWarnings(deps, reader, template, input.uploadId, located.bodyOffset),
 				);
 	const taxonomyDefs = linkSchema.taxonomies ?? [];
-	const warnings = [...(input.warnings ?? []), ...sampled, ...linkWarnings(template, taxonomyDefs)];
+	const targetFields = targetFieldsOf(template, input.schemaFields);
+	const warnings = [
+		...(input.warnings ?? []),
+		...sampled,
+		...linkWarnings(template, taxonomyDefs),
+		...translationWarnings(template, targetFields),
+	];
+	const sharedRequired = sharedRequiredOf(template, input.schemaFields);
 
 	const now = new Date(deps.now()).toISOString();
 	const job: Job = {
@@ -165,7 +174,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		source: template.source,
 		...(columns === null ? {} : { columns }),
 		warnings,
-		targetFields: targetFieldsOf(template, input.schemaFields),
+		targetFields,
+		...(sharedRequired.length > 0 ? { sharedRequired } : {}),
 		...(siteTimezone === undefined ? {} : { siteTimezone }),
 		...(template.taxonomies === undefined
 			? {}

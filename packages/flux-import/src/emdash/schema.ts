@@ -40,6 +40,8 @@ export interface RegistryField {
 		| null
 		| undefined;
 	unsupportedType?: unknown;
+	/** Absent or true: per locale; false: shared across a translation group. */
+	translatable?: boolean;
 }
 
 /**
@@ -128,8 +130,9 @@ function relationOf(
  * The collection's fields for `checkTemplate` and the job's target snapshot, or `null` when the
  * collection does not exist: type, `required`, whether it has a default, the validation keys
  * EmDash enforces, whether EmDash cannot read its type or keeps its values elsewhere (a
- * reference bound to a relation, `isStoragelessField` in src/schema/types.ts:120-125), and a
- * reference field's relation side, target collection and `multiple`.
+ * reference bound to a relation, `isStoragelessField` in src/schema/types.ts:120-125), a
+ * reference field's relation side, target collection and `multiple`, and `translatable: false`
+ * (src/schema/types.ts:341-342).
  */
 export async function listSchemaFields(
 	registry: SchemaRegistryLike,
@@ -150,6 +153,7 @@ export async function listSchemaFields(
 				? { storageless: true }
 				: {}),
 			...(f.type === "reference" ? relationOf(f) : {}),
+			...(f.translatable === false ? { translatable: false as const } : {}),
 		};
 	});
 }
