@@ -305,10 +305,16 @@ it, with three amendments.
   `_rev` vouches for every fingerprint but the always-compared ones. So a fingerprint the save
   only carries must not be vouched for unless it describes the entry at the new `writtenRev`.
   `LinkRow.unconfirmed` lists the mappings whose fingerprint does not:
-  - a protected mapping's kept fingerprint (the editor's value differs from it);
+  - every protected mapping, whether it keeps an old fingerprint or has none (the editor's value
+    differs from what the importer last wrote);
   - a carried fingerprint of a mapping the record does not carry (unlisted, another template's),
-    unless it was confirmed and the entry, as read, was still at the stored `writtenRev` or showed
-    only the scheduler's publish of the link's own schedule (Ruling 9, `sweptSince`).
+    unless it was confirmed and the entry, as read, was still at the stored `writtenRev`.
+
+  The scheduler's publish moves `_rev` and vouches for nothing here (Task 5 review, round 2): an
+  editor who unschedules after the time and then discards the draft leaves the same shape
+  (`sweptSince`), and after a real sweep the importer's values are live, so they compare equal.
+  A sweep therefore makes the fingerprints an `updateFields` run carries unconfirmed; the next run
+  that maps them finds them equal and confirms them.
 
   A recomputed fingerprint (written, or found equal to the feed) is confirmed, so a mapping leaves
   the list once the importer writes it or its current fingerprint equals the stored one. The list
@@ -325,9 +331,8 @@ With `protectEdited`, for an existing entry found through its link row (crash re
 the job's own, above):
 
 A mapping is **always compared** when it is a taxonomy (term edits leave `_rev`, F8), a reference
-field (edges set elsewhere leave it, F15) or listed in `unconfirmed`. The entry is **unmoved** when
-`entry.rev === writtenRev`, or when it shows only the scheduler's publish of the link's own
-schedule (Ruling 9).
+field (edges set elsewhere leave it, F15) or listed in `unconfirmed`. The entry is **unmoved** only
+when `entry.rev === writtenRev`; a scheduler's publish counts as a move (above).
 
 | The mapping on the link row | It counts as edited when |
 | --- | --- |
@@ -424,7 +429,11 @@ nothing changes (draft).
     record resumes. If the time is now within the lead, the schedule is adopted (link saved with
     `scheduledAt`) and then published. If the sweep already published it (`sweptSince`: one
     `version` past `writtenRev`, at or after the time, published, no draft, no schedule), the
-    link is saved at the swept `_rev` with `scheduledAt`, so rollback owns the result.
+    link is saved at the swept `_rev` with `scheduledAt`, so rollback owns the result. That shape
+    is also what an editor's unschedule and discard after the time leave, so the swept entry is
+    adopted only when the record reached crash repair unchanged with no protected mapping: the
+    entry then holds the record's values for every mapping (Task 5 review, round 2). Otherwise the
+    link is not moved, and the protected mappings go on `unconfirmed`.
   - Both checks need the row's `entryId` to be the entry found: an editor's entry that crash
     repair finds by `flux_source_id` is never taken as landed, even at the same `version` and
     time.
@@ -621,6 +630,10 @@ plugins, translation sync), which counts as edits; predicting duplicate keys in 
   - On link rows from before M5b, the first protected run cannot see term edits (F8) or reference
     edits made elsewhere (F15), so every mapped taxonomy and reference field that differs from the
     feed is protected until a job without `protectEdited` writes it or its value equals the feed.
+  - For a link from before M5b whose entry has moved since `writtenRev`, every mapping counts as
+    edited. So every mapping that differs from the feed stays protected and warns `field_edited`
+    on each run, including mappings no one touched, until the entry's value equals the feed or a
+    run without `protectEdited` writes it.
   - A slug staged in the importer's own draft is not readable (F13). Once an editor saves another
     field into that draft, `_rev` moves, the live slug differs from the staged slug's fingerprint,
     and the run warns `field_edited` for the slug although only the other field was edited. This

@@ -112,6 +112,8 @@ describe("which mappings count as edited (M5b)", () => {
 		const stored = link({ fields: { a: "1", b: "2", c: "3" }, unconfirmed: ["c"] });
 		expect(unconfirmedOf(["a", "b", "c"], new Set(["b"]), stored, "r1")).toEqual(["b", "c"]);
 		expect(unconfirmedOf(["a", "b", "c"], new Set(), stored, "r2")).toEqual(["a", "b", "c"]);
+		// A kept mapping is unconfirmed whether or not it has a fingerprint to carry.
+		expect(unconfirmedOf(["a"], new Set(["d"]), stored, "r1")).toEqual(["d"]);
 		expect(unconfirmedOf(["a"], new Set(), null, "r1")).toEqual(["a"]);
 		const { writtenRev: _w, ...repaired } = stored;
 		expect(unconfirmedOf(["a"], new Set(), repaired, "r1")).toEqual(["a"]);
@@ -560,6 +562,26 @@ describe("protection after a protected write (M5b, review C1)", () => {
 		expect(await linkOf(deps)).not.toHaveProperty("unconfirmed");
 	});
 
+	it("keeps a protected mapping without a fingerprint unconfirmed, through later runs", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const link = await linkOf(deps);
+		const { title: _t, ...rest } = link.fields ?? {};
+		await deps.links.put(KEY, { ...link, fields: rest });
+		await editDesk(deps, { data: { title: "Editor's desk" } });
+		const second = await importRows(deps, [{ ...desk, price: 12 }], protect);
+		expect((await records(deps, second.id))[0]).toMatchObject({
+			status: "updated",
+			changes: [{ field: "price" }],
+			warnings: [edited("title")],
+		});
+		expect(await linkOf(deps)).toMatchObject({ unconfirmed: ["title"] });
+		expect((await linkOf(deps)).fields).not.toHaveProperty("title");
+		const third = await importRows(deps, [{ ...desk, price: 13 }], protect);
+		expect((await records(deps, third.id))[0]).toMatchObject({ warnings: [edited("title")] });
+		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor's desk", price: 13 });
+	});
+
 	it("journals the unconfirmed list with the link", async () => {
 		const { deps } = setup();
 		await importRows(deps, [desk]);
@@ -635,11 +657,20 @@ describe("an entry the scheduler published (M5b, Ruling 9)", () => {
 		expect(sweptSince({ ...link, writtenRev: "r1" }, swept)).toBe(false);
 	});
 
-	it("writes a mapping without a fingerprint on a swept entry, as on an unmoved one", async () => {
+	const scheduled = { extra: { rules: { protectEdited: true }, publishAt: { expr: `'${due}'` } } };
+	const discard = async (deps: Deps, step: "unschedule" | "discard") => {
+		const e = entryOf(deps, "A1");
+		await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			step,
+		});
+	};
+
+	it("lets the sweep vouch for nothing: a mapping without a fingerprint is protected", async () => {
 		const { deps, clock } = setup();
-		const scheduled = {
-			extra: { rules: { protectEdited: true }, publishAt: { expr: `'${due}'` } },
-		};
 		await importRows(deps, [desk], scheduled);
 		clock.t = T0 + HOUR;
 		deps.content.runScheduled();
@@ -647,16 +678,14 @@ describe("an entry the scheduler published (M5b, Ruling 9)", () => {
 		const { price: _p, ...rest } = link.fields ?? {};
 		await deps.links.put(KEY, { ...link, fields: rest });
 		const job = await importRows(deps, [{ ...desk, price: 12 }], protect);
-		const [row] = await records(deps, job.id);
-		expect(row).toMatchObject({ status: "updated", changes: [{ field: "price" }] });
-		expect(row).not.toHaveProperty("warnings");
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "unchanged",
+			warnings: [edited("price")],
+		});
 	});
 
-	it("updates a swept entry normally, without field_edited or unconfirmed carry-over", async () => {
+	it("updates a swept entry by comparison, without field_edited", async () => {
 		const { deps, clock } = setup();
-		const scheduled = {
-			extra: { rules: { protectEdited: true }, publishAt: { expr: `'${due}'` } },
-		};
 		await importRows(deps, [desk], scheduled);
 		clock.t = T0 + HOUR;
 		expect(deps.content.runScheduled()).toEqual([entryOf(deps, "A1").id]);
@@ -666,13 +695,74 @@ describe("an entry the scheduler published (M5b, Ruling 9)", () => {
 		const [row] = await records(deps, listed.id);
 		expect(row).toMatchObject({ status: "updated", changes: [{ field: "price" }] });
 		expect(row).not.toHaveProperty("warnings");
-		expect(await linkOf(deps)).not.toHaveProperty("unconfirmed");
+		// The sweep moved the revision, so the carried fingerprints are unconfirmed; they compare
+		// equal, so the next full run finds nothing edited and confirms them.
+		expect((await linkOf(deps)).unconfirmed).toContain("title");
 		const job = await importRows(deps, [{ ...desk, name: "Desk 2", price: 13 }], protect);
 		const [full] = await records(deps, job.id);
 		expect(full).toMatchObject({ status: "updated" });
 		expect(full).not.toHaveProperty("warnings");
 		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Desk 2", price: 13 });
 		expect(await linkOf(deps)).not.toHaveProperty("unconfirmed");
+	});
+
+	it("keeps an editor's unschedule and discard after the time, which looks like a sweep", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk]);
+		await importRows(deps, [{ ...desk, name: "Desk 2" }], scheduled);
+		clock.t = T0 + HOUR + 1000;
+		await discard(deps, "unschedule");
+		await discard(deps, "discard");
+		const e = entryOf(deps, "A1");
+		const snap = await deps.content.get("products", "en", e.id);
+		expect(snap && sweptSince(await linkOf(deps), snap)).toBe(true);
+		const job = await importRows(deps, [{ ...desk, name: "Desk 2" }], protect);
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "unchanged",
+			warnings: [edited("slug"), edited("title")],
+		});
+		expect(entryOf(deps, "A1")).toMatchObject({ slug: "desk", status: "published" });
+		expect(entryOf(deps, "A1").data.title).toBe("Desk");
+	});
+
+	it("does not adopt a stopped schedule an editor unscheduled and discarded in crash repair", async () => {
+		const { deps, clock } = setup();
+		await importRows(deps, [desk]);
+		const job = await start(deps, csv([{ ...desk, price: 12 }]), scheduled);
+		deps.content.afterSchedule = () => {
+			throw new Error("stop");
+		};
+		await expect(runBatch(deps, job.id, "w1")).rejects.toThrow("stop");
+		deps.content.afterSchedule = () => {};
+		const before = await linkOf(deps);
+		clock.t = T0 + HOUR + 1000;
+		await discard(deps, "unschedule");
+		await discard(deps, "discard");
+		expect(entryOf(deps, "A1").data.price).toBe(10);
+		const e = entryOf(deps, "A1");
+		const snap = await deps.content.get("products", "en", e.id);
+		const row = (await records(deps, job.id))[0];
+		const written = { ...before, writtenRev: row?.writtenRev ?? "", scheduledAt: due };
+		expect(snap && sweptSince(written, snap)).toBe(true);
+		const leased = (await deps.jobs.get(job.id)) as NonNullable<
+			Awaited<ReturnType<Deps["jobs"]["get"]>>
+		>;
+		await deps.jobs.put(job.id, { ...leased, lease: null });
+		const calls = deps.content.calls.length;
+		await runToEnd(deps, job.id);
+		// The link already named the importer's draft, so the discarded price reads as edited and is
+		// protected; with a protected mapping the entry does not hold the record's values, so crash
+		// repair does not adopt the editor's revision as the scheduler's publish.
+		expect((await records(deps, job.id))[0]).toMatchObject({ warnings: [edited("price")] });
+		expect(deps.content.calls.slice(calls)).toEqual([]);
+		expect(entryOf(deps, "A1").data.price).toBe(10);
+		const link = await linkOf(deps);
+		expect(link.writtenRev).not.toBe(deps.content.revOf(e.id));
+		expect(link).not.toHaveProperty("scheduledAt");
+		expect(link.unconfirmed).toContain("price");
+		// The next protected run still keeps the editor's price.
+		await importRows(deps, [{ ...desk, price: 12 }], protect);
+		expect(entryOf(deps, "A1").data.price).toBe(10);
 	});
 });
 

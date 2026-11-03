@@ -264,6 +264,8 @@ type RecordCtx = {
 	fields?: Record<string, string>;
 	/** The names of `fields` that the saved revision does not vouch for (M5b, `unconfirmedOf`). */
 	unconfirmed?: string[];
+	/** The record's protected mappings (M5b), which the entry holds differently from the feed. */
+	kept?: ReadonlySet<string>;
 	/** A link save of this record carried `fields` (M5b), so no refresh is needed. */
 	linkSaved: boolean;
 	/** When the record's content goes live (M5b). */
@@ -433,8 +435,8 @@ async function setFields(
 	const own = entry !== null && ctx.stored?.entryId === entry.id ? ctx.stored : null;
 	const carried = Object.keys(own?.fields ?? {}).filter((name) => !Object.hasOwn(forms, name));
 	ctx.fields = { ...(own?.fields ?? {}), ...(await fingerprintsOf(forms)) };
-	const swept = own !== null && entry !== null && sweptSince(own, entry);
-	ctx.unconfirmed = unconfirmedOf(carried, kept, own, entry?.rev ?? null, swept);
+	ctx.unconfirmed = unconfirmedOf(carried, kept, own, entry?.rev ?? null);
+	ctx.kept = kept;
 }
 
 /**
@@ -837,9 +839,7 @@ async function decideRecord(
 			held = await fingerprintsOf(currentForms(entry, record, comparisons, known, childSide));
 			// Reference edges set from the other entry or a translation leave `_rev` (F15).
 			const references = new Set(Object.keys(record.links?.references ?? {}));
-			// The scheduler's publish of the importer's own schedule is no edit (Ruling 9).
-			const swept = sweptSince(link, entry);
-			edited = editedMappings(recordMappings(record), link, entry.rev, held, references, swept);
+			edited = editedMappings(recordMappings(record), link, entry.rev, held, references);
 		}
 		const own = edited.size > 0 ? narrowRecord(record, (name) => !edited.has(name)) : record;
 		const quiet = edited.size > 0 ? narrowRecord(record, (name) => edited.has(name)) : null;
@@ -1369,9 +1369,12 @@ async function finishUnchanged(
 		publishAt !== null &&
 		writtenRev !== undefined &&
 		scheduleLanded(entry, writtenRev, publishAt);
+	// The sweep's shape is also what an editor's unschedule and discard after the time leave, so it
+	// is adopted only when the entry holds the record's values for every mapping: none protected.
 	const swept =
 		ours &&
 		publishAt !== null &&
+		(ctx.kept?.size ?? 0) === 0 &&
 		writtenRev !== undefined &&
 		sweptSince(
 			{

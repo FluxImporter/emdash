@@ -104,9 +104,9 @@ export function sameFields(
  * mapping is edited only once the entry has moved past `writtenRev` and its fingerprint differs:
  * an unmoved `_rev` vouches for it, also when the read cannot show a slug staged in the
  * importer's own draft (F13). A mapping without a fingerprint (every mapping of a link from
- * before M5b) is edited when it is always compared, or when the entry has moved. `swept`: the
- * entry shows only the scheduler's publish of the link's schedule (`sweptSince`), which vouches
- * as an unmoved `_rev` does.
+ * before M5b) is edited when it is always compared, or when the entry has moved. The scheduler's
+ * publish moves `_rev` too and vouches for nothing: `sweptSince` cannot tell it from an editor's
+ * unschedule and discard, and after a real sweep the importer's values are live and compare equal.
  */
 export function editedMappings(
 	names: readonly string[],
@@ -114,9 +114,8 @@ export function editedMappings(
 	rev: string,
 	current: Readonly<Record<string, string>>,
 	references: ReadonlySet<string> = new Set(),
-	swept = false,
 ): Set<string> {
-	const unmoved = swept || (link.writtenRev !== undefined && link.writtenRev === rev);
+	const unmoved = link.writtenRev !== undefined && link.writtenRev === rev;
 	const unconfirmed = new Set(link.unconfirmed);
 	const edited = new Set<string>();
 	for (const name of names) {
@@ -133,7 +132,10 @@ export function editedMappings(
  * Whether the entry shows the scheduler's publish of the link's own schedule and nothing since
  * (Ruling 9, spec M5b F6): its `_rev` decodes to exactly one `version` past `writtenRev`, with
  * `updatedAt` at or after the link's `scheduledAt`, published, without a draft or a schedule. A
- * `writtenRev` that does not decode never passes.
+ * `writtenRev` that does not decode never passes. An editor who unschedules after the time and
+ * then discards the draft leaves the same shape, so this proves ownership only where the values
+ * are checked too (crash repair reaches it for an unchanged record; rollback); protection never
+ * uses it.
  */
 export function sweptSince(link: LinkRow, entry: EntrySnapshot): boolean {
 	if (link.scheduledAt === undefined || link.writtenRev === undefined) return false;
@@ -150,22 +152,23 @@ export function sweptSince(link: LinkRow, entry: EntrySnapshot): boolean {
 }
 
 /**
- * The carried fingerprints of a link save that `writtenRev` does not vouch for (spec M5b
- * "Unconfirmed fingerprints"): a protected mapping's old one (`kept`), and one the record does
- * not carry unless it was confirmed and the entry, at `rev`, had not moved since the stored
- * link's `writtenRev` (or only the scheduler had published its schedule, `swept`). Recomputed
- * fingerprints describe what the importer wrote or found, so they are confirmed.
+ * The mappings of a link save that `writtenRev` does not vouch for (spec M5b "Unconfirmed
+ * fingerprints"): every protected mapping (`kept`), whether it keeps an old fingerprint or has
+ * none; and each `carried` one (a fingerprint the record does not recompute) unless it was
+ * confirmed and the entry, at `rev`, had not moved since the stored link's `writtenRev`.
+ * Recomputed fingerprints describe what the importer wrote or found, so they are confirmed.
  */
 export function unconfirmedOf(
 	carried: readonly string[],
 	kept: ReadonlySet<string>,
 	stored: LinkRow | null,
 	rev: string | null,
-	swept = false,
 ): string[] {
 	const was = new Set(stored?.unconfirmed);
-	const unmoved = swept || (stored?.writtenRev !== undefined && stored.writtenRev === rev);
-	return carried.filter((name) => kept.has(name) || was.has(name) || !unmoved);
+	const unmoved = stored?.writtenRev !== undefined && stored.writtenRev === rev;
+	const out = new Set(kept);
+	for (const name of carried) if (was.has(name) || !unmoved) out.add(name);
+	return [...out];
 }
 
 /**
