@@ -70,10 +70,16 @@ import {
 	mappingOf,
 	modeSkip,
 	narrowRecord,
+	ownPending,
 	protectedMappings,
 	protectPlan,
 	ruled,
 	sameFields,
+	sameInstant,
+	scheduleLanded,
+	schedulePlan,
+	type Target,
+	targetOf,
 } from "./rules.js";
 import {
 	applyTemplate,
@@ -256,6 +262,10 @@ type RecordCtx = {
 	fields?: Record<string, string>;
 	/** A link save of this record carried `fields` (M5b), so no refresh is needed. */
 	linkSaved: boolean;
+	/** When the record's content goes live (M5b). */
+	target: Target;
+	/** The schedule the record makes, as its `publishAt` change (M5b); absent when none. */
+	schedule?: Change;
 	/** The job may already have written the entry (see `JournalTarget.mayHaveWritten`). */
 	mayHaveWritten: boolean;
 	/** The record's earlier row was `writing` (see `JournalTarget.resuming`). */
@@ -318,10 +328,15 @@ function publishFailed(
 }
 
 /**
- * Saves the link with the latest revision this importer produced for the entry, and the
- * record's fingerprints (M5b).
+ * Saves the link with the latest revision this importer produced for the entry, the record's
+ * fingerprints, and the schedule the entry has at that revision (M5b).
  */
-function putLink(ctx: RecordCtx, entryId: string, writtenRev: string): Promise<void> {
+function putLink(
+	ctx: RecordCtx,
+	entryId: string,
+	writtenRev: string,
+	scheduledAt: string | null = null,
+): Promise<void> {
 	const { collection, locale } = ctx.job.template;
 	ctx.linkSaved = true;
 	return ctx.deps.links.put(ctx.linkId, {
@@ -332,7 +347,47 @@ function putLink(ctx: RecordCtx, entryId: string, writtenRev: string): Promise<v
 		writtenRev,
 		jobId: ctx.job.id,
 		...(ctx.fields === undefined ? {} : { fields: ctx.fields }),
+		...(scheduledAt === null ? {} : { scheduledAt }),
 	});
+}
+
+/** Schedules the revision the record wrote (M5b) and saves the link with the schedule's. */
+async function scheduleRev(ctx: RecordCtx, id: string, rev: string, at: string) {
+	const { collection, locale } = ctx.job.template;
+	const scheduled = await ctx.deps.content.schedule({
+		collection,
+		locale,
+		id,
+		rev,
+		scheduledAt: at,
+	});
+	if (scheduled.ok) await putLink(ctx, id, scheduled.rev, at);
+	return scheduled;
+}
+
+function scheduleFailed(
+	reason: "conflict" | "locked",
+	sourceKey: string,
+	id: string,
+	action: RecordRow["action"],
+	writtenRev: string | undefined,
+): RowFields {
+	return {
+		status: reason,
+		sourceKey,
+		entryId: id,
+		...(action ? { action } : {}),
+		...(writtenRev === undefined ? {} : { writtenRev }),
+		errors: [
+			{
+				code: `schedule_${reason}`,
+				message:
+					reason === "locked"
+						? "Saved as a draft: the entry is locked, so it was not scheduled"
+						: "Saved as a draft: the entry changed before it could be scheduled",
+			},
+		],
+	};
 }
 
 /**
@@ -699,6 +754,7 @@ async function decideRecord(
 		link: null,
 		stored: null,
 		linkSaved: false,
+		target: targetOf(job, mapped.value, deps.now()),
 		mayHaveWritten: false,
 		resuming: false,
 		save,
@@ -947,6 +1003,12 @@ async function decideRecord(
 		found.warnings.push(...first.warnings);
 		const plan = withChange(first.plan, translationChange);
 		action = plan.action;
+		// M5b: the schedule this plan makes, or why an update cannot be scheduled.
+		const target = ctx.target;
+		const scheduled =
+			target.kind === "at" ? schedulePlan(job, entry, link, plan, record, target.at) : null;
+		if (scheduled !== null && "warning" in scheduled) found.warnings.push(scheduled.warning);
+		if (scheduled !== null && "change" in scheduled) ctx.schedule = scheduled.change;
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
@@ -959,14 +1021,23 @@ async function decideRecord(
 			for (const [url, { field }] of misses) {
 				if (!listed.has(url)) found.newMedia.push(`${field}: ${url}`);
 			}
-			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
+			const schedule = ctx.schedule;
+			return {
+				status: "planned",
+				sourceKey,
+				entryId,
+				action: schedule && plan.action === "unchanged" ? "update" : plan.action,
+				changes: schedule ? [...plan.changes, schedule] : plan.changes,
+			};
 		}
 		if (entry) {
 			if (plan.action === "unchanged") {
 				ctx.fields = await nextFields(ctx, entry, record, plan, links, guarded);
 				return await finishUnchanged(ctx, entry, link, existing, repaired);
 			}
-			if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
+			// A schedule someone else set is pending too (M5b): a publish would clear it.
+			const pending = entry.pendingPublish || entry.scheduledAt !== null;
+			if (pending && entry.rev !== link?.writtenRev) {
 				const code = "pending_draft";
 				return notImported(
 					"conflict",
@@ -1034,6 +1105,14 @@ async function decideRecord(
 		);
 		const final = withChange(kept.plan, translationChange);
 		action = final.action;
+		if (target.kind === "at") {
+			// The downloads may leave only links to update, which go live at once.
+			const again = schedulePlan(job, entry, link, final, record, target.at);
+			if (again !== null && "change" in again) ctx.schedule = again.change;
+			else delete ctx.schedule;
+			const warned = scheduled !== null && "warning" in scheduled;
+			if (again !== null && "warning" in again && !warned) found.warnings.push(again.warning);
+		}
 		ctx.fields = await nextFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
@@ -1179,7 +1258,10 @@ function emptiedRequired(
 		.map(([field]) => ({ field, code: "required", message: "The field is required" }));
 }
 
-/** The entry already holds the mapped data: finish an unfinished write or publish our own draft. */
+/**
+ * The entry already holds the mapped data: finish an unfinished write, or publish or schedule
+ * the importer's own pending state (M5b: schedule it when the record's target is a time).
+ */
 async function finishUnchanged(
 	ctx: RecordCtx,
 	entry: EntrySnapshot,
@@ -1187,20 +1269,39 @@ async function finishUnchanged(
 	existing: RecordRow | null,
 	repaired: boolean,
 ): Promise<RowFields> {
-	const { job, sourceKey } = ctx;
+	const { job, sourceKey, target } = ctx;
 	const entryId = entry.id;
 	const unfinished =
 		repaired ||
 		(existing !== null &&
 			(existing.status === "writing" ||
-				(existing.errors ?? []).some((e) => e.code.startsWith("publish_"))));
+				(existing.errors ?? []).some(
+					(e) => e.code.startsWith("publish_") || e.code.startsWith("schedule_"),
+				)));
 	if (!unfinished) {
-		// A pending draft at the revision this importer last produced is its own (an earlier
-		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
-		if (job.publish && entry.pendingPublish && link?.writtenRev === entry.rev) {
+		// A pending state at the revision this importer last produced is its own (an earlier
+		// `publish: false` run, a failed publish, or a schedule), so publishing or scheduling it puts
+		// no one else's work live.
+		if (job.publish && ownPending(entry, link)) {
+			if (target.kind === "at" && ctx.schedule === undefined) {
+				await refreshFields(ctx, entry);
+				return { status: "unchanged", sourceKey, entryId };
+			}
 			// Publishing makes the draft's values live: the journal keeps the live ones first.
 			const failure = journaling(job) ? await journalPublish(ctx, entry, link) : null;
 			if (failure) return { status: "failed", sourceKey, entryId, errors: [failure] };
+			if (target.kind === "at" && ctx.schedule !== undefined) {
+				const scheduled = await scheduleRev(ctx, entryId, entry.rev, target.at);
+				if (!scheduled.ok)
+					return scheduleFailed(scheduled.reason, sourceKey, entryId, "update", entry.rev);
+				return {
+					status: "updated",
+					sourceKey,
+					entryId,
+					action: "update",
+					changes: [ctx.schedule],
+				};
+			}
 			const published = await publishRev(ctx, entryId, entry.rev);
 			if (!published.ok)
 				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
@@ -1215,7 +1316,37 @@ async function finishUnchanged(
 	// version-derived, so a different entry (an editor's copy) can carry the same string.
 	const proven =
 		writtenRev !== undefined && existing?.entryId === entry.id && entry.rev === writtenRev;
-	if (job.publish && entry.pendingPublish) {
+	if (job.publish && entry.pendingPublish && target.kind === "at") {
+		const at = target.at;
+		// A schedule this record sent may have landed before the stop: the same version as the
+		// write's, a later updated_at, and the time asked for (spec M5b "Crash repair").
+		const landed =
+			writtenRev !== undefined &&
+			existing?.entryId === entry.id &&
+			scheduleLanded(entry, writtenRev, at);
+		if (landed || (proven && sameInstant(entry.scheduledAt, at))) {
+			await putLink(ctx, entryId, entry.rev, at);
+		} else if (proven) {
+			const scheduled = await scheduleRev(ctx, entryId, entry.rev, at);
+			if (!scheduled.ok)
+				return scheduleFailed(scheduled.reason, sourceKey, entryId, action, writtenRev);
+		} else {
+			return {
+				status: "conflict",
+				sourceKey,
+				entryId,
+				...(action ? { action } : {}),
+				...(writtenRev === undefined ? {} : { writtenRev }),
+				errors: [
+					{
+						code: "schedule_unverified",
+						message:
+							"Saved as a draft and maybe scheduled: the entry may have changed after the import wrote it, so it was not verified",
+					},
+				],
+			};
+		}
+	} else if (job.publish && entry.pendingPublish) {
 		// Publish only the exact revision this job wrote; anything newer may be an editor's draft.
 		if (!proven) {
 			return {
@@ -1239,7 +1370,7 @@ async function finishUnchanged(
 	} else if (!job.publish && proven && link?.writtenRev !== writtenRev) {
 		// The crash came between saving the written revision and saving the link: the draft is
 		// provably ours, so record it on the link for a later publishing run.
-		await putLink(ctx, entryId, writtenRev);
+		await putLink(ctx, entryId, writtenRev, entry.scheduledAt);
 	}
 	await refreshFields(ctx, entry);
 	return {
@@ -1485,18 +1616,23 @@ async function writeRecord(
 		action: plan.action,
 		writtenRev: written.rev,
 	});
-	await putLink(ctx, written.id, written.rev);
-	if (job.publish) {
+	// An update keeps the entry's schedule (spec M5b F7), which the link records with the revision.
+	await putLink(ctx, written.id, written.rev, entry?.scheduledAt ?? null);
+	if (ctx.target.kind === "now") {
 		const published = await publishRev(ctx, written.id, written.rev);
 		if (!published.ok)
 			return publishFailed(published.reason, sourceKey, written.id, plan.action, written.rev);
+	} else if (ctx.target.kind === "at" && ctx.schedule !== undefined) {
+		const scheduled = await scheduleRev(ctx, written.id, written.rev, ctx.target.at);
+		if (!scheduled.ok)
+			return scheduleFailed(scheduled.reason, sourceKey, written.id, plan.action, written.rev);
 	}
 	return {
 		status: plan.action === "create" ? "created" : "updated",
 		sourceKey,
 		entryId: written.id,
 		action: plan.action,
-		changes: plan.changes,
+		changes: ctx.schedule ? [...plan.changes, ctx.schedule] : plan.changes,
 	};
 }
 

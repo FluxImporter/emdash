@@ -6,8 +6,9 @@ import type { Change, RecordPlan } from "./diff.js";
 import { fingerprint, recordMappings } from "./fingerprints.js";
 import type { LinkRequests } from "./links.js";
 import type { EntrySnapshot } from "./ports.js";
+import { decodeRev } from "./revs.js";
 import type { MappedRecord, Template } from "./template.js";
-import type { LinkRow, RecordError, RecordRow } from "./types.js";
+import type { Job, LinkRow, RecordError, RecordRow } from "./types.js";
 
 /**
  * Whether the template uses M5b's record rules: then the entry is looked up right after the key
@@ -170,4 +171,90 @@ export function protectPlan(
 	});
 	const action = plan.action === "update" && changes.length === 0 ? "unchanged" : plan.action;
 	return { plan: { action, changes }, protectedNames, warnings };
+}
+
+/**
+ * How far ahead a `publishAt` time must be to schedule (spec M5b "Bounded work"): EmDash refuses
+ * a time that is not after its own clock (F2), and this absorbs the time between the record's
+ * read and the schedule call. A nearer, past or empty time publishes now.
+ */
+export const SCHEDULE_LEAD_MS = 60_000;
+
+/** When the record's content goes live: kept as a draft, published now, or scheduled at a time. */
+export type Target = { kind: "draft" } | { kind: "now" } | { kind: "at"; at: string };
+
+/** The record's target (spec M5b "Publish, draft or schedule"). */
+export function targetOf(job: Job, record: MappedRecord, now: number): Target {
+	if (!job.publish) return { kind: "draft" };
+	const at = record.publishAt;
+	if (at === undefined || at === null || Date.parse(at) - now < SCHEDULE_LEAD_MS) {
+		return { kind: "now" };
+	}
+	return { kind: "at", at };
+}
+
+/** Whether two times name the same instant; null names none. */
+export function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+	if (a === null || a === undefined || b === null || b === undefined) return a === b;
+	return Date.parse(a) === Date.parse(b);
+}
+
+export const NOT_SCHEDULED_MESSAGE =
+	"Not scheduled: the update went live at once (the collection keeps no revisions, or only terms and bylines changed)";
+
+/**
+ * Whether the importer's own pending state is what the entry shows (M2): a draft, a schedule or
+ * a published entry's draft at the revision the link records.
+ */
+export function ownPending(entry: EntrySnapshot, link: LinkRow | null): boolean {
+	return (entry.pendingPublish || entry.scheduledAt !== null) && link?.writtenRev === entry.rev;
+}
+
+/**
+ * The schedule a record makes for target `at` (spec M5b decision table), as the change it adds
+ * (`publishAt`, from the entry's schedule to `at`); or the `not_scheduled` warning when an update
+ * of a published entry goes live at once; or nothing when the entry is already scheduled for
+ * exactly `at` (an update keeps the schedule), when nothing is pending, or when the pending state
+ * is someone else's.
+ */
+export function schedulePlan(
+	job: Job,
+	entry: EntrySnapshot | null,
+	link: LinkRow | null,
+	plan: RecordPlan,
+	record: MappedRecord,
+	at: string,
+): { change: Change } | { warning: RecordError } | null {
+	const change = { field: "publishAt", before: entry?.scheduledAt ?? null, after: at };
+	if (entry === null) return { change };
+	if (sameInstant(entry.scheduledAt, at)) return null;
+	if (plan.action === "unchanged") return ownPending(entry, link) ? { change } : null;
+	// Data, slug and references stage a draft on a collection with revisions (F7); terms and
+	// bylines are written live.
+	const stages =
+		job.revisions !== false &&
+		plan.changes.some((c) => {
+			const name = mappingOf(c, record);
+			return name !== null && name !== "bylines" && !name.startsWith("taxonomies.");
+		});
+	if (entry.status === "published" && !entry.hasDraft && !stages) {
+		return { warning: { code: "not_scheduled", message: NOT_SCHEDULED_MESSAGE } };
+	}
+	return { change };
+}
+
+/**
+ * Whether a resumed record's entry shows the schedule it was writing (spec M5b "Crash repair"):
+ * the same version as the revision it wrote, with a later `updated_at` (a schedule moves only
+ * that, F2), scheduled for `at`. False when either revision cannot be decoded.
+ */
+export function scheduleLanded(entry: EntrySnapshot, writtenRev: string, at: string): boolean {
+	const now = decodeRev(entry.rev);
+	const wrote = decodeRev(writtenRev);
+	if (now === null || wrote === null) return false;
+	return (
+		now.version === wrote.version &&
+		Date.parse(now.updatedAt) > Date.parse(wrote.updatedAt) &&
+		sameInstant(entry.scheduledAt, at)
+	);
 }
