@@ -1,5 +1,6 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
 import {
+	type Change,
 	type CurrentLinks,
 	comparisonsOf,
 	type LinkPlan,
@@ -45,9 +46,11 @@ import {
 	COST_CALL,
 	COST_READ,
 	COST_RECORD,
+	findTranslationSource,
 	LookupCache,
 	loadTerms,
 	resolveLinks,
+	sourceNotFoundMessage,
 	termPath,
 } from "./resolve.js";
 import {
@@ -221,6 +224,8 @@ type RecordCtx = {
 	media?: Record<string, MediaPlanItem | null>;
 	/** The record's Portable Text values, written with the data; absent when it maps none. */
 	portableText?: Record<string, PortableTextPlanItem | null>;
+	/** A create's translation source (its entry ID, M4e); absent for an entry of its own. */
+	translationOf?: string;
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -531,7 +536,10 @@ async function decideRecord(
 		const mediaRequests = mapped.value.media;
 		const drafts = mapped.value.portableText;
 		const hasImages = Object.values(drafts ?? {}).some((d) => d !== null && d.images.length > 0);
-		if (requests || mediaRequests || hasImages) cache.spend(COST_RECORD);
+		// A template with translationOf looks entries up for every record (M4e).
+		const translating = job.template.translationOf !== undefined;
+		const lookingUp = requests !== undefined || translating;
+		if (lookingUp || mediaRequests || hasImages) cache.spend(COST_RECORD);
 		const errors: { field: string; code: string; message: string }[] = [];
 		if (requests) {
 			const resolution = await resolveLinks(
@@ -550,6 +558,25 @@ async function decideRecord(
 			found.newTerms = resolution.newTerms;
 			if (resolution.ok) ctx.links = resolution.links;
 			else errors.push(...resolution.errors);
+		}
+		// The entry this record translates, in the source locale; a miss is judged once the
+		// record's own entry is known.
+		const translates = mapped.value.translationOf;
+		let source: { id: string; group: string } | null = null;
+		if (translates !== undefined) {
+			try {
+				source = await findTranslationSource(
+					deps,
+					cache,
+					collection,
+					job.template.translationOf?.locale ?? "",
+					translates,
+					sourceIdReady(job),
+				);
+			} catch (e) {
+				if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
+				errors.push({ field: "translationOf", code: e.code, message: e.message });
+			}
 		}
 		// Media is looked up even when a link failed, so the record reports every error.
 		let lookups: Record<string, MediaLookup | null> | undefined;
@@ -575,21 +602,44 @@ async function decideRecord(
 		// Reference selections are read only when the template maps reference fields.
 		const read = { references: requests?.references !== undefined };
 		let link = await deps.links.get(ctx.linkId);
-		if (link && requests) cache.spend(COST_READ);
+		if (link && lookingUp) cache.spend(COST_READ);
 		let entry = link ? await deps.content.get(collection, locale, link.entryId, read) : null;
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
 		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
 		let repaired = false;
 		if (!entry && existing !== null && sourceIdReady(job)) {
-			if (requests) cache.spend(COST_READ);
-			entry = await deps.content.findBySourceId(collection, locale, sourceKey, read);
-			if (entry) {
-				link = { collection, locale, sourceKey, entryId: entry.id };
+			if (lookingUp) cache.spend(COST_READ);
+			// A translation's source ID is its source's key (spec M4e F1), which an editor's
+			// translation carries too: such an entry is taken only for a row this job was writing.
+			const found = await deps.content.findBySourceId(
+				collection,
+				locale,
+				translates ?? sourceKey,
+				read,
+			);
+			if (
+				found &&
+				(translates === undefined || existing.status === "writing" || existing.entryId === found.id)
+			) {
+				entry = found;
+				link = { collection, locale, sourceKey, entryId: found.id };
 				await deps.links.put(ctx.linkId, link);
 				repaired = true;
 			}
 		}
 		entryId = entry?.id ?? null;
+		let translationChange: Change | undefined;
+		if (translating) {
+			const verdict = await checkTranslation(deps, cache, job, entry, translates, source);
+			if ("error" in verdict) {
+				return { status: "failed", sourceKey, entryId, errors: [verdict.error] };
+			}
+			found.warnings.push(...verdict.warnings);
+			if (verdict.change && source) {
+				ctx.translationOf = source.id;
+				translationChange = verdict.change;
+			}
+		}
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
@@ -601,7 +651,10 @@ async function decideRecord(
 				return { status: "failed", sourceKey, entryId, errors: required };
 			}
 		}
-		const plan = planRecord(entry, mapped.value, comparisons, links, media, ctx.portableText);
+		const plan = withChange(
+			planRecord(entry, mapped.value, comparisons, links, media, ctx.portableText),
+			translationChange,
+		);
 		action = plan.action;
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
@@ -676,7 +729,10 @@ async function decideRecord(
 				return { status: "failed", sourceKey, entryId, action: plan.action, errors: required };
 			}
 		}
-		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media, ctx.portableText);
+		const final = withChange(
+			planRecord(entry, mapped.value, comparisons, links, ctx.media, ctx.portableText),
+			translationChange,
+		);
 		action = final.action;
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
@@ -693,6 +749,82 @@ async function decideRecord(
 			errors: [{ code: e.code, message: e.message }],
 		};
 	}
+}
+
+/** The plan with a linked create's `translationOf` change last (M4e). */
+function withChange(plan: RecordPlan, change: Change | undefined): RecordPlan {
+	return change === undefined ? plan : { ...plan, changes: [...plan.changes, change] };
+}
+
+/** The ID of the group's entry in `locale` (EmDash's casing ignored), or null when it has none. */
+async function translationIn(
+	deps: EngineDeps,
+	collection: string,
+	sourceId: string,
+	locale: string,
+): Promise<string | null> {
+	const lower = locale.toLowerCase();
+	const entries = await deps.content.translations(collection, sourceId);
+	return entries.find((t) => t.locale.toLowerCase() === lower)?.id ?? null;
+}
+
+function translationExists(locale: string, id: string): RecordError {
+	return {
+		field: "translationOf",
+		code: "translation_exists",
+		message: `The source entry already has a translation in ${locale} (entry ${id}) that this import did not create`,
+	};
+}
+
+/**
+ * The decision table of spec M4e ("Resolution, diff and writes") for a template that maps
+ * `translationOf`: an error fails the record; warnings go on its row; `change` marks a linked
+ * create. `value` is the record's `translationOf` value, `source` what it found.
+ */
+async function checkTranslation(
+	deps: EngineDeps,
+	cache: LookupCache,
+	job: Job,
+	entry: EntrySnapshot | null,
+	value: string | undefined,
+	source: { id: string; group: string } | null,
+): Promise<{ error: RecordError } | { warnings: RecordError[]; change?: Change }> {
+	const { collection, locale } = job.template;
+	const sourceLocale = job.template.translationOf?.locale ?? "";
+	const field = "translationOf";
+	if (value === undefined) {
+		// EmDash sets a translation's group to its source's (spec M4e F3).
+		if (entry?.group !== undefined && entry.group !== entry.id) {
+			return {
+				error: {
+					field,
+					code: "translation_of_missing",
+					message:
+						"The entry is a translation, so the record needs a translationOf value: without one its shared values would overwrite its translation group's",
+				},
+			};
+		}
+		return { warnings: [] };
+	}
+	const missing = sourceNotFoundMessage(collection, sourceLocale, value);
+	if (entry === null) {
+		if (source === null) {
+			return { error: { field, code: "translation_source_not_found", message: missing } };
+		}
+		cache.spend(COST_READ);
+		const taken = await translationIn(deps, collection, source.id, locale);
+		if (taken !== null) return { error: translationExists(locale, taken) };
+		return { warnings: [], change: { field, before: null, after: `${sourceLocale}: ${value}` } };
+	}
+	if (source === null) {
+		const message = `${missing}; the entry is updated without its source`;
+		return { warnings: [{ field, code: "translation_source_not_found", message }] };
+	}
+	if ((entry.group ?? entry.id) !== source.group) {
+		const message = `The entry is not a translation of ${sourceLocale}: ${value}, and EmDash cannot link an existing entry; trash it so the next run creates it as a translation`;
+		return { warnings: [{ field, code: "translation_not_linked", message }] };
+	}
+	return { warnings: [] };
 }
 
 /**
@@ -774,6 +906,16 @@ async function finishUnchanged(
 	};
 }
 
+/**
+ * A linked create's links (M4e): only the bylines, always when mapped, an empty list included,
+ * since EmDash copies the source's credits when none are given (spec M4e F5). Terms and
+ * references are the translation group's.
+ */
+function translationLinks(resolved: ResolvedLinks | undefined): LinkWrites {
+	if (resolved?.bylines === undefined) return {};
+	return { bylines: resolved.bylines.map((b) => ({ bylineId: b.value, roleLabel: null })) };
+}
+
 /** A create's links: every non-empty one. New byline credits have no role label. */
 function createLinks(resolved: ResolvedLinks | undefined): LinkWrites {
 	const writes: LinkWrites = {};
@@ -843,7 +985,20 @@ async function writeRecord(
 	}
 	const data = { ...mapped.data, ...media };
 	let written: { id: string; rev: string };
-	if (!entry) {
+	if (!entry && ctx.translationOf !== undefined) {
+		const value = mapped.translationOf ?? sourceKey;
+		const created = await createTranslation(ctx, ctx.translationOf, value, plan, {
+			collection,
+			locale,
+			...slugPart,
+			// EmDash copies the source's source ID; sent so it is the same where the field is
+			// translatable (spec M4e "Writes").
+			data: { ...data, [SOURCE_ID_FIELD]: value },
+			...translationLinks(ctx.links),
+		});
+		if ("status" in created) return created;
+		written = created;
+	} else if (!entry) {
 		written = await deps.content.create({
 			collection,
 			locale,
@@ -904,6 +1059,43 @@ async function writeRecord(
 		action: plan.action,
 		changes: plan.changes,
 	};
+}
+
+/**
+ * Creates the entry as a translation of `sourceId`, found by the source key `value`. A source
+ * trashed since it was found fails `translation_source_not_found`; an entry another writer added
+ * in the locale meanwhile (a `CONFLICT`) fails `translation_exists`.
+ */
+async function createTranslation(
+	ctx: RecordCtx,
+	sourceId: string,
+	value: string,
+	plan: RecordPlan,
+	input: Omit<Parameters<EngineDeps["content"]["create"]>[0], "translationOf">,
+): Promise<{ id: string; rev: string } | RowFields> {
+	const { deps, sourceKey } = ctx;
+	try {
+		return await deps.content.create({ ...input, translationOf: sourceId });
+	} catch (e) {
+		if (!(e instanceof ContentWriteError)) throw e;
+		const failed = (error: RecordError): RowFields => ({
+			status: "failed",
+			sourceKey,
+			entryId: null,
+			action: plan.action,
+			errors: [error],
+		});
+		if (e.code === "emdash_not_found") {
+			const sourceLocale = ctx.job.template.translationOf?.locale ?? "";
+			const message = `The source entry ${sourceId} (${sourceLocale}: ${value}) no longer exists`;
+			return failed({ field: "translationOf", code: "translation_source_not_found", message });
+		}
+		if (e.code === "emdash_conflict") {
+			const taken = await translationIn(deps, input.collection, sourceId, input.locale);
+			if (taken !== null) return failed(translationExists(input.locale, taken));
+		}
+		throw e;
+	}
 }
 
 async function importPass(
@@ -1047,6 +1239,7 @@ export async function runBatch(
 			targets: job.targetFields,
 			siteTimezone: job.siteTimezone,
 			taxonomies: job.taxonomies,
+			sharedRequired: job.sharedRequired,
 		});
 		if (!compiled.ok) {
 			outcome = {
