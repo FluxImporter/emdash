@@ -40,7 +40,7 @@ See [Outline of M5b and M5c](#outline-of-m5b-and-m5c).
 | --- | --- |
 | What "pre-run state" means | Per entry the job wrote: whether it exists (active), its `status`, `scheduledAt`, live slug, and, for every field and link the job changed, the live value and the pending draft's value. Revision history, `publishedAt` and `updatedAt` are not part of it (F2, F12). Entries the job did not write are not touched. |
 | Why not revisions | EmDash revisions cannot tell the importer from an editor: a revision row stores only `author_id`, which is the `jobs/next` caller, usually the same admin who edits (F3). They exist only on collections with revisions, are pruned to the newest 50 per entry (F3), and a revision restore takes no `_rev` and only stages a draft (F4). The journal is the importer's own record and covers every collection. |
-| Journal storage | A new plugin storage collection `journal`, one row per (job, entry), keyed `${jobId}:${linkKey}`, so a second write of the same job to the same entry (a duplicate key in the feed, a retry, a crash repair) finds the row. Indexes `jobId`, `["jobId", "seq"]`. Media get a second collection `journalMedia`, keyed `${jobId}:${mediaId}`, index `jobId`. Both are deleted with their job by retention. |
+| Journal storage | A new plugin storage collection `journal`, one row per (job, entry), keyed `${jobId}:${linkKey}`, so a second write of the same job to the same entry (a duplicate key in the feed, a retry, a crash repair) finds the row. Indexes `jobId`, `["jobId", "seq"]`. Media get a second collection `journalMedia`, keyed `${jobId}:${mediaId}`, indexes `jobId`, `["jobId", "seq"]` (the rollback warning lists them by `seq`, and EmDash refuses to order by a field no index names: `StorageQueryError: Cannot order by non-indexed field`). Both are deleted with their job by retention. |
 | Write-ahead | The journal row is written **before** the job's first write to the entry, with put-if-absent (`compareAndSet(key, null, row)`). A crash after it and before the write leaves a row for an unchanged entry, which rollback recognises as unchanged (Rollback, "Ownership"). A crash before it leaves nothing changed. |
 | First touch wins | A later write of the same job to the same entry keeps the stored pre-image and adds only fields and links that the earlier writes did not change, taken from the entry as read before this write (which then still holds the pre-run value). `status`, `scheduledAt` and the link-row snapshot come from the first touch only. |
 | What is captured | For an update: the fields and links in the write's `changes`, and, when the write publishes a pending draft (`job.publish` with `pendingPublish`), every field whose draft and live values differ (from `liveData`, F5), since publishing makes them live. For each such field: `live` (the column value: `liveData[field]` when a draft exists, else `data[field]`) and, when a draft exists, `draft` (`data[field]`). Missing values are stored as `null`. Links: the groups of the mapped taxonomies' terms, the IDs of the mapped reference fields' targets, the explicit byline credits with their role labels, as `currentLinks` already reads them. The slug: the live slug (F5) when the write changes it. For a create: the `flux_source_id` value the create sends. |
@@ -252,16 +252,23 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    an M4e partial create on D1) looks the entry up with `findBySourceId(collection, locale,
    sourceIdValue)` and takes it only when exactly one entry matches, its `createdAt` is at or after
    the journal row's `at`, and `updatedAt === createdAt` (V3); it is then handled as unconfirmed.
-   No entry: `unchanged` ("nothing to roll back": never created, or deleted since).
+   No entry: `unchanged`, warning `nothing_to_roll_back` ("Nothing to roll back: the entry was
+   never created, or was deleted since"). A row saved as `writing` with `action: "delete"` whose
+   entry is gone is the permanent delete of a stopped batch: `reverted`, and its link row is
+   deleted when it still names the entry.
 2. **Ownership.** The entry is as the job left it when the link row (`links.get(linkKey)`) has
    `jobId === rollbackOf`, `entryId` equal to the entry's ID and `writtenRev === entry.rev`; or as
    this rollback left it when the row is `writing` with `writtenRev === entry.rev` (resuming).
    Otherwise `conflict`, `rollback_changed`: "Not rolled back: the entry changed after the import
    wrote it (an editor or a later import); roll back later imports first or revert it by hand".
    An `update` row whose job never wrote (a crash after the write-ahead put) has a link row from an
-   earlier job; it is `unchanged` when the entry's `rev` equals `before.link.writtenRev`, and
-   `conflict` otherwise. A `create` row adopted in step 1 without a link row passes ownership only
-   by the step 1 conditions.
+   earlier job; it is `unchanged`, warning `nothing_to_roll_back` ("Nothing to roll back: the
+   import never wrote this entry"), when the entry's `rev` equals `before.link.writtenRev` or its
+   `updatedAt` is before the journal row's `at`, and `conflict` otherwise. A `create` row passes
+   ownership without a matching link row when its entry was created at or after the journal row's
+   `at` and never changed since (`updatedAt === createdAt`, V3): the step 1 adoption, or a create
+   crash repair found before the link row was saved. Such an entry is only moved to Trash unless
+   the job's own create returned it (`confirmed`).
 3. **Lock.** `isLocked` true: `locked`.
 4. **Act**, saving the row as `writing` (with `action`) first and after every step with the step's
    returned `_rev` as `writtenRev` and the step number, so a resumed batch continues where it
@@ -345,6 +352,7 @@ deletion for plugins); the import's records list them under newTerms", from the 
 | `journal_too_large` | import error | The record's pre-image is over `MAX_JOURNAL_BYTES` |
 | `journal_incomplete` | import error | A changed reference field's current selection was truncated |
 | `journal_kind_unknown` | failed | A journal row of a kind this version does not know (a downgrade) |
+| `nothing_to_roll_back` | warning (`unchanged`) | The job never wrote the entry, or the entry it created is gone |
 
 ## Translations, crash repair and the M4e issues
 
@@ -425,7 +433,9 @@ skips an original whose rollback job is not terminal. Link rows are kept, as bef
   collection, then a rollback restores every entry's data, slug, links and status exactly as read
   before the job, deletes the created ones, and the same feed then imports again without
   `SLUG_CONFLICT`; `publish: false` then `publish: true` then rollback of the second leaves the
-  first's pending draft; a scheduled entry; an editor's change before the rollback gives
+  first's pending draft; a scheduled entry (an editor's schedule is a draft the importer did not
+  write, so M5a cannot change it: the test sets the link row's `writtenRev` as an M5b scheduling
+  import would leave it); an editor's change before the rollback gives
   `rollback_changed` and the entry is untouched; two jobs rolled back newest first, and oldest first
   (conflicts); a French translation job rolled back before the English one; kill-and-resume of a
   rollback mid-batch and mid-sequence; a dry-run rollback writes nothing; the kept-media and
