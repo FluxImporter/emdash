@@ -76,6 +76,7 @@ describe("transitions of rolled-back and rollback jobs (M5a)", () => {
 		await patch(deps, job.id, { status: "completed" });
 		await expect(transitionJob(deps, job.id, "retry")).rejects.toMatchObject({
 			code: "invalid_transition",
+			message: "Cannot retry a job that was rolled back (rollback job rb1)",
 		});
 	});
 
@@ -122,5 +123,47 @@ describe("clearLastImport (M5a)", () => {
 		await clearLastImport({ sources }, "src1", "j1");
 		expect(await sources.get("src1")).not.toHaveProperty("lastImport");
 		await clearLastImport({ sources }, "missing", "j1");
+		expect([...sources.rows.keys()]).toEqual(["src1"]);
+	});
+
+	it("writes nothing for a source that does not exist", async () => {
+		const sources = new MemoryKv<SourceRow>();
+		await clearLastImport({ sources }, "missing", "j1");
+		expect(sources.rows.size).toBe(0);
+	});
+
+	it("retries after a concurrent change and does not overwrite it", async () => {
+		const sources = new MemoryKv<SourceRow>();
+		await sources.put("src1", row("j1"));
+		const cas = sources.compareAndSet.bind(sources);
+		let raced = false;
+		sources.compareAndSet = async (id, expected, data) => {
+			if (!raced) {
+				raced = true;
+				const current = (await sources.get(id)) as SourceRow;
+				await sources.put(id, { ...current, name: "Renamed" });
+			}
+			return cas(id, expected, data);
+		};
+		await clearLastImport({ sources }, "src1", "j1");
+		const after = await sources.get("src1");
+		expect(after?.name).toBe("Renamed");
+		expect(after).not.toHaveProperty("lastImport");
+	});
+
+	it("leaves a concurrently replaced lastImport alone", async () => {
+		const sources = new MemoryKv<SourceRow>();
+		await sources.put("src1", row("j1"));
+		const cas = sources.compareAndSet.bind(sources);
+		let raced = false;
+		sources.compareAndSet = async (id, expected, data) => {
+			if (!raced) {
+				raced = true;
+				await sources.put(id, row("j2"));
+			}
+			return cas(id, expected, data);
+		};
+		await clearLastImport({ sources }, "src1", "j1");
+		expect((await sources.get("src1"))?.lastImport?.jobId).toBe("j2");
 	});
 });

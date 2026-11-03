@@ -33,6 +33,11 @@ describe("pluginCollections", () => {
 		expect(() => pluginCollections({ jobs: s, records: s, links: s, media: s })).toThrow(
 			"storage collections",
 		);
+		const all = { jobs: s, records: s, links: s, media: s, journal: s, journalMedia: s };
+		const { journal: _j, ...withoutJournal } = all;
+		const { journalMedia: _m, ...withoutJournalMedia } = all;
+		expect(() => pluginCollections(withoutJournal)).toThrow("storage collections");
+		expect(() => pluginCollections(withoutJournalMedia)).toThrow("storage collections");
 		expect(
 			Object.keys(
 				pluginCollections({

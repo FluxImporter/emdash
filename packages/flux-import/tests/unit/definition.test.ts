@@ -136,6 +136,13 @@ describe("createPlugin", () => {
 		expect(create.safeParse({ ...base, sourceId: "a/b" }).success).toBe(false);
 	});
 
+	it("accepts the journal option in jobs/create, and only a boolean", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const base = { template: {}, dryRun: false, uploadId: UPLOAD_ID };
+		expect(create.parse({ ...base, journal: false })).toMatchObject({ journal: false });
+		expect(create.safeParse({ ...base, journal: "no" }).success).toBe(false);
+	});
+
 	it("validates schema/apply input, refusing required, unique, defaults and validation", () => {
 		const apply = plugin.routes["schema/apply"]!.input!;
 		const field = { slug: "stage", type: "select", options: ["draft"], label: "Stage" };
