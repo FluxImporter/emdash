@@ -352,7 +352,11 @@ async function nextFields(
 		if (kept.has(name)) continue;
 		forms[name] = entry === null || changed.has(name) ? sent[name] : held[name];
 	}
-	return { ...(ctx.stored?.fields ?? {}), ...(await fingerprintsOf(forms)) };
+	// A stored link's fingerprints describe its entry: they carry over only to that entry, never to
+	// one created because the linked entry is gone.
+	const carried =
+		entry !== null && ctx.stored?.entryId === entry.id ? ctx.stored.fields : undefined;
+	return { ...(carried ?? {}), ...(await fingerprintsOf(forms)) };
 }
 
 /**
@@ -655,19 +659,20 @@ async function decideRecord(
 	try {
 		// A template with translationOf looks entries up for every record (M4e).
 		const translating = job.template.translationOf !== undefined;
-		const lookingUp = mapped.value.links !== undefined || translating;
-		const drafted = Object.values(mapped.value.portableText ?? {});
-		if (lookingUp || mapped.value.media || drafted.some((d) => d !== null && d.images.length > 0)) {
-			cache.spend(COST_RECORD);
-		}
-		// Reference selections are read only when the template maps reference fields.
-		const read = { references: mapped.value.links?.references !== undefined };
+		const lookingUpFor = (r: MappedRecord) => r.links !== undefined || translating;
+		// Reference selections are read only when the record maps reference fields.
+		const readFor = (r: MappedRecord) => ({ references: r.links?.references !== undefined });
 		// M5b: with record rules the entry is looked up first, and the mode and the update scope
 		// decided before any link, translation source or media is looked up.
 		let early: { link: LinkRow | null; entry: EntrySnapshot | null } | null = null;
 		let record = mapped.value;
 		if (ruled(job.template)) {
-			early = await entryByLink(ctx, cache, read, lookingUp);
+			// An entry found is updated with only the listed mappings, so it is read for those.
+			const listed = job.template.rules?.updateFields;
+			const names = new Set(listed);
+			const narrowed =
+				listed === undefined ? record : narrowRecord(record, (name) => names.has(name));
+			early = await entryByLink(ctx, cache, readFor(narrowed), lookingUpFor(narrowed));
 			const skip = modeSkip(job.template, early.entry, existing);
 			if (skip !== null) {
 				found.warnings.push(skip);
@@ -676,11 +681,14 @@ async function decideRecord(
 					? { status: "planned", sourceKey, entryId: id, action: "unchanged" }
 					: { status: "unchanged", sourceKey, entryId: id };
 			}
-			const listed = job.template.rules?.updateFields;
-			if (early.entry !== null && listed !== undefined) {
-				const names = new Set(listed);
-				record = narrowRecord(record, (name) => names.has(name));
-			}
+			if (early.entry !== null) record = narrowed;
+		}
+		// The record's lookups are charged for what it resolves: with `updateFields`, the listed ones.
+		const lookingUp = lookingUpFor(record);
+		const read = readFor(record);
+		const drafted = Object.values(record.portableText ?? {});
+		if (lookingUp || record.media || drafted.some((d) => d !== null && d.images.length > 0)) {
+			cache.spend(COST_RECORD);
 		}
 		const requests = record.links;
 		const mediaRequests = record.media;
@@ -749,9 +757,7 @@ async function decideRecord(
 			errors.push(...looked.errors);
 			found.warnings.push(...looked.warnings);
 		}
-		if (errors.length > 0) {
-			return { status: "failed", sourceKey, entryId: early?.entry?.id ?? null, errors };
-		}
+		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		let { link, entry } = early ?? (await entryByLink(ctx, cache, read, lookingUp));
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
 		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.

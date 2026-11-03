@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
-import { transitionJob } from "../../src/engine/jobs.js";
+import { canonicalMedia, fingerprint } from "../../src/engine/fingerprints.js";
+import { createJob, transitionJob } from "../../src/engine/jobs.js";
+import type { SchemaField } from "../../src/engine/template.js";
 import type { LinkRow } from "../../src/engine/types.js";
+import { makeDeps } from "./fakes.js";
 import {
 	csv,
 	type Deps,
@@ -23,6 +26,16 @@ const linkOf = async (deps: Deps, key: string) =>
 const rules = (r: Record<string, unknown>) => ({ extra: { rules: r } });
 /** A tag mapping that creates missing terms, so tests can see whether one was created. */
 const creatingTags = { tag: { from: "Tags", separator: "|", create: true } };
+/** Wraps the link store's `put` to list the link rows each save names. */
+const countPuts = (deps: Deps) => {
+	const puts: string[] = [];
+	const put = deps.links.put.bind(deps.links);
+	deps.links.put = async (id: string, row: LinkRow) => {
+		puts.push(id);
+		return put(id, row);
+	};
+	return puts;
+};
 
 describe("write modes (M5b)", () => {
 	it("skips an existing entry in create mode and creates a new one", async () => {
@@ -50,6 +63,14 @@ describe("write modes (M5b)", () => {
 		expect(entryOf(deps, "A1").data.price).toBe(10);
 		// The skipped record looked nothing up: the lamp's terms and bylines only.
 		expect(deps.content.calls.filter((c) => c.includes(entryOf(deps, "A1").id))).toEqual([]);
+		// Alone, a skipped record resolves no reference and reads no byline.
+		deps.lookups.calls.length = 0;
+		const alone = await importRows(deps, [{ ...desk, related: "B2" }], {
+			extra: { rules: { mode: "create" }, fields: { ...relatedBySlug } },
+		});
+		expect(alone.counters).toMatchObject({ unchanged: 1 });
+		expect(deps.lookups.calls.filter((c) => c.startsWith("find:"))).toEqual([]);
+		expect(deps.lookups.calls.filter((c) => c.startsWith("bylines:"))).toEqual([]);
 	});
 
 	it("skips a record without an entry in update mode, before any lookup", async () => {
@@ -147,6 +168,21 @@ describe("write modes (M5b)", () => {
 		expect(entryOf(deps, "A1")).toMatchObject({ status: "published" });
 	});
 
+	it("reports a failed record's entry as a template without rules does", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const plain = await importRows(deps, [{ ...desk, authors: "nobody" }]);
+		const ruledJob = await importRows(
+			deps,
+			[{ ...desk, authors: "nobody" }],
+			rules({ mode: "update" }),
+		);
+		const [without] = await records(deps, plain.id);
+		const [withRules] = await records(deps, ruledJob.id);
+		expect(without).toMatchObject({ status: "failed", entryId: null });
+		expect(withRules).toMatchObject({ status: "failed", entryId: null });
+	});
+
 	it("does not retry skipped rows", async () => {
 		const { deps } = setup();
 		await importRows(deps, [desk]);
@@ -238,7 +274,7 @@ describe("updateFields (M5b)", () => {
 		]);
 	});
 
-	it("keeps a translation's shared mappings and the unlisted ones out of the write", async () => {
+	it("writes a listed taxonomy and leaves the unlisted data and slug alone", async () => {
 		const { deps } = setup();
 		await importRows(deps, [desk]);
 		const job = await importRows(
@@ -251,6 +287,62 @@ describe("updateFields (M5b)", () => {
 		]);
 		expect(entryOf(deps, "A1")).toMatchObject({ slug: "desk", data: { title: "Desk" } });
 		expect(entryOf(deps, "A1").taxonomies.tag).toEqual(["sale"]);
+	});
+
+	it("leaves an unlisted reference unresolved and unwritten", async () => {
+		const { deps } = setup();
+		await importRows(deps, [lamp, { ...desk, related: "B2" }]);
+		const first = (await linkOf(deps, "A1")).fields ?? {};
+		await importRows(deps, [{ sku: "C3", name: "Chair", price: 7 }]);
+		deps.lookups.calls.length = 0;
+		const job = await importRows(deps, [{ ...desk, price: 12, related: "C3" }], {
+			extra: { rules: { updateFields: ["price"] }, fields: { ...relatedBySlug } },
+		});
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "updated",
+			changes: [{ field: "price", before: 10, after: 12 }],
+		});
+		expect(deps.lookups.calls.filter((c) => c.startsWith("find:"))).toEqual([]);
+		expect(entryOf(deps, "A1").references.related).toEqual([entryOf(deps, "B2").id]);
+		expect((await linkOf(deps, "A1")).fields?.related).toBe(first.related);
+	});
+
+	it("leaves an unlisted Portable Text field unconverted, undownloaded and unwritten", async () => {
+		const { deps } = makeDeps();
+		deps.mediaFetcher.files.set(url("a.png"), { body: PNG(1), contentType: "image/png" });
+		deps.mediaFetcher.files.set(url("b.png"), { body: PNG(2), contentType: "image/png" });
+		const post = (title: string, image: string) =>
+			`id,title,html\np1,${title},"<p>Hi</p><img src=""${url(image)}"" alt=""A"">"\n`;
+		await runPosts(deps, post("Hello", "a.png"));
+		const before = [...deps.content.entries.values()][0]?.data.body;
+		deps.mediaFetcher.calls.length = 0;
+		const job = await runPosts(deps, post("Hello 2", "b.png"), { updateFields: ["title"] });
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "updated", changes: [{ field: "title" }] });
+		expect(row?.changes).toHaveLength(1);
+		expect(deps.mediaFetcher.urls()).toEqual([]);
+		expect([...deps.content.entries.values()][0]?.data.body).toEqual(before);
+	});
+
+	it("records the written alt of a listed media field, so the next run needs no refresh", async () => {
+		const { deps } = setup();
+		const extra = {
+			fields: {
+				title: { from: "Name", type: "text" },
+				photo: { from: "Img", type: "image", alt: { from: "Related" } },
+			},
+		};
+		await importRows(deps, [{ ...desk, img: url("a.png"), related: "Old" }], { extra });
+		const job = await importRows(deps, [{ ...desk, img: url("a.png"), related: "New" }], {
+			extra: { ...extra, rules: { updateFields: ["photo"] } },
+		});
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "updated",
+			changes: [{ field: "photo.alt", after: "New" }],
+		});
+		const puts = countPuts(deps);
+		await importRows(deps, [{ ...desk, img: url("a.png"), related: "New" }], { extra });
+		expect(puts).toEqual([]);
 	});
 });
 
@@ -295,6 +387,18 @@ describe("fingerprints on the link row (M5b)", () => {
 		expect(second.title).toBe(first.title);
 		expect(second.slug).toBe(first.slug);
 		expect(second.price).not.toBe(first.price);
+		// A second template with the same collection, locale and key maps only the title.
+		await importRows(deps, [{ ...desk, name: "Desk 3", price: 12 }], {
+			extra: {
+				slug: undefined,
+				fields: { title: { from: "Name", type: "text" } },
+				taxonomies: undefined,
+				bylines: undefined,
+			},
+		});
+		const third = (await linkOf(deps, "A1")).fields ?? {};
+		expect(third.title).not.toBe(second.title);
+		expect({ ...third, title: second.title }).toEqual(second);
 	});
 
 	it("gives a mapping equal to the feed the fingerprint of the entry's value", async () => {
@@ -306,6 +410,40 @@ describe("fingerprints on the link row (M5b)", () => {
 		const before = (await linkOf(deps, "A1")).fields ?? {};
 		await importRows(deps, [{ ...desk, featured: true, price: 11 }]);
 		expect((await linkOf(deps, "A1")).fields?.featured).toBe(before.featured);
+	});
+
+	it("gives an unchanged image the fingerprint of the entry's value, an editor's alt included", async () => {
+		const { deps } = setup();
+		await importRows(deps, [{ ...desk, img: url("a.png") }]);
+		const before = (await linkOf(deps, "A1")).fields?.photo;
+		const e = entryOf(deps, "A1");
+		// An editor's alt, which the template does not map: the image itself equals the feed's.
+		const held = { ...(e.data.photo as Record<string, unknown>), alt: "Editor" };
+		e.data.photo = held;
+		await importRows(deps, [{ ...desk, img: url("a.png"), price: 11 }]);
+		const after = (await linkOf(deps, "A1")).fields?.photo;
+		expect(after).not.toBe(before);
+		expect(after).toBe(await fingerprint(canonicalMedia(held)));
+	});
+
+	it("starts from no fingerprints when it creates an entry for a link whose entry is gone", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const old = entryOf(deps, "A1");
+		await deps.content.trash("products", old.id);
+		await importRows(deps, [{ ...desk, name: "Desk B" }], {
+			extra: { taxonomies: undefined, bylines: undefined },
+		});
+		const link = await linkOf(deps, "A1");
+		expect(link.entryId).not.toBe(old.id);
+		expect(Object.keys(link.fields ?? {}).sort()).toEqual([
+			"featured",
+			"photo",
+			"price",
+			"related",
+			"slug",
+			"title",
+		]);
 	});
 
 	it("refreshes a link saved before M5b once, keeping its revision and job", async () => {
@@ -349,3 +487,42 @@ describe("fingerprints on the link row (M5b)", () => {
 		expect(termGroup(deps, "sale")).toBeDefined();
 	});
 });
+
+/** The related field matched by slug, so that resolving it shows as a `find:` lookup. */
+const relatedBySlug = {
+	title: { from: "Name", type: "text" },
+	price: { from: "Price", type: "number" },
+	featured: { from: "Featured", type: "boolean" },
+	photo: { from: "Img", type: "image" },
+	related: { from: "Related", type: "reference", match: "slug", separator: "|" },
+};
+
+const PNG = (n: number) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, n]);
+const postFields: SchemaField[] = [
+	{ slug: "title", type: "string" },
+	{ slug: "body", type: "portableText" },
+	{ slug: "flux_source_id", type: "string" },
+];
+
+/** Imports posts with a title and an HTML body into a Portable Text field. */
+async function runPosts(deps: Deps, body: string, rules?: Record<string, unknown>) {
+	const upload = `u${deps.source.uploads.size + 1}`;
+	deps.source.add(upload, body);
+	const job = await createJob(deps, {
+		uploadId: upload,
+		template: {
+			version: 1,
+			collection: "posts",
+			locale: "en",
+			key: { from: "id" },
+			fields: {
+				title: { from: "title", type: "text" },
+				body: { from: "html", type: "portableText", format: "html" },
+			},
+			...(rules ? { rules } : {}),
+		},
+		schemaFields: postFields,
+		mediaMaxBytes: 1000,
+	});
+	return runToEnd(deps, job.id);
+}
