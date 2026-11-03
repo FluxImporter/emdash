@@ -237,7 +237,7 @@ export class FakeContent implements ContentPort {
 				);
 			}
 			const taken = [...this.entries.values()].some(
-				(e) => e.group === source.group && e.locale === input.locale,
+				(e) => e.group === source.group && e.locale.toLowerCase() === input.locale.toLowerCase(),
 			);
 			if (taken) {
 				throw new ContentWriteError(
@@ -403,7 +403,11 @@ export class FakeLookups implements LookupPort {
 		return this.addTerm(taxonomy, slug, input.label, parentSlug, input.locale);
 	}
 
-	/** The groups of the term slugs the `FakeContent` entry was given, by taxonomy. */
+	/**
+	 * The groups of the term slugs the `FakeContent` entry was given, by taxonomy. Resolves the slugs
+	 * in the entry's own locale, whereas EmDash reads the source's terms for a translation (V1/E2);
+	 * tests must not rely on it for linked records.
+	 */
 	async entryTerms(_collection: string, entryId: string) {
 		this.calls.push(`entryTerms:${entryId}`);
 		const e = this.content.entries.get(entryId);
