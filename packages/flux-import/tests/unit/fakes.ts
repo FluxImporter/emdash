@@ -13,14 +13,24 @@ import {
 	type MediaInfo,
 	type MediaPort,
 	type MediaUploadError,
+	type RevertStep,
 	SourceMissingError,
 	type SourcePort,
+	type StepResult,
 	type TaxonomyDef,
 	type TermInfo,
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
-import type { EngineDeps, Job, LinkRow, MediaMapRow, RecordRow } from "../../src/engine/types.js";
+import type {
+	EngineDeps,
+	Job,
+	JournalEntry,
+	JournalMedia,
+	LinkRow,
+	MediaMapRow,
+	RecordRow,
+} from "../../src/engine/types.js";
 import type { CredentialSettings } from "../../src/plugin/credentials.js";
 import { dropBytes } from "../../src/sources/csv.js";
 import {
@@ -124,6 +134,28 @@ type StoredEntry = {
 	taxonomies: Record<string, string[]>;
 	references: Record<string, string[]>;
 	bylines: { bylineId: string; roleLabel: string | null }[];
+	/** M5a: `draft`, `scheduled` or `published`, and the schedule. */
+	status: string;
+	scheduledAt: string | null;
+	/**
+	 * M5a: the live data and slug while a draft revision is pending (on a collection with
+	 * revisions, a write staged after the entry's columns); null without one. `data` and `slug`
+	 * always hold the latest values, the draft's included.
+	 */
+	live: { data: Record<string, unknown>; slug: string | null } | null;
+	/**
+	 * M5a: the live revision saved at the last publish (as EmDash's `live_revision_id`); an
+	 * unpublish creates a draft from it (spec F18).
+	 */
+	published: { data: Record<string, unknown> } | null;
+	/**
+	 * M5a: on a collection without revisions, the draft an unpublish created: its stale values
+	 * hide the columns in `get` until a discard, while later updates still write the columns.
+	 */
+	stale: { data: Record<string, unknown> } | null;
+	trashed: boolean;
+	createdAt: string;
+	updatedAt: string;
 };
 
 export class FakeContent implements ContentPort {
@@ -150,16 +182,72 @@ export class FakeContent implements ContentPort {
 	 * source, as EmDash does (spec M4e F1).
 	 */
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
+	/** M5a: collections without revisions, whose writes go straight to the live columns. */
+	readonly plainCollections = new Set<string>();
+	/** M5a: return a message to make a `content:beforeDelete` hook refuse the trash. */
+	blockDelete: (id: string) => string | null = () => null;
+	/** M5a: return a message to make a policy hook refuse a publish, unpublish or schedule. */
+	blockStep: (step: RevertStep, id: string) => string | null = () => null;
+	/** M5a: called at the start of every rollback step; throw from it to simulate a crash. */
+	beforeStep: (step: RevertStep | "trash" | "delete", id: string) => void = () => {};
+	/** M5a: called after a rollback step changed the entry; throw from it to simulate a crash. */
+	afterStep: (step: RevertStep, id: string) => void = () => {};
+	/** The clock for timestamps and schedules; `makeDeps` gives it the test clock. */
+	now: () => number = () => Date.parse("2026-10-07T10:00:00Z");
 	private next = 0;
+
+	private stamp(): string {
+		return new Date(this.now()).toISOString();
+	}
+
+	/** A write that changes the row: a new revision and `updatedAt`. */
+	private touch(e: StoredEntry): void {
+		e.rev++;
+		e.updatedAt = this.stamp();
+	}
+
+	/** As EmDash: a slug is unique per collection and locale, and Trash still holds it. */
+	private checkSlug(
+		collection: string,
+		locale: string,
+		slug: string | null | undefined,
+		id?: string,
+	) {
+		if (slug === undefined || slug === null) return;
+		const taken = [...this.entries.values()].some(
+			(o) => o.id !== id && o.collection === collection && o.locale === locale && o.slug === slug,
+		);
+		if (taken) {
+			throw new ContentWriteError(
+				"emdash_slug_conflict",
+				`Writing the entry failed: Slug "${slug}" already exists in this collection`,
+			);
+		}
+	}
+
+	private hasDraft(e: StoredEntry): boolean {
+		return e.live !== null || e.stale !== null;
+	}
 
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
 			id: e.id,
 			rev: String(e.rev),
-			slug: e.slug,
-			data: structuredClone(e.data),
+			// As hydrateDraftData: a pending draft changes the data, never the live slug.
+			slug: e.live?.slug ?? e.slug,
+			data: structuredClone(e.stale ? { ...e.data, ...e.stale.data } : e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
+			status: e.status,
+			scheduledAt: e.scheduledAt,
+			hasDraft: this.hasDraft(e),
+			...(e.live
+				? { live: structuredClone(e.live.data) }
+				: e.stale
+					? { live: structuredClone(e.data) }
+					: {}),
+			createdAt: e.createdAt,
+			updatedAt: e.updatedAt,
 			...(options.references
 				? {
 						references: Object.fromEntries(
@@ -180,7 +268,131 @@ export class FakeContent implements ContentPort {
 	}
 	async get(collection: string, locale: string, id: string, options?: GetOptions) {
 		const e = this.entries.get(id);
-		return e && e.collection === collection && e.locale === locale ? this.snap(e, options) : null;
+		return e && !e.trashed && e.collection === collection && e.locale === locale
+			? this.snap(e, options)
+			: null;
+	}
+	async getIncludingTrashed(collection: string, locale: string, id: string) {
+		const e = this.entries.get(id);
+		return e && e.collection === collection && e.locale === locale
+			? { ...this.snap(e), trashed: e.trashed }
+			: null;
+	}
+	async trash(collection: string, id: string) {
+		this.beforeStep("trash", id);
+		const e = this.entries.get(id);
+		// As EmDash: the beforeDelete hook runs before the entry is looked up.
+		const blocked = this.blockDelete(id);
+		if (blocked !== null)
+			return { ok: false as const, reason: "blocked" as const, message: blocked };
+		if (!e || e.trashed || e.collection !== collection) {
+			return { ok: false as const, reason: "not_found" as const, message: "" };
+		}
+		// As EmDash: only deleted_at is set, so the revision stays (spec M5a F6).
+		e.trashed = true;
+		this.calls.push(`trash:${id}`);
+		return { ok: true as const };
+	}
+	async permanentDelete(collection: string, id: string) {
+		this.beforeStep("delete", id);
+		const e = this.entries.get(id);
+		if (!e?.trashed || e.collection !== collection) return false;
+		this.entries.delete(id);
+		this.calls.push(`delete:${id}`);
+		return true;
+	}
+	async revertStep(
+		input: {
+			collection: string;
+			locale: string;
+			id: string;
+			rev: string;
+			step: RevertStep;
+			slug?: string | null;
+			data?: Record<string, unknown>;
+			scheduledAt?: string;
+		} & LinkWrites,
+	): Promise<StepResult> {
+		this.beforeStep(input.step, input.id);
+		const e = this.entries.get(input.id);
+		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			throw new ContentWriteError("emdash_not_found", "Entry not found");
+		}
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
+		if (String(e.rev) !== input.rev) {
+			return { ok: false, reason: "conflict", message: "Revision precondition did not match" };
+		}
+		// Only publish, unpublish and schedule run policy hooks; a discard cannot be refused.
+		const blocked =
+			input.step === "update" || input.step === "discard" ? null : this.blockStep(input.step, e.id);
+		if (blocked !== null) return { ok: false, reason: "blocked", message: blocked };
+		switch (input.step) {
+			case "update": {
+				const written = await this.update(input);
+				if (!written.ok) return { ok: false, reason: "conflict", message: written.reason };
+				break;
+			}
+			case "publish": {
+				const published = await this.publish({ id: e.id, rev: input.rev });
+				if (!published.ok) return { ok: false, reason: "conflict", message: published.reason };
+				break;
+			}
+			case "unpublish":
+				if (e.status !== "draft" || e.scheduledAt !== null) {
+					// As EmDash, also without revisions: a draft is created from the live revision, and
+					// only when one exists (F18). Without revisions its stale values hide the columns.
+					if (e.published !== null || e.status === "published") {
+						const liveData = structuredClone(e.published?.data ?? e.data);
+						if (this.plainCollections.has(e.collection)) e.stale ??= { data: liveData };
+						else e.live ??= { data: liveData, slug: e.slug };
+					}
+					// As EmDash: an unpublish clears the live revision (repositories/content.ts:2763).
+					e.published = null;
+					e.status = "draft";
+					e.scheduledAt = null;
+					e.pendingPublish = true;
+					this.touch(e);
+				}
+				break;
+			case "discard":
+				if (e.live || e.stale) {
+					if (e.live) {
+						e.data = e.live.data;
+						e.slug = e.live.slug;
+					}
+					e.live = null;
+					e.stale = null;
+					e.pendingPublish = e.status !== "published";
+					e.rev++;
+				}
+				break;
+			case "schedule": {
+				const at = input.scheduledAt ?? "";
+				if (!(Date.parse(at) > this.now())) {
+					throw new ContentWriteError(
+						"emdash_validation_error",
+						"Rolling back the entry (schedule) failed: Scheduled date must be in the future",
+					);
+				}
+				e.scheduledAt = at;
+				if (e.status !== "published") e.status = "scheduled";
+				this.touch(e);
+				break;
+			}
+		}
+		if (input.step !== "update" && input.step !== "publish") {
+			this.calls.push(`${input.step}:${e.id}`);
+		}
+		this.afterStep(input.step, e.id);
+		return {
+			ok: true,
+			state: {
+				rev: String(e.rev),
+				status: e.status,
+				scheduledAt: e.scheduledAt,
+				hasDraft: this.hasDraft(e),
+			},
+		};
 	}
 	async findBySourceId(collection: string, locale: string, sourceId: string, options?: GetOptions) {
 		this.calls.push(`find:${sourceId}`);
@@ -192,6 +404,7 @@ export class FakeContent implements ContentPort {
 		}
 		for (const e of this.entries.values()) {
 			if (
+				!e.trashed &&
 				e.collection === collection &&
 				e.locale === locale &&
 				e.data.flux_source_id === sourceId
@@ -237,7 +450,10 @@ export class FakeContent implements ContentPort {
 				);
 			}
 			const taken = [...this.entries.values()].some(
-				(e) => e.group === source.group && e.locale.toLowerCase() === input.locale.toLowerCase(),
+				(e) =>
+					!e.trashed &&
+					e.group === source.group &&
+					e.locale.toLowerCase() === input.locale.toLowerCase(),
 			);
 			if (taken) {
 				throw new ContentWriteError(
@@ -246,8 +462,10 @@ export class FakeContent implements ContentPort {
 				);
 			}
 		}
+		this.checkSlug(input.collection, input.locale, input.slug);
 		const id = `e${++this.next}`;
 		const data = structuredClone(input.data);
+		const created = this.stamp();
 		for (const field of source ? this.sharedFields : []) {
 			if (source && Object.hasOwn(source.data, field)) data[field] = source.data[field];
 			else delete data[field];
@@ -265,6 +483,14 @@ export class FakeContent implements ContentPort {
 			taxonomies: structuredClone(source?.taxonomies ?? {}),
 			references: structuredClone(source?.references ?? {}),
 			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
+			status: "draft",
+			scheduledAt: null,
+			live: null,
+			published: null,
+			stale: null,
+			trashed: false,
+			createdAt: created,
+			updatedAt: created,
 		};
 		this.writeLinks(entry, input);
 		this.entries.set(id, entry);
@@ -276,7 +502,7 @@ export class FakeContent implements ContentPort {
 		input: {
 			id: string;
 			rev: string;
-			slug?: string;
+			slug?: string | null;
 			data?: Record<string, unknown>;
 		} & LinkWrites,
 	): Promise<WriteResult> {
@@ -286,14 +512,26 @@ export class FakeContent implements ContentPort {
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
+		this.checkSlug(e.collection, e.locale, input.slug, e.id);
+		const staged = input.data !== undefined || input.slug !== undefined || input.references;
+		const plain = this.plainCollections.has(e.collection);
+		// On revisioned collections data, slug and references are staged in a draft (spec M5a F17).
+		if (staged && !plain) e.live ??= { data: structuredClone(e.data), slug: e.slug };
 		e.data = { ...e.data, ...structuredClone(input.data ?? {}) };
 		if (input.slug !== undefined) e.slug = input.slug;
 		this.writeLinks(e, input);
+		// As EmDash: `updated_at` moves only when a column of the row changes
+		// (repositories/content.ts:1072-1075). With revisions data, slug and references go to the
+		// draft revision, which leaves it alone unless the slug is cleared (:1405-1432, and :2831-2846
+		// for the runtime's draft staging); terms and bylines live in other tables. Publish,
+		// unpublish and schedule set it (:2514, :2633, :2767, :2127); a discard keeps it (:2883).
+		const columns = plain
+			? input.data !== undefined || input.slug !== undefined
+			: input.slug === null;
 		e.rev++;
+		if (columns) e.updatedAt = this.stamp();
 		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
-		if (input.data !== undefined || input.slug !== undefined || input.references) {
-			e.pendingPublish = true;
-		}
+		if (staged && !plain) e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
 		return { ok: true, rev: String(e.rev) };
@@ -307,7 +545,16 @@ export class FakeContent implements ContentPort {
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
 		e.pendingPublish = false;
-		e.rev++;
+		e.status = "published";
+		e.scheduledAt = null;
+		e.live = null;
+		e.stale = null;
+		// As EmDash without revisions: the live revision is created at the first publish after an
+		// unpublish and then kept (repositories/content.ts:2489-2499); with revisions each publish
+		// makes the draft the live revision.
+		if (this.plainCollections.has(e.collection)) e.published ??= { data: structuredClone(e.data) };
+		else e.published = { data: structuredClone(e.data) };
+		this.touch(e);
 		this.calls.push(`publish:${e.id}`);
 		return { ok: true, rev: String(e.rev) };
 	}
@@ -317,9 +564,9 @@ export class FakeContent implements ContentPort {
 	async translations(collection: string, id: string) {
 		this.calls.push(`translations:${id}`);
 		const e = this.entries.get(id);
-		if (!e || e.collection !== collection) return [];
+		if (!e || e.trashed || e.collection !== collection) return [];
 		return [...this.entries.values()]
-			.filter((t) => t.collection === collection && t.group === e.group)
+			.filter((t) => !t.trashed && t.collection === collection && t.group === e.group)
 			.map((t) => ({ id: t.id, locale: t.locale }));
 	}
 }
@@ -583,6 +830,7 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 	const clock = opts.clock ?? { t: Date.parse("2026-10-07T10:00:00Z") };
 	let id = 0;
 	const content = new FakeContent();
+	content.now = () => clock.t;
 	const lookups = new FakeLookups(content);
 	content.bylineSlug = (id) => lookups.storedBylines.find((b) => b.id === id)?.slug ?? id;
 	const deps = {
@@ -590,6 +838,8 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 		records: new MemoryKv<RecordRow>(),
 		links: new MemoryKv<LinkRow>(),
 		mediaMap: new MemoryKv<MediaMapRow>(),
+		journal: new MemoryKv<JournalEntry>(),
+		journalMedia: new MemoryKv<JournalMedia>(),
 		content,
 		lookups,
 		media: new FakeMedia(),

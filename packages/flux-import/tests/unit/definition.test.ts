@@ -28,6 +28,7 @@ const ROUTES = [
 	"jobs/resume",
 	"jobs/cancel",
 	"jobs/retry",
+	"jobs/rollback",
 	"jobs/records",
 	"jobs/log.csv",
 	"schema/apply",
@@ -61,6 +62,8 @@ describe("createPlugin", () => {
 		expect(STORAGE.links.indexes).toEqual(["entryId"]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);
+		expect(STORAGE.journal.indexes).toEqual(["jobId", ["jobId", "seq"]]);
+		expect(STORAGE.journalMedia.indexes).toEqual(["jobId", ["jobId", "seq"]]);
 	});
 
 	it("has the retention setting, the activate hook and the cron hook", () => {
@@ -116,9 +119,9 @@ describe("createPlugin", () => {
 			plugin.routes["jobs/records"]!.input!.safeParse({ id: "J1", status: "bogus" }).success,
 		).toBe(false);
 		for (const route of ["jobs/records", "jobs/log.csv"]) {
-			expect(plugin.routes[route]!.input!.safeParse({ id: "J1", status: "filtered" }).success).toBe(
-				true,
-			);
+			for (const status of ["filtered", "reverted"]) {
+				expect(plugin.routes[route]!.input!.safeParse({ id: "J1", status }).success).toBe(true);
+			}
 		}
 	});
 
@@ -132,6 +135,13 @@ describe("createPlugin", () => {
 			false,
 		);
 		expect(create.safeParse({ ...base, sourceId: "a/b" }).success).toBe(false);
+	});
+
+	it("accepts the journal option in jobs/create, and only a boolean", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const base = { template: {}, dryRun: false, uploadId: UPLOAD_ID };
+		expect(create.parse({ ...base, journal: false })).toMatchObject({ journal: false });
+		expect(create.safeParse({ ...base, journal: "no" }).success).toBe(false);
 	});
 
 	it("validates schema/apply input, refusing required, unique, defaults and validation", () => {

@@ -34,14 +34,26 @@ export const LOG_MAX_BYTES = 8 * 1024 * 1024;
  * Records one jobs/next call processes on Workers, whatever the job's batch size. Cloudflare
  * allows 1,000 D1 queries per Worker invocation on the paid plan (50 on the free plan;
  * https://developers.cloudflare.com/workers/platform/limits/), local workerd does not enforce it,
- * and each record costs about nine plugin storage calls plus EmDash's own content queries.
+ * and each record costs about nine plugin storage calls plus EmDash's own content queries. Measured
+ * on local D1 (M5a review, V8): a batch of published updates costs about 240 queries plus 57 per
+ * record, so 20 records ran 1,377 queries and 13 ran 978; 11 stay under about 900.
  */
-export const WORKERS_BATCH_CAP = 20;
+export const WORKERS_BATCH_CAP = 11;
 /**
  * `WORKERS_BATCH_CAP` for jobs whose template maps reference fields, taxonomies, bylines or
- * media: each record also looks its links and media up, and may download files.
+ * media: each record also looks its links and media up, and may download files. Measured on local
+ * D1 (M5a review, V8): updates with three references, two taxonomies and bylines cost about 120
+ * queries per record plus about 130 per batch, so 10 records ran 1,331 queries and 6 ran 855.
  */
-export const WORKERS_LINKED_BATCH_CAP = 10;
+export const WORKERS_LINKED_BATCH_CAP = 6;
+
+/**
+ * Rollback rows one jobs/next call reverts on Workers (M5a). A reverted update runs up to seven
+ * content calls, about 175-265 D1 queries with EmDash's own (Fact V7), so three rows
+ * stay under the 1,000-query limit (measured in the M5a review: 744 queries for three scheduled
+ * updates with every link kind, 214 for three deletes).
+ */
+export const WORKERS_ROLLBACK_BATCH_CAP = 3;
 
 /**
  * The lookup cost one jobs/next call may spend on Workers (see `COST_READ`): D1 allows 1,000
@@ -71,6 +83,7 @@ export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolea
 
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
+	if (job.kind === "rollback") return WORKERS_ROLLBACK_BATCH_CAP;
 	return usesLinks(job.template) || usesMedia(job.template)
 		? WORKERS_LINKED_BATCH_CAP
 		: WORKERS_BATCH_CAP;
@@ -283,8 +296,12 @@ export async function getJob(deps: EngineDeps, id: string): Promise<Job> {
 	return upgradeJob(job);
 }
 
-/** Whether a job may still read its staged file (resume, retry, or a real run after a dry run). */
+/**
+ * Whether a job may still read its staged file (resume, retry, or a real run after a dry run).
+ * A rollback job never reads it, and a rolled-back job can no longer be resumed or retried.
+ */
 export function uploadNeeded(job: Job): boolean {
+	if (job.kind === "rollback" || job.rolledBackBy !== undefined) return false;
 	switch (job.status) {
 		case "cancelled":
 			return false;

@@ -6,6 +6,8 @@ import {
 	type EntrySnapshot,
 	type GetOptions,
 	type LinkWrites,
+	type RevertStep,
+	type StepResult,
 	type WriteResult,
 } from "../engine/ports.js";
 import { type FieldValue, SOURCE_ID_FIELD } from "../engine/template.js";
@@ -21,7 +23,9 @@ export type HandlerResult = {
 /**
  * The part of `EmDashRuntime` (from `emdash/middleware`) this adapter calls; the runtime is
  * assignable to it. Signatures: src/emdash-runtime.ts:3336 (list), :3364 (get), :3455 (create),
- * :3649 (update), :4575 (publish), :4776 (translations), :759 (schemaRegistry).
+ * :3649 (update), :4575 (publish), :4776 (translations), :759 (schemaRegistry); for rollbacks
+ * (M5a) :3374 (get including Trash), :4093 (delete), :4163 (permanent delete), :4652 (unpublish),
+ * :4686 (schedule), :4764 (discard draft).
  */
 export interface ContentRuntime {
 	readonly schemaRegistry: SchemaRegistryLike;
@@ -51,7 +55,7 @@ export interface ContentRuntime {
 		id: string,
 		body: {
 			data?: Record<string, unknown>;
-			slug?: string;
+			slug?: string | null;
 			locale?: string;
 			_rev?: string;
 			actor?: ActorInfo;
@@ -63,7 +67,37 @@ export interface ContentRuntime {
 		options?: { _rev?: string; actor?: ActorInfo },
 	): Promise<HandlerResult>;
 	handleContentTranslations(collection: string, id: string): Promise<HandlerResult>;
+	handleContentGetIncludingTrashed(
+		collection: string,
+		id: string,
+		locale?: string,
+	): Promise<HandlerResult>;
+	handleContentDelete(collection: string, id: string): Promise<HandlerResult>;
+	handleContentPermanentDelete(collection: string, id: string): Promise<HandlerResult>;
+	handleContentUnpublish(
+		collection: string,
+		id: string,
+		options?: { _rev?: string; actor?: ActorInfo },
+	): Promise<HandlerResult>;
+	handleContentSchedule(
+		collection: string,
+		id: string,
+		scheduledAt: string,
+		options?: { _rev?: string; actor?: ActorInfo },
+	): Promise<HandlerResult>;
+	handleContentDiscardDraft(
+		collection: string,
+		id: string,
+		options?: { _rev?: string },
+	): Promise<HandlerResult>;
 }
+
+/** The codes EmDash's policy hooks refuse a publish, unpublish or schedule with (M5a). */
+const HOOK_REFUSALS: ReadonlySet<string> = new Set([
+	"PUBLISH_REJECTED",
+	"UNPUBLISH_REJECTED",
+	"SCHEDULE_REJECTED",
+]);
 
 /** Answers whether anyone but `userId` holds a live lease on the entry. */
 export type LockReader = (collection: string, entryId: string, userId: string) => Promise<boolean>;
@@ -97,7 +131,13 @@ const itemResult = z.object({
 		locale: z.string().nullable().optional(),
 		translationGroup: z.string().nullable().optional(),
 		data: z.record(z.string(), z.unknown()),
+		/** The live column values, when `handleContentGet` hydrated a draft (spec M5a F5). */
+		liveData: z.record(z.string(), z.unknown()).optional(),
 		draftRevisionId: z.string().nullable().optional(),
+		scheduledAt: z.string().nullable().optional(),
+		createdAt: z.string().optional(),
+		updatedAt: z.string().optional(),
+		deletedAt: z.string().nullable().optional(),
 		references: z.record(z.string(), referencePage).optional(),
 		bylines: z.array(bylineCredit).optional(),
 	}),
@@ -137,8 +177,12 @@ export function writeError(op: string, error: HandlerResult["error"]): ContentWr
 	);
 }
 
-function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string | null } {
+function snapshotOf(
+	data: unknown,
+	op: string,
+): EntrySnapshot & { locale: string | null; trashed: boolean } {
 	const { item, _rev } = parse(itemResult, data, op);
+	const hasDraft = (item.draftRevisionId ?? null) !== null;
 	return {
 		id: item.id,
 		rev: _rev,
@@ -148,7 +192,14 @@ function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string
 		data: item.data,
 		...(item.translationGroup ? { group: item.translationGroup } : {}),
 		locale: item.locale ?? null,
-		pendingPublish: item.status !== "published" || (item.draftRevisionId ?? null) !== null,
+		pendingPublish: item.status !== "published" || hasDraft,
+		status: item.status,
+		scheduledAt: item.scheduledAt ?? null,
+		hasDraft,
+		...(hasDraft && item.liveData !== undefined ? { live: item.liveData } : {}),
+		...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
+		...(item.updatedAt === undefined ? {} : { updatedAt: item.updatedAt }),
+		trashed: (item.deletedAt ?? null) !== null,
 		...(item.references === undefined
 			? {}
 			: {
@@ -181,6 +232,11 @@ function snapshotOf(data: unknown, op: string): EntrySnapshot & { locale: string
 						})),
 				}),
 	};
+}
+
+/** Whether an entry's locale (null without i18n) is `locale`, ignoring case. */
+function sameLocale(entryLocale: string | null, locale: string): boolean {
+	return entryLocale === null || entryLocale.toLowerCase() === locale.toLowerCase();
 }
 
 /** The links of a write, without the ones not given. */
@@ -221,12 +277,115 @@ export class EmDashContent implements ContentPort {
 			if (result.error?.code === "NOT_FOUND") return null;
 			throw writeError("Reading the entry", result.error);
 		}
-		const { locale: entryLocale, ...snapshot } = snapshotOf(result.data, "Reading the entry");
+		const {
+			locale: entryLocale,
+			trashed: _trashed,
+			...snapshot
+		} = snapshotOf(result.data, "Reading the entry");
 		// EmDash stores the configured casing of a locale (resolveContentCreateLocale,
 		// src/i18n/config.ts:54-76), so compare without case.
-		return entryLocale === null || entryLocale.toLowerCase() === locale.toLowerCase()
-			? snapshot
-			: null;
+		return sameLocale(entryLocale, locale) ? snapshot : null;
+	}
+
+	async getIncludingTrashed(
+		collection: string,
+		locale: string,
+		id: string,
+	): Promise<(EntrySnapshot & { trashed: boolean }) | null> {
+		const result = await this.runtime.handleContentGetIncludingTrashed(collection, id, locale);
+		if (!result.success) {
+			if (result.error?.code === "NOT_FOUND") return null;
+			throw writeError("Reading the entry", result.error);
+		}
+		const { locale: entryLocale, ...snapshot } = snapshotOf(result.data, "Reading the entry");
+		return sameLocale(entryLocale, locale) ? snapshot : null;
+	}
+
+	async trash(
+		collection: string,
+		id: string,
+	): Promise<{ ok: true } | { ok: false; reason: "blocked" | "not_found"; message: string }> {
+		const result = await this.runtime.handleContentDelete(collection, id);
+		if (result.success) return { ok: true };
+		const message = result.error?.message ?? "";
+		if (result.error?.code === "DELETE_BLOCKED") return { ok: false, reason: "blocked", message };
+		if (result.error?.code === "NOT_FOUND") return { ok: false, reason: "not_found", message };
+		throw writeError("Moving the entry to Trash", result.error);
+	}
+
+	async permanentDelete(collection: string, id: string): Promise<boolean> {
+		const result = await this.runtime.handleContentPermanentDelete(collection, id);
+		if (result.success) return true;
+		if (result.error?.code === "NOT_FOUND") return false;
+		throw writeError("Deleting the entry", result.error);
+	}
+
+	async revertStep(
+		input: {
+			collection: string;
+			locale: string;
+			id: string;
+			rev: string;
+			step: RevertStep;
+			slug?: string | null;
+			data?: Record<string, unknown>;
+			scheduledAt?: string;
+		} & LinkWrites,
+	): Promise<StepResult> {
+		const { collection, id, rev } = input;
+		// As publish: an editor's lease stops every step, not only the publish (spec M5a).
+		if (await this.lockReader(collection, id, this.actor.id)) {
+			return { ok: false, reason: "locked", message: "The entry is being edited" };
+		}
+		const options = { _rev: rev, actor: this.actor };
+		let result: HandlerResult;
+		switch (input.step) {
+			case "update":
+				result = await this.runtime.handleContentUpdate(collection, id, {
+					...(input.data === undefined ? {} : { data: input.data }),
+					locale: input.locale,
+					_rev: rev,
+					actor: this.actor,
+					...(input.slug === undefined ? {} : { slug: input.slug }),
+					...linksOf(input),
+				});
+				break;
+			case "publish":
+				result = await this.runtime.handleContentPublish(collection, id, options);
+				break;
+			case "unpublish":
+				result = await this.runtime.handleContentUnpublish(collection, id, options);
+				break;
+			case "discard":
+				result = await this.runtime.handleContentDiscardDraft(collection, id, { _rev: rev });
+				break;
+			case "schedule":
+				result = await this.runtime.handleContentSchedule(
+					collection,
+					id,
+					input.scheduledAt ?? "",
+					options,
+				);
+				break;
+		}
+		const op = `Rolling back the entry (${input.step})`;
+		if (!result.success) {
+			const code = result.error?.code ?? "";
+			const message = result.error?.message ?? code;
+			if (code === "CONFLICT") return { ok: false, reason: "conflict", message };
+			if (HOOK_REFUSALS.has(code)) return { ok: false, reason: "blocked", message };
+			throw writeError(op, result.error);
+		}
+		const after = snapshotOf(result.data, op);
+		return {
+			ok: true,
+			state: {
+				rev: after.rev,
+				status: after.status,
+				scheduledAt: after.scheduledAt,
+				hasDraft: after.hasDraft,
+			},
+		};
 	}
 
 	async findBySourceId(

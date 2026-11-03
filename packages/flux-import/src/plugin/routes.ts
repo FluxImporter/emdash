@@ -13,6 +13,7 @@ import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
 import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
+import { createRollback } from "../engine/rollback.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { createMediaFetcher } from "../sources/media-fetch.js";
@@ -46,6 +47,7 @@ import {
 	type UploadKeeper,
 } from "./service.js";
 import {
+	clearLastImport,
 	createSource,
 	deleteSource,
 	fetchSource,
@@ -86,6 +88,7 @@ const RECORD_STATUSES = [
 	"failed",
 	"planned",
 	"filtered",
+	"reverted",
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
@@ -250,6 +253,8 @@ const createInput = z
 		publish: z.boolean().optional(),
 		batchSize: z.number().int().optional(),
 		budgetMs: z.number().int().optional(),
+		/** Keep a journal so the job can be rolled back (M5a); default true. */
+		journal: z.boolean().optional(),
 	})
 	.refine((input) => (input.uploadId === undefined) !== (input.sourceId === undefined), {
 		message: "Set exactly one of uploadId and sourceId",
@@ -283,9 +288,14 @@ const applyInput = z
 
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads, keep }) =>
-			changeJob(deps, uploads, ctx.input.id, action, keep).then(withoutPlannedTerms),
-		),
+		withServices(ctx, async ({ deps, uploads, keep, sources }) => {
+			const job = await changeJob(deps, uploads, ctx.input.id, action, keep);
+			// A cancelled job no longer makes its source skip the next import of the same content.
+			if (action === "cancel" && job.sourceId !== undefined) {
+				await clearLastImport(sources, job.sourceId, job.id).catch(() => {});
+			}
+			return withoutPlannedTerms(job);
+		}),
 	);
 }
 
@@ -394,11 +404,13 @@ export const routes: Record<string, PluginRoute> = {
 			const { input } = ctx;
 			// Read once here and stored on the job, so a resumed or retried job converts the same way.
 			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
-			const start = (upload: string) => {
+			const start = (upload: string, fromSource?: string) => {
 				const options: StartJobInput = {
 					uploadId: upload,
 					template: input.template,
 					dryRun: input.dryRun,
+					...(fromSource === undefined ? {} : { sourceId: fromSource }),
+					...(input.journal === undefined ? {} : { journal: input.journal }),
 					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 					...(siteTimezone === undefined ? {} : { siteTimezone }),
 					...(input.publish === undefined ? {} : { publish: input.publish }),
@@ -451,6 +463,30 @@ export const routes: Record<string, PluginRoute> = {
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 			}).then((jobs) => ({ ...jobs, items: jobs.items.map(withoutPlannedTerms) })),
 		),
+	),
+
+	// A real rollback marks the original rolled back and frees its URL source for a re-import.
+	"jobs/rollback": route(
+		z.object({
+			id: jobId,
+			dryRun: z.boolean().optional(),
+			batchSize: z.number().int().optional(),
+			budgetMs: z.number().int().optional(),
+		}),
+		(ctx) =>
+			withServices(ctx, async ({ deps, sources }) => {
+				const { id, dryRun, batchSize, budgetMs } = ctx.input;
+				const { rollback, original } = await createRollback(deps, {
+					id,
+					...(dryRun === undefined ? {} : { dryRun }),
+					...(batchSize === undefined ? {} : { batchSize }),
+					...(budgetMs === undefined ? {} : { budgetMs }),
+				});
+				if (!rollback.dryRun && original.sourceId !== undefined) {
+					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
+				}
+				return rollback;
+			}),
 	),
 
 	"jobs/pause": transition("pause"),

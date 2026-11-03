@@ -626,6 +626,93 @@ describe("workerd parity (D1, R2)", () => {
 		expect(new Set(entries.map((e) => e.data.flux_source_id)).size).toBe(10_000);
 	});
 
+	it("rolls back an M5a create-and-update job on D1, resumed after a stop mid-batch", async () => {
+		await client.createProducts("cf_m5a");
+		await importCsv("cf_m5a", productsCsv(5));
+		const stateOf = async () =>
+			new Map(
+				[...(await byKey("cf_m5a"))].map(([key, e]) => [
+					key,
+					{ slug: e.slug, status: e.status, data: e.data },
+				]),
+			);
+		const before = await stateOf();
+		const feed = productsCsv(10, (i) => `${i + 40}`);
+		const job = await importCsv("cf_m5a", feed);
+		expect(job.counters).toMatchObject({ created: 5, updated: 5, failed: 0 });
+		const rollback = await client.plugin("jobs/rollback", { id: job.id, budgetMs: 20_000 });
+		const first = await client.plugin("jobs/next", { id: rollback.id });
+		// The Workers cap: three rows per rollback batch.
+		expect(first.counters.reverted).toBe(3);
+		// A stop after the batch wrote its rows, before it saved its cursor: put both back.
+		d1(
+			`UPDATE _plugin_storage SET data = json_set(data, '$.cursor.seq', 9007199254740991, '$.counters.reverted', 0) WHERE plugin_id = 'flux-import' AND collection = 'jobs' AND id = '${rollback.id}'`,
+		);
+		const done = await client.runToEnd(rollback.id);
+		expect(done).toMatchObject({
+			status: "completed",
+			counters: { reverted: 10, conflict: 0, failed: 0 },
+		});
+		expect(await stateOf()).toEqual(before);
+		const again = await importCsv("cf_m5a", feed);
+		expect(again.counters).toMatchObject({ created: 5, updated: 5, failed: 0, conflict: 0 });
+	});
+
+	it("restores M5a links on D1: terms, bylines and references", async () => {
+		// Byline slugs take no underscore.
+		const n = { ...linkNames("cf_m5a"), alex: "cf-m5a-alex", sam: "cf-m5a-sam" };
+		await createLinkSchema(client, n);
+		const importLinked = async (csv: string, template: object) => {
+			const { uploadId } = await client.upload(csv);
+			const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
+			return client.runToEnd(job.id);
+		};
+		// The M4b test's bylines have the same display names, so these match by slug.
+		const template = {
+			...postsTemplate(n),
+			bylines: { from: "Authors", match: "slug", separator: ";" },
+		};
+		const bySlug = (csv: string) => csv.replaceAll("Alex Doe", n.alex).replaceAll("Sam Lee", n.sam);
+		await importLinked(PEOPLE_CSV, peopleTemplate(n));
+		expect((await importLinked(bySlug(POSTS_CSV), template)).counters).toMatchObject({
+			created: 3,
+			failed: 0,
+		});
+		const linksOf = async () => {
+			const out: Record<string, unknown> = {};
+			for (const [key, post] of await byKey(n.posts)) {
+				const { item } = await client.api<{ item: Product }>(
+					"GET",
+					`/_emdash/api/content/${n.posts}/${post.id}?locale=en`,
+				);
+				out[key] = {
+					author: item.references?.author?.children.map((c) => c.id),
+					related: item.references?.related?.children.map((c) => c.id),
+					bylines: item.bylines?.filter((b) => b.source === "explicit").map((b) => b.byline.slug),
+					category: await client.entryTerms(n.posts, post.id, n.category),
+					tag: await client.entryTerms(n.posts, post.id, n.tag),
+				};
+			}
+			return out;
+		};
+		const before = await linksOf();
+		const changed = [
+			"id,Title,Author,Related,Categories,Tags,Authors",
+			"P1,Desk review,A2,lamp-review,Garden,sale,Sam Lee",
+			"P2,Lamp review,A1,,Electronics > Tablets,,Alex Doe",
+			"",
+		].join("\n");
+		const job = await importLinked(bySlug(changed), template);
+		expect(job.counters).toMatchObject({ updated: 2, failed: 0 });
+		const rollback = await client.plugin("jobs/rollback", { id: job.id, budgetMs: 20_000 });
+		const done = await client.runToEnd(rollback.id);
+		expect(done.counters).toMatchObject({ reverted: 2, failed: 0, conflict: 0 });
+		expect(done.warnings).toEqual([
+			expect.stringMatching(/^The import created 1 terms, which are kept/),
+		]);
+		expect(await linksOf()).toEqual(before);
+	});
+
 	it("reads edit locks from D1: the importer's own lock passes, another user's lock skips", async () => {
 		await client.createProducts("cf_locks");
 		await importCsv("cf_locks", productsCsv(2));

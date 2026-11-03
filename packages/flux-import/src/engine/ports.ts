@@ -38,7 +38,7 @@ export type LinkWrites = {
 	bylines?: { bylineId: string; roleLabel: string | null }[];
 };
 
-/** `rev`, `slug` and `data` reflect the latest revision, draft included. */
+/** `rev` and `data` reflect the latest revision, draft included; `slug` is the live slug. */
 export interface EntrySnapshot {
 	id: string;
 	rev: string;
@@ -52,6 +52,17 @@ export interface EntrySnapshot {
 	 * live immediately, so only an unpublished status counts there.
 	 */
 	pendingPublish: boolean;
+	/** EmDash's status: `draft`, `scheduled` or `published` (M5a). */
+	status: string;
+	/** When a scheduled entry or draft is due to publish; null when none is set (M5a). */
+	scheduledAt: string | null;
+	/** The entry has a draft revision (`draftRevisionId`, M5a). */
+	hasDraft: boolean;
+	/** The live column values while the entry has a draft (EmDash `liveData`, M5a). */
+	live?: Record<string, unknown>;
+	/** ISO timestamps of the entry's row (M5a); absent when EmDash gives none. */
+	createdAt?: string;
+	updatedAt?: string;
 	/**
 	 * Each reference field's selection (the first 50), a staged draft selection first; only when
 	 * read with `references`.
@@ -67,6 +78,26 @@ export interface EntrySnapshot {
 export type GetOptions = { references?: boolean };
 
 export type WriteResult = { ok: true; rev: string } | { ok: false; reason: "conflict" | "locked" };
+
+/** The state a rollback step left the entry in (M5a). */
+export type EntryState = {
+	rev: string;
+	status: string;
+	scheduledAt: string | null;
+	hasDraft: boolean;
+};
+
+/**
+ * A rollback step's outcome (M5a): a stale `rev` is `conflict`; a plugin hook's refusal
+ * (`PUBLISH_REJECTED`, `UNPUBLISH_REJECTED`, `SCHEDULE_REJECTED`) is `blocked` with its message;
+ * an editor's lease on the entry is `locked`.
+ */
+export type StepResult =
+	| { ok: true; state: EntryState }
+	| { ok: false; reason: "conflict" | "blocked" | "locked"; message: string };
+
+/** The rollback's writes to a changed entry (spec M5a "Revert sequence"). */
+export type RevertStep = "update" | "publish" | "unpublish" | "discard" | "schedule";
 
 export interface ContentPort {
 	get(
@@ -135,6 +166,41 @@ export interface ContentPort {
 	 * existing field must be verified to be indexed.
 	 */
 	ensureSourceIdField(collection: string): Promise<void>;
+	/**
+	 * The entry, also when it is in Trash (`trashed`); a trashed entry keeps the `rev` it had
+	 * (spec M5a F6, V2). Null when there is none in the locale.
+	 */
+	getIncludingTrashed(
+		collection: string,
+		locale: string,
+		id: string,
+	): Promise<(EntrySnapshot & { trashed: boolean }) | null>;
+	/**
+	 * Moves an active entry to Trash (spec M5a F6). `blocked`: a `content:beforeDelete` hook
+	 * refused; `not_found`: no active entry has the ID.
+	 */
+	trash(
+		collection: string,
+		id: string,
+	): Promise<{ ok: true } | { ok: false; reason: "blocked" | "not_found"; message: string }>;
+	/** Deletes a trashed entry for good (spec M5a F8); false when no trashed entry has the ID. */
+	permanentDelete(collection: string, id: string): Promise<boolean>;
+	/**
+	 * One rollback write with the entry's current `rev` (M5a): `update` (data, slug and links as
+	 * in `update`), `publish`, `unpublish`, `discard` (the draft) or `schedule` (at `scheduledAt`).
+	 */
+	revertStep(
+		input: {
+			collection: string;
+			locale: string;
+			id: string;
+			rev: string;
+			step: RevertStep;
+			slug?: string | null;
+			data?: Record<string, unknown>;
+			scheduledAt?: string;
+		} & LinkWrites,
+	): Promise<StepResult>;
 }
 
 /** A taxonomy definition (`TaxonomyDefInfo`, one per locale). */

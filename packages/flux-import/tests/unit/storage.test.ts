@@ -28,16 +28,27 @@ describe("kvCollection", () => {
 });
 
 describe("pluginCollections", () => {
-	it("requires the jobs, records, links and media collections", () => {
+	it("requires the jobs, records, links, media, journal and journalMedia collections", () => {
 		const s = asStorage(new MemoryKv<unknown>());
-		expect(() => pluginCollections({ jobs: s, records: s, links: s })).toThrow(
+		expect(() => pluginCollections({ jobs: s, records: s, links: s, media: s })).toThrow(
 			"storage collections",
 		);
-		expect(Object.keys(pluginCollections({ jobs: s, records: s, links: s, media: s }))).toEqual([
-			"jobs",
-			"records",
-			"links",
-			"mediaMap",
-		]);
+		const all = { jobs: s, records: s, links: s, media: s, journal: s, journalMedia: s };
+		const { journal: _j, ...withoutJournal } = all;
+		const { journalMedia: _m, ...withoutJournalMedia } = all;
+		expect(() => pluginCollections(withoutJournal)).toThrow("storage collections");
+		expect(() => pluginCollections(withoutJournalMedia)).toThrow("storage collections");
+		expect(
+			Object.keys(
+				pluginCollections({
+					jobs: s,
+					records: s,
+					links: s,
+					media: s,
+					journal: s,
+					journalMedia: s,
+				}),
+			),
+		).toEqual(["jobs", "records", "links", "mediaMap", "journal", "journalMedia"]);
 	});
 });

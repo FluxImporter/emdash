@@ -97,7 +97,7 @@ describe("runBatch", () => {
 
 	it("logs bad records and keeps going", async () => {
 		const body =
-			"sku,Name,Price\nS0,Ok,1\n,No key,2\nS2,Bad price,abc\nS3,Short\nS4,Rejected,4\nS5,Ok,5\n";
+			"sku,Name,Price\nS0,Ok,1\n,No key,2\nS2,Bad price,abc\nS3,Short\nS4,Rejected,4\nS5,Fine,5\n";
 		const { deps, job } = await setup(body);
 		deps.content.failWrite = (data) =>
 			data.flux_source_id === "S4" ? new ContentWriteError("validation", "Title too long") : null;

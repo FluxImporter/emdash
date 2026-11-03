@@ -380,6 +380,25 @@ async function recordImport(
 }
 
 /**
+ * Clears the source's `lastImport` when it names `jobId`, so the next import of the same content
+ * runs: the job was cancelled or rolled back (M5a). Best effort, like `recordImport`; a missing
+ * source is left alone.
+ */
+export async function clearLastImport(
+	deps: Pick<SourceDeps, "sources">,
+	sourceId: string,
+	jobId: string,
+): Promise<void> {
+	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+		const current = await deps.sources.getVersioned(sourceId);
+		if (!current || current.value.lastImport?.jobId !== jobId) return;
+		const { lastImport: _last, ...rest } = current.value;
+		const result = await deps.sources.compareAndSet(sourceId, current.revision, rest);
+		if (result.applied) return;
+	}
+}
+
+/**
  * `jobs/create` with a `sourceId`: fetches first (conditional GET and hash decide whether a new
  * copy is staged), then skips the job only for a real run without `force` whose content equals
  * `lastImport`. Dry runs are never skipped and never recorded; a failed creation records nothing.
@@ -388,14 +407,14 @@ export async function jobFromSource(
 	deps: SourceDeps,
 	sourceId: string,
 	options: { force: boolean; dryRun: boolean },
-	create: (uploadId: string) => Promise<Job>,
+	create: (uploadId: string, sourceId: string) => Promise<Job>,
 ): Promise<Job | SkippedJob> {
 	const fetched = await fetchSource(deps, sourceId, options.force);
 	const source = await getSource(deps, sourceId);
 	if (!options.force && !options.dryRun && source.lastImport?.sha256 === fetched.sha256) {
 		return { skipped: "unchanged", sourceId, uploadId: fetched.uploadId };
 	}
-	const job = await create(fetched.uploadId);
+	const job = await create(fetched.uploadId, sourceId);
 	if (!options.dryRun) {
 		// Best effort: the job exists, so a storage error here must not fail the request (a retry
 		// would create a second job).

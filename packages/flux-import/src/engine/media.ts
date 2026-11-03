@@ -8,7 +8,7 @@ import { MediaError, mediaFilename, mediaTypeOf } from "../sources/media-fetch.j
 import { parseSourceUrl } from "../sources/net.js";
 import { ContentWriteError, type MediaInfo, MediaUploadError } from "./ports.js";
 import { COST_CALL, COST_MEDIA, type LinkError, type LookupCache } from "./resolve.js";
-import type { EngineDeps, MediaMapRow } from "./types.js";
+import { type EngineDeps, journalMediaKey, type MediaMapRow } from "./types.js";
 import type { JsonValue, TargetField } from "./values.js";
 
 /** Image and file mappings a template may have, so a record downloads at most this many files. */
@@ -189,7 +189,10 @@ export function altConverter(raw: unknown): MediaConverted {
 /** The least time a download other than the batch's first may start with. */
 export const MEDIA_MIN_LEFT_MS = 5000;
 
-export type MediaDeps = Pick<EngineDeps, "media" | "mediaFetcher" | "mediaMap" | "now">;
+export type MediaDeps = Pick<
+	EngineDeps,
+	"media" | "mediaFetcher" | "mediaMap" | "journalMedia" | "now"
+>;
 
 /** What the resolver needs from the job. */
 export type MediaContext = {
@@ -199,6 +202,8 @@ export type MediaContext = {
 	maxBytes: number;
 	/** The job's target field snapshot: each media field's `allowedMimeTypes`. */
 	targets: Readonly<Record<string, TargetField>>;
+	/** A real job with a journal (M5a): items its uploads create are journalled under `seq`. */
+	journal?: { seq: number };
 };
 
 /** One media field after the map lookup. */
@@ -405,6 +410,15 @@ export async function obtainMedia(
 			...(request.alt === null ? {} : { alt: request.alt }),
 		});
 		cache.mediaItems.set(item.id, item);
+		// Before the map row, so the item is on the job's list whatever happens next (M5a).
+		if (!deduplicated && ctx.journal) {
+			await deps.journalMedia.put(journalMediaKey(ctx.jobId, item.id), {
+				jobId: ctx.jobId,
+				mediaId: item.id,
+				url: request.url,
+				seq: ctx.journal.seq,
+			});
+		}
 		await deps.mediaMap.put(lookup.key, {
 			url: request.url,
 			mediaId: item.id,

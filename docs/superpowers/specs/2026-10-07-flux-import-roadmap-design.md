@@ -41,7 +41,7 @@ plus a run against the local EmDash site (`sites/dev`), reported with results.
 | 2 | Engine MVP | Workspace and dev site, CSV upload, template v1 (text, number, date, slug), create/update by source key, publish option, job engine, lock skip, record log and CSV export, dry-run diff, `jobs/retry`, a `sites/dev-cf` Cloudflare site for parity | 10,000 rows import; kill-and-resume gives no duplicates, and any entry a crash leaves unpublished is reported as `publish_unverified`; locked entries skipped; dry-run writes nothing; Node and `workerd` pass |
 | 3 | Sources (split into M3a–M3d, see [M3a spec](./2026-10-12-flux-import-m3a-formats-design.md)) | JSON, XML, URL (auth headers, SSRF guard, ETag/Last-Modified), pasted snippets, record selection (XPath, JSONPath, row filters), JSONata transforms, then XLSX | Valid, large and malformed fixtures per format |
 | 4 | Field types and schema (split into M4a–M4e, see [Milestone 4 split](#milestone-4-split)) | Boolean, select, date with timezone, taxonomy paths, media from URL (hash dedupe, `maxUploadSize`, URL rewriting in Portable Text), HTML and Markdown to Portable Text with unknown markup reported, references, bylines (existing only), locales and translation links, additive `schema/apply` route | Each field type has unit and integration tests |
-| 5 | Record rules and safety | Create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" via revisions; delete, trash or unpublish missing entries; publish, draft or schedule; rollback as a resumable job | A finished run rolls back to its pre-run state |
+| 5 | Record rules and safety (split into M5a–M5c, see [Milestone 5 split](#milestone-5-split)) | Create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" via revisions; delete, trash or unpublish missing entries; publish, draft or schedule; rollback as a resumable job | A finished run rolls back to its pre-run state |
 | 6 | Automation | Template CRUD and JSON export/import, cron-scheduled URL imports, MCP tools `list_templates`, `dry_run`, `start_import`, `import_status`, AI mapping suggestion route | A scheduled import runs unattended; an agent completes an import over MCP |
 | 7 | React admin wizard | Source, Target, Map, Options, Preview, Run on the M2 to M6 API; drag-and-drop mapping; schema diff confirmation; AI suggestions; live progress, pause, cancel, log download | Manual end-to-end run in `pnpm dev` |
 | 8 | Ship | README with a justification per capability, `skills/` entry for agents, packaging, npm publish | A fresh site installs from npm and imports a file |
@@ -206,3 +206,18 @@ in dependency order. Each part ends with unit and integration tests for its fiel
 | **M4c** ([spec](./2026-10-27-flux-import-m4c-media-design.md)) | Media from URL into image and file fields: fetch through the M3c fetcher and SSRF guard, `maxUploadSize`, content-hash dedupe via `handleMediaUpload`, alt text, site-wide URL-to-media map | Done ([review](../notes/2026-10-27-m4c-review.md)) |
 | **M4d** ([spec](./2026-11-02-flux-import-m4d-portable-text-design.md)) | HTML and Markdown to Portable Text, with unknown markup reported per record, and image URLs in Portable Text rewritten to media from M4c | Done ([review](../notes/2026-11-02-m4d-review.md)) |
 | **M4e** ([spec](./2026-11-03-flux-import-m4e-locales-design.md)) | Locales and translation links: one template per locale, `translationOf` resolved from another locale's source key, non-translatable fields left to EmDash's sync | Done ([review](../notes/2026-11-03-m4e-review.md)) |
+
+## Milestone 5 split
+
+Added 2026-11-03. Milestone 5 is delivered in three parts, each with its own spec, plan and review.
+Rollback comes first, so that the journal it reads is fixed before the later parts add the writes
+it must undo: every write M5b and M5c add is journalled in the M5a format, and each of them extends
+the rollback for its own writes. Each part ships with its own unit, Node integration and workerd
+tests, and M5a alone meets the milestone's acceptance for the writes M2-M4e make.
+
+| Part | Scope | Status |
+| --- | --- | --- |
+| **M5a** ([spec](./2026-11-03-flux-import-m5a-journal-rollback-design.md)) | Run journal and rollback: a write-ahead pre-image of every entry a job creates or changes (data, slug, links, status, schedule, pending draft), a record of the media it creates, the job that last wrote each link; `jobs/rollback` as a resumable, dry-runnable job that deletes created entries and restores changed ones, refusing entries changed since; `lastImport` cleared on cancel and rollback | Done ([review](../notes/2026-11-03-m5a-review.md)) |
+| **M5b** | Record rules: create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" through per-field fingerprints on the link row; publish, draft or schedule, with a per-record schedule; all journalled | Planned |
+| **M5c** | Missing entries: trash or unpublish entries this import created that a completed run did not see, behind a safety threshold; journalled, and rolled back by restoring from Trash or republishing | Planned |
+

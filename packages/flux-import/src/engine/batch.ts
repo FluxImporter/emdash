@@ -18,6 +18,14 @@ import {
 	upgradeJob,
 	withoutPlannedTerms,
 } from "./jobs.js";
+import {
+	draftFields,
+	journalCreate,
+	journalCreated,
+	journaling,
+	journalUpdate,
+	preImage,
+} from "./journal.js";
 import type { ResolvedLinks } from "./links.js";
 import {
 	DEFAULT_MAX_UPLOAD_SIZE,
@@ -53,6 +61,8 @@ import {
 	sourceNotFoundMessage,
 	termPath,
 } from "./resolve.js";
+import { rollbackPass, rollbackRetryPass } from "./revert.js";
+import { originalProblem } from "./rollback.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -65,7 +75,9 @@ import {
 	SOURCE_ID_FIELD,
 } from "./template.js";
 import {
+	bump,
 	type Counters,
+	CREATED_LISTED,
 	capErrors,
 	capWarnings,
 	type EngineDeps,
@@ -159,6 +171,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.plannedTerms ? { plannedTerms: job.plannedTerms } : {}),
 			...(job.deferred ? { deferred: job.deferred } : {}),
 			...(job.warnings ? { warnings: job.warnings } : {}),
+			...(job.created ? { created: job.created } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
@@ -186,7 +199,7 @@ export async function processRecord(
 	if (existing && existing.status !== "writing" && !opts.retry) {
 		// Only reached after a crash: the batch that wrote this row never saved its cursor and counters.
 		const counter = counterFor(existing);
-		if (counter) job.counters[counter]++;
+		if (counter) bump(job.counters, counter);
 		return;
 	}
 
@@ -206,18 +219,28 @@ export async function processRecord(
 	await save(row);
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
-		if (old) job.counters[old]--;
+		if (old) bump(job.counters, old, -1);
 	}
 	const counter = counterFor(row);
-	if (counter) job.counters[counter]++;
+	if (counter) bump(job.counters, counter);
 }
 
 /** What the write helpers need about the record being processed. */
 type RecordCtx = {
 	deps: EngineDeps;
 	job: Job;
+	/** The record's sequence number, which orders its journal row (M5a). */
+	seq: number;
 	sourceKey: string;
 	linkId: string;
+	/** The link row as read before any write of this record; null when there is none. */
+	link: LinkRow | null;
+	/** The job may already have written the entry (see `JournalTarget.mayHaveWritten`). */
+	mayHaveWritten: boolean;
+	/** The record's earlier row was `writing` (see `JournalTarget.resuming`). */
+	resuming: boolean;
+	/** The entry's current links, as the plan compared them; absent when the template maps none. */
+	current?: CurrentLinks;
 	save: (fields: RowFields) => Promise<void>;
 	/** The record's resolved links; absent when the template maps none. */
 	links?: ResolvedLinks;
@@ -252,7 +275,7 @@ function publishFailed(
 	reason: "conflict" | "locked",
 	sourceKey: string,
 	id: string,
-	action: PlanAction | undefined,
+	action: RecordRow["action"],
 	writtenRev: string | undefined,
 ): RowFields {
 	return {
@@ -282,6 +305,7 @@ function putLink(ctx: RecordCtx, entryId: string, writtenRev: string): Promise<v
 		sourceKey: ctx.sourceKey,
 		entryId,
 		writtenRev,
+		jobId: ctx.job.id,
 	});
 }
 
@@ -457,12 +481,27 @@ async function decide(
 	};
 }
 
-function mediaContext(job: Job): MediaContext {
+/**
+ * Adds terms a real job created to the job's summary, which the batch's save keeps for the
+ * rollback job's warnings (M5a). Names beyond `CREATED_LISTED` are only counted.
+ */
+export function noteCreated(job: Job, names: readonly string[]): void {
+	job.created ??= { terms: [], termCount: 0 };
+	const created = job.created;
+	for (const name of names) {
+		if (created.terms.includes(name)) continue;
+		if (created.terms.length < CREATED_LISTED) created.terms.push(name);
+		created.termCount++;
+	}
+}
+
+function mediaContext(job: Job, seq: number): MediaContext {
 	return {
 		jobId: job.id,
 		dryRun: job.dryRun,
 		maxBytes: job.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE,
 		targets: job.targetFields ?? {},
+		...(journaling(job) ? { journal: { seq } } : {}),
 	};
 }
 
@@ -528,8 +567,12 @@ async function decideRecord(
 	const ctx: RecordCtx = {
 		deps,
 		job,
+		seq: rec.seq,
 		sourceKey,
 		linkId: linkKey(collection, locale, sourceKey),
+		link: null,
+		mayHaveWritten: false,
+		resuming: false,
 		save,
 	};
 	// Known so far, so that a ContentWriteError from any content call still reports it.
@@ -560,6 +603,7 @@ async function decideRecord(
 				requests,
 			);
 			found.newTerms = resolution.newTerms;
+			if (journaling(job)) noteCreated(job, resolution.newTerms);
 			if (resolution.ok) ctx.links = resolution.links;
 			else errors.push(...resolution.errors);
 		}
@@ -585,7 +629,12 @@ async function decideRecord(
 		// Media is looked up even when a link failed, so the record reports every error.
 		let lookups: Record<string, MediaLookup | null> | undefined;
 		if (mediaRequests) {
-			const looked = await lookupRecordMedia(deps, cache, mediaContext(job), mediaRequests);
+			const looked = await lookupRecordMedia(
+				deps,
+				cache,
+				mediaContext(job, rec.seq),
+				mediaRequests,
+			);
 			lookups = looked.lookups;
 			errors.push(...looked.errors);
 		}
@@ -594,7 +643,7 @@ async function decideRecord(
 			const looked = await lookupPortableTextImages(
 				deps,
 				cache,
-				mediaContext(job),
+				mediaContext(job, rec.seq),
 				drafts,
 				template.portableText,
 			);
@@ -654,8 +703,17 @@ async function decideRecord(
 			return { status: "failed", sourceKey, entryId, errors: [sharedOnTranslation()] };
 		}
 		// A repaired link is saved only for an entry the record may write.
-		if (repaired && link) await deps.links.put(ctx.linkId, link);
+		if (repaired && link) {
+			await deps.links.put(ctx.linkId, link);
+			// Crash repair may have found an editor's entry: a rollback only moves it to Trash.
+			if (entry && journaling(job)) await journalCreated(ctx, entry.id, false);
+		}
+		// A repaired link is made up from the entry found: the pre-image records that none existed.
+		ctx.link = repaired ? null : link;
+		ctx.mayHaveWritten = ctx.link?.jobId === job.id || existing?.status === "writing";
+		ctx.resuming = existing?.status === "writing";
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
+		if (links) ctx.current = links.current;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
 		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
@@ -707,7 +765,7 @@ async function decideRecord(
 		// Downloads only for a record that will be written, after the draft and lock checks: field
 		// media first, then Portable Text images in document order.
 		if (lookups) {
-			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
+			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job, rec.seq), lookups);
 			found.newMedia = obtained.newMedia;
 			if (!obtained.ok) {
 				return {
@@ -724,7 +782,7 @@ async function decideRecord(
 			const obtained = await obtainPortableTextImages(
 				deps,
 				cache,
-				mediaContext(job),
+				mediaContext(job, rec.seq),
 				images,
 				found.newMedia,
 			);
@@ -907,6 +965,9 @@ async function finishUnchanged(
 		// A pending draft at the revision this importer last produced is its own (an earlier
 		// `publish: false` run or a failed publish), so publishing it puts no one else's work live.
 		if (job.publish && entry.pendingPublish && link?.writtenRev === entry.rev) {
+			// Publishing makes the draft's values live: the journal keeps the live ones first.
+			const failure = journaling(job) ? await journalPublish(ctx, entry, link) : null;
+			if (failure) return { status: "failed", sourceKey, entryId, errors: [failure] };
 			const published = await publishRev(ctx, entryId, entry.rev);
 			if (!published.ok)
 				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
@@ -1014,6 +1075,87 @@ function updateLinks(
 	return writes;
 }
 
+/** Journals the publish of the importer's own pending draft: every field it makes live (M5a). */
+async function journalPublish(
+	ctx: RecordCtx,
+	entry: EntrySnapshot,
+	link: LinkRow | null,
+): Promise<RecordError | null> {
+	const touched = {
+		fields: draftFields(entry),
+		slug: false,
+		taxonomies: [],
+		references: [],
+		bylines: false,
+		// Only a published entry with a pending draft: the read gave the draft's selection.
+		referencesUnknown:
+			entry.status === "published" && entry.hasDraft && ctx.links?.references !== undefined,
+	};
+	const before = preImage(entry, link, touched, undefined);
+	if ("code" in before) return before;
+	return journalUpdate(ctx, entry.id, before);
+}
+
+/**
+ * The write-ahead journal row of a write (M5a): a create's source ID, or the pre-image of every
+ * field and link an update changes and, when it publishes, of every field its publish makes live.
+ */
+async function journalWrite(
+	ctx: RecordCtx,
+	entry: EntrySnapshot | null,
+	plan: RecordPlan,
+	data: Readonly<Record<string, FieldValue>>,
+	media: Readonly<Record<string, FieldValue>>,
+): Promise<RecordError | null> {
+	if (!entry) {
+		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey);
+		return null;
+	}
+	const changed = new Set(plan.changes.map((c) => c.field));
+	const fields = new Set<string>();
+	for (const field of changed) {
+		if (Object.hasOwn(data, field)) fields.add(field);
+		else if (field.endsWith(".alt") && Object.hasOwn(media, field.slice(0, -4))) {
+			fields.add(field.slice(0, -4));
+		}
+	}
+	// Every field of a pending draft, also when the job does not publish: the rollback publishes
+	// the restored live values (revert step 2), which must not make the rest of the draft live.
+	for (const field of draftFields(entry)) fields.add(field);
+	fields.delete(SOURCE_ID_FIELD);
+	const resolved = ctx.links;
+	const touched = {
+		fields: [...fields],
+		slug: changed.has("slug"),
+		taxonomies: Object.keys(resolved?.taxonomies ?? {}).filter((t) =>
+			changed.has(`taxonomies.${t}`),
+		),
+		references: Object.keys(resolved?.references ?? {}).filter((f) => changed.has(f)),
+		bylines: resolved?.bylines !== undefined && changed.has("bylines"),
+		// The read gives the draft's selection only, and the publish makes it live.
+		referencesUnknown:
+			ctx.job.publish &&
+			entry.status === "published" &&
+			entry.hasDraft &&
+			resolved?.references !== undefined,
+	};
+	const before = preImage(entry, ctx.link, touched, ctx.current);
+	if ("code" in before) return before;
+	// The groups this write gives each changed taxonomy, for the rollback's term check (I3).
+	const terms = Object.fromEntries(
+		touched.taxonomies.map((t) => [
+			t,
+			(resolved?.taxonomies?.[t] ?? []).flatMap((i) => (i.group === null ? [] : [i.group])),
+		]),
+	);
+	return journalUpdate(
+		ctx,
+		entry.id,
+		before,
+		touched.taxonomies.length > 0 ? { taxonomies: terms } : undefined,
+	);
+}
+
 async function writeRecord(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
@@ -1022,7 +1164,6 @@ async function writeRecord(
 ): Promise<RowFields> {
 	const { deps, job, sourceKey, save } = ctx;
 	const { collection, locale } = job.template;
-	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
 	// Media and Portable Text fields are data fields: their values (null clears one) are written
 	// with the rest.
@@ -1032,6 +1173,20 @@ async function writeRecord(
 		media[field] = item?.blocks ?? null;
 	}
 	const data = { ...mapped.data, ...media };
+	// The journal row comes before the first write, so a crash leaves nothing it does not know of.
+	if (journaling(job)) {
+		const failure = await journalWrite(ctx, entry, plan, data, media);
+		if (failure) {
+			return {
+				status: "failed",
+				sourceKey,
+				entryId: entry?.id ?? null,
+				action: plan.action,
+				errors: [failure],
+			};
+		}
+	}
+	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	let written: { id: string; rev: string };
 	if (!entry && ctx.translationOf !== undefined) {
 		const { sourceId, value } = ctx.translationOf;
@@ -1085,6 +1240,7 @@ async function writeRecord(
 		}
 		written = { id: entry.id, rev: result.rev };
 	}
+	if (!entry && journaling(job)) await journalCreated(ctx, written.id, true);
 	// Record the revision we wrote before anything else, so crash repair can prove a draft is ours
 	// and publishes or links only that revision.
 	await save({
@@ -1204,7 +1360,7 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 		});
 		for (const { data } of page.items) {
 			const counter = counterFor(data);
-			if (counter) counters[counter]++;
+			if (counter) bump(counters, counter);
 		}
 		if (!page.hasMore || !page.cursor) return counters;
 		cursor = page.cursor;
@@ -1251,6 +1407,37 @@ async function retryPass(
 	}
 }
 
+/** An import job's batch: the source-ID field, the compiled template, then a pass. */
+async function importBatch(
+	deps: EngineDeps,
+	job: Job,
+	started: number,
+	limit: number,
+	cache: LookupCache,
+): Promise<Outcome> {
+	if (!job.dryRun && !job.schemaReady) {
+		await deps.content.ensureSourceIdField(job.template.collection);
+		job.schemaReady = true;
+	}
+	// Parsed once per batch and reused for every record; job creation already checked them.
+	const compiled = compileTemplate(jobTemplate(job), {
+		targets: job.targetFields,
+		siteTimezone: job.siteTimezone,
+		taxonomies: job.taxonomies,
+		sharedRequired: job.sharedRequired,
+	});
+	if (!compiled.ok) {
+		return {
+			done: false,
+			error: { code: "invalid_template", message: compiled.problems.join("; ") },
+		};
+	}
+	const template = compiled.compiled;
+	return job.phase === "retry"
+		? retryPass(deps, job, template, started, limit, cache)
+		: importPass(deps, job, template, started, limit, cache);
+}
+
 /**
  * Claims the job's lease, processes one bounded batch, saves cursor and counters, and releases
  * the lease. Returns the stored job without doing any work when the job is not runnable or any
@@ -1278,28 +1465,21 @@ export async function runBatch(
 	cache.mediaDeadline = started + job.budgetMs + MEDIA_GRACE_MS;
 	let outcome: Outcome;
 	try {
-		if (!job.dryRun && !job.schemaReady) {
-			await deps.content.ensureSourceIdField(job.template.collection);
-			job.schemaReady = true;
-		}
-		// Parsed once per batch and reused for every record; job creation already checked them.
-		const compiled = compileTemplate(jobTemplate(job), {
-			targets: job.targetFields,
-			siteTimezone: job.siteTimezone,
-			taxonomies: job.taxonomies,
-			sharedRequired: job.sharedRequired,
-		});
-		if (!compiled.ok) {
-			outcome = {
-				done: false,
-				error: { code: "invalid_template", message: compiled.problems.join("; ") },
-			};
+		// A rollback reads its original's journal, not a source file (M5a).
+		if (job.kind === "rollback") {
+			// An original gone or being deleted leaves an empty or partial journal: the rollback fails
+			// with that reason rather than completing with no rows (spec M5a "Retention").
+			const problem = await originalProblem(deps, job);
+			if (problem !== null) {
+				outcome = { done: false, error: { code: "rollback_original_gone", message: problem } };
+			} else {
+				outcome =
+					job.phase === "retry"
+						? await rollbackRetryPass(deps, job, started, limit, cache)
+						: await rollbackPass(deps, job, started, limit, cache);
+			}
 		} else {
-			const template = compiled.compiled;
-			outcome =
-				job.phase === "retry"
-					? await retryPass(deps, job, template, started, limit, cache)
-					: await importPass(deps, job, template, started, limit, cache);
+			outcome = await importBatch(deps, job, started, limit, cache);
 		}
 	} catch (e) {
 		if (e instanceof SourceMissingError) {

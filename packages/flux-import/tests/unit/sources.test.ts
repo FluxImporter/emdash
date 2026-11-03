@@ -513,6 +513,22 @@ describe("jobFromSource", () => {
 		return { created, create, failOnce: () => (failNext = true) };
 	}
 
+	it("passes the source ID to the job creator", async () => {
+		const { deps, routes } = setup();
+		routes.set(
+			FEED,
+			etagged(() => BODY),
+		);
+		await createSource(deps, { name: "A", url: FEED });
+		const seen: [string, string][] = [];
+		await jobFromSource(deps, "S1", REAL, async (uploadId, sourceId) => {
+			seen.push([uploadId, sourceId]);
+			return jobUsing(uploadId, "created");
+		});
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.[1]).toBe("S1");
+	});
+
 	it("skips a real run of content already imported, and forces one", async () => {
 		const { deps, routes } = setup();
 		routes.set(

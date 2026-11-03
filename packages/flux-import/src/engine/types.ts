@@ -20,6 +20,8 @@ export interface Counters {
 	failed: number;
 	/** Records the template's filter skipped. Absent on jobs created before M3b (read as 0). */
 	filtered: number;
+	/** Rollback jobs: rows reverted, or that a dry run would revert. Absent on imports (read as 0). */
+	reverted?: number;
 }
 
 /** A term a dry run plans to create, kept on the job so later batches see it. */
@@ -33,6 +35,30 @@ export type PlannedTerm = {
 export interface Job {
 	id: string;
 	status: JobStatus;
+	/** `rollback` for a rollback job (M5a); absent for an import job. */
+	kind?: "import" | "rollback";
+	/** A rollback job: the import job it rolls back. */
+	rollbackOf?: string;
+	/** An import job: the real rollback job created for it; it can no longer be resumed or retried. */
+	rolledBackBy?: string;
+	/**
+	 * A real import job keeps a journal of what it changes, so it can be rolled back (M5a). Absent
+	 * on dry runs and on jobs created before M5a, which have no journal.
+	 */
+	journal?: boolean;
+	/**
+	 * The terms a real job created, which a rollback keeps (M5a): names (at most `CREATED_LISTED`)
+	 * and the total. Saved with each batch; absent until it creates one. The media warning reads
+	 * `journalMedia` instead.
+	 */
+	created?: { terms: string[]; termCount: number };
+	/**
+	 * Retention is deleting the job (M5a): set before any of its rows go, so a rollback of it is
+	 * refused and a rollback job already created for it fails when it next runs.
+	 */
+	purging?: boolean;
+	/** An import job created from a URL source: the source's ID (M5a). */
+	sourceId?: string;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -115,7 +141,11 @@ export type RecordStatus =
 	| "conflict"
 	| "failed"
 	| "planned"
-	| "filtered";
+	| "filtered"
+	| "reverted";
+
+/** What a rollback row does to its entry (M5a). */
+export type RollbackAction = "delete" | "trash" | "revert";
 
 export interface RecordError {
 	field?: string;
@@ -131,7 +161,7 @@ export interface RecordRow {
 	status: RecordStatus;
 	sourceKey: string | null;
 	entryId: string | null;
-	action?: PlanAction;
+	action?: PlanAction | RollbackAction;
 	changes?: Change[];
 	errors?: RecordError[];
 	/** The content revision this job wrote, saved before publishing so crash repair publishes only it. */
@@ -151,6 +181,13 @@ export interface RecordRow {
 	 * `MAX_RECORD_WARNINGS`. Absent when there are none.
 	 */
 	warnings?: RecordError[];
+	/** Rollback rows: the last revert step done (M5a); absent before the first. */
+	step?: number;
+	/**
+	 * Rollback rows: the step sent to EmDash and not yet saved as done (M5a). A resumed row whose
+	 * entry moved past `writtenRev` adopts the entry when it shows this step's result.
+	 */
+	pendingStep?: number;
 	updatedAt: string;
 }
 
@@ -164,6 +201,84 @@ export interface LinkRow {
 	 * published, else the write's). A pending draft at any other revision is not the importer's.
 	 */
 	writtenRev?: string;
+	/** The job that produced `writtenRev` (M5a); absent on links saved before M5a. */
+	jobId?: string;
+}
+
+/** The pre-image of an entry a job updated (M5a): what the entry held before its first write. */
+export interface JournalBefore {
+	/** The link row before the job; null when there was none. */
+	link: { jobId?: string; writtenRev?: string } | null;
+	/**
+	 * The entry's `_rev` when the pre-image was read. When it is not `link.writtenRev`, someone
+	 * changed the entry after the earlier job, and a rollback hands the link back unchanged.
+	 */
+	rev?: string;
+	status: string;
+	scheduledAt: string | null;
+	/** The live slug, when the job changed the slug. */
+	slug?: string | null;
+	/** Live values of the fields the job changed or published. */
+	live: Record<string, unknown>;
+	/** The pending draft's values of the same fields, when the entry had a draft. */
+	draft?: Record<string, unknown>;
+	links?: {
+		/** Term translation groups, by taxonomy. */
+		taxonomies?: Record<string, string[]>;
+		/** Target entry IDs, by reference field. */
+		references?: Record<string, string[]>;
+		bylines?: { bylineId: string; roleLabel: string | null }[];
+	};
+	/**
+	 * The write published a pending draft of an entry whose template maps references: the read
+	 * returns the draft's selection only, so the live one is not in the pre-image and a rollback
+	 * leaves the references as the draft had them (spec "Open issues").
+	 */
+	referencesUnknown?: true;
+	/**
+	 * Final review I2: the import resumed a stopped write and found the entry at another `_rev`
+	 * than this pre-image's, so an edit made between the stop and the resume cannot be ruled out.
+	 * The rollback leaves such an entry (`rollback_changed`).
+	 */
+	uncertain?: true;
+}
+
+/**
+ * One entry a real job wrote (plugin storage `journal`, keyed `journalKey(jobId, linkKey)`),
+ * written before the job's first write to it.
+ */
+export interface JournalEntry {
+	jobId: string;
+	/** The record that first touched the entry; rollback order. */
+	seq: number;
+	collection: string;
+	locale: string;
+	sourceKey: string;
+	kind: "create" | "update";
+	/** null until a create returns. */
+	entryId: string | null;
+	/** create: this job's create call returned `entryId` (not found by crash repair). */
+	confirmed?: boolean;
+	/** create: the `flux_source_id` the create sends (the translationOf value for a linked create). */
+	sourceIdValue?: string;
+	/** update only. */
+	before?: JournalBefore;
+	/** ISO time of the write-ahead put. */
+	at: string;
+	/**
+	 * Final review I3, update only: the term translation groups the job wrote, by taxonomy (the
+	 * after state of each taxonomy in `before.links.taxonomies`). Term edits do not move `_rev`,
+	 * so the rollback compares them with the entry's terms before restoring.
+	 */
+	wrote?: { taxonomies?: Record<string, string[]> };
+}
+
+/** A media item a job's upload created (plugin storage `journalMedia`, `journalMediaKey`). */
+export interface JournalMedia {
+	jobId: string;
+	mediaId: string;
+	url: string;
+	seq: number;
 }
 
 /**
@@ -192,6 +307,8 @@ export interface EngineDeps {
 	records: KvCollection<RecordRow>;
 	links: KvCollection<LinkRow>;
 	mediaMap: KvCollection<MediaMapRow>;
+	journal: KvCollection<JournalEntry>;
+	journalMedia: KvCollection<JournalMedia>;
 	content: ContentPort;
 	lookups: LookupPort;
 	media: MediaPort;
@@ -207,6 +324,26 @@ export function recordKey(jobId: string, seq: number): string {
 
 export function linkKey(collection: string, locale: string, sourceKey: string): string {
 	return `${collection}:${locale}:${sourceKey}`;
+}
+
+/** The journal row of the entry a link names, for one job (M5a). */
+export function journalKey(jobId: string, linkId: string): string {
+	return `${jobId}:${linkId}`;
+}
+
+export function journalMediaKey(jobId: string, mediaId: string): string {
+	return `${jobId}:${mediaId}`;
+}
+
+/** Names and IDs `Job.created` lists of each kind; past them it counts only. */
+export const CREATED_LISTED = 100;
+
+/** The largest journal row, in bytes of JSON (M5a); D1 stores more (spec V6). */
+export const MAX_JOURNAL_BYTES = 1024 * 1024;
+
+/** Adds `by` to a counter; `reverted` is absent on import jobs. */
+export function bump(counters: Counters, key: keyof Counters, by = 1): void {
+	counters[key] = (counters[key] ?? 0) + by;
 }
 
 /** Warnings kept on one record row. */
