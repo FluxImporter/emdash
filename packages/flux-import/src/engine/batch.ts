@@ -236,6 +236,8 @@ type RecordCtx = {
 	link: LinkRow | null;
 	/** The job may already have written the entry (see `JournalTarget.mayHaveWritten`). */
 	mayHaveWritten: boolean;
+	/** The record's earlier row was `writing` (see `JournalTarget.resuming`). */
+	resuming: boolean;
 	/** The entry's current links, as the plan compared them; absent when the template maps none. */
 	current?: CurrentLinks;
 	save: (fields: RowFields) => Promise<void>;
@@ -569,6 +571,7 @@ async function decideRecord(
 		linkId: linkKey(collection, locale, sourceKey),
 		link: null,
 		mayHaveWritten: false,
+		resuming: false,
 		save,
 	};
 	// Known so far, so that a ContentWriteError from any content call still reports it.
@@ -707,6 +710,7 @@ async function decideRecord(
 		// A repaired link is made up from the entry found: the pre-image records that none existed.
 		ctx.link = repaired ? null : link;
 		ctx.mayHaveWritten = ctx.link?.jobId === job.id || existing?.status === "writing";
+		ctx.resuming = existing?.status === "writing";
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		if (links) ctx.current = links.current;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
@@ -1114,7 +1118,9 @@ async function journalWrite(
 			fields.add(field.slice(0, -4));
 		}
 	}
-	if (ctx.job.publish) for (const field of draftFields(entry)) fields.add(field);
+	// Every field of a pending draft, also when the job does not publish: the rollback publishes
+	// the restored live values (revert step 2), which must not make the rest of the draft live.
+	for (const field of draftFields(entry)) fields.add(field);
 	fields.delete(SOURCE_ID_FIELD);
 	const resolved = ctx.links;
 	const touched = {
@@ -1134,7 +1140,19 @@ async function journalWrite(
 	};
 	const before = preImage(entry, ctx.link, touched, ctx.current);
 	if ("code" in before) return before;
-	return journalUpdate(ctx, entry.id, before);
+	// The groups this write gives each changed taxonomy, for the rollback's term check (I3).
+	const terms = Object.fromEntries(
+		touched.taxonomies.map((t) => [
+			t,
+			(resolved?.taxonomies?.[t] ?? []).flatMap((i) => (i.group === null ? [] : [i.group])),
+		]),
+	);
+	return journalUpdate(
+		ctx,
+		entry.id,
+		before,
+		touched.taxonomies.length > 0 ? { taxonomies: terms } : undefined,
+	);
 }
 
 async function writeRecord(

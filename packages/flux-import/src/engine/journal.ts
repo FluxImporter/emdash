@@ -33,6 +33,8 @@ export type JournalTarget = {
 	 * touch's values; otherwise the earlier attempt wrote nothing and the row is replaced.
 	 */
 	mayHaveWritten: boolean;
+	/** The record's earlier row was `writing`: this write resumes a stopped one (final review I2). */
+	resuming?: boolean;
 };
 
 const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
@@ -190,9 +192,16 @@ export async function journalUpdate(
 	t: JournalTarget,
 	entryId: string,
 	before: JournalBefore,
+	wrote?: NonNullable<JournalEntry["wrote"]>,
 ): Promise<RecordError | null> {
 	const key = journalKey(t.job.id, t.linkId);
-	const row: JournalEntry = { ...base(t), kind: "update", entryId, before };
+	const row: JournalEntry = {
+		...base(t),
+		kind: "update",
+		entryId,
+		before,
+		...(wrote?.taxonomies ? { wrote } : {}),
+	};
 	const large = tooLarge(row);
 	if (large) return large;
 	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
@@ -205,9 +214,24 @@ export async function journalUpdate(
 		}
 		// The job created the entry: rolling back deletes it, whatever it wrote afterwards.
 		if (stored.value.kind !== "update" || stored.value.before === undefined) return null;
-		const merged = mergeBefore(stored.value.before, before);
-		if (merged === null) return null;
-		const next: JournalEntry = { ...stored.value, before: merged };
+		const first = stored.value.before;
+		let merged = mergeBefore(first, before);
+		// Resuming a stopped write: when the entry moved since the first read, the stopped write
+		// may have landed, or someone may have edited the entry meanwhile; neither can be told.
+		if (t.resuming && first.rev !== before.rev && !first.uncertain) {
+			merged = { ...(merged ?? structuredClone(first)), uncertain: true };
+		}
+		const terms = wrote?.taxonomies
+			? { ...stored.value.wrote?.taxonomies, ...wrote.taxonomies }
+			: stored.value.wrote?.taxonomies;
+		const termsChanged =
+			JSON.stringify(terms ?? null) !== JSON.stringify(stored.value.wrote?.taxonomies ?? null);
+		if (merged === null && !termsChanged) return null;
+		const next: JournalEntry = {
+			...stored.value,
+			before: merged ?? first,
+			...(terms ? { wrote: { taxonomies: terms } } : {}),
+		};
 		const larger = tooLarge(next);
 		if (larger) return larger;
 		if ((await t.deps.journal.compareAndSet(key, stored.revision, next)).applied) return null;

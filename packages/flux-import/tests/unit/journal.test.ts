@@ -88,6 +88,8 @@ describe("the journal of a real import (M5a)", () => {
 				},
 			},
 			at: "2026-10-07T10:00:00.000Z",
+			// What the job gave the taxonomy, for the rollback's term check.
+			wrote: { taxonomies: { tag: [termGroup(deps, "sale")] } },
 		});
 	});
 

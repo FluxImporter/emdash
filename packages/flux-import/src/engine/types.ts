@@ -235,6 +235,12 @@ export interface JournalBefore {
 	 * leaves the references as the draft had them (spec "Open issues").
 	 */
 	referencesUnknown?: true;
+	/**
+	 * Final review I2: the import resumed a stopped write and found the entry at another `_rev`
+	 * than this pre-image's, so an edit made between the stop and the resume cannot be ruled out.
+	 * The rollback leaves such an entry (`rollback_changed`).
+	 */
+	uncertain?: true;
 }
 
 /**
@@ -259,6 +265,12 @@ export interface JournalEntry {
 	before?: JournalBefore;
 	/** ISO time of the write-ahead put. */
 	at: string;
+	/**
+	 * Final review I3, update only: the term translation groups the job wrote, by taxonomy (the
+	 * after state of each taxonomy in `before.links.taxonomies`). Term edits do not move `_rev`,
+	 * so the rollback compares them with the entry's terms before restoring.
+	 */
+	wrote?: { taxonomies?: Record<string, string[]> };
 }
 
 /** A media item a job's upload created (plugin storage `journalMedia`, `journalMediaKey`). */
