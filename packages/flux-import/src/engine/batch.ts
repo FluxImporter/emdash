@@ -65,7 +65,16 @@ import {
 } from "./resolve.js";
 import { rollbackPass, rollbackRetryPass } from "./revert.js";
 import { originalProblem } from "./rollback.js";
-import { mappingOf, modeSkip, narrowRecord, ruled, sameFields } from "./rules.js";
+import {
+	editedMappings,
+	mappingOf,
+	modeSkip,
+	narrowRecord,
+	protectedMappings,
+	protectPlan,
+	ruled,
+	sameFields,
+} from "./rules.js";
 import {
 	applyTemplate,
 	type CompiledTemplate,
@@ -364,9 +373,12 @@ async function nextFields(
  * before M5b, or a protection that lifted. Revision, job and schedule stay, since ownership did
  * not change. Not journalled.
  */
-async function refreshFields(ctx: RecordCtx): Promise<void> {
+async function refreshFields(ctx: RecordCtx, entry: EntrySnapshot): Promise<void> {
 	const stored = ctx.stored;
 	if (ctx.linkSaved || ctx.fields === undefined || stored === null) return;
+	// Someone else's draft may yet be discarded (EmDash `discardDraft` clears `draftRevisionId`
+	// and keeps the columns), so its values are not recorded as the entry's.
+	if (entry.hasDraft && entry.rev !== stored.writtenRev) return;
 	if (sameFields(stored.fields, ctx.fields)) return;
 	await ctx.deps.links.put(ctx.linkId, { ...stored, fields: ctx.fields });
 }
@@ -378,6 +390,13 @@ async function publishRev(ctx: RecordCtx, id: string, rev: string) {
 	return published;
 }
 
+/** The links a record maps: resolved ones, or (M5b) the requests before resolution. */
+type MappedLinks = {
+	references?: Readonly<Record<string, unknown>>;
+	taxonomies?: Readonly<Record<string, unknown>>;
+	bylines?: unknown;
+};
+
 /**
  * What the entry holds now for the mapped links: reference selections and explicit bylines from
  * the snapshot, and the assigned terms, each shown as the record log shows resolved ones.
@@ -387,7 +406,7 @@ async function currentLinks(
 	cache: LookupCache,
 	job: Job,
 	entry: EntrySnapshot,
-	resolved: ResolvedLinks,
+	resolved: MappedLinks,
 ): Promise<CurrentLinks> {
 	const current: CurrentLinks = {};
 	if (resolved.references) {
@@ -412,10 +431,41 @@ async function currentLinks(
 			}));
 		}
 	}
-	if (resolved.bylines) {
+	if (resolved.bylines !== undefined) {
 		current.bylines = (entry.bylines ?? []).map((b) => ({ group: b.group, text: b.slug }));
 	}
 	return current;
+}
+
+/** The reference fields on the child side of their relation, which keep no order. */
+function childSideOf(job: Job, links: MappedLinks | undefined): Set<string> {
+	return new Set(
+		Object.keys(links?.references ?? {}).filter(
+			(field) => job.targetFields?.[field]?.relationSide === "child",
+		),
+	);
+}
+
+/** Two resolutions of one record's links, as one (M5b: its unprotected and protected parts). */
+function mergeLinks(a: ResolvedLinks | undefined, b: ResolvedLinks): ResolvedLinks {
+	const merged: ResolvedLinks = { ...a };
+	if (b.references) merged.references = { ...merged.references, ...b.references };
+	if (b.taxonomies) merged.taxonomies = { ...merged.taxonomies, ...b.taxonomies };
+	if (b.bylines !== undefined) merged.bylines = b.bylines;
+	return merged;
+}
+
+/**
+ * The record without its protected mappings (M5b), which are neither written nor journalled:
+ * also taken out of the media and Portable Text values the write sends.
+ */
+function unprotected(ctx: RecordCtx, record: MappedRecord, names: ReadonlySet<string>) {
+	if (names.size === 0) return record;
+	for (const name of names) {
+		if (ctx.media) delete ctx.media[name];
+		if (ctx.portableText) delete ctx.portableText[name];
+	}
+	return narrowRecord(record, (name) => !names.has(name));
 }
 
 /**
@@ -455,20 +505,20 @@ async function plannedKey(
 	return planned;
 }
 
-/** The link plan for `planRecord`; child-side reference fields compare as sets. */
+/**
+ * The link plan for `planRecord`; child-side reference fields compare as sets. `known` is the
+ * entry's current links when the record already read them (M5b, protection).
+ */
 async function linkPlan(
 	deps: EngineDeps,
 	cache: LookupCache,
 	job: Job,
 	entry: EntrySnapshot | null,
 	resolved: ResolvedLinks,
+	known?: CurrentLinks,
 ): Promise<LinkPlan> {
-	const childSide = new Set(
-		Object.keys(resolved.references ?? {}).filter(
-			(field) => job.targetFields?.[field]?.relationSide === "child",
-		),
-	);
-	const current = entry ? await currentLinks(deps, cache, job, entry, resolved) : {};
+	const childSide = childSideOf(job, resolved);
+	const current = entry ? (known ?? (await currentLinks(deps, cache, job, entry, resolved))) : {};
 	return { resolved, current, childSide };
 }
 
@@ -666,6 +716,8 @@ async function decideRecord(
 		// decided before any link, translation source or media is looked up.
 		let early: { link: LinkRow | null; entry: EntrySnapshot | null } | null = null;
 		let record = mapped.value;
+		// The mappings an update of a found entry is limited to (`updateFields`); null for all.
+		let scope: ReadonlySet<string> | null = null;
 		if (ruled(job.template)) {
 			// An entry found is updated with only the listed mappings, so it is read for those.
 			const listed = job.template.rules?.updateFields;
@@ -681,7 +733,10 @@ async function decideRecord(
 					? { status: "planned", sourceKey, entryId: id, action: "unchanged" }
 					: { status: "unchanged", sourceKey, entryId: id };
 			}
-			if (early.entry !== null) record = narrowed;
+			if (early.entry !== null) {
+				record = narrowed;
+				if (listed !== undefined) scope = names;
+			}
 		}
 		// The record's lookups are charged for what it resolves: with `updateFields`, the listed ones.
 		const lookingUp = lookingUpFor(record);
@@ -690,27 +745,44 @@ async function decideRecord(
 		if (lookingUp || record.media || drafted.some((d) => d !== null && d.images.length > 0)) {
 			cache.spend(COST_RECORD);
 		}
-		const requests = record.links;
-		const mediaRequests = record.media;
-		const drafts = record.portableText;
+		// M5b: with protectEdited, the mappings edited since the import last wrote them are
+		// resolved without side effects, and never written while they differ from the feed.
+		let edited = new Set<string>();
+		let held: Record<string, string> = {};
+		let known: CurrentLinks | undefined;
+		if (early?.entry && early.link && job.template.rules?.protectEdited) {
+			const { entry, link } = early;
+			known = record.links ? await currentLinks(deps, cache, job, entry, record.links) : {};
+			const comparisons = comparisonsOf(job.template, job.targetFields);
+			const childSide = childSideOf(job, record.links);
+			held = await fingerprintsOf(currentForms(entry, record, comparisons, known, childSide));
+			edited = editedMappings(recordMappings(record), link, entry.rev, held);
+		}
+		const own = edited.size > 0 ? narrowRecord(record, (name) => !edited.has(name)) : record;
+		const quiet = edited.size > 0 ? narrowRecord(record, (name) => edited.has(name)) : null;
+		const requests = own.links;
+		const mediaRequests = own.media;
+		const drafts = own.portableText;
 		const errors: { field: string; code: string; message: string }[] = [];
+		const resolveContext = {
+			template: job.template,
+			targets: job.targetFields ?? {},
+			taxonomies: job.taxonomies ?? {},
+			dryRun: job.dryRun,
+			plannedKey: (key: string) => plannedKey(deps, job, cache, key, rec.seq),
+			sourceIdReady: sourceIdReady(job),
+		};
 		if (requests) {
-			const resolution = await resolveLinks(
-				deps,
-				cache,
-				{
-					template: job.template,
-					targets: job.targetFields ?? {},
-					taxonomies: job.taxonomies ?? {},
-					dryRun: job.dryRun,
-					plannedKey: (key) => plannedKey(deps, job, cache, key, rec.seq),
-					sourceIdReady: sourceIdReady(job),
-				},
-				requests,
-			);
+			const resolution = await resolveLinks(deps, cache, resolveContext, requests);
 			found.newTerms = resolution.newTerms;
 			if (journaling(job)) noteCreated(job, resolution.newTerms);
 			if (resolution.ok) ctx.links = resolution.links;
+			else errors.push(...resolution.errors);
+		}
+		if (quiet?.links) {
+			const context = { ...resolveContext, quiet: true };
+			const resolution = await resolveLinks(deps, cache, context, quiet.links);
+			if (resolution.ok) ctx.links = mergeLinks(ctx.links, resolution.links);
 			else errors.push(...resolution.errors);
 		}
 		// The entry this record translates, in the source locale; a miss is judged once the
@@ -757,6 +829,26 @@ async function decideRecord(
 			errors.push(...looked.errors);
 			found.warnings.push(...looked.warnings);
 		}
+		// Protected media and images: looked up in the media map, never downloaded; a miss differs.
+		let quietMedia: Record<string, MediaPlanItem | null> | undefined;
+		if (quiet?.media) {
+			const looked = await lookupRecordMedia(deps, cache, mediaContext(job, rec.seq), quiet.media);
+			quietMedia = lookedUpMedia(looked.lookups, true, job.id);
+			errors.push(...looked.errors);
+		}
+		let quietText: Record<string, PortableTextPlanItem | null> | undefined;
+		if (quiet?.portableText) {
+			const looked = await lookupPortableTextImages(
+				deps,
+				cache,
+				mediaContext(job, rec.seq),
+				quiet.portableText,
+				template.portableText,
+			);
+			quietText = portableTextPlan(quiet.portableText, looked.images);
+			errors.push(...looked.errors);
+			found.warnings.push(...looked.warnings);
+		}
 		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		let { link, entry } = early ?? (await entryByLink(ctx, cache, read, lookingUp));
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
@@ -799,7 +891,7 @@ async function decideRecord(
 				ctx.translationOf = { sourceId: source.id, value: translates };
 				translationChange = verdict.change;
 			}
-		} else if (entry && isTranslation(entry) && mapsShared(job)) {
+		} else if (entry && isTranslation(entry) && mapsShared(job, scope)) {
 			// A template without translationOf would send shared values that EmDash then syncs to
 			// the whole group (M4e).
 			return { status: "failed", sourceKey, entryId, errors: [sharedOnTranslation()] };
@@ -815,22 +907,45 @@ async function decideRecord(
 		ctx.stored = link;
 		ctx.mayHaveWritten = ctx.link?.jobId === job.id || existing?.status === "writing";
 		ctx.resuming = existing?.status === "writing";
-		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
+		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links, known) : undefined;
 		if (links) ctx.current = links.current;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
 		// Before any download: a file or image not stored yet counts as a change.
-		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
+		const media =
+			lookups || quietMedia
+				? { ...(lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : {}), ...quietMedia }
+				: undefined;
 		if (drafts && images) {
-			ctx.portableText = portableTextPlan(drafts, images);
-			const required = emptiedRequired(ctx.portableText, job);
+			const assembled = portableTextPlan(drafts, images);
+			const required = emptiedRequired(assembled, job);
 			if (required.length > 0) {
 				return { status: "failed", sourceKey, entryId, errors: required };
 			}
-		}
-		const plan = withChange(
+			ctx.portableText = { ...assembled, ...quietText };
+		} else if (quietText) ctx.portableText = quietText;
+		// An edited mapping stays protected unless the feed's value has the entry's fingerprint.
+		const guarded =
+			edited.size === 0
+				? edited
+				: await protectedMappings(
+						edited,
+						held,
+						sentForms(
+							record,
+							comparisons,
+							ctx.links,
+							media,
+							ctx.portableText,
+							links?.childSide ?? new Set(),
+						),
+					);
+		const first = protectPlan(
 			planRecord(entry, record, comparisons, links, media, ctx.portableText),
-			translationChange,
+			record,
+			guarded,
 		);
+		found.warnings.push(...first.warnings);
+		const plan = withChange(first.plan, translationChange);
 		action = plan.action;
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
@@ -848,7 +963,7 @@ async function decideRecord(
 		}
 		if (entry) {
 			if (plan.action === "unchanged") {
-				ctx.fields = await nextFields(ctx, entry, record, plan, links);
+				ctx.fields = await nextFields(ctx, entry, record, plan, links, guarded);
 				return await finishUnchanged(ctx, entry, link, existing, repaired);
 			}
 			if (entry.pendingPublish && entry.rev !== link?.writtenRev) {
@@ -867,8 +982,8 @@ async function decideRecord(
 			}
 		}
 		if (!lookups && misses.length === 0) {
-			ctx.fields = await nextFields(ctx, entry, record, plan, links);
-			return await writeRecord(ctx, entry, plan, record);
+			ctx.fields = await nextFields(ctx, entry, record, plan, links, guarded);
+			return await writeRecord(ctx, entry, plan, unprotected(ctx, record, guarded));
 		}
 		// Downloads only for a record that will be written, after the draft and lock checks: field
 		// media first, then Portable Text images in document order.
@@ -884,7 +999,7 @@ async function decideRecord(
 					errors: obtained.errors,
 				};
 			}
-			ctx.media = obtainedMedia(obtained.media);
+			ctx.media = { ...obtainedMedia(obtained.media), ...quietMedia };
 		}
 		if (drafts && images && misses.length > 0) {
 			const obtained = await obtainPortableTextImages(
@@ -904,22 +1019,26 @@ async function decideRecord(
 					errors: obtained.errors,
 				};
 			}
-			ctx.portableText = portableTextPlan(drafts, images);
-			const required = emptiedRequired(ctx.portableText, job);
+			const assembled = portableTextPlan(drafts, images);
+			const required = emptiedRequired(assembled, job);
 			if (required.length > 0) {
 				return { status: "failed", sourceKey, entryId, action: plan.action, errors: required };
 			}
+			ctx.portableText = { ...assembled, ...quietText };
 		}
-		const final = withChange(
-			planRecord(entry, record, comparisons, links, ctx.media, ctx.portableText),
-			translationChange,
+		// Protected values were not downloaded, so the same mappings stay protected.
+		const kept = protectPlan(
+			planRecord(entry, record, comparisons, links, ctx.media ?? media, ctx.portableText),
+			record,
+			guarded,
 		);
+		const final = withChange(kept.plan, translationChange);
 		action = final.action;
-		ctx.fields = await nextFields(ctx, entry, record, final, links);
+		ctx.fields = await nextFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
 		}
-		return await writeRecord(ctx, entry, final, record);
+		return await writeRecord(ctx, entry, final, unprotected(ctx, record, guarded));
 	} catch (e) {
 		// A missing collection or a broken source-id field fails every record: fail the job instead.
 		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
@@ -965,12 +1084,17 @@ function isTranslation(entry: EntrySnapshot): boolean {
 
 /**
  * Whether the template maps a value EmDash shares across a translation group: a field that is
- * not translatable (per the job's snapshot), a reference field or a taxonomy.
+ * not translatable (per the job's snapshot), a reference field or a taxonomy; with a `scope`, only
+ * among the mappings it names.
  */
-function mapsShared(job: Job): boolean {
+function mapsShared(job: Job, scope: ReadonlySet<string> | null): boolean {
 	const t = job.template;
-	if (Object.keys(t.taxonomies ?? {}).length > 0) return true;
-	return Object.entries(t.fields).some(([name, m]) => isSharedMapping(m, job.targetFields?.[name]));
+	// With `updateFields`, an update sends only the listed mappings (M5b).
+	const sent = (name: string) => scope === null || scope.has(name);
+	if (Object.keys(t.taxonomies ?? {}).some((name) => sent(`taxonomies.${name}`))) return true;
+	return Object.entries(t.fields).some(
+		([name, m]) => sent(name) && isSharedMapping(m, job.targetFields?.[name]),
+	);
 }
 
 function sharedOnTranslation(): RecordError {
@@ -1082,7 +1206,7 @@ async function finishUnchanged(
 				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
 			return { status: "updated", sourceKey, entryId, action: "update" };
 		}
-		await refreshFields(ctx);
+		await refreshFields(ctx, entry);
 		return { status: "unchanged", sourceKey, entryId };
 	}
 	const action = existing?.action;
@@ -1117,7 +1241,7 @@ async function finishUnchanged(
 		// provably ours, so record it on the link for a later publishing run.
 		await putLink(ctx, entryId, writtenRev);
 	}
-	await refreshFields(ctx);
+	await refreshFields(ctx, entry);
 	return {
 		status: action === "create" ? "created" : "updated",
 		sourceKey,

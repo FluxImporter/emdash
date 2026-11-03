@@ -2,11 +2,12 @@
  * Record rules (spec M5b): write modes, the `updateFields` scope, and the link row's
  * fingerprints. `batch.ts` applies them while it decides a record.
  */
-import type { Change } from "./diff.js";
+import type { Change, RecordPlan } from "./diff.js";
+import { fingerprint, recordMappings } from "./fingerprints.js";
 import type { LinkRequests } from "./links.js";
 import type { EntrySnapshot } from "./ports.js";
 import type { MappedRecord, Template } from "./template.js";
-import type { RecordError, RecordRow } from "./types.js";
+import type { LinkRow, RecordError, RecordRow } from "./types.js";
 
 /**
  * Whether the template uses M5b's record rules: then the entry is looked up right after the key
@@ -91,4 +92,82 @@ export function sameFields(
 	const left = a ?? {};
 	const keys = Object.keys(b);
 	return Object.keys(left).length === keys.length && keys.every((key) => left[key] === b[key]);
+}
+
+/**
+ * The mappings that count as edited outside the import (spec M5b "Protection"), from the link row
+ * and the fingerprints of the entry's current values. With fingerprints, a mapping counts as
+ * edited when its fingerprint is missing or differs; but a mapping other than a taxonomy whose
+ * entry is still at the link's `writtenRev` is not edited, since only term edits leave `_rev` (F8)
+ * and the read cannot show a slug staged in the importer's own draft (F13). Without fingerprints
+ * (a link from before M5b), taxonomies always count as edited, and the rest unless the entry is
+ * still at `writtenRev`.
+ */
+export function editedMappings(
+	names: readonly string[],
+	link: LinkRow,
+	rev: string,
+	current: Readonly<Record<string, string>>,
+): Set<string> {
+	const unmoved = link.writtenRev !== undefined && link.writtenRev === rev;
+	const edited = new Set<string>();
+	for (const name of names) {
+		const taxonomy = name.startsWith("taxonomies.");
+		const stored = link.fields?.[name];
+		if (link.fields === undefined) {
+			if (taxonomy || !unmoved) edited.add(name);
+		} else if (stored === undefined) edited.add(name);
+		else if ((taxonomy || !unmoved) && stored !== current[name]) edited.add(name);
+	}
+	return edited;
+}
+
+/**
+ * The edited mappings that stay protected: those whose value as the record would write it has a
+ * fingerprint other than the entry's current one. Protection lifts only on that equality, never
+ * because the plan found no change: the plan ignores a media alt the template does not map,
+ * which the write would still replace.
+ */
+export async function protectedMappings(
+	edited: ReadonlySet<string>,
+	current: Readonly<Record<string, string>>,
+	sent: Readonly<Record<string, unknown>>,
+): Promise<Set<string>> {
+	const kept = new Set<string>();
+	for (const name of edited) {
+		if (!Object.hasOwn(sent, name) || (await fingerprint(sent[name])) !== current[name]) {
+			kept.add(name);
+		}
+	}
+	return kept;
+}
+
+export const FIELD_EDITED_MESSAGE =
+	"Not updated: the value was changed outside the import since the import last wrote it";
+
+/**
+ * The plan without the changes of protected mappings, which are not written, and a `field_edited`
+ * warning for each, in the plan's order (slug, data, media, Portable Text, links). A plan left
+ * without changes is `unchanged`.
+ */
+export function protectPlan(
+	plan: RecordPlan,
+	record: MappedRecord,
+	guarded: ReadonlySet<string>,
+): { plan: RecordPlan; protectedNames: Set<string>; warnings: RecordError[] } {
+	const names = recordMappings(record);
+	const ordered = [...names.filter((n) => n === "slug"), ...names.filter((n) => n !== "slug")];
+	const protectedNames = new Set(ordered.filter((name) => guarded.has(name)));
+	const warnings = [...protectedNames].map((field) => ({
+		field,
+		code: "field_edited",
+		message: FIELD_EDITED_MESSAGE,
+	}));
+	if (protectedNames.size === 0) return { plan, protectedNames, warnings };
+	const changes = plan.changes.filter((change) => {
+		const name = mappingOf(change, record);
+		return name === null || !protectedNames.has(name);
+	});
+	const action = plan.action === "update" && changes.length === 0 ? "unchanged" : plan.action;
+	return { plan: { action, changes }, protectedNames, warnings };
 }

@@ -65,6 +65,11 @@ export type ResolveContext = {
 	 * a lookup by source ID in the job's own collection would fail. Absent counts as ready.
 	 */
 	sourceIdReady?: boolean;
+	/**
+	 * Resolve without side effects (M5b, protected mappings): terms are matched but none is
+	 * created or planned, so a missing term stays `group: null` and always differs.
+	 */
+	quiet?: boolean;
 };
 
 /** A record error from resolution; EmDash read errors keep their `emdash_` code. */
@@ -780,7 +785,7 @@ export async function resolveLinks(
 	if (errors.length > 0) return { ok: false, errors, newTerms: [] };
 
 	const newTerms: string[] = [];
-	for (const p of pending) {
+	for (const p of ctx.quiet ? [] : pending) {
 		const items = resolved.taxonomies?.[p.taxonomy] as ResolvedItem[];
 		const created = await createPath(
 			deps,
