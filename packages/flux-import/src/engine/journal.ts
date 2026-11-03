@@ -15,9 +15,9 @@ import {
 
 const CAS_ATTEMPTS = 5;
 
-/** Whether the job keeps a journal: a real run created with `journal: true` (M5a). */
+/** Whether the job keeps a journal: a real import created with `journal: true` (M5a). */
 export function journaling(job: Job): boolean {
-	return job.journal === true && !job.dryRun;
+	return job.journal === true && !job.dryRun && job.kind !== "rollback";
 }
 
 /** Where a record's journal row goes and what it names. */
@@ -27,6 +27,12 @@ export type JournalTarget = {
 	seq: number;
 	sourceKey: string;
 	linkId: string;
+	/**
+	 * The job may already have written the entry: the link row read before this write names the
+	 * job, or the record's earlier row was `writing`. Only then does a stored row keep its first
+	 * touch's values; otherwise the earlier attempt wrote nothing and the row is replaced.
+	 */
+	mayHaveWritten: boolean;
 };
 
 const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
@@ -72,6 +78,8 @@ export type Touched = {
 	taxonomies: readonly string[];
 	references: readonly string[];
 	bylines: boolean;
+	/** The write publishes a pending draft and the template maps references: see `referencesUnknown`. */
+	referencesUnknown: boolean;
 };
 
 /**
@@ -120,6 +128,7 @@ export function preImage(
 		live,
 		...(entry.live ? { draft } : {}),
 		...(Object.keys(links).length > 0 ? { links } : {}),
+		...(touched.referencesUnknown ? { referencesUnknown: true as const } : {}),
 	};
 }
 
@@ -163,13 +172,18 @@ export function mergeBefore(first: JournalBefore, next: JournalBefore): JournalB
 		merged.links.bylines = next.links.bylines;
 		changed = true;
 	}
+	if (next.referencesUnknown && !merged.referencesUnknown) {
+		merged.referencesUnknown = true;
+		changed = true;
+	}
 	return changed ? merged : null;
 }
 
 /**
  * Write-ahead for an update: stores the pre-image before the job's first write to the entry
  * (put-if-absent), or adds what this write touches first to the row an earlier write stored. A
- * row too large fails the record before any write.
+ * row an attempt stored that never wrote (`mayHaveWritten` false) is replaced, since the entry
+ * may have changed since. A row too large fails the record before any write.
  */
 export async function journalUpdate(
 	t: JournalTarget,
@@ -184,6 +198,10 @@ export async function journalUpdate(
 		if ((await t.deps.journal.compareAndSet(key, null, row)).applied) return null;
 		const stored = await t.deps.journal.getVersioned(key);
 		if (!stored) continue;
+		if (!t.mayHaveWritten) {
+			if ((await t.deps.journal.compareAndSet(key, stored.revision, row)).applied) return null;
+			continue;
+		}
 		// The job created the entry: rolling back deletes it, whatever it wrote afterwards.
 		if (stored.value.kind !== "update" || stored.value.before === undefined) return null;
 		const merged = mergeBefore(stored.value.before, before);

@@ -231,6 +231,8 @@ type RecordCtx = {
 	linkId: string;
 	/** The link row as read before any write of this record; null when there is none. */
 	link: LinkRow | null;
+	/** The job may already have written the entry (see `JournalTarget.mayHaveWritten`). */
+	mayHaveWritten: boolean;
 	/** The entry's current links, as the plan compared them; absent when the template maps none. */
 	current?: CurrentLinks;
 	save: (fields: RowFields) => Promise<void>;
@@ -549,6 +551,7 @@ async function decideRecord(
 		sourceKey,
 		linkId: linkKey(collection, locale, sourceKey),
 		link: null,
+		mayHaveWritten: false,
 		save,
 	};
 	// Known so far, so that a ContentWriteError from any content call still reports it.
@@ -683,7 +686,9 @@ async function decideRecord(
 			// Crash repair may have found an editor's entry: a rollback only moves it to Trash.
 			if (entry && journaling(job)) await journalCreated(ctx, entry.id, false);
 		}
-		ctx.link = link;
+		// A repaired link is made up from the entry found: the pre-image records that none existed.
+		ctx.link = repaired ? null : link;
+		ctx.mayHaveWritten = ctx.link?.jobId === job.id || existing?.status === "writing";
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		if (links) ctx.current = links.current;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
@@ -1059,6 +1064,7 @@ async function journalPublish(
 		taxonomies: [],
 		references: [],
 		bylines: false,
+		referencesUnknown: ctx.links?.references !== undefined,
 	};
 	const before = preImage(entry, link, touched, undefined);
 	if ("code" in before) return before;
@@ -1099,6 +1105,9 @@ async function journalWrite(
 		),
 		references: Object.keys(resolved?.references ?? {}).filter((f) => changed.has(f)),
 		bylines: resolved?.bylines !== undefined && changed.has("bylines"),
+		// The read gives the draft's selection only, and the publish makes it live.
+		referencesUnknown:
+			ctx.job.publish && entry.pendingPublish && resolved?.references !== undefined,
 	};
 	const before = preImage(entry, ctx.link, touched, ctx.current);
 	if ("code" in before) return before;

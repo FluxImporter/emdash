@@ -208,6 +208,12 @@ export interface JournalBefore {
 		references?: Record<string, string[]>;
 		bylines?: { bylineId: string; roleLabel: string | null }[];
 	};
+	/**
+	 * The write published a pending draft of an entry whose template maps references: the read
+	 * returns the draft's selection only, so the live one is not in the pre-image and a rollback
+	 * leaves the references as the draft had them (spec "Open issues").
+	 */
+	referencesUnknown?: true;
 }
 
 /**

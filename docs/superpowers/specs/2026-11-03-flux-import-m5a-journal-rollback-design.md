@@ -517,6 +517,10 @@ Each gets its own spec; these rulings fix the direction and the journal they wri
   - A crash between a media upload and its `journalMedia` put leaves the item off the list.
   - `publishedAt` stays set on an entry the run published for the first time (F12).
   - A staged slug in a pending draft is not in the pre-image (F5): rollback restores the live slug.
+  - Likewise, `handleContentGet` returns a pending draft's reference selection, not the live one.
+    When a publishing job writes or publishes an entry with a pending draft and the template maps
+    references, the pre-image has `referencesUnknown: true` and holds the draft's selection; the
+    rollback reports `references_not_restored` for it instead of a plain `reverted` (Task 6).
   - Rollbacks must go newest first across jobs, and translation jobs before their source job;
     otherwise entries report `rollback_changed`.
   - A step that fails after a partial write on D1 leaves the entry `rollback_changed`.
