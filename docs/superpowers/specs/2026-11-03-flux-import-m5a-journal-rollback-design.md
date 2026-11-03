@@ -117,9 +117,10 @@ If V1, V2 or V5 fail, the plan stops and this spec is amended before Task 1. V7 
 cap: if 10 rows exceed the limit, the cap is lowered to what fits.
 
 **Results (plan drafting, 2026-11-03, amended here).** V1, V2, V3, V4 and V6 hold on SQLite and
-D1. V1 holds under a comparison where booleans compare by truth value (EmDash returns `1`/`0`), an
-object's key order is ignored (an image value reads back with its keys in another order) and a
-`null` written reads back as an absent key. V5 **failed** for the sequence first specified (step 2
+D1. V1 holds under a comparison where, at the field's top level, booleans compare by truth value
+(EmDash returns `1`/`0`) and a `null` written reads back as an absent value; below the top level
+values compare strictly (null, booleans and absent keys distinct), but an object's key order is
+ignored (an image value reads back with its keys in another order). V5 **failed** for the sequence first specified (step 2
 only publish or unpublish) in two of the four pre-states, "a draft never published that the run
 published" and "a future-scheduled draft that the run published", on both collections and both
 databases: without revisions every field read back with the run's values (the unpublish turned
