@@ -68,6 +68,11 @@ export function translationTemplate(n: TranslationNames, locale: "fr" | "de") {
 	return { ...englishTemplate(n), locale, translationOf: { from: "en_id" } };
 }
 
+/** The same template with the bylines mapped from an `Authors` column (by slug). */
+export function withBylines<T extends object>(template: T) {
+	return { ...template, bylines: { from: "Authors", match: "slug" } };
+}
+
 export const ENGLISH_HEADER = "id,handle,Name,SKU,Price,Photo,Related,Tags";
 export const TRANSLATION_HEADER = "id,en_id,handle,Name,SKU,Price,Photo,Related,Tags";
 
@@ -75,6 +80,8 @@ export const TRANSLATION_HEADER = "id,en_id,handle,Name,SKU,Price,Photo,Related,
 export function englishCsv(
 	rows: [id: string, name: string, sku: string, price: number][],
 	photo = "",
+	/** When set, adds an `Authors` column holding this value on every row. */
+	authors?: string,
 ): string {
 	const lines = rows.map(([id, name, sku, price], i) =>
 		[
@@ -88,7 +95,8 @@ export function englishCsv(
 			"new",
 		].join(","),
 	);
-	return [ENGLISH_HEADER, ...lines, ""].join("\n");
+	if (authors === undefined) return [ENGLISH_HEADER, ...lines, ""].join("\n");
+	return [`${ENGLISH_HEADER},Authors`, ...lines.map((l) => `${l},${authors}`), ""].join("\n");
 }
 
 export type TranslationRow = {
@@ -101,6 +109,8 @@ export type TranslationRow = {
 	price?: string;
 	related?: string;
 	tags?: string;
+	/** Used only when `translationCsv` is called with `bylines`. */
+	authors?: string;
 };
 
 /**
@@ -108,7 +118,7 @@ export type TranslationRow = {
  * linked entry, and would fail a record that reads them: another SKU, a price that is not a
  * number, an unknown reference and an unknown tag.
  */
-export function translationCsv(rows: TranslationRow[]): string {
+export function translationCsv(rows: TranslationRow[], opts: { bylines?: boolean } = {}): string {
 	const lines = rows.map((r) =>
 		[
 			r.id,
@@ -122,7 +132,27 @@ export function translationCsv(rows: TranslationRow[]): string {
 			r.tags ?? "missing",
 		].join(","),
 	);
-	return [TRANSLATION_HEADER, ...lines, ""].join("\n");
+	if (!opts.bylines) return [TRANSLATION_HEADER, ...lines, ""].join("\n");
+	return [
+		`${TRANSLATION_HEADER},Authors`,
+		...lines.map((l, i) => `${l},${rows[i]?.authors ?? ""}`),
+		"",
+	].join("\n");
+}
+
+/** Creates the byline `slug` in English and in French (a translation of the English row). */
+export async function createTranslationByline(client: Client, slug: string): Promise<void> {
+	const en = await client.api<{ id: string }>("POST", "/_emdash/api/admin/bylines", {
+		slug,
+		displayName: "Kim Roe",
+		locale: "en",
+	});
+	await client.api("POST", "/_emdash/api/admin/bylines", {
+		slug,
+		displayName: "Kim Roe",
+		locale: "fr",
+		translationOf: en.id,
+	});
 }
 
 /** Every entry of the collection in one locale. */

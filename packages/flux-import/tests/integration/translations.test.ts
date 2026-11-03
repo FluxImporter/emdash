@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Job, RecordRow } from "../../src/engine/types.js";
 import { BLUE_PNG, RED_PNG } from "../fixtures/media.js";
 import {
+	createTranslationByline,
 	createTranslationSchema,
 	englishCsv,
 	englishTemplate,
@@ -12,6 +13,7 @@ import {
 	translationNames,
 	translationsOf,
 	translationTemplate,
+	withBylines,
 } from "../fixtures/translations.js";
 import { Client, devBypass, type Product } from "./client.js";
 import { withDb } from "./db.js";
@@ -63,10 +65,10 @@ const german = translationTemplate(n, "de");
 const frCsv = (rows: TranslationRow[]) => translationCsv(rows);
 
 async function get(id: string, locale: string) {
-	return client.api<{ item: Product & { translationGroup: string; locale: string }; _rev: string }>(
-		"GET",
-		`/_emdash/api/content/${n.products}/${id}?locale=${locale}`,
-	);
+	return client.api<{
+		item: Product & { translationGroup: string; locale: string; updatedAt: string };
+		_rev: string;
+	}>("GET", `/_emdash/api/content/${n.products}/${id}?locale=${locale}`);
 }
 
 const bySource = async (locale: string) =>
@@ -136,6 +138,8 @@ describe("M4e translations end to end", () => {
 	});
 
 	it("syncs a new English price into the French entry, which then re-runs unchanged", async () => {
+		const frRevBefore = (await get(((await bySource("fr")).get("bureau") as Product).id, "fr"))
+			._rev;
 		const en = await importCsv(
 			englishCsv(
 				[
@@ -149,6 +153,8 @@ describe("M4e translations end to end", () => {
 		expect(en.job.counters).toMatchObject({ updated: 1, unchanged: 1 });
 		const bureau = (await bySource("fr")).get("bureau") as Product;
 		expect(bureau.data.price).toBe(120);
+		// Fact V4: the source's update moves the translation's revision.
+		expect((await get(bureau.id, "fr"))._rev).not.toBe(frRevBefore);
 		const fr = await importCsv(
 			frCsv([
 				{ id: "F1", enId: "E1", name: "Bureau", photo: photoUrl("/desk.png") },
@@ -178,6 +184,11 @@ describe("M4e translations end to end", () => {
 		expect(retried.counters).toMatchObject({ created: 1, failed: 0 });
 		const chaise = (await bySource("fr")).get("chaise") as Product;
 		expect(chaise.data).toMatchObject({ sku: "S3", price: 30 });
+		const chair = (await bySource("en")).get("chair") as Product;
+		expect(await translationsOf(client, n.products, chaise.id)).toEqual({
+			group: chair.id,
+			locales: { en: chair.id, fr: chaise.id },
+		});
 	});
 
 	it("plans a German dry run with the translationOf change and writes nothing", async () => {
@@ -266,6 +277,7 @@ describe("M4e translations end to end", () => {
 		expect(published.rows[0]).toMatchObject({ status: "updated" });
 		const after = await get(desk.id, "en");
 		expect(after._rev).toBe(before._rev);
+		expect(after.item.updatedAt).toBe(before.item.updatedAt);
 		expect(after.item.draftRevisionId).toBeNull();
 		expect((await get(bureau.id, "fr")).item).toMatchObject({
 			status: "published",
@@ -292,20 +304,60 @@ describe("M4e translations end to end", () => {
 			).run("flux-import", "links", `${n.products}:fr:F2`);
 			const moved = db
 				.prepare(
-					"UPDATE _plugin_storage SET data = json_set(data, '$.status', 'writing') WHERE plugin_id = ? AND collection = ? AND json_extract(data, '$.jobId') = ? AND json_extract(data, '$.sourceKey') = ?",
+					"UPDATE _plugin_storage SET data = json_set(data, '$.status', 'writing', '$.entryId', null, '$.action', 'create') WHERE plugin_id = ? AND collection = ? AND json_extract(data, '$.jobId') = ? AND json_extract(data, '$.sourceKey') = ?",
 				)
 				.run("flux-import", "records", first.job.id, "F2");
 			expect(moved.changes).toBe(1);
 		});
 		await client.plugin("jobs/retry", { id: first.job.id });
 		const repaired = await client.runToEnd(first.job.id);
-		expect(repaired.counters).toMatchObject({ updated: 1, failed: 1, conflict: 0 });
+		expect(repaired.counters).toMatchObject({ created: 1, failed: 1, conflict: 0 });
 		const rows = await client.records(first.job.id);
-		expect(rows[0]).toMatchObject({ status: "updated", entryId: lampe.id });
+		expect(rows[0]).toMatchObject({ status: "created", entryId: lampe.id });
+		// The link row was written again, naming the entry the create made.
+		const link = withDb(server.dbPath, (db) =>
+			db
+				.prepare(
+					"SELECT json_extract(data, '$.entryId') AS entryId FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND id = ?",
+				)
+				.get("flux-import", "links", `${n.products}:fr:F2`),
+		);
+		expect(link).toMatchObject({ entryId: lampe.id });
+		const rerun = await importCsv(
+			frCsv([{ id: "F2", enId: "E2", name: "Lampe", photo: photoUrl("/lampe.png") }]),
+			french,
+		);
+		expect(rerun.job.counters).toMatchObject({ unchanged: 1 });
 		const lamp = english.get("E2") as Product;
 		expect((await translationsOf(client, n.products, lamp.id)).locales.fr).toBe(lampe.id);
 		expect(
 			(await listLocale(client, n.products, "fr")).filter((e) => e.data.flux_source_id === "E2"),
 		).toHaveLength(1);
+	});
+
+	it("sends the bylines of a translation, so an empty value leaves it without credits", async () => {
+		await createTranslationByline(client, "it-m4e-kim");
+		const en = await importCsv(
+			englishCsv([["B1", "Kettle", "SB", 15]], "", "it-m4e-kim"),
+			withBylines(englishTemplate(n)),
+		);
+		expect(en.job.counters).toMatchObject({ created: 1, failed: 0 });
+		const kettle = (await bySource("en")).get("kettle") as Product;
+		const credits = async (id: string, locale: string) =>
+			((await get(id, locale)).item.bylines ?? []).map((b) => b.byline.slug);
+		expect(await credits(kettle.id, "en")).toEqual(["it-m4e-kim"]);
+
+		const csv = translationCsv([{ id: "FB1", enId: "B1", name: "Bouilloire", authors: "" }], {
+			bylines: true,
+		});
+		const fr = await importCsv(csv, withBylines(french));
+		expect(fr.job.counters).toMatchObject({ created: 1, failed: 0 });
+		const bouilloire = (await bySource("fr")).get("bouilloire") as Product;
+		// Not the source's credit: the empty value is sent as no bylines.
+		expect(await credits(bouilloire.id, "fr")).toEqual([]);
+		expect(await credits(kettle.id, "en")).toEqual(["it-m4e-kim"]);
+
+		const again = await importCsv(csv, withBylines(french));
+		expect(again.job.counters).toMatchObject({ unchanged: 1 });
 	});
 });
