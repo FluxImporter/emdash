@@ -239,6 +239,37 @@ describe("FakeContent for rollbacks (M5a)", () => {
 		});
 	});
 
+	it("keeps the first live revision on a plain collection until an unpublish clears it", async () => {
+		const { content } = setup();
+		content.plainCollections.add("plain");
+		const { id } = await content.create({ ...base, collection: "plain", data: { t: "A", u: "x" } });
+		const step = stepOf(content, id, "plain");
+		await step(1, "publish");
+		await content.update({ id, rev: "2", data: { t: "B" } });
+		await step(3, "publish");
+		await step(4, "unpublish");
+		// The live revision was made at the first publish and kept by the second.
+		const drafted = await content.get("plain", "en", id);
+		expect(drafted).toMatchObject({ hasDraft: true, data: { t: "A", u: "x" } });
+		expect(content.entries.get(id)?.data).toEqual({ t: "B", u: "x" });
+		// The stale draft overlays the columns: a column it lacks still shows.
+		content.entries.get(id)!.data.extra = 1;
+		expect((await content.get("plain", "en", id))?.data).toEqual({ t: "A", u: "x", extra: 1 });
+	});
+
+	it("creates no draft after an unpublish cleared the live revision and the entry was scheduled", async () => {
+		const { content, clock } = setup();
+		content.plainCollections.add("plain");
+		const { id } = await content.create({ ...base, collection: "plain", data: { t: "A" } });
+		const step = stepOf(content, id, "plain");
+		await step(1, "publish");
+		await step(2, "unpublish");
+		await step(3, "discard");
+		clock.t += 1;
+		await step(4, "schedule", { scheduledAt: at(60_000) });
+		expect(await step(5, "unpublish")).toMatchObject({ ok: true, state: { hasDraft: false } });
+	});
+
 	it("creates no draft on unpublish when no live revision exists", async () => {
 		const { content, clock } = setup();
 		content.plainCollections.add("plain");

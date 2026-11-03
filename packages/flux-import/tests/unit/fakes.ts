@@ -233,7 +233,7 @@ export class FakeContent implements ContentPort {
 			rev: String(e.rev),
 			// As hydrateDraftData: a pending draft changes the data, never the live slug.
 			slug: e.live?.slug ?? e.slug,
-			data: structuredClone(e.stale?.data ?? e.data),
+			data: structuredClone(e.stale ? { ...e.data, ...e.stale.data } : e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
 			status: e.status,
@@ -344,6 +344,8 @@ export class FakeContent implements ContentPort {
 						if (this.plainCollections.has(e.collection)) e.stale ??= { data: liveData };
 						else e.live ??= { data: liveData, slug: e.slug };
 					}
+					// As EmDash: an unpublish clears the live revision (repositories/content.ts:2763).
+					e.published = null;
 					e.status = "draft";
 					e.scheduledAt = null;
 					e.pendingPublish = true;
@@ -535,7 +537,11 @@ export class FakeContent implements ContentPort {
 		e.scheduledAt = null;
 		e.live = null;
 		e.stale = null;
-		e.published = { data: structuredClone(e.data) };
+		// As EmDash without revisions: the live revision is created at the first publish after an
+		// unpublish and then kept (repositories/content.ts:2489-2499); with revisions each publish
+		// makes the draft the live revision.
+		if (this.plainCollections.has(e.collection)) e.published ??= { data: structuredClone(e.data) };
+		else e.published = { data: structuredClone(e.data) };
 		this.touch(e);
 		this.calls.push(`publish:${e.id}`);
 		return { ok: true, rev: String(e.rev) };
