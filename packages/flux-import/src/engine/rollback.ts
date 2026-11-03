@@ -4,15 +4,11 @@ import { type EngineDeps, emptyCounters, type Job } from "./types.js";
 /** Media IDs the rollback job's warning lists; past them it says there are more. */
 const MAX_LISTED_MEDIA = 100;
 
-/**
- * A job retention is deleting (M5a): it marks the job before it deletes any of its rows, so a
- * rollback of it is refused, and a rollback job already created for it fails when it next runs.
- * The field lives in the stored job only.
- */
-export type PurgingJob = Job & { purging?: boolean };
+/** A job retention is deleting (`Job.purging`); the name is kept for `retention.ts`. */
+export type PurgingJob = Job;
 
 export function isPurging(job: Job): boolean {
-	return (job as PurgingJob).purging === true;
+	return job.purging === true;
 }
 
 /** Why a rollback job cannot run: its original is gone or being deleted; null when it can. */

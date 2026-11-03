@@ -49,7 +49,7 @@ type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt"
 /** Plugin storage query limit. */
 const PAGE = 100;
 
-export const CHANGED_MESSAGE =
+const CHANGED_MESSAGE =
 	"Not rolled back: the entry changed after the import wrote it (an editor or a later import); roll back later imports first or revert it by hand";
 const LOCKED_MESSAGE = "Not rolled back: the entry is being edited (locked)";
 const NOTHING_MESSAGE = "Nothing to roll back: the entry was never created, or was deleted since";

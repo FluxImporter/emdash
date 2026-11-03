@@ -479,18 +479,16 @@ async function decide(
 }
 
 /**
- * Adds terms or media a real job created to the job's summary, which the batch's save keeps for
- * the rollback job's warnings (M5a). Names beyond `CREATED_LISTED` are only counted.
+ * Adds terms a real job created to the job's summary, which the batch's save keeps for the
+ * rollback job's warnings (M5a). Names beyond `CREATED_LISTED` are only counted.
  */
-export function noteCreated(job: Job, kind: "terms" | "media", names: readonly string[]): void {
-	job.created ??= { terms: [], termCount: 0, media: [], mediaCount: 0 };
+export function noteCreated(job: Job, names: readonly string[]): void {
+	job.created ??= { terms: [], termCount: 0 };
 	const created = job.created;
-	const list = kind === "terms" ? created.terms : created.media;
 	for (const name of names) {
-		if (list.includes(name)) continue;
-		if (list.length < CREATED_LISTED) list.push(name);
-		if (kind === "terms") created.termCount++;
-		else created.mediaCount++;
+		if (created.terms.includes(name)) continue;
+		if (created.terms.length < CREATED_LISTED) created.terms.push(name);
+		created.termCount++;
 	}
 }
 
@@ -500,9 +498,7 @@ function mediaContext(job: Job, seq: number): MediaContext {
 		dryRun: job.dryRun,
 		maxBytes: job.mediaMaxBytes ?? DEFAULT_MAX_UPLOAD_SIZE,
 		targets: job.targetFields ?? {},
-		...(journaling(job)
-			? { journal: { seq, created: (id: string) => noteCreated(job, "media", [id]) } }
-			: {}),
+		...(journaling(job) ? { journal: { seq } } : {}),
 	};
 }
 
@@ -603,7 +599,7 @@ async function decideRecord(
 				requests,
 			);
 			found.newTerms = resolution.newTerms;
-			if (journaling(job)) noteCreated(job, "terms", resolution.newTerms);
+			if (journaling(job)) noteCreated(job, resolution.newTerms);
 			if (resolution.ok) ctx.links = resolution.links;
 			else errors.push(...resolution.errors);
 		}

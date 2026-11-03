@@ -14,6 +14,15 @@ import { type Deps, importRows, setup, url } from "./rollback-fixture.js";
 const desk = { sku: "A1", name: "Desk", price: 10, tags: "new" };
 const DAY = 24 * 60 * 60 * 1000;
 
+async function journalMediaIds(deps: Deps, jobId: string): Promise<string[]> {
+	const page = await deps.journalMedia.query({
+		where: { jobId },
+		orderBy: { seq: "asc" },
+		limit: 100,
+	});
+	return page.items.map((i) => i.data.mediaId);
+}
+
 async function patch(deps: Deps, id: string, change: Partial<Job>) {
 	const job = (await deps.jobs.get(id)) as Job;
 	await deps.jobs.put(id, { ...job, ...change });
@@ -185,24 +194,23 @@ describe("jobs/rollback (M5a)", () => {
 		expect(stored?.created).toEqual({
 			terms: ["tag: fresh", "tag: bright"],
 			termCount: 2,
-			media: ["m1", "m2"],
-			mediaCount: 2,
 		});
+		// The media warning reads journalMedia, not the summary.
+		expect(await journalMediaIds(deps, original.id)).toEqual(["m1", "m2"]);
 	});
 
 	it("counts a term once however often it is noted, and lists at most 100", () => {
 		const job = {} as Job;
-		noteCreated(job, "terms", ["a", "b"]);
-		noteCreated(job, "terms", ["b", "c"]);
-		expect(job.created).toMatchObject({ terms: ["a", "b", "c"], termCount: 3, mediaCount: 0 });
+		noteCreated(job, ["a", "b"]);
+		noteCreated(job, ["b", "c"]);
+		expect(job.created).toEqual({ terms: ["a", "b", "c"], termCount: 3 });
 		const many = {} as Job;
 		noteCreated(
 			many,
-			"media",
-			Array.from({ length: 105 }, (_, i) => `m${i}`),
+			Array.from({ length: 105 }, (_, i) => `t${i}`),
 		);
-		expect(many.created?.media).toHaveLength(100);
-		expect(many.created?.mediaCount).toBe(105);
+		expect(many.created?.terms).toHaveLength(100);
+		expect(many.created?.termCount).toBe(105);
 	});
 
 	it("scans no rows to build the warnings", async () => {

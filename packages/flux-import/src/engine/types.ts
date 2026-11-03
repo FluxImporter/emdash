@@ -47,10 +47,16 @@ export interface Job {
 	 */
 	journal?: boolean;
 	/**
-	 * What a real job created and a rollback keeps (M5a): term names and media IDs (at most
-	 * `CREATED_LISTED` of each) and the totals. Saved with each batch; absent until it creates one.
+	 * The terms a real job created, which a rollback keeps (M5a): names (at most `CREATED_LISTED`)
+	 * and the total. Saved with each batch; absent until it creates one. The media warning reads
+	 * `journalMedia` instead.
 	 */
-	created?: { terms: string[]; termCount: number; media: string[]; mediaCount: number };
+	created?: { terms: string[]; termCount: number };
+	/**
+	 * Retention is deleting the job (M5a): set before any of its rows go, so a rollback of it is
+	 * refused and a rollback job already created for it fails when it next runs.
+	 */
+	purging?: boolean;
 	/** An import job created from a URL source: the source's ID (M5a). */
 	sourceId?: string;
 	uploadId: string;
