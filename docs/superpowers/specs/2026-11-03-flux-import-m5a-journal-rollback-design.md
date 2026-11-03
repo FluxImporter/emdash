@@ -155,6 +155,8 @@ interface JournalEntry {
 	before?: {
 		/** The link row before the job; null when there was none. */
 		link: { jobId?: string; writtenRev?: string } | null;
+		/** The entry's `_rev` when the pre-image was read ("Links after a rollback"). */
+		rev?: string;
 		status: string;
 		scheduledAt: string | null;
 		/** The live slug, when the job changed the slug. */
@@ -253,6 +255,8 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    an M4e partial create on D1) looks the entry up with `findBySourceId(collection, locale,
    sourceIdValue)` and takes it only when exactly one entry matches, its `createdAt` is at or after
    the journal row's `at`, and `updatedAt === createdAt` (V3); it is then handled as unconfirmed.
+   More than one match is `failed`, `ambiguous_source_id` (the M4e lookup error), and the entries
+   are left as they are.
    No entry: `unchanged`, warning `nothing_to_roll_back` ("Nothing to roll back: the entry was
    never created, or was deleted since"). A row saved as `writing` with `action: "delete"` whose
    entry is gone is the permanent delete of a stopped batch: `reverted`, and its link row is
@@ -268,15 +272,34 @@ record row in the rollback job, keyed `recordKey(rollbackJobId, journal.seq)`, w
    `updatedAt` is before the journal row's `at`, and `conflict` otherwise. A `create` row passes
    ownership without a matching link row when its entry was created at or after the journal row's
    `at` and never changed since (`updatedAt === createdAt`, V3): the step 1 adoption, or a create
-   crash repair found before the link row was saved. Such an entry is only moved to Trash unless
-   the job's own create returned it (`confirmed`).
+   crash repair found before the link row was saved. This holds only when no link row names the
+   entry with a `writtenRev`: such a link decides ownership by revision alone, because EmDash
+   keeps `updated_at` when an edit only stages a draft on a revisioned collection
+   (`src/database/repositories/content.ts:1405-1432`, `:2831-2846`), so the timestamps cannot see
+   an editor's draft. Such an entry is only moved to Trash unless the job's own create returned it
+   (`confirmed`).
 3. **Lock.** `isLocked` true: `locked`.
-4. **Act**, saving the row as `writing` (with `action`) first and after every step with the step's
-   returned `_rev` as `writtenRev` and the step number, so a resumed batch continues where it
-   stopped. Each step sends the previous step's `_rev`; a `CONFLICT` is `rollback_changed`.
+4. **Act**, saving the row as `writing` (with `action`) before every step, with the last step
+   done (`step`), the `_rev` it returned (`writtenRev`) and the step about to be sent
+   (`pendingStep`), so a resumed batch continues where it stopped. Each step sends the previous
+   step's `_rev`; a `CONFLICT` is `rollback_changed`, an editor's lock between two steps is
+   `locked` (retried from the saved step). A resumed `writing` row whose entry's `_rev` is neither
+   `writtenRev` nor the link row's is a step that reached EmDash before the stop: the entry is
+   adopted at its current `_rev`, with `pendingStep` done, only when it shows that step's result
+   (1: the restored live values by `sameStored`, the slug when no draft hides it, and the
+   restored references and bylines; 2: published without a draft; 3: not published; 4: no
+   draft; 5: the restored draft values; 6: the schedule); otherwise `rollback_changed`. The
+   saves cost one plugin storage write per step sent, as the save after each step did before:
+   nothing runs between a step's return and the next step's save. Before step 1, a pre-image
+   value that is empty for a field the job's `targetFields` mark `required` fails the row with a
+   `required` error naming the field (EmDash would refuse the restored value half way), with no
+   other warnings and nothing written. A resumed row whose step 1 is done keeps the
+   `rollback_link_missing` warnings it saved and does not look the links up again.
 5. **Link.** After the last step: for a deleted or trashed entry the link row is deleted when it
-   still names the entry; for a restored entry it is put back as `before.link` with `writtenRev`
-   set to the final `_rev` (or deleted when `before.link` is null). The row becomes `reverted`.
+   still names the entry; for a restored entry it is put back as `before.link` (or deleted when
+   `before.link` is null), with `writtenRev` set to the final `_rev` when `before.rev` equals
+   `before.link.writtenRev`, and kept as `before.link.writtenRev` otherwise ("Links after a
+   rollback"). The row becomes `reverted`.
 
 ### Created entries
 
@@ -322,7 +345,11 @@ the saved step.
 
 Restoring the link row to `before.link` (with the rollback's final `_rev`) is what lets rollbacks
 chain: after rolling back job B, an entry B changed is again "as job A left it" for A's rollback,
-because its link row names A and its `_rev`. The importer's own pending draft that the rollback
+because its link row names A and its `_rev`. That hand-over is right only when B found the entry
+as A left it: the pre-image records the entry's `_rev` at B's read (`before.rev`), and only when it
+equals `before.link.writtenRev` does the restored link get the rollback's final `_rev`. When an
+editor changed the entry between A and B, the link keeps A's old `writtenRev`, so A's rollback
+reports `rollback_changed` instead of undoing the editor's change along with A's. The importer's own pending draft that the rollback
 restores (step 5) is then recognised as the importer's by the next import (M2 `writtenRev` rule).
 
 ### Dry run
@@ -351,6 +378,9 @@ has it once it has created anything; a job without one cannot be rolled back.
 | `rollback_trashed` | warning | A created entry found by crash repair was moved to Trash, not deleted |
 | `rollback_schedule_passed` | warning | The entry's former schedule has passed |
 | `rollback_link_missing` | warning | A term, byline or reference target of the pre-image no longer exists |
+| `references_not_restored` | warning (`reverted`) | The pre-image has `referencesUnknown` and its status was `published`: the import published a pending draft over a live reference selection it could not read |
+| `required` | failed | A pre-image value is empty for a field the job's `targetFields` mark `required`; the field is named. A deviation from the plan's code list, which named no code for it: the import's own `required` code is reused |
+| `ambiguous_source_id` | failed | A `create` row without `entryId` matches more than one entry by `flux_source_id` |
 | `locked` | locked | Another user holds the entry's lock |
 | `journal_too_large` | import error | The record's pre-image is over `MAX_JOURNAL_BYTES` |
 | `journal_incomplete` | import error | A changed reference field's current selection was truncated |
@@ -525,7 +555,14 @@ Each gets its own spec; these rulings fix the direction and the journal they wri
   - Likewise, `handleContentGet` returns a pending draft's reference selection, not the live one.
     When a publishing job writes or publishes a published entry with a pending draft and the template maps
     references, the pre-image has `referencesUnknown: true` and holds the draft's selection; the
-    rollback reports `references_not_restored` for it instead of a plain `reverted` (Task 6).
+    rollback reports `references_not_restored` for it on a `reverted` row (Task 6), and only when
+    the pre-image's status was `published`: an entry never published has no live selection.
+  - An `update` row whose job never wrote passes as `unchanged` also when the entry's
+    `updatedAt` is before the journal row's `at` and its link row names another job. EmDash keeps
+    `updated_at` when an edit only stages a draft, so this can take a draft for unwritten: when the
+    job's link save was lost after its write and an editor then staged a draft, the rollback
+    leaves the job's write (and the editor's draft) in place. Nothing is destroyed; the row says
+    "Nothing to roll back" where a revert by hand is needed.
   - Rollbacks must go newest first across jobs, and translation jobs before their source job;
     otherwise entries report `rollback_changed`.
   - A step that fails after a partial write on D1 leaves the entry `rollback_changed`.
