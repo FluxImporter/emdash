@@ -43,13 +43,13 @@ URLs a real run would download. The template stays `version: 1` and every additi
 | Image option | Mapping option `images: "import"` (default) or `"skip"`. `"skip"` drops every image without a warning and downloads nothing; such a template needs no storage. |
 | Image failures | Mapping option `imageErrors: "drop"` (default) or `"fail"`. With `"drop"`, an image that cannot be imported (invalid or relative URL without `baseUrl`, blocked host, HTTP error, too large, wrong type, upload error) is left out of the blocks and the record gets an `image_dropped` warning that carries the M4c code and message. With `"fail"`, it is a record error with the M4c code, as for an `image` field. Default `"drop"`, because one broken image in a long article should not keep the article out; a dropped URL is tried again on the next run, where it plans `unchanged` if it still fails. `CONFIGURATION_ERROR` and `NO_STORAGE` still fail the job (`media_config`), and deferral still defers. |
 | Keys | Deterministic per field: blocks `b0`, `b1`, …; spans `<block key>s0`, …; link definitions `<block key>l0`, …. Keys are unique within their array, which is all EmDash needs; it accepts missing keys (F1) and its editor regenerates them only for duplicates (F8). |
-| Diff | New comparison kind `portableText`: both values are canonicalized and compared with `deepEqual`. Canonical form: every `_key` removed at every depth, an empty `markDefs` or `marks` array equal to a missing one, `style: "normal"` equal to a missing style on text blocks. A stored value that is not an array is a change. A record whose images include a miss (dry run, or before downloads) is always a change, as in M4c. Task 0 proves that an editor round trip of the importer's value canonicalizes equal (V2). |
+| Diff | No new comparison kind (plan Ruling 3): `planRecord` takes the Portable Text fields as a separate argument, canonicalizes both values and compares them with `deepEqual`. Canonical form (plan Ruling 2): every `_key` removed at every depth, an empty `markDefs` or `marks` array equal to a missing one, `style: "normal"` equal to a missing style on text blocks, the editor's additions (`listId`, `listStart: 1`, a link's `blank: false`) equal to missing, each span mark that names a `markDef` renamed to the definition's position, and a span's marks sorted (the editor reorders them on save). A stored value that is not an array is a change. A record whose images include a miss (dry run, or before downloads) is always a change, as in M4c. Task 0 proves that an editor round trip of the importer's value canonicalizes equal (V2). |
 | Change text | Portable Text is never put into a row's `changes`. A change reads `{ field: "body", before: "12 blocks, 2 images" \| null, after: "14 blocks, 3 images (1 new)" }`. |
-| Warnings on the row | `RecordRow` gains `warnings?: RecordError[]` (`field`, `code`, `message`), at most 20 per record; the 20th is replaced by `{ code: "warnings_truncated", message: "N more warnings" }`. Warnings are saved whatever the record's status, `unchanged` and `planned` included. A retried row's warnings are replaced, not merged: they describe the latest conversion. The log CSV gains a last column `warnings` (`field: code: message`, joined with `; `). |
-| Size and work limits | Per field: the source text is at most 512 KiB (UTF-8), the HTML that `markdown-it` renders at most 2 MiB, and the estimated element nesting at most 256 (a linear pre-scan; see Bounded work). No tag may carry more than 1,000 attributes (counted exactly in `parse5`'s tokenizer, which checks each new attribute name against the earlier ones), or the record fails `portable_text_too_complex`. Per record: at most 1 MiB of Portable Text JSON over all mapped fields, and at most 50 distinct image URLs (with `imageErrors: "drop"` the rest are dropped with one `image_dropped` warning; with `"fail"` the record fails `portable_text_limit`). Per template: at most 3 `portableText` mappings. The limits keep one record's conversion under about 0.3 s of CPU (M1, M2) and the stored row well under D1's 2 MB (F13). |
-| Shared media path | Images go through `findMedia` / `obtainMedia` from `src/engine/media.ts` with the batch's `LookupCache`: the per-batch item cache, obtained and failed URLs, the media deadline and deferral, and the Workers budget (M4c review, open issue 2). A URL used by an `image` field and in Portable Text, or twice in one record, is downloaded once. New items get the image's alt as their library default, as in M4c. |
+| Warnings on the row | `RecordRow` gains `warnings?: RecordError[]` (`field`, `code`, `message`), at most 20 per record; the 20th is replaced by `{ code: "warnings_truncated", message: "N more warnings" }`. A row's errors are capped the same way at 50 (the 50th an `errors_truncated` "N more errors"), and every kept message is cut to 1,000 characters, so no producer can make a row too large for D1. Warnings are saved whatever the record's status, `unchanged` and `planned` included. A retried row's warnings are replaced, not merged: they describe the latest conversion. The log CSV gains a last column `warnings` (`field: code: message`, joined with `; `). |
+| Size and work limits | Per field: the source text is at most 128 KiB (UTF-8) for Markdown and 512 KiB for HTML and text, the HTML that `markdown-it` renders at most 2 MiB (checked while rendering), `markdown-it` creates at most 100,000 tokens and `parse5` at most 150,000 nodes (each element counted with its attributes), and at most 256 elements are open at once, counted exactly inside `parse5` through its tree adapter's `onItemPush`/`onItemPop`, implied elements included (plan Ruling 1). Over a size or token or node limit the record fails `portable_text_too_large`. No tag may carry more than 1,000 attributes (counted exactly in `parse5`'s tokenizer, which checks each new attribute name against the earlier ones); that and the nesting bound fail the record `portable_text_too_complex`. Per record: the Portable Text sources are at most 512 KiB together (checked before any field is parsed), at most 1 MiB of Portable Text JSON over all mapped fields, enforced while converting (see Conversion), and at most 50 distinct image URLs (with `imageErrors: "drop"` the rest are dropped with one `image_dropped` warning; with `"fail"` the record fails `portable_text_limit`). Per template: at most 3 `portableText` mappings. Per field, markup issues are capped at 19 plus one `unknown_markup` summary ("N more markup issues"), and invalid image URLs the same way. The limits keep the stored row well under D1's 2 MB (F13) and a record's memory within a Worker; dense Markdown at the 128 KiB limit was measured at about 0.5-0.6 s of CPU per field. |
+| Shared media path | Images go through `findMedia` / `obtainMedia` from `src/engine/media.ts` with the batch's `LookupCache`: the per-batch item cache, obtained and failed URLs, the media deadline and deferral, and the Workers budget (M4c review, open issue 2). A URL used by an `image` field and in Portable Text, or twice in one record, is downloaded once. New items get the image's alt as their library default, as in M4c. A type refusal that does not depend on the field (a file no field could take) is cached in the batch's failed URLs, for M4c fields too; one that only this field refuses is not. When a record is deferred, the failures of the downloads it actually tried are carried in `job.deferred` and seeded into the next batch's failed URLs for that record only, so a dropped image is not fetched again in every batch (which would never finish on Workers) and a later record's field is not failed by it. |
 | Budget deferral | New rule for every download, field media included: a download other than the batch's first throws `MediaDeferred` when `cache.spent + COST_MEDIA` would exceed the budget. Without it, a record with 50 new images would spend 3,000 units on Workers in one batch. With it, such a record is deferred and the next batch finds its earlier images in the map (2 units each) and downloads the next ones, so every batch makes progress. M4c records (at most 5 downloads, 300 units) could exceed the budget before; now they defer instead. |
-| Empty values | A missing path, `null`, blank text, or a conversion with no blocks left (only removed markup) is empty: `null`, which clears the field. An empty value into a `required` field fails `required`. Non-text values fail `not_scalar`. |
+| Empty values | A missing path, `null`, blank text, or a conversion with no blocks left (only removed markup) is empty: `null`, which clears the field. An empty value into a `required` field fails `required`, also when the field is left empty only after its dropped images are left out (by the image limit, or after downloads), before anything is written. Non-text values fail `not_scalar`. |
 | `schema/apply` | `portableText` joins `APPLY_FIELD_TYPES` (a JSON column created through `SchemaRegistry` like the others, F2), and it cannot be indexed. |
 | Locale | Portable Text is per locale row like every other field. The media map stays locale-free (M4c). |
 | Capabilities | Unchanged. `media:write` was added in M4c. |
@@ -161,19 +161,25 @@ Zod refinement).
 `portableTextConverter(mapping)` runs inside `applyTemplate`, synchronously, after the M3a/M4a
 empty and `not_scalar` rules:
 
-1. Size check (`portable_text_too_large`). For Markdown, render with `markdown-it` and check the
-   rendered size. For text, build the blocks directly (no HTML).
-2. Nesting pre-scan (`portable_text_too_complex`): one linear pass that counts start tags minus end
-   tags of non-void elements, skipping comments and the content of `script`, `style`, `textarea`
-   and `title`, and not counting elements whose end tag HTML may omit (`p`, `li`, `dt`, `dd`, `tr`,
-   `td`, `th`, `thead`, `tbody`, `tfoot`, `option`, `optgroup`, `colgroup`, `caption`, `rb`, `rt`,
-   `rp`). It over-estimates, never under-estimates, the depth `parse5` builds for these elements.
-3. `parseFragment`, then an iterative walk (an explicit stack, no recursion) that builds draft blocks
+1. Size check (`portable_text_too_large`): each field's source, then the record's sources together;
+   if any is over, no field is converted. For Markdown, render with `markdown-it` (at most 100,000
+   tokens) and stop as soon as the HTML passes 2 MiB. For text, build the blocks directly (no
+   HTML).
+2. `parseFragment` with a tree adapter that counts open elements (more than 256 fails
+   `portable_text_too_complex`) and created nodes (more than 150,000 fails
+   `portable_text_too_large`), and a tokenizer that counts each tag's attributes (more than 1,000
+   fails `portable_text_too_complex`). The counts are exact, so nothing can bypass them (plan
+   Ruling 1 replaced the spec's linear pre-scan, which under-counted nested lists).
+3. An iterative walk (an explicit stack, no recursion) that builds draft blocks
    with marks, link definitions and image slots, and collects warnings with counts per tag.
 4. Whitespace: outside `pre`, runs of HTML whitespace become one space, and leading and trailing
    spaces of a block are trimmed; empty text blocks are dropped. `pre` keeps its text exactly, minus
    one leading newline.
-5. Keys, the per-record image limit, and the JSON size check once every field is converted.
+5. The JSON size budget, enforced while building: a running estimate (each finished block exactly,
+   plus the open text block's text and spans, and 160 bytes per image block for what resolution
+   adds) stops the field with `portable_text_too_large` as soon as it passes what the record's
+   earlier fields left of 1 MiB. The record's later fields are then not converted.
+6. Keys, the per-record image limit, and the exact JSON size check once every field is converted.
 
 Any exception from `parse5` or `markdown-it` (for example a `RangeError`) fails the record with
 `portable_text_failed`, never the batch.
@@ -181,14 +187,13 @@ Any exception from `parse5` or `markdown-it` (for example a `RangeError`) fails 
 ```ts
 type PortableTextImage = { url: string /* normalized */; alt: string | null };
 type PortableTextDraft = {
-	format: "html" | "markdown" | "text";
 	/** Blocks; an image block holds `{ _type: "image", _key, slot }` until resolution. */
 	blocks: DraftBlock[];
-	/** One entry per distinct normalized URL; slots index into it. */
+	/** One entry per distinct normalized URL, with the alt of its first use; slots index into it. */
 	images: PortableTextImage[];
-	/** Images the draft already dropped (bad URL, over the limit), for `imageErrors`. */
-	invalidImages: { url: string; code: string; message: string }[];
 };
+// No invalidImages (plan Ruling 6): the converter applies imageErrors itself to URLs it can refuse
+// without the network (an image_dropped warning or an invalid_media_url error).
 // MappedRecord gains: portableText?: Record<string, PortableTextDraft | null>; kept out of `data`.
 // applyTemplate's result gains warnings: RecordError[] (also for records that then fail).
 ```
@@ -200,8 +205,8 @@ type PortableTextDraft = {
 | `link_dropped` | warning (error with `"fail"`) | An unsafe or unresolvable `href` |
 | `alt_truncated` | warning | An image `alt` over 1,000 characters |
 | `image_dropped` | warning (`imageErrors: "drop"`) | An image left out; the message has the M4c code and the URL |
-| `portable_text_too_large` | error | Over 512 KiB source, 2 MiB rendered Markdown, or 1 MiB of JSON per record |
-| `portable_text_too_complex` | error | Estimated nesting over 256 |
+| `portable_text_too_large` | error | Over 128 KiB of Markdown or 512 KiB of HTML or text in a field, 512 KiB of sources per record, 2 MiB rendered Markdown, 100,000 Markdown tokens or 150,000 HTML nodes in a field, or 1 MiB of JSON per record |
+| `portable_text_too_complex` | error | More than 256 open elements (counted exactly in `parse5`), or a tag with more than 1,000 attributes |
 | `portable_text_limit` | error (`imageErrors: "fail"`) | More than 50 distinct image URLs in the record |
 | `portable_text_failed` | error | The parser threw |
 | `invalid_media_url` and the M4c resolution codes | error (`imageErrors: "fail"`) | As in M4c, with field `<field>` and the URL in the message |
@@ -209,8 +214,10 @@ type PortableTextDraft = {
 
 ## Resolution, diff and writes
 
-- **Lookups.** `lookupRecordMedia` gains the Portable Text images: one `findMedia` per distinct URL
-  of the record (fields and Portable Text together, so each URL is looked up once), with
+- **Lookups.** `lookupPortableTextImages` looks up the Portable Text images next to M4c's
+  `lookupRecordMedia`: one `findMedia` per distinct URL over the record's Portable Text fields,
+  naming the first field that uses it (plan Ruling 15; a URL shared with an `image` field is looked
+  up by both paths and downloaded once, through the batch's obtained URLs), with
   `kind: "image"`, the image's alt and `refresh: false`. With `imageErrors: "fail"` every lookup
   error is collected, as for fields; with `"drop"` a lookup error becomes a warning and the slot
   is dropped.
@@ -233,9 +240,10 @@ type PortableTextDraft = {
 Ports and engine types:
 
 ```ts
-// MediaLookup gains: source: { kind: "field" } | { kind: "portableText"; field: string; index: number }
+// MediaLookup is unchanged (no source; plan Ruling 15): the two lookup paths keep their own bookkeeping.
 // RecordRow gains: warnings?: RecordError[]
-// Comparison gains: "portableText"; BY_TARGET.portableText = "portableText"
+// Comparison and BY_TARGET are unchanged (plan Ruling 3): Portable Text fields are not in data
+// before the plan, and planRecord compares them with the canonical form.
 type PortableTextPlanItem = {
 	/** The assembled blocks; null for an empty value. */
 	blocks: JsonValue[] | null;
@@ -251,13 +259,19 @@ type PortableTextPlanItem = {
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| Source per field | 512 KiB | With nesting at most 256, the worst parse measured about 0.25 s (M2) |
-| Rendered Markdown | 2 MiB | `markdown-it` output can be larger than its input |
-| Nesting estimate | 256 | parse5's cost grows with depth squared (M1) |
-| `portableText` mappings | 3 per template | At most about 0.75 s of conversion per record |
-| JSON per record | 1 MiB | D1 rows hold 2 MB, and a revision stores the data again (F13) |
+| Source per field | 128 KiB of Markdown; 512 KiB of HTML or text | With nesting at most 256, the worst HTML parse measured about 0.25 s (M2); `markdown-it`'s tokens and HTML take many times the source's memory (512 KiB of `"a\n\n"` exhausted a 128 MB heap) |
+| Sources per record | 512 KiB together | Three fields' parsed trees at their own limits do not fit in a Worker's memory |
+| Rendered Markdown | 2 MiB, checked while rendering | `markdown-it` output can be larger than its input; one reference definition used thousands of times renders tens of megabytes |
+| Markdown tokens | 100,000 per field | Memory grows with tokens, not source: a 100-column table header makes each short row after it 100 cells (1.7 KB made 200,000 tokens); 128 KiB of prose is about 11,000 |
+| HTML nodes | 150,000 per field (elements with their attributes, text and comments) | Each new paragraph reopens every active formatting element: 16 KiB of HTML made 164,000 nodes |
+| Open elements | 256, counted exactly in `parse5` | parse5's cost grows with depth squared (M1) |
+| Attributes per tag | 1,000, counted in `parse5`'s tokenizer | parse5 checks each new name against the earlier ones |
+| `portableText` mappings | 3 per template | Dense Markdown at the 128 KiB limit measured about 0.5-0.6 s of CPU per field |
+| JSON per record | 1 MiB, enforced while converting; each image block counted with 160 bytes | D1 rows hold 2 MB, and a revision stores the data again (F13); no field builds far past it |
 | Image URLs | 50 per record | With the budget deferral, 50 new images take about five Workers batches |
+| Markup issues | 19 per field plus a summary; invalid image URLs the same | Bounded under `unknownMarkup: "fail"` and `imageErrors: "fail"` too |
 | Warnings | 20 per record | Record rows stay small |
+| Errors | 50 per record (`errors_truncated`), each message at most 1,000 characters | No producer can make a row too large for D1 |
 | Workers batch | `WORKERS_LINKED_BATCH_CAP` (10) when images are imported, else `WORKERS_BATCH_CAP` (20) | Conversion is CPU, not D1, so a template without images keeps the plain cap |
 
 A batch still ends by its time budget, which includes conversion time.
@@ -290,10 +304,11 @@ A batch still ends by its time budget, which includes conversion time.
   the page (V2), with library items for the images and warnings on the rows; a re-run is
   `unchanged` with no request; a Markdown import; a dry run with no request and `newMedia`; a 404
   image dropped with a warning, and failing the record with `imageErrors: "fail"`; an image shared
-  with an `image` field downloaded once; a record with more new images than one batch allows is
-  deferred and completes in the next batches without a second download of the same URL.
+  with an `image` field downloaded once. The Node runtime has no lookup budget, so budget deferral
+  is tested in the unit suite and on workerd (plan Ruling 14).
 - **Cloudflare parity on `sites/dev-cf`:** one HTML and one Markdown import with images into R2,
-  and a re-run `unchanged`.
+  and a re-run `unchanged`; a record with more new images than one batch allows is deferred and
+  completes in the next batches without a second download of the same URL.
 
 ## Plan sizing
 
@@ -314,5 +329,6 @@ inside repeaters; image `srcset` (the largest candidate) and `alignment` from cl
 `displayWidth` / `displayHeight`; `blurhash` and `dominantColor` on image blocks; text alignment;
 Gutenberg block comments (dropped; their HTML is converted); links rewritten to entries of the same
 import; images from `data:` URLs; refresh for Portable Text images; Markdown extensions beyond
-tables and strikethrough (footnotes, task lists: their checkboxes are removed markup). The
+tables and strikethrough (footnotes, task lists: CommonMark has no task-list rule, so `- [ ] task`
+stays the item text `[ ] task`, plan Ruling 9; a raw `<input>` is removed markup). The
 production Cloudflare build blocker from M2 still stands.
