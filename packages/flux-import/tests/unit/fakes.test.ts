@@ -396,15 +396,28 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 		expect(decodeRev("not base64!")).toBeNull();
 		expect(decodeRev(btoa("x:2026-10-07T10:00:00.000Z"))).toBeNull();
 		expect(decodeRev(btoa("3:"))).toBeNull();
+		expect(decodeRev(btoa(":2026-10-07T10:00:00.000Z"))).toBeNull();
+		expect(decodeRev(btoa("-1:2026-10-07T10:00:00.000Z"))).toBeNull();
 	});
 
-	it("schedules without a new version: only updatedAt moves, so a standing clock keeps the revision", async () => {
+	it("schedules without a new version: only updatedAt moves, and always moves the revision", async () => {
 		const { content, clock } = setup();
 		const { id, rev } = await content.create({ ...base, slug: "a", data: { title: "A" } });
-		const same = await content.schedule({ ...base, id, rev, scheduledAt: at(120_000) });
-		expect(same).toEqual({ ok: true, rev });
+		// At a clock that has not moved, updatedAt still moves (1 ms), as on a real server.
+		const first = await content.schedule({ ...base, id, rev, scheduledAt: at(120_000) });
+		expect(first.ok && decodeRev(first.rev)).toEqual({ version: 1, updatedAt: at(1) });
+		expect(first.ok && first.rev).not.toBe(rev);
+		expect(await content.schedule({ ...base, id, rev, scheduledAt: at(180_000) })).toEqual({
+			ok: false,
+			reason: "conflict",
+		});
 		clock.t += 5;
-		const moved = await content.schedule({ ...base, id, rev, scheduledAt: at(180_000) });
+		const moved = await content.schedule({
+			...base,
+			id,
+			rev: content.revOf(id),
+			scheduledAt: at(180_000),
+		});
 		expect(moved.ok && decodeRev(moved.rev)).toEqual({ version: 1, updatedAt: at(5) });
 		expect(await content.get("products", "en", id)).toMatchObject({
 			status: "scheduled",
@@ -473,6 +486,78 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 			version: 1,
 			updatedAt: at(2),
 		});
+		// At a standing clock the unschedule still moves the revision.
+		content.blockStep = () => null;
+		await content.schedule({ ...base, id, rev: content.revOf(id), scheduledAt: at(60_000) });
+		const scheduledRev = content.revOf(id);
+		const again = await step();
+		expect(again.ok && again.state.rev).not.toBe(scheduledRev);
+		expect(again.ok && decodeRev(again.state.rev)).toEqual({ version: 1, updatedAt: at(4) });
+	});
+
+	it("refuses to unschedule a missing or trashed entry as EmDash's repository does", async () => {
+		const { content } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: {} });
+		await content.trash("products", id);
+		for (const target of [id, "missing"]) {
+			await expect(
+				content.revertStep({ ...base, id: target, rev: "any", step: "unschedule" }),
+			).rejects.toMatchObject({
+				code: "emdash_validation_error",
+				message: "Rolling back the entry (unschedule) failed: Content item not found",
+			});
+		}
+	});
+
+	it("schedules only an entry of the given collection and locale", async () => {
+		const { content } = setup();
+		const { id, rev } = await content.create({ ...base, slug: "a", data: {} });
+		const input = { ...base, id, rev, scheduledAt: at(60_000) };
+		for (const wrong of [{ collection: "articles" }, { locale: "fr" }]) {
+			await expect(content.schedule({ ...input, ...wrong })).rejects.toMatchObject({
+				code: "emdash_not_found",
+			});
+		}
+		expect(content.entries.get(id)?.scheduledAt).toBeNull();
+	});
+
+	it("adds 2 versions and keeps updatedAt when a draft update also sends terms or bylines (V3)", async () => {
+		const { content, clock } = setup();
+		const { id } = await content.create({ ...base, slug: "a", data: { title: "A" } });
+		await content.publish({ id, rev: content.revOf(id) });
+		const start = content.entries.get(id)!;
+		const v = start.rev;
+		const updatedAt = start.updatedAt;
+		clock.t += 1000;
+		await content.update({ id, rev: content.revOf(id), data: { title: "B" } });
+		expect(content.entries.get(id)).toMatchObject({ rev: v + 1, updatedAt });
+		await content.update({
+			id,
+			rev: content.revOf(id),
+			data: { title: "C" },
+			taxonomies: { tag: ["new"] },
+		});
+		expect(content.entries.get(id)).toMatchObject({ rev: v + 3, updatedAt });
+		await content.update({
+			id,
+			rev: content.revOf(id),
+			data: { title: "D" },
+			bylines: [{ bylineId: "b1", roleLabel: null }],
+		});
+		expect(content.entries.get(id)).toMatchObject({ rev: v + 5, updatedAt });
+		// Terms alone stage no draft: one version.
+		await content.update({ id, rev: content.revOf(id), taxonomies: { tag: ["old"] } });
+		expect(content.entries.get(id)?.rev).toBe(v + 6);
+		// Without revisions the row update is the only write: one version, and updatedAt moves.
+		content.plainCollections.add("plain");
+		const plain = await content.create({ ...base, collection: "plain", data: { t: "A" } });
+		await content.update({
+			id: plain.id,
+			rev: content.revOf(plain.id),
+			data: { t: "B" },
+			taxonomies: { tag: ["x"] },
+		});
+		expect(content.entries.get(plain.id)).toMatchObject({ rev: 2, updatedAt: at(1000) });
 	});
 
 	it("changes terms through the terms route without moving the revision (F8)", async () => {
@@ -533,6 +618,17 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 			scheduledAt: null,
 		});
 		expect(content.entries.get(id)?.rev).toBe(1);
+		// The refusal stamps updatedAt past the schedule's, even at a clock that has not moved.
+		const before = content.revOf(id);
+		await content.schedule({ ...base, id, rev: before, scheduledAt: at(120_000) });
+		const scheduled = content.revOf(id);
+		clock.t = Date.parse(at(120_000));
+		content.entries.get(id)!.updatedAt = at(120_000);
+		const stamped = content.revOf(id);
+		expect(content.runScheduled()).toEqual([]);
+		expect(scheduled).not.toBe(before);
+		expect(content.revOf(id)).not.toBe(stamped);
+		expect(content.entries.get(id)?.updatedAt).toBe(at(120_001));
 	});
 
 	it("sets publishedAt at the first publish and keeps it through later publishes and an unpublish", async () => {
@@ -587,7 +683,15 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 			scheduledAt: "2026-10-08T00:00Z",
 		});
 		expect(content.entries.get(id)?.scheduledAt).toBe("2026-10-08T00:00:00.000Z");
-		for (const bad of ["tomorrow", "2026-02-30T10:00", "2026-10-08T10:00:00 UTC"]) {
+		for (const bad of [
+			"tomorrow",
+			"2026-02-30T10:00",
+			"2026-10-08T10:00:00 UTC",
+			"2026-02-30T10:00:00Z",
+			"2026-10-08t10:00:00Z",
+			"2026-10-08T10:00:00z",
+			"2026-10-08T10:00:00+0200",
+		]) {
 			await expect(schedule(bad)).rejects.toMatchObject({
 				code: "emdash_validation_error",
 				message: `Scheduling the entry failed: Datetime ${JSON.stringify(bad)} is not a valid ISO 8601 datetime`,

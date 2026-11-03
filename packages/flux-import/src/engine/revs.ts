@@ -20,9 +20,10 @@ export function decodeRev(rev: string): DecodedRev | null {
 	}
 	const colon = text.indexOf(":");
 	if (colon === -1) return null;
-	const version = Number(text.slice(0, colon));
+	const versionText = text.slice(0, colon);
+	const version = Number(versionText);
 	const updatedAt = text.slice(colon + 1);
-	if (!Number.isInteger(version) || updatedAt === "" || Number.isNaN(Date.parse(updatedAt))) {
+	if (!/^\d+$/.test(versionText) || updatedAt === "" || Number.isNaN(Date.parse(updatedAt))) {
 		return null;
 	}
 	return { version, updatedAt };

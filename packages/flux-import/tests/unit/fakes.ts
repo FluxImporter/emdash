@@ -131,8 +131,19 @@ function compareText(a: string, b: string): number {
  * database/content-datetime.ts:176-186; datetime-normalization.ts:209-250), as `schedule` applies
  * it (repositories/content.ts:2106): a naive time is read in the site's zone, here UTC; an
  * explicit offset is converted to UTC with milliseconds; anything else is a validation error. The
- * fake's check of the explicit form approximates EmDash's zod `iso.datetime` schema.
+ * explicit form is checked as EmDash's `EXPLICIT_DATETIME_SCHEMA` does (datetime-normalization.ts:
+ * 66-69): `z.iso.datetime({ offset: true })` or with `precision: -1`, whose zod 4.5.4 patterns
+ * (v4/core/regexes.js:69, 77-102) are copied below: case-sensitive, a real calendar day, seconds
+ * required unless the time is `HH:MM`, an offset with a colon.
  */
+const ZOD_DATE =
+	"(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))";
+const ZOD_HHMM = "(?:[01]\\d|2[0-3]):[0-5]\\d";
+const ZOD_OFFSET = "(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d))";
+const EXPLICIT_DATETIME = new RegExp(
+	`^${ZOD_DATE}T(?:${ZOD_HHMM}:[0-5]\\d(?:\\.\\d+)?${ZOD_OFFSET}|${ZOD_HHMM}${ZOD_OFFSET})$`,
+);
+
 function normalizeScheduledAt(value: string, op: string): string {
 	const naive =
 		/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/.exec(value);
@@ -168,9 +179,7 @@ function normalizeScheduledAt(value: string, op: string): string {
 		) {
 			ms = t;
 		}
-	} else if (
-		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)
-	) {
+	} else if (EXPLICIT_DATETIME.test(value)) {
 		ms = Date.parse(value);
 	}
 	if (Number.isNaN(ms)) {
@@ -270,6 +279,16 @@ export class FakeContent implements ContentPort {
 
 	private stamp(): string {
 		return new Date(this.now()).toISOString();
+	}
+
+	/**
+	 * The `updated_at` a schedule or unschedule stamps. EmDash writes the time of the call, which on
+	 * a real server is always after the last write's, so the `_rev` always moves; a test clock may
+	 * stand still, so the fake moves it at least 1 ms past the old value.
+	 */
+	private later(e: StoredEntry): string {
+		const before = Date.parse(e.updatedAt);
+		return new Date(Math.max(this.now(), before + 1)).toISOString();
 	}
 
 	/** A write that changes the row: a new version and `updatedAt`. */
@@ -400,6 +419,14 @@ export class FakeContent implements ContentPort {
 		this.beforeStep(input.step, input.id);
 		const e = this.entries.get(input.id);
 		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			// As EmDash: unschedule has no policy read, so the repository's `findById`, which skips
+			// Trash, answers (repositories/content.ts:2163-2166).
+			if (input.step === "unschedule") {
+				throw new ContentWriteError(
+					"emdash_validation_error",
+					"Rolling back the entry (unschedule) failed: Content item not found",
+				);
+			}
 			throw new ContentWriteError("emdash_not_found", "Entry not found");
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
@@ -460,7 +487,7 @@ export class FakeContent implements ContentPort {
 				if (e.scheduledAt !== null) {
 					e.scheduledAt = null;
 					if (e.status !== "published") e.status = "draft";
-					e.updatedAt = this.stamp();
+					e.updatedAt = this.later(e);
 				}
 				break;
 		}
@@ -613,7 +640,13 @@ export class FakeContent implements ContentPort {
 		const columns = plain
 			? input.data !== undefined || input.slug !== undefined
 			: input.slug === null;
-		e.rev++;
+		// As EmDash on a revisioned collection (spec M5b V3): staging the draft is one version
+		// (`replaceDraftRevision`, repositories/content.ts:2840-2841); terms or bylines with it make
+		// the runtime also run the row update (emdash-runtime.ts:299-308, 4026-4037), another
+		// version that writes no column (repositories/content.ts:1071-1075; bylines set
+		// `primary_byline_id` by their own statement, byline.ts:1404-1409).
+		const liveMeta = input.taxonomies !== undefined || input.bylines !== undefined;
+		e.rev += staged && !plain && liveMeta ? 2 : 1;
 		if (columns) e.updatedAt = this.stamp();
 		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
 		if (staged && !plain) e.pendingPublish = true;
@@ -669,7 +702,7 @@ export class FakeContent implements ContentPort {
 		}
 		e.scheduledAt = at;
 		if (e.status !== "published") e.status = "scheduled";
-		e.updatedAt = this.stamp();
+		e.updatedAt = this.later(e);
 	}
 
 	async schedule(input: {
@@ -681,7 +714,9 @@ export class FakeContent implements ContentPort {
 	}): Promise<WriteResult> {
 		this.beforeSchedule(input.id);
 		const e = this.entries.get(input.id);
-		if (!e || e.trashed) throw new ContentWriteError("emdash_not_found", "Entry not found");
+		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			throw new ContentWriteError("emdash_not_found", "Entry not found");
+		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
 		const blocked = this.blockStep("schedule", e.id);
@@ -732,7 +767,7 @@ export class FakeContent implements ContentPort {
 			if (this.blockStep("publish", e.id) !== null) {
 				e.scheduledAt = null;
 				if (e.status !== "published") e.status = "draft";
-				e.updatedAt = this.stamp();
+				e.updatedAt = this.later(e);
 				continue;
 			}
 			this.makeLive(e, firstAt);
