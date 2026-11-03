@@ -5,14 +5,15 @@ import {
 	MEDIA_MIN_LEFT_MS,
 	type MediaContext,
 	MediaDeferred,
+	type MediaDeps,
 	type MediaRequest,
 	mediaFieldValue,
 	mediaMapKey,
+	obtainMedia,
 	obtainRecordMedia,
-	resolveMedia,
 } from "../../src/engine/media.js";
-import { ContentWriteError, MediaUploadError } from "../../src/engine/ports.js";
-import { COST_CALL, COST_MEDIA, LookupCache } from "../../src/engine/resolve.js";
+import { ContentWriteError, type MediaInfo, MediaUploadError } from "../../src/engine/ports.js";
+import { COST_CALL, COST_MEDIA, type LinkError, LookupCache } from "../../src/engine/resolve.js";
 import { MediaError } from "../../src/sources/media-fetch.js";
 import { makeDeps } from "./fakes.js";
 
@@ -38,7 +39,27 @@ function setup(ctx: Partial<MediaContext> = {}) {
 	return { deps, clock, ctx: context, cache: new LookupCache() };
 }
 
-describe("resolveMedia", () => {
+/**
+ * One media request resolved as the importer does: the map lookup, then in a real run the
+ * download and upload when it is a miss (or a hit with `refresh`); a dry run gives `item: null`
+ * for a miss.
+ */
+async function resolveMedia(
+	deps: MediaDeps,
+	cache: LookupCache,
+	ctx: MediaContext,
+	field: string,
+	request: MediaRequest,
+): Promise<
+	{ ok: true; item: MediaInfo | null; downloaded: boolean } | { ok: false; error: LinkError }
+> {
+	const found = await findMedia(deps, cache, ctx, field, request);
+	if (!found.ok) return found;
+	if (ctx.dryRun) return { ok: true, item: found.lookup.item, downloaded: false };
+	return obtainMedia(deps, cache, ctx, found.lookup);
+}
+
+describe("findMedia and obtainMedia", () => {
 	it("downloads a miss, uploads it with its alt and filename, and writes the map row", async () => {
 		const { deps, ctx, cache } = setup();
 		const resolved = await resolveMedia(deps, cache, ctx, "photo", image(A, { alt: "A chair" }));
@@ -349,6 +370,27 @@ describe("record media", () => {
 		expect(cache.spent).toBe(2 * COST_CALL);
 		await obtainRecordMedia(deps, cache, ctx, lookups);
 		expect(cache.spent).toBe(2 * COST_CALL + 2 * COST_MEDIA);
+	});
+
+	it("defers a download that would bring the batch past its budget, never the batch's first", async () => {
+		const { deps, ctx } = setup();
+		// Two lookups and the first download make 62; a second download would make 122.
+		const cache = new LookupCache([], 100);
+		const { lookups } = await lookupRecordMedia(deps, cache, ctx, {
+			photo: image(A),
+			hero: image(B),
+		});
+		const deferred = await obtainRecordMedia(deps, cache, ctx, lookups).catch((e: unknown) => e);
+		expect(deferred).toBeInstanceOf(MediaDeferred);
+		expect((deferred as MediaDeferred).newMedia).toEqual([`photo: ${A}`]);
+		expect(cache.spent).toBe(2 * COST_CALL + COST_MEDIA);
+		expect(deps.mediaFetcher.urls()).toEqual([A]);
+		// The next batch finds A in the map and downloads B first, whatever it spent before.
+		const next = new LookupCache([], 100);
+		next.spend(99);
+		const retried = await lookupRecordMedia(deps, next, ctx, { photo: image(A), hero: image(B) });
+		expect(await obtainRecordMedia(deps, next, ctx, retried.lookups)).toMatchObject({ ok: true });
+		expect(deps.mediaFetcher.urls()).toEqual([A, B]);
 	});
 });
 

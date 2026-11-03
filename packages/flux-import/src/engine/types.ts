@@ -80,7 +80,13 @@ export interface Job {
 	 * Terms and media a record created before a batch left it for the next one (a download that
 	 * would start too late), merged into its row when it completes. Absent otherwise.
 	 */
-	deferred?: { seq: number; newTerms: string[]; newMedia: string[] };
+	deferred?: {
+		seq: number;
+		newTerms: string[];
+		newMedia: string[];
+		/** Image downloads that failed for good (media map key and error), so the retry skips them. */
+		failed?: { key: string; error: { field: string; code: string; message: string } }[];
+	};
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;
@@ -134,6 +140,11 @@ export interface RecordRow {
 	 * already stored, or that a dry run would download. Absent when there are none.
 	 */
 	newMedia?: string[];
+	/**
+	 * What the record's latest conversion reported without failing it (M4d), at most
+	 * `MAX_RECORD_WARNINGS`. Absent when there are none.
+	 */
+	warnings?: RecordError[];
 	updatedAt: string;
 }
 
@@ -190,6 +201,52 @@ export function recordKey(jobId: string, seq: number): string {
 
 export function linkKey(collection: string, locale: string, sourceKey: string): string {
 	return `${collection}:${locale}:${sourceKey}`;
+}
+
+/** Warnings kept on one record row. */
+export const MAX_RECORD_WARNINGS = 20;
+/** Errors kept on one record row, so that no producer can make a row too large to store. */
+export const MAX_RECORD_ERRORS = 50;
+/** The longest message kept in a row's error or warning, in characters. */
+export const MAX_RECORD_MESSAGE_LENGTH = 1000;
+
+/** `issue` with its message cut to `MAX_RECORD_MESSAGE_LENGTH` characters. */
+function bounded(issue: RecordError): RecordError {
+	if (issue.message.length <= MAX_RECORD_MESSAGE_LENGTH) return issue;
+	return { ...issue, message: `${issue.message.slice(0, MAX_RECORD_MESSAGE_LENGTH - 1)}…` };
+}
+
+/** At most `max` issues, each message bounded: past it, the last one kept says how many more. */
+function capIssues(
+	issues: readonly RecordError[],
+	max: number,
+	summary: (more: number) => RecordError,
+): RecordError[] {
+	if (issues.length <= max) return issues.map(bounded);
+	const kept = issues.slice(0, max - 1).map(bounded);
+	return [...kept, summary(issues.length - kept.length)];
+}
+
+/**
+ * At most `MAX_RECORD_WARNINGS` warnings: when there are more, the last one kept says how many
+ * were left out (`warnings_truncated`). Each message is at most `MAX_RECORD_MESSAGE_LENGTH`.
+ */
+export function capWarnings(warnings: readonly RecordError[]): RecordError[] {
+	return capIssues(warnings, MAX_RECORD_WARNINGS, (more) => ({
+		code: "warnings_truncated",
+		message: `${more} more warnings`,
+	}));
+}
+
+/**
+ * At most `MAX_RECORD_ERRORS` errors: when there are more, the last one kept says how many were
+ * left out (`errors_truncated`). Each message is at most `MAX_RECORD_MESSAGE_LENGTH`.
+ */
+export function capErrors(errors: readonly RecordError[]): RecordError[] {
+	return capIssues(errors, MAX_RECORD_ERRORS, (more) => ({
+		code: "errors_truncated",
+		message: `${more} more errors`,
+	}));
 }
 
 export function emptyCounters(): Counters {

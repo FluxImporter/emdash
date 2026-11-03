@@ -220,6 +220,8 @@ export type MediaLookup = {
 export class MediaDeferred extends Error {
 	/** The record's media (`field: url`) downloaded before the deferral. */
 	newMedia: string[] = [];
+	/** The record's downloads that failed for good (media map key and error), kept for the retry. */
+	failed: { key: string; error: LinkError }[] = [];
 	constructor() {
 		super("No time left in this batch for the next download");
 		this.name = "MediaDeferred";
@@ -313,7 +315,8 @@ function uploadError(field: string, e: MediaUploadError): LinkError {
  * The item for a looked-up request in a real run: a hit as it is, or a download (a conditional
  * one for a hit with `refresh`), whose type comes from its bytes, uploaded through EmDash and
  * written to the media map before anything else. Throws `MediaDeferred` when a download other
- * than the batch's first would start with less than `MEDIA_MIN_LEFT_MS` left.
+ * than the batch's first would start with less than `MEDIA_MIN_LEFT_MS` left, or would bring
+ * the batch's lookup cost past its budget (M4d).
  */
 export async function obtainMedia(
 	deps: MediaDeps,
@@ -349,7 +352,8 @@ export async function obtainMedia(
 	}
 	const now = deps.now();
 	const first = cache.mediaDownloads === 0;
-	if (!first && cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS) throw new MediaDeferred();
+	const late = cache.mediaDeadline - now < MEDIA_MIN_LEFT_MS;
+	if (!first && (late || cache.spent + COST_MEDIA > cache.budget)) throw new MediaDeferred();
 	cache.mediaDownloads++;
 	cache.spend(COST_MEDIA);
 	try {
@@ -385,10 +389,14 @@ export async function obtainMedia(
 			? mediaTypeProblem(type.mimeType, request.kind, ctx.targets[field]?.allowedMimeTypes)
 			: type.message;
 		if (!type.ok || problem !== null) {
-			return {
-				ok: false,
-				error: fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`),
-			};
+			const error = fieldError(field, "media_type_not_allowed", `${request.url}: ${problem}`);
+			// A file no field can take (markup, an unknown type, one EmDash never accepts) is fetched
+			// once per batch, like any other failure. A type only this field refuses is not: the map
+			// key is the URL alone, and another field may take the file.
+			if (!type.ok || mediaTypeProblem(type.mimeType, "file", undefined) !== null) {
+				cache.mediaFailed.set(lookup.key, error);
+			}
+			return { ok: false, error };
 		}
 		const { item, deduplicated } = await deps.media.upload({
 			filename: mediaFilename(fetched.finalUrl, type.mimeType),
@@ -435,27 +443,6 @@ export async function obtainMedia(
 		cache.mediaFailed.set(lookup.key, error);
 		return { ok: false, error };
 	}
-}
-
-/**
- * Resolves one media request: the map lookup, then in a real run the download and upload when
- * it is a miss (or a hit with `refresh`). A dry run gives `item: null` for a miss. This is the
- * resolver M4d calls for each Portable Text image URL; it shares the batch's cache, budget and
- * deadline.
- */
-export async function resolveMedia(
-	deps: MediaDeps,
-	cache: LookupCache,
-	ctx: MediaContext,
-	field: string,
-	request: MediaRequest,
-): Promise<
-	{ ok: true; item: MediaInfo | null; downloaded: boolean } | { ok: false; error: LinkError }
-> {
-	const found = await findMedia(deps, cache, ctx, field, request);
-	if (!found.ok) return found;
-	if (ctx.dryRun) return { ok: true, item: found.lookup.item, downloaded: false };
-	return obtainMedia(deps, cache, ctx, found.lookup);
 }
 
 /** Every media field of a record looked up; all errors are collected. */

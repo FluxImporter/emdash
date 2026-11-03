@@ -5,6 +5,7 @@ import {
 	type LinkPlan,
 	type MediaPlanItem,
 	type PlanAction,
+	type PortableTextPlanItem,
 	planRecord,
 	type RecordPlan,
 } from "./diff.js";
@@ -27,6 +28,12 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
+import {
+	lookupPortableTextImages,
+	obtainPortableTextImages,
+	portableTextPlan,
+	type RecordImages,
+} from "./portable-text-images.js";
 import {
 	ContentWriteError,
 	type EntrySnapshot,
@@ -55,11 +62,14 @@ import {
 } from "./template.js";
 import {
 	type Counters,
+	capErrors,
+	capWarnings,
 	type EngineDeps,
 	emptyCounters,
 	type Job,
 	type LinkRow,
 	linkKey,
+	type RecordError,
 	type RecordRow,
 	recordKey,
 } from "./types.js";
@@ -177,8 +187,15 @@ export async function processRecord(
 	}
 
 	const base = { jobId: job.id, seq: rec.seq, start: rec.start, end: rec.end };
+	// Every row is saved through here, so the caps hold whatever produced its errors and warnings.
 	const save = (fields: RowFields) =>
-		deps.records.put(key, { ...base, ...fields, updatedAt: iso(deps) });
+		deps.records.put(key, {
+			...base,
+			...fields,
+			...(fields.errors ? { errors: capErrors(fields.errors) } : {}),
+			...(fields.warnings ? { warnings: capWarnings(fields.warnings) } : {}),
+			updatedAt: iso(deps),
+		});
 
 	const cache = opts.cache ?? new LookupCache();
 	const row = await decide(deps, job, template, rec, existing, save, cache);
@@ -202,6 +219,8 @@ type RecordCtx = {
 	links?: ResolvedLinks;
 	/** The record's media field values, written with the data; absent when it maps none. */
 	media?: Record<string, MediaPlanItem | null>;
+	/** The record's Portable Text values, written with the data; absent when it maps none. */
+	portableText?: Record<string, PortableTextPlanItem | null>;
 };
 
 const PENDING_DRAFT_MESSAGE =
@@ -358,13 +377,17 @@ async function linkPlan(
 	return { resolved, current, childSide };
 }
 
-/** What a record found to create or download, listed on its row whatever happens to it. */
-type Found = { newTerms: string[]; newMedia: string[] };
+/**
+ * What a record found to create or download, and the warnings of its conversion and images,
+ * listed on its row whatever happens to it.
+ */
+type Found = { newTerms: string[]; newMedia: string[]; warnings: RecordError[] };
 
 /**
  * Decides and writes one record. Terms that resolution creates (or, in a dry run, would create)
- * are listed on the row as `newTerms`, and media it downloads (or would) as `newMedia`, whatever
- * happens to the record afterwards.
+ * are listed on the row as `newTerms`, media it downloads (or would) as `newMedia`, and what its
+ * conversion and images reported as `warnings`, whatever happens to the record afterwards. A
+ * retried record's warnings replace the earlier ones.
  */
 async function decide(
 	deps: EngineDeps,
@@ -375,9 +398,12 @@ async function decide(
 	save: (fields: RowFields) => Promise<void>,
 	cache: LookupCache,
 ): Promise<RowFields> {
-	const found: Found = { newTerms: [], newMedia: [] };
+	const found: Found = { newTerms: [], newMedia: [], warnings: [] };
 	const carried = job.deferred?.seq === rec.seq ? job.deferred : undefined;
 	let row: RowFields;
+	// Failures carried from the record's earlier batch apply to that record only: a later record
+	// may take the same file in a field that accepts it.
+	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
 	try {
 		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
 	} catch (e) {
@@ -387,11 +413,24 @@ async function decide(
 			const newMedia = [
 				...new Set([...(carried?.newMedia ?? []), ...found.newMedia, ...e.newMedia]),
 			];
-			if (newTerms.length > 0 || newMedia.length > 0) {
-				job.deferred = { seq: rec.seq, newTerms, newMedia };
+			const failed = new Map(
+				[...(carried?.failed ?? []), ...e.failed].map((f) => [f.key, f] as const),
+			);
+			if (newTerms.length > 0 || newMedia.length > 0 || failed.size > 0) {
+				job.deferred = {
+					seq: rec.seq,
+					newTerms,
+					newMedia,
+					...(failed.size > 0 ? { failed: [...failed.values()].slice(0, 50) } : {}),
+				};
 			}
 		}
 		throw e;
+	} finally {
+		// The identity check keeps a failure this batch recorded for the same URL itself.
+		for (const { key, error } of carried?.failed ?? []) {
+			if (cache.mediaFailed.get(key) === error) cache.mediaFailed.delete(key);
+		}
 	}
 	// A retried or deferred record keeps the terms and media its earlier attempts created.
 	const newTerms = [
@@ -405,6 +444,7 @@ async function decide(
 		...row,
 		...(newTerms.length > 0 ? { newTerms } : {}),
 		...(newMedia.length > 0 ? { newMedia } : {}),
+		...(found.warnings.length > 0 ? { warnings: found.warnings } : {}),
 	};
 }
 
@@ -470,6 +510,7 @@ async function decideRecord(
 	// A filtered record stops here: its key is not read and EmDash is never called.
 	if (!filter.keep) return { status: "filtered", sourceKey: null, entryId: null };
 	const mapped = await applyTemplate(template, rec.value);
+	found.warnings.push(...(mapped.warnings ?? []));
 	if (!mapped.ok)
 		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
 
@@ -488,7 +529,9 @@ async function decideRecord(
 	try {
 		const requests = mapped.value.links;
 		const mediaRequests = mapped.value.media;
-		if (requests || mediaRequests) cache.spend(COST_RECORD);
+		const drafts = mapped.value.portableText;
+		const hasImages = Object.values(drafts ?? {}).some((d) => d !== null && d.images.length > 0);
+		if (requests || mediaRequests || hasImages) cache.spend(COST_RECORD);
 		const errors: { field: string; code: string; message: string }[] = [];
 		if (requests) {
 			const resolution = await resolveLinks(
@@ -515,6 +558,19 @@ async function decideRecord(
 			lookups = looked.lookups;
 			errors.push(...looked.errors);
 		}
+		let images: RecordImages | undefined;
+		if (drafts) {
+			const looked = await lookupPortableTextImages(
+				deps,
+				cache,
+				mediaContext(job),
+				drafts,
+				template.portableText,
+			);
+			images = looked.images;
+			errors.push(...looked.errors);
+			found.warnings.push(...looked.warnings);
+		}
 		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		// Reference selections are read only when the template maps reference fields.
 		const read = { references: requests?.references !== undefined };
@@ -536,15 +592,28 @@ async function decideRecord(
 		entryId = entry?.id ?? null;
 		const links = ctx.links ? await linkPlan(deps, cache, job, entry, ctx.links) : undefined;
 		const comparisons = comparisonsOf(job.template, job.targetFields);
-		// Before any download: a file not stored yet counts as a change.
+		// Before any download: a file or image not stored yet counts as a change.
 		const media = lookups ? lookedUpMedia(lookups, job.dryRun, job.id) : undefined;
-		const plan = planRecord(entry, mapped.value, comparisons, links, media);
+		if (drafts && images) {
+			ctx.portableText = portableTextPlan(drafts, images);
+			const required = emptiedRequired(ctx.portableText, job);
+			if (required.length > 0) {
+				return { status: "failed", sourceKey, entryId, errors: required };
+			}
+		}
+		const plan = planRecord(entry, mapped.value, comparisons, links, media, ctx.portableText);
 		action = plan.action;
+		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
 			for (const [field, item] of Object.entries(media ?? {})) {
 				const url = mediaRequests?.[field]?.url;
 				if (item?.mediaId === null && url) found.newMedia.push(`${field}: ${url}`);
+			}
+			// A URL an image field also downloads is listed once, under that field.
+			const listed = new Set(Object.values(mediaRequests ?? {}).map((r) => r?.url));
+			for (const [url, { field }] of misses) {
+				if (!listed.has(url)) found.newMedia.push(`${field}: ${url}`);
 			}
 			return { status: "planned", sourceKey, entryId, action: plan.action, changes: plan.changes };
 		}
@@ -566,15 +635,48 @@ async function decideRecord(
 				return notImported("locked", sourceKey, entry.id, plan.action, "locked", LOCKED_MESSAGE);
 			}
 		}
-		if (!lookups) return await writeRecord(ctx, entry, plan, mapped.value);
-		// Downloads only for a record that will be written, after the draft and lock checks.
-		const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
-		found.newMedia = obtained.newMedia;
-		if (!obtained.ok) {
-			return { status: "failed", sourceKey, entryId, action: plan.action, errors: obtained.errors };
+		if (!lookups && misses.length === 0) return await writeRecord(ctx, entry, plan, mapped.value);
+		// Downloads only for a record that will be written, after the draft and lock checks: field
+		// media first, then Portable Text images in document order.
+		if (lookups) {
+			const obtained = await obtainRecordMedia(deps, cache, mediaContext(job), lookups);
+			found.newMedia = obtained.newMedia;
+			if (!obtained.ok) {
+				return {
+					status: "failed",
+					sourceKey,
+					entryId,
+					action: plan.action,
+					errors: obtained.errors,
+				};
+			}
+			ctx.media = obtainedMedia(obtained.media);
 		}
-		ctx.media = obtainedMedia(obtained.media);
-		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media);
+		if (drafts && images && misses.length > 0) {
+			const obtained = await obtainPortableTextImages(
+				deps,
+				cache,
+				mediaContext(job),
+				images,
+				found.newMedia,
+			);
+			found.warnings.push(...obtained.warnings);
+			if (!obtained.ok) {
+				return {
+					status: "failed",
+					sourceKey,
+					entryId,
+					action: plan.action,
+					errors: obtained.errors,
+				};
+			}
+			ctx.portableText = portableTextPlan(drafts, images);
+			const required = emptiedRequired(ctx.portableText, job);
+			if (required.length > 0) {
+				return { status: "failed", sourceKey, entryId, action: plan.action, errors: required };
+			}
+		}
+		const final = planRecord(entry, mapped.value, comparisons, links, ctx.media, ctx.portableText);
 		action = final.action;
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
@@ -591,6 +693,19 @@ async function decideRecord(
 			errors: [{ code: e.code, message: e.message }],
 		};
 	}
+}
+
+/**
+ * A `required` error for each required Portable Text field that holds a value in the source but
+ * is left empty once its dropped images are left out, which EmDash would refuse to write.
+ */
+function emptiedRequired(
+	plan: Readonly<Record<string, PortableTextPlanItem | null>>,
+	job: Job,
+): RecordError[] {
+	return Object.entries(plan)
+		.filter(([field, item]) => item === null && job.targetFields?.[field]?.required === true)
+		.map(([field]) => ({ field, code: "required", message: "The field is required" }));
 }
 
 /** The entry already holds the mapped data: finish an unfinished write or publish our own draft. */
@@ -719,9 +834,13 @@ async function writeRecord(
 	const { collection, locale } = job.template;
 	await save({ status: "writing", sourceKey, entryId: entry?.id ?? null, action: plan.action });
 	const slugPart = mapped.slug === undefined ? {} : { slug: mapped.slug };
-	// Media fields are data fields: their values (null clears one) are written with the rest.
+	// Media and Portable Text fields are data fields: their values (null clears one) are written
+	// with the rest.
 	const media: Record<string, FieldValue> = {};
 	for (const [field, item] of Object.entries(ctx.media ?? {})) media[field] = item?.value ?? null;
+	for (const [field, item] of Object.entries(ctx.portableText ?? {})) {
+		media[field] = item?.blocks ?? null;
+	}
 	const data = { ...mapped.data, ...media };
 	let written: { id: string; rev: string };
 	if (!entry) {

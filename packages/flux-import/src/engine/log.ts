@@ -9,6 +9,7 @@ export const LOG_COLUMNS = [
 	"error_code",
 	"error_field",
 	"message",
+	"warnings",
 ] as const;
 
 const PAGE = 100;
@@ -33,6 +34,9 @@ export function recordsToCsvLines(rows: RecordRow[]): string {
 				first?.code,
 				first?.field,
 				r.errors?.map((e) => e.message).join("; "),
+				r.warnings
+					?.map((w) => [w.field, w.code, w.message].filter((part) => part !== undefined).join(": "))
+					.join("; "),
 			]
 				.map(csvCell)
 				.join(",");

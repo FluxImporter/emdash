@@ -121,7 +121,7 @@ describe("malformed input", () => {
 		expect(res.headers.get("content-disposition")).toContain(`flux-import-${job!.id}.csv`);
 		const lines = (await res.text()).trimEnd().split("\r\n");
 		expect(lines[0]).toBe(
-			"record,status,source_key,entry_id,action,error_code,error_field,message",
+			"record,status,source_key,entry_id,action,error_code,error_field,message,warnings",
 		);
 		const cells = lines.slice(1).map((l) => l.split(","));
 		expect(cells.map((c) => c[1])).toEqual(["failed", "failed"]);

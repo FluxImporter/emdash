@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
 	type Comparison,
 	type CurrentLinks,
+	canonicalPortableText,
 	comparisonsOf,
 	deepEqual,
 	type LinkPlan,
 	type MediaPlanItem,
+	type PortableTextPlanItem,
 	planRecord,
+	portableTextSummary,
 } from "../../src/engine/diff.js";
 import type { ResolvedLinks } from "../../src/engine/links.js";
 import { templateSchema } from "../../src/engine/template.js";
@@ -382,5 +385,149 @@ describe("planRecord with media", () => {
 				{ field: "bylines", before: null, after: ["alex"] },
 			],
 		});
+	});
+});
+
+describe("Portable Text in the plan", () => {
+	const block = (key: string, text: string, extra: Record<string, unknown> = {}) => ({
+		_type: "block",
+		_key: key,
+		style: "normal",
+		children: [{ _type: "span", _key: `${key}s0`, text, marks: [] }],
+		...extra,
+	});
+	const linked = (key: string, def: string, blank?: boolean) => ({
+		_type: "block",
+		_key: key,
+		style: "normal",
+		children: [{ _type: "span", _key: `${key}s0`, text: "x", marks: ["em", def] }],
+		markDefs: [
+			{
+				_type: "link",
+				_key: def,
+				href: "https://x.test/",
+				...(blank === undefined ? {} : { blank }),
+			},
+		],
+	});
+	const image = (key: string, id: string) => ({
+		_type: "image",
+		_key: key,
+		asset: { _ref: id, url: `/_emdash/api/media/file/${id}.png` },
+		width: 4,
+		height: 3,
+	});
+	const value = [block("b0", "Hello"), linked("b1", "b1l0"), image("b2", "m1")];
+	const item = (blocks: unknown[], pending = 0): PortableTextPlanItem => ({
+		blocks: blocks as PortableTextPlanItem["blocks"],
+		pending,
+		text: portableTextSummary(blocks, pending),
+	});
+	const record = { key: "P1", data: { title: "Post" } };
+	const plan = (stored: unknown, body: PortableTextPlanItem | null) =>
+		planRecord(
+			{ slug: null, data: { title: "Post", body: stored } },
+			record,
+			new Map(),
+			undefined,
+			undefined,
+			{
+				body,
+			},
+		);
+
+	it("ignores keys, empty marks and markDefs, a normal style, blank: false and list ids", () => {
+		// What EmDash's editor writes back for the same value (Fact V2).
+		const edited = [
+			{ _type: "block", _key: "k1", children: [{ _type: "span", _key: "k2", text: "Hello" }] },
+			{
+				_type: "block",
+				_key: "k3",
+				style: "normal",
+				children: [{ _type: "span", _key: "k4", text: "x", marks: ["em", "zz9"] }],
+				markDefs: [{ _type: "link", _key: "zz9", href: "https://x.test/", blank: false }],
+				listId: "legacy:root:1:k3",
+			},
+			{ ...image("k5", "m1"), _key: "k5" },
+		];
+		expect(canonicalPortableText(edited)).toEqual(canonicalPortableText(value));
+		expect(plan(edited, item(value))).toEqual({ action: "unchanged", changes: [] });
+		expect(
+			canonicalPortableText([block("b0", "a", { listItem: "number", level: 1, listStart: 1 })]),
+		).toEqual(canonicalPortableText([block("x", "a", { listItem: "number", level: 1 })]));
+	});
+
+	it("compares marks as a set, as the editor reorders them on save", () => {
+		const spans = (marks: string[], def: string) => [
+			{
+				_type: "block",
+				_key: "a",
+				children: [{ _type: "span", _key: "s", text: "x", marks }],
+				markDefs: [{ _type: "link", _key: def, href: "https://x.test/" }],
+			},
+		];
+		expect(canonicalPortableText(spans(["em", "strong", "b1l0"], "b1l0"))).toEqual(
+			canonicalPortableText(spans(["zz9", "strong", "em"], "zz9")),
+		);
+		expect(canonicalPortableText(spans(["em", "strong", "b1l0"], "b1l0"))).not.toEqual(
+			canonicalPortableText(spans(["em", "b1l0"], "b1l0")),
+		);
+	});
+
+	it("compares text, marks, link targets, images and block order", () => {
+		const changed = (blocks: unknown[]) => plan(blocks, item(value)).action;
+		expect(changed([block("b0", "Hello!"), linked("b1", "b1l0"), image("b2", "m1")])).toBe(
+			"update",
+		);
+		expect(changed([block("b0", "Hello"), linked("b1", "b1l0", true), image("b2", "m1")])).toBe(
+			"update",
+		);
+		expect(changed([block("b0", "Hello"), linked("b1", "b1l0"), image("b2", "m2")])).toBe("update");
+		expect(changed([linked("b1", "b1l0"), block("b0", "Hello"), image("b2", "m1")])).toBe("update");
+		expect(
+			changed([block("b0", "Hello", { style: "h2" }), linked("b1", "b1l0"), image("b2", "m1")]),
+		).toBe("update");
+	});
+
+	it("treats a stored value that is not an array, or nests too deep, as a change", () => {
+		let deep: unknown = "x";
+		for (let i = 0; i < 40; i++) deep = { a: deep };
+		expect(canonicalPortableText("text")).toBeUndefined();
+		expect(canonicalPortableText([{ _type: "block", children: [deep] }])).toBeUndefined();
+		expect(plan("<p>Hello</p>", item(value)).changes).toEqual([
+			{ field: "body", before: "a value that is not Portable Text", after: "3 blocks, 1 image" },
+		]);
+	});
+
+	it("shows counts instead of Portable Text, and pending images as new", () => {
+		expect(portableTextSummary([block("b0", "a")])).toBe("1 block");
+		expect(portableTextSummary(value, 2)).toBe("5 blocks, 3 images (2 new)");
+		expect(plan(value, item(value, 1))).toEqual({
+			action: "update",
+			changes: [
+				{ field: "body", before: "3 blocks, 1 image", after: "4 blocks, 2 images (1 new)" },
+			],
+		});
+		expect(
+			planRecord(null, record, new Map(), undefined, undefined, { body: item(value) }),
+		).toEqual({
+			action: "create",
+			changes: [
+				{ field: "title", before: null, after: "Post" },
+				{ field: "body", before: null, after: "3 blocks, 1 image" },
+			],
+		});
+	});
+
+	it("treats an empty value as nothing stored, an empty array included", () => {
+		expect(plan(null, null)).toEqual({ action: "unchanged", changes: [] });
+		expect(plan([], null)).toEqual({ action: "unchanged", changes: [] });
+		expect(plan(undefined, null)).toEqual({ action: "unchanged", changes: [] });
+		expect(plan(value, null).changes).toEqual([
+			{ field: "body", before: "3 blocks, 1 image", after: null },
+		]);
+		expect(plan([], item(value)).changes).toEqual([
+			{ field: "body", before: null, after: "3 blocks, 1 image" },
+		]);
 	});
 });

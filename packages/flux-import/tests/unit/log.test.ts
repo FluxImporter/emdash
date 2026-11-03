@@ -6,7 +6,7 @@ import {
 	LogTooLargeError,
 	recordsToCsvLines,
 } from "../../src/engine/log.js";
-import { type RecordRow, recordKey } from "../../src/engine/types.js";
+import { capErrors, capWarnings, type RecordRow, recordKey } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
 
 const row = (seq: number, patch: Partial<RecordRow> = {}): RecordRow => ({
@@ -55,10 +55,61 @@ describe("recordsToCsvLines", () => {
 			row(2, { status: "planned", action: "update" }),
 		]);
 		expect(lines).toBe(
-			"1,created,S0,e0,,,,\r\n" +
-				'2,failed,S1,,,invalid_number,price,"""x"" is not a number; The slug would be empty"\r\n' +
-				"3,planned,S2,e2,update,,,\r\n",
+			"1,created,S0,e0,,,,,\r\n" +
+				'2,failed,S1,,,invalid_number,price,"""x"" is not a number; The slug would be empty",\r\n' +
+				"3,planned,S2,e2,update,,,,\r\n",
 		);
+	});
+
+	it("ends each line with the record's warnings", () => {
+		const lines = recordsToCsvLines([
+			row(0, {
+				warnings: [
+					{ field: "body", code: "unknown_markup", message: "Kept the text of 1 <table> element" },
+					{ code: "warnings_truncated", message: "3 more warnings" },
+				],
+			}),
+		]);
+		expect(lines).toBe(
+			"1,created,S0,e0,,,,,body: unknown_markup: Kept the text of 1 <table> element; warnings_truncated: 3 more warnings\r\n",
+		);
+	});
+});
+
+describe("capWarnings", () => {
+	it("keeps at most 20 warnings, the last saying how many more there were", () => {
+		const warnings = Array.from({ length: 25 }, (_, i) => ({
+			field: "body",
+			code: "image_dropped",
+			message: `w${i}`,
+		}));
+		expect(capWarnings(warnings.slice(0, 20))).toEqual(warnings.slice(0, 20));
+		expect(capWarnings(warnings)).toEqual([
+			...warnings.slice(0, 19),
+			{ code: "warnings_truncated", message: "6 more warnings" },
+		]);
+	});
+
+	it("cuts each message to 1,000 characters", () => {
+		const long = { field: "body", code: "link_dropped", message: "x".repeat(5000) };
+		const [cut] = capWarnings([long]);
+		expect(cut).toEqual({ ...long, message: `${"x".repeat(999)}…` });
+		expect(capErrors([long])).toEqual([cut]);
+	});
+});
+
+describe("capErrors", () => {
+	it("keeps at most 50 errors, the last saying how many more there were", () => {
+		const errors = Array.from({ length: 60 }, (_, i) => ({
+			field: "body",
+			code: "invalid_media_url",
+			message: `e${i}`,
+		}));
+		expect(capErrors(errors.slice(0, 50))).toEqual(errors.slice(0, 50));
+		expect(capErrors(errors)).toEqual([
+			...errors.slice(0, 49),
+			{ code: "errors_truncated", message: "11 more errors" },
+		]);
 	});
 });
 
@@ -103,6 +154,6 @@ describe("buildLogCsv", () => {
 		await deps.records.put(recordKey("j1", 0), row(0));
 		await deps.records.put(recordKey("j1", 1), row(1, { status: "failed" }));
 		const csv = await buildLogCsv(deps, "j1", { status: "failed" });
-		expect(csv.trimEnd().split("\r\n").slice(1)).toEqual(["2,failed,S1,e1,,,,"]);
+		expect(csv.trimEnd().split("\r\n").slice(1)).toEqual(["2,failed,S1,e1,,,,,"]);
 	});
 });

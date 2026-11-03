@@ -93,10 +93,10 @@ describe.each(CASES)("filter and expr on $name (10 records)", (c) => {
 		);
 		expect(res.status).toBe(200);
 		expect((await res.text()).trimEnd().split("\r\n").slice(1)).toEqual([
-			"1,filtered,,,,,,",
-			"2,filtered,,,,,,",
-			"3,filtered,,,,,,",
-			"4,filtered,,,,,,",
+			"1,filtered,,,,,,,",
+			"2,filtered,,,,,,,",
+			"3,filtered,,,,,,,",
+			"4,filtered,,,,,,,",
 		]);
 
 		// The same file again: expressions are deterministic, so nothing changes.

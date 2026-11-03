@@ -265,7 +265,7 @@ describe("importing media", () => {
 		expect(deps.mediaFetcher.urls()).toEqual([url("a.png"), url("a.pdf"), url("b.png")]);
 	});
 
-	it("ends a batch after the record that spends the lookup budget", async () => {
+	it("ends a batch before a record whose download would spend past the lookup budget", async () => {
 		const { deps } = makeDeps();
 		let csv = HEADER;
 		for (let i = 0; i < 12; i++) {
@@ -273,9 +273,14 @@ describe("importing media", () => {
 			csv += `S${i},Item,${url(`${i}.png`)},,\n`;
 		}
 		const created = await start(deps, csv);
-		// Each record: 25, a map lookup 1, a download 60.
+		// Each record: 25, a map lookup 1, a download 60. The seventh record's download would bring
+		// the batch to 602, past the budget, so that record waits for the next batch.
 		const job = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
-		expect(job.cursor.seq).toBe(7);
+		expect(job.cursor.seq).toBe(6);
+		expect(deps.mediaFetcher.urls()).toHaveLength(6);
+		const next = await runBatch(deps, created.id, "driver", Number.POSITIVE_INFINITY, 600);
+		expect(next.cursor.seq).toBe(12);
+		expect(deps.mediaFetcher.urls()).toHaveLength(12);
 	});
 
 	it("leaves templates without media as before", async () => {

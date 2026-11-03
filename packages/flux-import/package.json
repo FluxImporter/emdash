@@ -22,11 +22,14 @@
 		"jsonata": "2.2.2",
 		"kysely": "^0.29.0",
 		"luxon": "^3.7.2",
+		"markdown-it": "14.3.3",
+		"parse5": "7.3.0",
 		"zod": "4.5.4"
 	},
 	"devDependencies": {
 		"@astrojs/react": "^6.0.5",
 		"@types/luxon": "^3.7.0",
+		"@types/markdown-it": "14.2.0",
 		"@types/node": "^22.0.0",
 		"astro": "^7.3.2",
 		"emdash": "1.2.0",

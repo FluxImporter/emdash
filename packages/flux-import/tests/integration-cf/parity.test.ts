@@ -16,14 +16,23 @@ import {
 	postsTemplate,
 } from "../fixtures/links.js";
 import {
+	BLUE_PNG,
 	createMediaSchema,
 	GREEN_JPEG,
 	largePng,
 	MANUAL_PDF,
 	mediaCsv,
 	mediaTemplate,
+	RED_PNG,
 	type StoredMedia,
 } from "../fixtures/media.js";
+import {
+	articleHtml,
+	createPortableTextSchema,
+	type Post,
+	portableTextTemplate,
+	postsJson,
+} from "../fixtures/portable-text.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
@@ -382,6 +391,154 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await feeds.stop();
 		}
+	});
+
+	it("imports M4d Portable Text from HTML and Markdown into R2, defers a record by budget, and re-runs unchanged", async () => {
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			await createPortableTextSchema(client, "cf_pt");
+			const names = Array.from({ length: 12 }, (_, i) => `/pt/${i}.png`);
+			for (const [i, name] of names.entries()) {
+				const body = new Uint8Array([...RED_PNG, ...new TextEncoder().encode(`cf-pt-${i}`)]);
+				feeds.feeds.set(name, { body, contentType: "image/png" });
+			}
+			feeds.feeds.set("/pt/blue.png", { body: BLUE_PNG, contentType: "image/png" });
+			const run = async (posts: Post[], template: Record<string, unknown>) => {
+				const { uploadId } = await client.upload(postsJson(posts), "posts.json");
+				const job = await client.plugin("jobs/create", { uploadId, template, dryRun: false });
+				// Each batch's job, to see the deferrals between them.
+				const batches: Job[] = [];
+				let done = job;
+				while (done.status === "running" || done.status === "created") {
+					if (batches.length >= 100) throw new Error("did not finish in 100 batches");
+					done = await client.plugin<Job>("jobs/next", { id: job.id });
+					batches.push(done);
+				}
+				return { done, batches, rows: await client.records(done.id) };
+			};
+			const html: Post[] = [
+				{ id: "H1", title: "Article", html: articleHtml(feeds.url(names[0] as string)) },
+				// More new images than one Workers batch downloads (WORKERS_LOOKUP_BUDGET).
+				{
+					id: "H2",
+					title: "Gallery",
+					html: names.map((n) => `<img src="${feeds.url(n)}">`).join(""),
+				},
+			];
+			const first = await run(html, portableTextTemplate("cf_pt"));
+			expect(first.done.counters).toMatchObject({ created: 2, failed: 0 });
+			// H2 (seq 1) was deferred by the budget: a batch ended inside it, with its downloads kept.
+			expect(first.batches.length).toBeGreaterThan(1);
+			const deferred = first.batches.find((b) => b.deferred !== undefined)?.deferred;
+			expect(deferred?.seq).toBe(1);
+			expect(deferred?.newMedia.length).toBeGreaterThan(0);
+			expect(first.rows[0]?.warnings).toHaveLength(3);
+			expect(first.rows[1]?.newMedia).toEqual(names.slice(1).map((n) => `body: ${feeds.url(n)}`));
+			// Each URL was downloaded once, across the batches that deferred H2.
+			for (const name of names) {
+				expect(feeds.requests.filter((r) => r.path === name)).toHaveLength(1);
+			}
+			const entries = await byKey("cf_pt");
+			const gallery = entries.get("H2")?.data.body as { asset: { url: string } }[];
+			expect(gallery).toHaveLength(12);
+			const file = await client.raw("GET", gallery[0]?.asset.url ?? "?");
+			expect(file.status).toBe(200);
+			expect(file.headers.get("content-type")).toBe("image/png");
+
+			const md = `# Title\n\n![Blue](${feeds.url("/pt/blue.png")})\n\n- *one*\n`;
+			const markdown = await run(
+				[{ id: "M1", title: "Markdown", md }],
+				portableTextTemplate("cf_pt", { format: "markdown" }),
+			);
+			expect(markdown.done.counters).toMatchObject({ created: 1 });
+			const body = (await byKey("cf_pt")).get("M1")?.data.body as { _type: string }[];
+			expect(body.map((b) => b._type)).toEqual(["block", "image", "block"]);
+
+			const requests = feeds.requests.length;
+			const again = await run(html, portableTextTemplate("cf_pt"));
+			expect(again.done.counters).toMatchObject({ unchanged: 2 });
+			expect(feeds.requests.length).toBe(requests);
+		} finally {
+			await feeds.stop();
+		}
+	});
+
+	it("fails worst-case M4d Markdown records cleanly and completes the job", async () => {
+		await createPortableTextSchema(client, "cf_pt_worst");
+		const fill = (unit: string, bytes: number) => unit.repeat(Math.floor(bytes / unit.length));
+		const limit = 128 * 1024;
+		const table = `|${"a|".repeat(100)}\n|${"-|".repeat(100)}\n${"a\n".repeat(660)}\n`;
+		const prose =
+			"Lorem ipsum dolor sit amet, *consectetur* adipiscing elit, sed do **eiusmod** tempor incididunt ut labore et [dolore](https://x.test/d) magna aliqua. Ut enim ad `minim` veniam.\n\n";
+		const posts: Post[] = [
+			// 24,576 paragraphs: 98,304 markdown-it tokens, under that limit, and 2.6 MB of JSON.
+			{ id: "W1", title: "Paragraphs", md: fill("a\n\n", 72 * 1024) },
+			// Tables of 66,000 cells each, 200,000 tokens per 1.7 KB, repeated to the limit.
+			{ id: "W2", title: "Tables", md: fill(table, limit) },
+			{ id: "W3", title: "Prose", md: fill(prose, limit) },
+			{ id: "W4", title: "Small", md: "# After\n\nText" },
+		];
+		const { uploadId } = await client.upload(postsJson(posts), "worst.json");
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: portableTextTemplate("cf_pt_worst", { format: "markdown" }),
+			dryRun: false,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done).toMatchObject({ status: "completed", counters: { created: 2, failed: 2 } });
+		const rows = await client.records(done.id);
+		const tooLarge = (message: string) => ({
+			status: "failed",
+			errors: [{ field: "body", code: "portable_text_too_large", message }],
+		});
+		expect(rows[0]).toMatchObject(tooLarge("The record's Portable Text is larger than 1 MiB"));
+		expect(rows[1]).toMatchObject(tooLarge("The Markdown expands to too many elements"));
+		const entries = await byKey("cf_pt_worst");
+		expect(entries.has("W1")).toBe(false);
+		expect(entries.has("W2")).toBe(false);
+		expect((entries.get("W3")?.data.body as unknown[] | undefined)?.length).toBeGreaterThan(600);
+		expect(entries.get("W4")?.data.body).toHaveLength(2);
+	});
+
+	it("writes a record with almost 1 MiB of M4d Portable Text to D1", async () => {
+		await client.createCollection("cf_pt_big");
+		for (const slug of ["a", "b", "c"]) {
+			await client.api("POST", "/_emdash/api/schema/collections/cf_pt_big/fields", {
+				slug,
+				label: slug,
+				type: "portableText",
+			});
+		}
+		// Three fields of 169,002 characters, under the 512 KiB of source a record may have: each
+		// quote is 2 bytes in JSON, so about 1,014,000 bytes of JSON, under the 1 MiB cap.
+		const text = (tag: string) => `${tag} ${'"'.repeat(169_000)}`;
+		const record = { id: "B1", a: text("a"), b: text("b"), c: text("c") };
+		const field = (from: string) => ({ from, type: "portableText", format: "text" });
+		const { uploadId } = await client.upload(JSON.stringify({ posts: [record] }), "big.json");
+		const job = await client.plugin("jobs/create", {
+			uploadId,
+			template: {
+				version: 1,
+				source: { format: "json", records: "posts" },
+				collection: "cf_pt_big",
+				locale: "en",
+				key: { from: "id" },
+				slug: { from: "id" },
+				fields: { a: field("a"), b: field("b"), c: field("c") },
+			},
+			dryRun: false,
+		});
+		const done = await client.runToEnd(job.id);
+		expect(done.counters).toMatchObject({ created: 1, failed: 0 });
+		const stored = (await byKey("cf_pt_big")).get("B1")?.data;
+		const bytes = new TextEncoder().encode(
+			JSON.stringify([stored?.a, stored?.b, stored?.c]),
+		).byteLength;
+		expect(bytes).toBeGreaterThan(1_000_000);
+		expect(
+			(stored?.c as { children: { text: string }[] }[] | undefined)?.[0]?.children[0]?.text,
+		).toBe(record.c);
 	});
 
 	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {

@@ -1,5 +1,6 @@
 import { DateTime, IANAZone } from "luxon";
 import { z } from "zod";
+import { parseSourceUrl } from "../sources/net.js";
 import { pathProblem, resolvePath } from "../sources/paths.js";
 import {
 	CSV_SOURCE,
@@ -31,6 +32,22 @@ import {
 	type MediaRequest,
 	mediaUrlConverter,
 } from "./media.js";
+import {
+	convertPortableText,
+	MAX_PORTABLE_TEXT_IMAGES,
+	MAX_PORTABLE_TEXT_MAPPINGS,
+	MAX_PORTABLE_TEXT_RECORD_BYTES,
+	MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES,
+	type PortableTextCode,
+	type PortableTextDraft,
+	type PortableTextOptions,
+	portableTextBytes,
+	portableTextSourceProblem,
+	RECORD_SOURCE_TOO_LARGE_MESSAGE,
+	RECORD_TOO_LARGE_MESSAGE,
+	shownUrl,
+	utf8Length,
+} from "./portable-text.js";
 import type { TaxonomyDef } from "./ports.js";
 import {
 	booleanConverter,
@@ -95,6 +112,22 @@ function sharedToken(m: { true?: string[] | undefined; false?: string[] | undefi
 	const trues = new Set((m.true ?? TRUE_TOKENS).map(token));
 	return (m.false ?? FALSE_TOKENS).map(token).find((t) => trues.has(t));
 }
+
+/** An absolute http(s) URL without a user name or password, as `parseSourceUrl` accepts. */
+const baseUrl = z
+	.string()
+	.min(1)
+	.refine(
+		(text) => {
+			try {
+				parseSourceUrl(text);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		{ message: "baseUrl must be an absolute http or https URL" },
+	);
 
 /** An image mapping's alt text: from a source path or an expression. */
 const altMapping = z.object(valueSource).strict().refine(hasOneSource, ONE_SOURCE);
@@ -188,6 +221,18 @@ const fieldMapping = z.discriminatedUnion("type", [
 		.refine(hasOneSource, ONE_SOURCE),
 	z
 		.object({ ...valueSource, type: z.literal("file"), refresh: z.boolean().optional() })
+		.strict()
+		.refine(hasOneSource, ONE_SOURCE),
+	z
+		.object({
+			...valueSource,
+			type: z.literal("portableText"),
+			format: z.enum(["html", "markdown", "text"]),
+			baseUrl: baseUrl.optional(),
+			images: z.enum(["import", "skip"]).optional(),
+			imageErrors: z.enum(["drop", "fail"]).optional(),
+			unknownMarkup: z.enum(["warn", "fail"]).optional(),
+		})
 		.strict()
 		.refine(hasOneSource, ONE_SOURCE),
 ]);
@@ -288,13 +333,22 @@ export type MappingType = FieldMapping["type"];
 export type TaxonomyMapping = NonNullable<Template["taxonomies"]>[string];
 export type BylinesMapping = NonNullable<Template["bylines"]>;
 
-export type { JsonValue, LinkRequests, MediaRequest, TargetField, TaxonomySnapshot, TermRequest };
+export type {
+	JsonValue,
+	LinkRequests,
+	MediaRequest,
+	PortableTextDraft,
+	TargetField,
+	TaxonomySnapshot,
+	TermRequest,
+};
 export type FieldValue = string | number | boolean | string[] | JsonValue | null;
 /**
  * One record after the template: the key, the slug, the field values, the link requests
  * (reference fields, taxonomies, bylines) when the template maps any, and the media requests
- * when it maps image or file fields (null for an empty value). Reference and media fields are
- * kept out of `data`.
+ * when it maps image or file fields (null for an empty value), and the Portable Text drafts when
+ * it maps `portableText` fields (null for an empty value). Reference, media and Portable Text
+ * fields are kept out of `data`.
  */
 export type MappedRecord = {
 	key: string;
@@ -302,6 +356,7 @@ export type MappedRecord = {
 	data: Record<string, FieldValue>;
 	links?: LinkRequests;
 	media?: Record<string, MediaRequest | null>;
+	portableText?: Record<string, PortableTextDraft | null>;
 };
 export type ValueErrorCode =
 	| "filter_error"
@@ -315,7 +370,8 @@ export type ValueErrorCode =
 	| ConversionCode
 	| RuleCode
 	| LinkErrorCode
-	| MediaConversionCode;
+	| MediaConversionCode
+	| PortableTextCode;
 export type ValueError = { field: string; code: ValueErrorCode; message: string };
 
 export function slugify(s: string): string {
@@ -394,7 +450,23 @@ export function fieldConverter(
 		case "image":
 		case "file":
 			return mediaUrlConverter;
+		case "portableText":
+			return portableTextSource;
 	}
+}
+
+/**
+ * A `portableText` source value: a missing path, `null` or blank text is empty (null), and
+ * anything but text fails `not_scalar`, numbers and booleans included. `applyTemplate` converts
+ * the text.
+ */
+function portableTextSource(raw: unknown): Converted {
+	if (raw === undefined || raw === null) return { ok: true, value: null };
+	if (typeof raw !== "string") {
+		const message = `Expected HTML, Markdown or text, found ${kindOf(raw)}`;
+		return { ok: false, code: "not_scalar", message };
+	}
+	return { ok: true, value: raw.trim() === "" ? null : raw };
 }
 
 /** A link mapping read from `from` or `expr` and converted to lookup requests. */
@@ -434,6 +506,8 @@ export interface CompiledTemplate {
 	readonly bylines: LinkReader<string> | null;
 	/** Each image and file field's reader, by field name. */
 	readonly media: ReadonlyMap<string, MediaReader>;
+	/** Each `portableText` field's options, by field name, with their defaults. */
+	readonly portableText: ReadonlyMap<string, PortableTextOptions>;
 }
 
 /** What a job knows about its target fields; absent on jobs created before M4a. */
@@ -468,6 +542,7 @@ export function compileTemplate(
 	const converters = new Map<string, FieldConverter>();
 	const targets = context.targets ?? null;
 	const media = new Map<string, MediaReader>();
+	const portableText = new Map<string, PortableTextOptions>();
 	for (const [name, mapping] of Object.entries(t.fields)) {
 		const expr = compile(`fields.${name}.expr`, mapping.expr);
 		if (expr !== null) fields.set(name, expr);
@@ -486,6 +561,7 @@ export function compileTemplate(
 						: { from: alt.from, expr: compile(`fields.${name}.alt.expr`, alt.expr) },
 			});
 		}
+		if (mapping.type === "portableText") portableText.set(name, portableTextOptions(mapping));
 	}
 	const taxonomies = new Map<string, LinkReader<TermRequest>>();
 	for (const [name, mapping] of Object.entries(t.taxonomies ?? {})) {
@@ -517,7 +593,21 @@ export function compileTemplate(
 			taxonomies,
 			bylines,
 			media,
+			portableText,
 		},
+	};
+}
+
+/** A `portableText` mapping's options with their defaults filled in. */
+export function portableTextOptions(
+	mapping: Extract<FieldMapping, { type: "portableText" }>,
+): PortableTextOptions {
+	return {
+		format: mapping.format,
+		baseUrl: mapping.baseUrl ?? null,
+		images: mapping.images ?? "import",
+		imageErrors: mapping.imageErrors ?? "drop",
+		unknownMarkup: mapping.unknownMarkup ?? "warn",
 	};
 }
 
@@ -552,19 +642,28 @@ export async function filterRecord(
 /** Marks a value whose expression failed; the failure is already in the record's errors. */
 const FAILED = Symbol("failed");
 
+/** What `applyTemplate` reports without failing the record: Portable Text conversion warnings. */
+export type ValueWarning = { field: string; code: PortableTextCode; message: string };
+
 /**
  * Applies the template to one record value (a CSV row object, a JSON value, an XML object): reads
  * the key, the slug, each field, each taxonomy and the bylines from `from` or `expr` and converts
  * them, collecting every error. An expression result goes through the same conversion as a path
  * value, and `undefined` reads as a missing path. Reference fields and the other links go into
- * `links`, as lookup requests. Run `filterRecord` first.
+ * `links`, as lookup requests, and Portable Text into `portableText`, as drafts. `warnings` is
+ * present when a Portable Text conversion reported something, also for a record that fails. Run
+ * `filterRecord` first.
  */
 export async function applyTemplate(
 	c: CompiledTemplate,
 	value: unknown,
-): Promise<{ ok: true; value: MappedRecord } | { ok: false; errors: ValueError[] }> {
+): Promise<
+	| { ok: true; value: MappedRecord; warnings?: ValueWarning[] }
+	| { ok: false; errors: ValueError[]; warnings?: ValueWarning[] }
+> {
 	const t = c.template;
 	const errors: ValueError[] = [];
+	const warnings: ValueWarning[] = [];
 	const read = async (
 		field: string,
 		from: string | undefined,
@@ -621,6 +720,8 @@ export async function applyTemplate(
 	const data: Record<string, FieldValue> = {};
 	const links: LinkRequests = {};
 	const media: Record<string, MediaRequest | null> = {};
+	const portableText: Record<string, PortableTextDraft | null> = {};
+	const sources: PortableTextSource[] = [];
 	for (const [field, mapping] of Object.entries(t.fields)) {
 		const raw = await read(field, mapping.from, c.fields.get(field));
 		if (raw === FAILED) continue;
@@ -634,7 +735,12 @@ export async function applyTemplate(
 		for (const e of broken) errors.push({ field, ...e });
 		if (broken.length > 0) continue;
 		const reader = c.media.get(field);
-		if (mapping.type === "reference") {
+		const options = c.portableText.get(field);
+		if (options !== undefined) {
+			// Converted once every field is read, so their sizes are known before any is parsed.
+			const text = result.value as string | null;
+			sources.push({ field, text, options, target, at: errors.length });
+		} else if (mapping.type === "reference") {
 			links.references ??= {};
 			links.references[field] = result.value as string[] | null;
 		} else if (reader !== undefined) {
@@ -658,6 +764,7 @@ export async function applyTemplate(
 			media[field] = { kind: reader.kind, url, alt, refresh: reader.refresh };
 		} else data[field] = result.value;
 	}
+	if (sources.length > 0) convertSources(sources, portableText, errors, warnings);
 	for (const [name, reader] of c.taxonomies) {
 		const field = `taxonomies.${name}`;
 		const raw = await read(field, reader.from, reader.expr);
@@ -678,11 +785,164 @@ export async function applyTemplate(
 		}
 	}
 
-	if (errors.length > 0) return { ok: false, errors };
+	if (c.portableText.size > 0) limitPortableText(c, portableText, errors, warnings);
+
+	const reported = warnings.length > 0 ? { warnings } : {};
+	if (errors.length > 0) return { ok: false, errors, ...reported };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
 	if (Object.keys(links).length > 0) mapped.links = links;
 	if (c.media.size > 0) mapped.media = media;
-	return { ok: true, value: mapped };
+	if (c.portableText.size > 0) mapped.portableText = portableText;
+	return { ok: true, value: mapped, ...reported };
+}
+
+/** A `portableText` field's source value, and where its errors go in the record's list. */
+type PortableTextSource = {
+	field: string;
+	text: string | null;
+	options: PortableTextOptions;
+	target: TargetField | undefined;
+	/** The length of the record's errors when the field was read. */
+	at: number;
+};
+
+/**
+ * Converts each `portableText` field in template order, each with what the fields before it left
+ * of `MAX_PORTABLE_TEXT_RECORD_BYTES`. Nothing is parsed when a field's source text is over its
+ * own limit, which fails that field, or when the fields' source text is over
+ * `MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES` together, which fails the field that goes over. Each
+ * field's errors are inserted where it was read, so they stay in template order with the other
+ * fields' errors.
+ */
+function convertSources(
+	sources: readonly PortableTextSource[],
+	drafts: Record<string, PortableTextDraft | null>,
+	errors: ValueError[],
+	warnings: ValueWarning[],
+): void {
+	let inserted = 0;
+	const report = (source: PortableTextSource, found: readonly ValueError[]) => {
+		errors.splice(source.at + inserted, 0, ...found);
+		inserted += found.length;
+	};
+	for (const { field } of sources) drafts[field] = null;
+	let total = 0;
+	let tooLarge = false;
+	for (const source of sources) {
+		if (source.text === null) continue;
+		const own = portableTextSourceProblem(source.text, source.options.format);
+		if (own !== null) {
+			report(source, [{ field: source.field, ...own }]);
+			tooLarge = true;
+			continue;
+		}
+		total += utf8Length(source.text);
+		if (total > MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES) {
+			const message = RECORD_SOURCE_TOO_LARGE_MESSAGE;
+			report(source, [{ field: source.field, code: "portable_text_too_large", message }]);
+			tooLarge = true;
+			break;
+		}
+	}
+	if (tooLarge) return;
+	let used = 0;
+	for (const source of sources) {
+		const { field, text, options, target } = source;
+		if (text === null) continue;
+		const converted = convertPortableText(text, options, MAX_PORTABLE_TEXT_RECORD_BYTES - used);
+		const found: ValueError[] = converted.errors.map((e) => ({ field, ...e }));
+		for (const w of converted.warnings) warnings.push({ field, ...w });
+		const draft = converted.draft;
+		// Markup that leaves no block is empty, as a missing value is.
+		if (draft === null && target !== undefined && found.length === 0) {
+			for (const e of checkRules(null, target)) found.push({ field, ...e });
+		}
+		report(source, found);
+		drafts[field] = draft;
+		if (draft !== null) used += portableTextBytes(draft.blocks);
+		// Past the budget, the later fields could only fail too.
+		if (converted.errors.some((e) => e.message === RECORD_TOO_LARGE_MESSAGE)) return;
+	}
+}
+
+/**
+ * The per-record limits over every Portable Text field, in template order: at most
+ * `MAX_PORTABLE_TEXT_IMAGES` distinct image URLs (the rest are dropped with one `image_dropped`
+ * warning per field, or fail `portable_text_limit` with `imageErrors: "fail"`), then at most
+ * `MAX_PORTABLE_TEXT_RECORD_BYTES` of JSON, each image block counted with
+ * `IMAGE_BLOCK_ALLOWANCE` (`portable_text_too_large`).
+ */
+function limitPortableText(
+	c: CompiledTemplate,
+	drafts: Record<string, PortableTextDraft | null>,
+	errors: ValueError[],
+	warnings: ValueWarning[],
+): void {
+	const seen = new Set<string>();
+	for (const [field, draft] of Object.entries(drafts)) {
+		if (draft === null || draft.images.length === 0) continue;
+		const over = draft.images.filter((image) => {
+			if (seen.has(image.url)) return false;
+			if (seen.size < MAX_PORTABLE_TEXT_IMAGES) {
+				seen.add(image.url);
+				return false;
+			}
+			return true;
+		});
+		if (over.length === 0) continue;
+		if (c.portableText.get(field)?.imageErrors === "fail") {
+			errors.push({
+				field,
+				code: "portable_text_limit",
+				message: `The record's Portable Text has more than ${MAX_PORTABLE_TEXT_IMAGES} distinct image URLs`,
+			});
+			continue;
+		}
+		const first = over[0] as { url: string };
+		const which =
+			over.length === 1
+				? `1 image (${shownUrl(first.url)})`
+				: `${over.length} images (${shownUrl(first.url)}, …)`;
+		warnings.push({
+			field,
+			code: "image_dropped",
+			message: `Left out ${which}: at most ${MAX_PORTABLE_TEXT_IMAGES} distinct image URLs per record`,
+		});
+		const kept = withoutImages(draft, new Set(over.map((image) => image.url)));
+		drafts[field] = kept;
+		if (kept === null && c.targets?.[field]?.required === true) {
+			errors.push({ field, code: "required", message: "The field is required" });
+		}
+	}
+	// The exact size, as a backstop to the converter's running estimate.
+	let bytes = 0;
+	for (const [field, draft] of Object.entries(drafts)) {
+		if (draft === null) continue;
+		bytes += portableTextBytes(draft.blocks);
+		if (bytes > MAX_PORTABLE_TEXT_RECORD_BYTES) {
+			errors.push({ field, code: "portable_text_too_large", message: RECORD_TOO_LARGE_MESSAGE });
+			return;
+		}
+	}
+}
+
+/** A draft without the images whose URL is in `urls`; slots are renumbered, keys kept. */
+function withoutImages(
+	draft: PortableTextDraft,
+	urls: ReadonlySet<string>,
+): PortableTextDraft | null {
+	const slots = new Map<number, number>();
+	const images = draft.images.filter((image, i) => {
+		if (urls.has(image.url)) return false;
+		slots.set(i, slots.size);
+		return true;
+	});
+	const blocks = draft.blocks.flatMap((block) => {
+		if (block._type !== "image") return [block];
+		const slot = slots.get(block.slot as number);
+		return slot === undefined ? [] : [{ ...block, slot }];
+	});
+	return blocks.length === 0 ? null : { blocks, images };
 }
 
 /**
@@ -780,6 +1040,7 @@ export const COMPATIBLE: Record<MappingType, string[]> = {
 	reference: ["reference"],
 	image: ["image"],
 	file: ["file"],
+	portableText: ["portableText"],
 };
 
 /** Whether `value` names one of `options`, as the select matching would find it. */
@@ -904,9 +1165,9 @@ function fieldProblems(
  * that are not options, `tz: "site"` without a valid site timezone, required fields with no
  * default that the template does not map (every create would fail), reference fields that are
  * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
- * to the collection, more than five image and file mappings, and image or file fields whose
- * `allowedMimeTypes` EmDash's upload can never satisfy. The link checks run only on what `links`
- * carries.
+ * to the collection, more than five image and file mappings, more than three `portableText`
+ * mappings, and image or file fields whose `allowedMimeTypes` EmDash's upload can never
+ * satisfy. The link checks run only on what `links` carries.
  */
 export function checkTemplate(
 	t: Template,
@@ -932,6 +1193,12 @@ export function checkTemplate(
 	if (media.length > MAX_MEDIA_MAPPINGS) {
 		errors.push(
 			`The template maps ${media.length} image and file fields; at most ${MAX_MEDIA_MAPPINGS} are allowed`,
+		);
+	}
+	const rich = Object.values(t.fields).filter((m) => m.type === "portableText");
+	if (rich.length > MAX_PORTABLE_TEXT_MAPPINGS) {
+		errors.push(
+			`The template maps ${rich.length} portableText fields; at most ${MAX_PORTABLE_TEXT_MAPPINGS} are allowed`,
 		);
 	}
 	const byslug = new Map(fields.map((f) => [f.slug, f]));
@@ -1049,9 +1316,17 @@ export function usesLinks(t: Template): boolean {
 	);
 }
 
-/** Whether the template maps image or file fields. */
+/**
+ * Whether the template downloads media: it maps image or file fields, or `portableText` fields
+ * that import their images.
+ */
 export function usesMedia(t: Template): boolean {
-	return Object.values(t.fields).some((m) => m.type === "image" || m.type === "file");
+	return Object.values(t.fields).some(
+		(m) =>
+			m.type === "image" ||
+			m.type === "file" ||
+			(m.type === "portableText" && (m.images ?? "import") === "import"),
+	);
 }
 
 /** Whether any date mapping reads `tz: "site"`; such a job stores the site timezone. */

@@ -15,8 +15,9 @@ import {
 import { ServiceError } from "./service.js";
 
 /**
- * The field types `schema/apply` creates: every type that holds a plain value, and `image` and
- * `file` (a TEXT column holding one media value), created without `allowedMimeTypes`.
+ * The field types `schema/apply` creates: every type that holds a plain value, `image` and `file`
+ * (a TEXT column holding one media value), created without `allowedMimeTypes`, and
+ * `portableText` (a JSON column).
  */
 export const APPLY_FIELD_TYPES = [
 	"string",
@@ -32,6 +33,7 @@ export const APPLY_FIELD_TYPES = [
 	"slug",
 	"image",
 	"file",
+	"portableText",
 ] as const;
 export type ApplyFieldType = (typeof APPLY_FIELD_TYPES)[number];
 /**
