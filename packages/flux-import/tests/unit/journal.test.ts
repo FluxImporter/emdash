@@ -52,7 +52,7 @@ describe("the journal of a real import (M5a)", () => {
 		expect(row).toMatchObject({ kind: "create", entryId: entryOf(deps, "A1").id, confirmed: true });
 		expect(await deps.links.get(linkKey("products", "en", "A1"))).toMatchObject({
 			jobId: job.id,
-			writtenRev: String(entryOf(deps, "A1").rev),
+			writtenRev: deps.content.revOf(entryOf(deps, "A1").id),
 		});
 	});
 
@@ -60,7 +60,7 @@ describe("the journal of a real import (M5a)", () => {
 		const { deps } = setup();
 		const first = await importRows(deps, [desk]);
 		const entry = entryOf(deps, "A1");
-		const rev = String(entry.rev);
+		const rev = deps.content.revOf(entry.id);
 		const second = await importRows(deps, [
 			{ ...desk, name: "Table", price: 12, tags: "sale", authors: "sam" },
 		]);
@@ -403,7 +403,7 @@ async function editPrice(deps: Deps, price: number): Promise<void> {
 	const entry = entryOf(deps, "A1");
 	const result = await deps.content.update({
 		id: entry.id,
-		rev: String(entry.rev),
+		rev: deps.content.revOf(entry.id),
 		data: { price },
 	});
 	if (!result.ok) throw new Error(result.reason);

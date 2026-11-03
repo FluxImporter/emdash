@@ -412,7 +412,7 @@ describe("runBatch", () => {
 			true,
 		);
 		const link = await deps.links.get("products:en:S0");
-		expect(link?.writtenRev).toBe(String(deps.content.entries.get("e1")!.rev));
+		expect(link?.writtenRev).toBe(deps.content.revOf("e1"));
 	});
 
 	it("explains conflict and locked rows from the write and the lock check", async () => {
@@ -636,9 +636,7 @@ describe("runBatch", () => {
 		clock.t += draftJob.budgetMs + LEASE_GRACE_MS + 1;
 		const done = await runToEnd(deps, draftJob.id);
 		expect(done.counters).toMatchObject({ created: 3, conflict: 0 });
-		expect((await deps.links.get("products:en:S1"))?.writtenRev).toBe(
-			String(deps.content.entries.get("e2")!.rev),
-		);
+		expect((await deps.links.get("products:en:S1"))?.writtenRev).toBe(deps.content.revOf("e2"));
 
 		const second = await createJob(deps, { uploadId: "u1", template, schemaFields });
 		const published = await runToEnd(deps, second.id);

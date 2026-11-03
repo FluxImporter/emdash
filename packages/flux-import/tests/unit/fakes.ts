@@ -22,6 +22,7 @@ import {
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
+import { encodeRev } from "../../src/engine/revs.js";
 import type {
 	EngineDeps,
 	Job,
@@ -128,6 +129,7 @@ type StoredEntry = {
 	data: Record<string, unknown>;
 	/** The translation group: the entry's own ID, or its source's group (EmDash, spec M4e F3). */
 	group: string;
+	/** EmDash's `version`; the entry's `_rev` encodes it with `updatedAt` (`revOf`, spec M5b F1). */
 	rev: number;
 	pendingPublish: boolean;
 	/** Term slugs by taxonomy, entry IDs by reference field, byline credits: as written. */
@@ -177,6 +179,10 @@ export class FakeContent implements ContentPort {
 	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
 	/** Called at the start of publish; throw from it to simulate a crash before publishing. */
 	beforePublish: (id: string) => void = () => {};
+	/** M5b: called at the start of schedule; throw from it to simulate a crash before it. */
+	beforeSchedule: (id: string) => void = () => {};
+	/** M5b: called after a schedule landed; throw from it to simulate a crash before its save. */
+	afterSchedule: (id: string) => void = () => {};
 	/**
 	 * The non-translatable fields: a create with `translationOf` takes their values from the
 	 * source, as EmDash does (spec M4e F1).
@@ -200,10 +206,22 @@ export class FakeContent implements ContentPort {
 		return new Date(this.now()).toISOString();
 	}
 
-	/** A write that changes the row: a new revision and `updatedAt`. */
+	/** A write that changes the row: a new version and `updatedAt`. */
 	private touch(e: StoredEntry): void {
 		e.rev++;
 		e.updatedAt = this.stamp();
+	}
+
+	/** The entry's `_rev`, as EmDash encodes it: `base64("<version>:<updatedAt>")` (M5b F1). */
+	private encoded(e: StoredEntry): string {
+		return encodeRev(e.rev, e.updatedAt);
+	}
+
+	/** The current `_rev` of an entry, for tests that write as an editor would. */
+	revOf(id: string): string {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		return this.encoded(e);
 	}
 
 	/** As EmDash: a slug is unique per collection and locale, and Trash still holds it. */
@@ -232,7 +250,7 @@ export class FakeContent implements ContentPort {
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
 			id: e.id,
-			rev: String(e.rev),
+			rev: this.encoded(e),
 			// As hydrateDraftData: a pending draft changes the data, never the live slug.
 			slug: e.live?.slug ?? e.slug,
 			data: structuredClone(e.stale ? { ...e.data, ...e.stale.data } : e.data),
@@ -319,12 +337,13 @@ export class FakeContent implements ContentPort {
 			throw new ContentWriteError("emdash_not_found", "Entry not found");
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
-		if (String(e.rev) !== input.rev) {
+		if (this.encoded(e) !== input.rev) {
 			return { ok: false, reason: "conflict", message: "Revision precondition did not match" };
 		}
-		// Only publish, unpublish and schedule run policy hooks; a discard cannot be refused.
-		const blocked =
-			input.step === "update" || input.step === "discard" ? null : this.blockStep(input.step, e.id);
+		// Only publish, unpublish and schedule run policy hooks; a discard, an update and an
+		// unschedule (no beforeUnschedule hook, spec M5b F3) cannot be refused.
+		const unhooked = ["update", "discard", "unschedule"];
+		const blocked = unhooked.includes(input.step) ? null : this.blockStep(input.step, e.id);
 		if (blocked !== null) return { ok: false, reason: "blocked", message: blocked };
 		switch (input.step) {
 			case "update": {
@@ -366,19 +385,18 @@ export class FakeContent implements ContentPort {
 					e.rev++;
 				}
 				break;
-			case "schedule": {
-				const at = input.scheduledAt ?? "";
-				if (!(Date.parse(at) > this.now())) {
-					throw new ContentWriteError(
-						"emdash_validation_error",
-						"Rolling back the entry (schedule) failed: Scheduled date must be in the future",
-					);
-				}
-				e.scheduledAt = at;
-				if (e.status !== "published") e.status = "scheduled";
-				this.touch(e);
+			case "schedule":
+				this.setSchedule(e, input.scheduledAt ?? "", "Rolling back the entry (schedule)");
 				break;
-			}
+			case "unschedule":
+				// As EmDash: a no-op without a schedule; else the status goes back to draft unless
+				// published, and only `updated_at` moves (repositories/content.ts:2155-2198).
+				if (e.scheduledAt !== null) {
+					e.scheduledAt = null;
+					if (e.status !== "published") e.status = "draft";
+					e.updatedAt = this.stamp();
+				}
+				break;
 		}
 		if (input.step !== "update" && input.step !== "publish") {
 			this.calls.push(`${input.step}:${e.id}`);
@@ -387,7 +405,7 @@ export class FakeContent implements ContentPort {
 		return {
 			ok: true,
 			state: {
-				rev: String(e.rev),
+				rev: this.encoded(e),
 				status: e.status,
 				scheduledAt: e.scheduledAt,
 				hasDraft: this.hasDraft(e),
@@ -496,7 +514,7 @@ export class FakeContent implements ContentPort {
 		this.entries.set(id, entry);
 		this.calls.push(`create:${id}`);
 		this.afterWrite(id);
-		return { id, rev: "1" };
+		return { id, rev: this.encoded(entry) };
 	}
 	async update(
 		input: {
@@ -509,7 +527,7 @@ export class FakeContent implements ContentPort {
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
-		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
 		this.checkSlug(e.collection, e.locale, input.slug, e.id);
@@ -534,7 +552,7 @@ export class FakeContent implements ContentPort {
 		if (staged && !plain) e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
-		return { ok: true, rev: String(e.rev) };
+		return { ok: true, rev: this.encoded(e) };
 	}
 	async publish(input: { id: string; rev: string }): Promise<WriteResult> {
 		this.beforePublish(input.id);
@@ -543,7 +561,14 @@ export class FakeContent implements ContentPort {
 		const forced = this.failPublish(e.id);
 		if (forced) return { ok: false, reason: forced };
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
-		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		this.makeLive(e);
+		this.calls.push(`publish:${e.id}`);
+		return { ok: true, rev: this.encoded(e) };
+	}
+
+	/** EmDash's publish (F4): status, draft and schedule cleared, a new version and `updated_at`. */
+	private makeLive(e: StoredEntry): void {
 		e.pendingPublish = false;
 		e.status = "published";
 		e.scheduledAt = null;
@@ -555,8 +580,80 @@ export class FakeContent implements ContentPort {
 		if (this.plainCollections.has(e.collection)) e.published ??= { data: structuredClone(e.data) };
 		else e.published = { data: structuredClone(e.data) };
 		this.touch(e);
-		this.calls.push(`publish:${e.id}`);
-		return { ok: true, rev: String(e.rev) };
+	}
+
+	/**
+	 * EmDash's schedule (spec M5b F2): a time not after now is refused; a draft becomes
+	 * `scheduled` and a published entry stays published; `version` is kept and only `updated_at`
+	 * moves, so at a clock that has not moved the `_rev` stays the same, as in EmDash.
+	 */
+	private setSchedule(e: StoredEntry, at: string, op: string): void {
+		if (!(Date.parse(at) > this.now())) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				`${op} failed: Scheduled date must be in the future`,
+			);
+		}
+		e.scheduledAt = at;
+		if (e.status !== "published") e.status = "scheduled";
+		e.updatedAt = this.stamp();
+	}
+
+	async schedule(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+		scheduledAt: string;
+	}): Promise<WriteResult> {
+		this.beforeSchedule(input.id);
+		const e = this.entries.get(input.id);
+		if (!e || e.trashed) throw new ContentWriteError("emdash_not_found", "Entry not found");
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		const blocked = this.blockStep("schedule", e.id);
+		if (blocked !== null) {
+			throw new ContentWriteError(
+				"emdash_schedule_rejected",
+				`Scheduling the entry failed: ${blocked}`,
+			);
+		}
+		this.setSchedule(e, input.scheduledAt, "Scheduling the entry");
+		this.calls.push(`schedule:${e.id}`);
+		this.afterSchedule(e.id);
+		return { ok: true, rev: this.encoded(e) };
+	}
+
+	/**
+	 * An editor's term change through the admin terms route (spec M5b F8): only the entry's term
+	 * assignments change, so its `_rev` stays as it was.
+	 */
+	setTerms(id: string, taxonomy: string, slugs: string[]): void {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		e.taxonomies[taxonomy] = [...slugs];
+	}
+
+	/**
+	 * One pass of EmDash's scheduler (`publishDueContent`, spec M5b F5): every active entry due by
+	 * now is published without a revision check; a publish hook's refusal unschedules it instead.
+	 * Returns the IDs published.
+	 */
+	runScheduled(): string[] {
+		const published: string[] = [];
+		for (const e of this.entries.values()) {
+			if (e.trashed || e.scheduledAt === null || Date.parse(e.scheduledAt) > this.now()) continue;
+			if (this.blockStep("publish", e.id) !== null) {
+				e.scheduledAt = null;
+				if (e.status !== "published") e.status = "draft";
+				e.updatedAt = this.stamp();
+				continue;
+			}
+			this.makeLive(e);
+			this.calls.push(`scheduled:${e.id}`);
+			published.push(e.id);
+		}
+		return published;
 	}
 	async ensureSourceIdField() {
 		this.sourceFieldEnsured = true;

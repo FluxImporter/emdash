@@ -93,7 +93,7 @@ describe("rolling back an import (M5a)", () => {
 		// The link is handed back to the job before, at the rollback's revision.
 		expect(await linkOf(deps, "A1")).toMatchObject({
 			jobId: (await deps.jobs.query({ where: {} })).items[0]?.id,
-			writtenRev: String(entryOf(deps, "A1").rev),
+			writtenRev: deps.content.revOf(entryOf(deps, "A1").id),
 		});
 		// The same feed imports again.
 		const again = await importRows(deps, [changed, { sku: "A2", name: "Lamp", related: "A1" }]);
@@ -146,7 +146,7 @@ describe("rolling back an import (M5a)", () => {
 				collection: "products",
 				locale: "en",
 				id: e.id,
-				rev: String(e.rev),
+				rev: deps.content.revOf(e.id),
 				step: "schedule",
 				scheduledAt: at,
 			});
@@ -154,7 +154,7 @@ describe("rolling back an import (M5a)", () => {
 			const link = await linkOf(deps, "A1");
 			await deps.links.put(linkKey("products", "en", "A1"), {
 				...link!,
-				writtenRev: String(e.rev),
+				writtenRev: deps.content.revOf(e.id),
 			});
 			const before = stateOf(deps, "A1");
 			const job = await importRows(deps, [changed]);
@@ -216,7 +216,11 @@ describe("rolling back an import (M5a)", () => {
 		// An editor's change after a references-only import is still caught.
 		const second = await importRows(deps, [{ sku: "A2", name: "Lamp", related: "A3" }]);
 		const e = entryOf(deps, "A2");
-		await deps.content.update({ id: e.id, rev: String(e.rev), references: { related: [] } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			references: { related: [] },
+		});
 		const refused = await rollBack(deps, second.id);
 		expect(refused.counters).toMatchObject({ conflict: 1, reverted: 0 });
 	});
@@ -228,7 +232,11 @@ describe("ownership (M5a)", () => {
 		await importRows(deps, [desk]);
 		const job = await importRows(deps, [changed]);
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const after = stateOf(deps, "A1");
 		const done = await rollBack(deps, job.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
@@ -313,8 +321,12 @@ describe("ownership (M5a)", () => {
 		const link = await linkOf(deps, "A1");
 		// An editor changes the entry, then a job's write-ahead put happens and its write does not.
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
 		clock.t += 1000;
 		// The job of the ghost row; it writes another entry, so A1's link stays as it was.
 		const ghost = await importRows(deps, [{ sku: "Z1", name: "Other" }]);
@@ -479,14 +491,14 @@ describe("resuming a rollback (M5a)", () => {
 				collection: "products",
 				locale: "en",
 				id: e.id,
-				rev: String(e.rev),
+				rev: deps.content.revOf(e.id),
 				step: "schedule",
 				scheduledAt: new Date(clock.t + 60_000).toISOString(),
 			});
 			const link = await linkOf(deps, "A1");
 			await deps.links.put(linkKey("products", "en", "A1"), {
 				...link!,
-				writtenRev: String(e.rev),
+				writtenRev: deps.content.revOf(e.id),
 			});
 			const before = stateOf(deps, "A1");
 			const job = await importRows(deps, [changed]);
@@ -749,12 +761,15 @@ async function scheduleDraft(deps: Deps, at: string) {
 		collection: "products",
 		locale: "en",
 		id: e.id,
-		rev: String(e.rev),
+		rev: deps.content.revOf(e.id),
 		step: "schedule",
 		scheduledAt: at,
 	});
 	const link = await linkOf(deps, "A1");
-	await deps.links.put(linkKey("products", "en", "A1"), { ...link!, writtenRev: String(e.rev) });
+	await deps.links.put(linkKey("products", "en", "A1"), {
+		...link!,
+		writtenRev: deps.content.revOf(e.id),
+	});
 }
 
 type Shape = { name: string; plain: boolean; prepare: (deps: Deps, t: number) => Promise<void> };
@@ -792,7 +807,11 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		const { deps } = setup();
 		const job = await importRows(deps, [desk], { publish: false });
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor's work" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor's work" },
+		});
 		// As EmDash 1.2.0: staging a draft leaves updated_at alone.
 		expect(e.updatedAt).toBe(e.createdAt);
 		const done = await rollBack(deps, job.id);
@@ -828,7 +847,11 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		// The job stages a draft, which leaves updatedAt before its journal row's time.
 		const job = await importRows(deps, [{ ...desk, price: 12 }], { publish: false });
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const done = await rollBack(deps, job.id);
 		const [row] = await records(deps, done.id);
 		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
@@ -840,8 +863,12 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		await importRows(deps, [desk]);
 		const a = await importRows(deps, [{ ...desk, price: 11 }]);
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor title" } });
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor title" },
+		});
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
 		const writtenByA = (await linkOf(deps, "A1"))?.writtenRev;
 		expect((await rollBack(deps, a.id, { dryRun: true })).counters).toMatchObject({ conflict: 1 });
 		const b = await importRows(deps, [{ ...desk, price: 12 }]);
@@ -860,7 +887,11 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		deps.content.plainCollections.add("products");
 		const job = await importRows(deps, [desk], { publish: false });
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const done = await rollBack(deps, job.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(e.trashed).toBe(false);
@@ -872,7 +903,11 @@ describe("ownership by revision, not timestamps (M5a)", () => {
 		// A crash before the link save, never resumed; then an editor stages a draft.
 		await deps.links.delete(linkKey("products", "en", "A1"));
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		expect(e.updatedAt).toBe(e.createdAt);
 		const done = await rollBack(deps, job.id);
 		const [row] = await records(deps, done.id);
@@ -955,7 +990,11 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		await crash(deps, rollback.id, "killed after update");
 		deps.content.afterStep = () => {};
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		const [row] = await records(deps, done.id);
 		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
@@ -973,7 +1012,11 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		await crash(deps, rollback.id, "crash before update");
 		deps.content.beforeStep = () => {};
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").data.title).toBe("Editor");
@@ -991,7 +1034,7 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		deps.content.beforeStep = () => {};
 		// Published with a draft, as step 1 left it, but at the editor's revision.
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { price: 77 } });
+		await deps.content.update({ id: e.id, rev: deps.content.revOf(e.id), data: { price: 77 } });
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").data.price).toBe(77);
@@ -1017,7 +1060,7 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		const stopped = await deps.records.get(recordKey(rollback.id, 0));
 		expect(stopped).toMatchObject({
 			status: "writing",
-			writtenRev: String(entryOf(deps, "A1").rev),
+			writtenRev: deps.content.revOf(entryOf(deps, "A1").id),
 		});
 		expect(stopped).not.toHaveProperty("pendingStep");
 		const done = await runToEnd(deps, rollback.id);
@@ -1038,8 +1081,12 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		deps.content.beforeStep = () => {};
 		// Published without a draft, as step 2 would leave it, but with the editor's title.
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
 		const done = await runToEnd(deps, rollback.id);
 		const [row] = await records(deps, done.id);
 		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
@@ -1057,7 +1104,11 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		await crash(deps, rollback.id, "killed after update");
 		deps.content.afterStep = () => {};
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), taxonomies: { tag: ["sale"] } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			taxonomies: { tag: ["sale"] },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").taxonomies.tag).toEqual(["sale"]);
@@ -1077,7 +1128,7 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		deps.content.beforeStep = () => {};
 		// Published with the restored live values, but the editor's draft instead of the importer's.
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { price: 55 } });
+		await deps.content.update({ id: e.id, rev: deps.content.revOf(e.id), data: { price: 55 } });
 		expect(await deps.records.get(recordKey(rollback.id, 0))).toMatchObject({ pendingStep: 5 });
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
@@ -1096,8 +1147,12 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		deps.content.beforeStep = () => {};
 		// The editor publishes step 1's values, then stages a draft of a field the import never wrote.
 		const e = entryOf(deps, "A1");
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { notes: "Editor" } });
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { notes: "Editor" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").data.notes).toBe("Editor");
@@ -1114,8 +1169,8 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 		await crash(deps, rollback.id, "crash before publish");
 		deps.content.beforeStep = () => {};
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), slug: "editors-desk" });
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
+		await deps.content.update({ id: e.id, rev: deps.content.revOf(e.id), slug: "editors-desk" });
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").slug).toBe("editors-desk");
@@ -1141,7 +1196,7 @@ describe("a crash after a step reached EmDash (M5a)", () => {
 			await crash(deps, rollback.id, "killed after update");
 			deps.content.afterStep = () => {};
 			const e = entryOf(deps, "A1");
-			await deps.content.update({ id: e.id, rev: String(e.rev), ...edit });
+			await deps.content.update({ id: e.id, rev: deps.content.revOf(e.id), ...edit });
 			const done = await runToEnd(deps, rollback.id);
 			const row = (await records(deps, done.id)).find((r) => r.entryId === e.id);
 			expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
@@ -1360,7 +1415,11 @@ describe("final review: drafts, stops and edits the revision does not show (M5a)
 		};
 		await crash(deps, rollback.id, "killed after the unpublish");
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor's title" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor's title" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		const [row] = await records(deps, done.id);
 		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });
@@ -1386,7 +1445,7 @@ describe("final review: drafts, stops and edits the revision does not show (M5a)
 		const e = entryOf(deps, "A1");
 		const w = await deps.content.update({
 			id: e.id,
-			rev: String(e.rev),
+			rev: deps.content.revOf(e.id),
 			data: { title: "Editor" },
 		});
 		if (!w.ok) throw new Error("the editor's write failed");
@@ -1561,7 +1620,11 @@ describe("timestamp rules under a clock that moves on every read (M5a)", () => {
 		const { deps } = tickingSetup();
 		const job = await importRows(deps, [desk], { publish: false });
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor" },
+		});
 		const done = await rollBack(deps, job.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(e.trashed).toBe(false);
@@ -1630,8 +1693,12 @@ describe("final review: more guards (M5a)", () => {
 		await crash(deps, rollback.id, "crash before publish");
 		deps.content.beforeStep = () => {};
 		const e = entryOf(deps, "A1");
-		await deps.content.publish({ id: e.id, rev: String(e.rev) });
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { notes: "Editor" } });
+		await deps.content.publish({ id: e.id, rev: deps.content.revOf(e.id) });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { notes: "Editor" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
 		expect(entryOf(deps, "A1").data.notes).toBe("Editor");
@@ -1685,7 +1752,11 @@ describe("final review, second pass (M5a)", () => {
 		};
 		await crash(deps, rollback.id, "killed after step 1");
 		const e = entryOf(deps, "A1");
-		await deps.content.update({ id: e.id, rev: String(e.rev), data: { title: "Editor draft" } });
+		await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { title: "Editor draft" },
+		});
 		const done = await runToEnd(deps, rollback.id);
 		const [row] = await records(deps, done.id);
 		expect(row).toMatchObject({ status: "conflict", errors: [{ code: "rollback_changed" }] });

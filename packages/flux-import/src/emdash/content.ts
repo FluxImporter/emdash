@@ -90,6 +90,12 @@ export interface ContentRuntime {
 		id: string,
 		options?: { _rev?: string },
 	): Promise<HandlerResult>;
+	/** M5b: src/emdash-runtime.ts:4733 (no hook can refuse it, spec M5b F3). */
+	handleContentUnschedule(
+		collection: string,
+		id: string,
+		options?: { _rev?: string },
+	): Promise<HandlerResult>;
 }
 
 /** The codes EmDash's policy hooks refuse a publish, unpublish or schedule with (M5a). */
@@ -367,6 +373,9 @@ export class EmDashContent implements ContentPort {
 					options,
 				);
 				break;
+			case "unschedule":
+				result = await this.runtime.handleContentUnschedule(collection, id, { _rev: rev });
+				break;
 		}
 		const op = `Rolling back the entry (${input.step})`;
 		if (!result.success) {
@@ -492,6 +501,29 @@ export class EmDashContent implements ContentPort {
 			throw writeError("Publishing the entry", result.error);
 		}
 		return { ok: true, rev: snapshotOf(result.data, "Publishing the entry").rev };
+	}
+
+	async schedule(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+		scheduledAt: string;
+	}): Promise<WriteResult> {
+		if (await this.lockReader(input.collection, input.id, this.actor.id)) {
+			return { ok: false, reason: "locked" };
+		}
+		const result = await this.runtime.handleContentSchedule(
+			input.collection,
+			input.id,
+			input.scheduledAt,
+			{ _rev: input.rev, actor: this.actor },
+		);
+		if (!result.success) {
+			if (result.error?.code === "CONFLICT") return { ok: false, reason: "conflict" };
+			throw writeError("Scheduling the entry", result.error);
+		}
+		return { ok: true, rev: snapshotOf(result.data, "Scheduling the entry").rev };
 	}
 
 	ensureSourceIdField(collection: string): Promise<void> {
