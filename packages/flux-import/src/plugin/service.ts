@@ -7,12 +7,14 @@ import {
 	createJob,
 	JobError,
 	transitionJob,
+	updateJob,
 	upgradeJob,
 } from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "../engine/media.js";
 import type { KvCollection } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
+import { originalProblem } from "../engine/rollback.js";
 import { type LinkSchema, type SchemaField, usesLinks, usesMedia } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import { type CsvSample, CsvSyntaxError, readCsvSample } from "../sources/csv.js";
@@ -370,6 +372,25 @@ async function releaseQuietly(
 	await releaseUploadIfUnused(deps, uploads, job, keep).catch(() => false);
 }
 
+/**
+ * A rollback job whose original is gone or being deleted fails with that reason instead of
+ * running over an empty journal and completing with no rows (spec M5a "Retention").
+ */
+async function failOrphanRollback(deps: EngineDeps, id: string): Promise<void> {
+	const job = await deps.jobs.get(id);
+	if (job?.kind !== "rollback") return;
+	if (job.status !== "created" && job.status !== "running") return;
+	if (job.lease && job.lease.expiresAt > deps.now()) return;
+	const problem = await originalProblem(deps, job);
+	if (problem === null) return;
+	await updateJob(deps, id, (stored) => ({
+		...stored,
+		status: "failed",
+		lease: null,
+		error: { code: "rollback_original_gone", message: problem },
+	}));
+}
+
 export async function nextBatch(
 	deps: EngineDeps,
 	uploads: UploadStore,
@@ -377,6 +398,7 @@ export async function nextBatch(
 	holder: string,
 	keep: UploadKeeper = keepNone,
 ): Promise<Job> {
+	await failOrphanRollback(deps, id);
 	const job = await runBatch(
 		deps,
 		id,

@@ -1,4 +1,5 @@
 import type { KvCollection } from "../engine/ports.js";
+import { isPurging, type PurgingJob } from "../engine/rollback.js";
 import type { EngineDeps, Job } from "../engine/types.js";
 
 export const RETENTION_TASK = "retention";
@@ -66,7 +67,21 @@ export async function purgeExpired(
 	const originals = all.filter(({ data }) => data.kind !== "rollback");
 	const pruned = new Set<string>();
 	const counts = { records: { n: 0 }, journal: { n: 0 } };
+	// Marks the job before any of its rows go, so a rollback cannot start on a half-deleted
+	// journal; false when the job changed since the scan (a rollback was created for it).
+	const markPurging = async (id: string): Promise<boolean> => {
+		const current = await deps.jobs.getVersioned(id);
+		if (!current) return false;
+		if (isPurging(current.value)) return true;
+		const job = current.value;
+		if (job.kind !== "rollback" && job.rolledBackBy !== undefined) {
+			if (await deps.jobs.get(job.rolledBackBy)) return false;
+		}
+		const next: PurgingJob = { ...job, purging: true };
+		return (await deps.jobs.compareAndSet(id, current.revision, next)).applied;
+	};
 	const prune = async (id: string): Promise<void> => {
+		if (!(await markPurging(id))) return;
 		const complete =
 			(await deleteRows(deps.records, id, counts.records)) &&
 			(await deleteRows(deps.journal, id, counts.journal)) &&

@@ -1,8 +1,35 @@
 import { batchOptions, JobError, upgradeJob } from "./jobs.js";
-import { CREATED_LISTED, type EngineDeps, emptyCounters, type Job } from "./types.js";
+import { type EngineDeps, emptyCounters, type Job } from "./types.js";
 
-/** Media IDs the rollback job's warning lists; past them it gives a count. */
-export const MAX_LISTED_MEDIA = CREATED_LISTED;
+/** Media IDs the rollback job's warning lists; past them it says there are more. */
+const MAX_LISTED_MEDIA = 100;
+
+/**
+ * A job retention is deleting (M5a): it marks the job before it deletes any of its rows, so a
+ * rollback of it is refused, and a rollback job already created for it fails when it next runs.
+ * The field lives in the stored job only.
+ */
+export type PurgingJob = Job & { purging?: boolean };
+
+export function isPurging(job: Job): boolean {
+	return (job as PurgingJob).purging === true;
+}
+
+/** Why a rollback job cannot run: its original is gone or being deleted; null when it can. */
+export async function originalProblem(
+	deps: Pick<EngineDeps, "jobs">,
+	rollback: Job,
+): Promise<string | null> {
+	if (rollback.rollbackOf === undefined) return null;
+	const original = await deps.jobs.get(rollback.rollbackOf);
+	if (!original) {
+		return `The original job ${rollback.rollbackOf} no longer exists (retention deleted it), so its journal is gone`;
+	}
+	if (isPurging(original)) {
+		return `The original job ${rollback.rollbackOf} is being deleted by retention, so its journal is incomplete`;
+	}
+	return null;
+}
 
 export type RollbackInput = {
 	/** The import job to roll back. */
@@ -15,6 +42,7 @@ export type RollbackInput = {
 /** Why `job` cannot be rolled back now, or null when it can (spec M5a "Which jobs"). */
 export function rollbackRefusal(job: Job, now: number): string | null {
 	if (job.kind === "rollback") return "Cannot roll back a rollback job";
+	if (isPurging(job)) return "Cannot roll back the job: retention is deleting it";
 	if (job.dryRun) return "Cannot roll back a dry-run job: it wrote nothing";
 	if (job.journal !== true) {
 		return "The job has no journal: it was created before rollback support or with journal: false";
@@ -33,24 +61,32 @@ export function rollbackRefusal(job: Job, now: number): string | null {
 
 /**
  * The rollback job's warnings: the media items the import created and the terms it created, both
- * kept (spec M5a F13, F14). Read from the summary the import job kept while it ran, so the call
- * costs no row scan. A job with a journal always has one once it has created anything.
+ * kept (spec M5a F13, F14). Media come from the `journalMedia` rows, which are written before the
+ * item is used, in one query of at most 100 rows (the index `["jobId", "seq"]` orders it; plugin
+ * storage has no count, so a longer list says "more than 100"). Terms come from the summary the
+ * import job keeps in `Job.created`. Neither scans records.
  */
-export function rollbackWarnings(original: Job): string[] {
+async function rollbackWarnings(
+	deps: Pick<EngineDeps, "journalMedia">,
+	original: Job,
+): Promise<string[]> {
 	const warnings: string[] = [];
-	const created = original.created;
-	if (!created) return warnings;
-	if (created.mediaCount > 0) {
-		const listed = created.media.slice(0, MAX_LISTED_MEDIA);
-		const more =
-			created.mediaCount > listed.length ? `, and ${created.mediaCount - listed.length} more` : "";
+	const page = await deps.journalMedia.query({
+		where: { jobId: original.id },
+		orderBy: { seq: "asc" },
+		limit: MAX_LISTED_MEDIA,
+	});
+	if (page.items.length > 0) {
+		const ids = page.items.map(({ data }) => data.mediaId);
+		const count = page.hasMore ? `more than ${ids.length}` : String(ids.length);
 		warnings.push(
-			`The import created ${created.mediaCount} media items, which are kept (EmDash cannot tell whether other content uses them): ${listed.join(", ")}${more}`,
+			`The import created ${count} media items, which are kept (EmDash cannot tell whether other content uses them): ${ids.join(", ")}${page.hasMore ? ", and more" : ""}`,
 		);
 	}
-	if (created.termCount > 0) {
+	const terms = original.created?.termCount ?? 0;
+	if (terms > 0) {
 		warnings.push(
-			`The import created ${created.termCount} terms, which are kept (EmDash 1.2.0 has no term deletion for plugins); the import's records list them under newTerms`,
+			`The import created ${terms} terms, which are kept (EmDash 1.2.0 has no term deletion for plugins); the import's records list them under newTerms`,
 		);
 	}
 	return warnings;
@@ -72,7 +108,7 @@ export async function createRollback(
 	const refusal = rollbackRefusal(original, deps.now());
 	if (refusal !== null) throw new JobError("invalid_transition", refusal);
 	const dryRun = input.dryRun ?? false;
-	const warnings = rollbackWarnings(original);
+	const warnings = await rollbackWarnings(deps, original);
 	const now = new Date(deps.now()).toISOString();
 	const rollback: Job = {
 		id: deps.newId(),

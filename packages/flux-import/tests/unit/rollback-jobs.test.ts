@@ -4,6 +4,7 @@ import { createRollback, rollbackRefusal } from "../../src/engine/rollback.js";
 import type { Job } from "../../src/engine/types.js";
 import { purgeExpired } from "../../src/plugin/retention.js";
 import {
+	nextBatch,
 	WORKERS_LINKED_BATCH_CAP,
 	WORKERS_ROLLBACK_BATCH_CAP,
 	workersBatchCap,
@@ -140,18 +141,32 @@ describe("jobs/rollback (M5a)", () => {
 		]);
 	});
 
-	it("lists at most 100 media IDs, then a count", async () => {
+	it("lists at most 100 media IDs in seq order, then says there are more", async () => {
 		const { deps } = setup();
 		const original = await importRows(deps, [desk]);
-		const media = Array.from({ length: 100 }, (_, i) => `m${i}`);
-		await patch(deps, original.id, {
-			created: { terms: [], termCount: 0, media, mediaCount: 102 },
-		});
+		for (let i = 101; i >= 0; i--) {
+			await deps.journalMedia.put(`${original.id}:m${i}`, {
+				jobId: original.id,
+				mediaId: `m${i}`,
+				url: url(`${i}.png`),
+				seq: i,
+			});
+		}
 		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
 		const [warning] = rollback.warnings ?? [];
 		expect(warning).toMatch(
-			/^The import created 102 media items, .*: m0, m1, .*, m99, and 2 more$/,
+			/^The import created more than 100 media items, .*: m0, m1, .*, m99, and more$/,
 		);
+		expect(warning).not.toContain("m100");
+	});
+
+	it("lists media a crashed batch never saved to the job's summary", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [{ ...desk, img: url("a.png") }]);
+		const { created: _lost, ...withoutSummary } = (await deps.jobs.get(original.id)) as Job;
+		await deps.jobs.put(original.id, withoutSummary);
+		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
+		expect(rollback.warnings?.[0]).toMatch(/^The import created 1 media items, .*: m1$/);
 	});
 
 	it("keeps the summary on the job while it imports, one entry per term and media item", async () => {
@@ -193,13 +208,21 @@ describe("jobs/rollback (M5a)", () => {
 	it("scans no rows to build the warnings", async () => {
 		const { deps } = setup();
 		const original = await importRows(deps, [{ ...desk, img: url("a.png") }]);
-		for (const rows of [deps.records, deps.journal, deps.journalMedia]) {
+		for (const rows of [deps.records, deps.journal]) {
 			rows.query = () => {
 				throw new Error("scanned");
 			};
 		}
+		let mediaQueries = 0;
+		const query = deps.journalMedia.query.bind(deps.journalMedia);
+		deps.journalMedia.query = (opts) => {
+			mediaQueries++;
+			expect(opts.limit).toBeLessThanOrEqual(100);
+			return query(opts);
+		};
 		const { rollback } = await createRollback(deps, { id: original.id, dryRun: true });
 		expect(rollback.warnings).toHaveLength(1);
+		expect(mediaQueries).toBe(1);
 	});
 
 	it("still reports the conflict when deleting the orphan rollback job fails", async () => {
@@ -309,6 +332,64 @@ describe("retention of journals and rollbacks (M5a)", () => {
 		expect(await deps.jobs.get(job.id)).not.toBeNull();
 		deps.journal.deleteMany = deleteMany;
 		expect((await purgeExpired(deps, purger, 30)).jobs).toBe(1);
+	});
+
+	it("marks a job purging before it deletes any of its rows, and refuses a rollback of it", async () => {
+		const { deps, clock } = setup();
+		const job = await importRows(deps, [desk]);
+		clock.t += 31 * DAY;
+		let seen: boolean | undefined;
+		const deleteMany = deps.journal.deleteMany.bind(deps.journal);
+		deps.journal.deleteMany = async (ids) => {
+			seen = ((await deps.jobs.get(job.id)) as { purging?: boolean }).purging;
+			return deleteMany(ids);
+		};
+		await purgeExpired(deps, purger, 30);
+		expect(seen).toBe(true);
+		// A purge that stopped halfway leaves the mark.
+		const stopped = await importRows(deps, [{ sku: "B1", name: "Bench" }]);
+		clock.t += 31 * DAY;
+		deps.journal.deleteMany = async () => 0;
+		await purgeExpired(deps, purger, 30);
+		expect(await deps.jobs.get(stopped.id)).toMatchObject({ purging: true });
+		await expect(createRollback(deps, { id: stopped.id })).rejects.toMatchObject({
+			code: "invalid_transition",
+			message: "Cannot roll back the job: retention is deleting it",
+		});
+	});
+
+	it("does not purge an original a rollback was created for after the scan", async () => {
+		const { deps, clock } = setup();
+		const original = await importRows(deps, [desk]);
+		clock.t += 31 * DAY;
+		const query = deps.jobs.query.bind(deps.jobs);
+		let rolled = false;
+		deps.jobs.query = async (opts) => {
+			const result = await query(opts);
+			if (!rolled) {
+				rolled = true;
+				// The scan has read the original; a rollback is created before retention marks it.
+				await createRollback(deps, { id: original.id });
+			}
+			return result;
+		};
+		expect((await purgeExpired(deps, purger, 30)).jobs).toBe(0);
+		expect(await deps.jobs.get(original.id)).not.toHaveProperty("purging");
+		expect((await deps.journal.query({ where: { jobId: original.id } })).items).toHaveLength(1);
+	});
+
+	it("fails a rollback job whose original is gone or being purged, instead of completing empty", async () => {
+		for (const how of ["gone", "purging"] as const) {
+			const { deps } = setup();
+			const original = await importRows(deps, [desk]);
+			const { rollback } = await createRollback(deps, { id: original.id });
+			if (how === "gone") await deps.jobs.delete(original.id);
+			else await patch(deps, original.id, { purging: true } as Partial<Job>);
+			const job = await nextBatch(deps, {} as never, rollback.id, "driver");
+			expect(job.status, how).toBe("failed");
+			expect(job.error, how).toMatchObject({ code: "rollback_original_gone" });
+			expect(job.counters.reverted ?? 0).toBe(0);
+		}
 	});
 
 	it("does not keep the original's file for a rollback job", async () => {

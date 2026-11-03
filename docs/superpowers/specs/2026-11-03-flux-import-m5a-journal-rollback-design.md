@@ -373,12 +373,14 @@ would get back (`before` the current value, `after` the journal's), and the same
 ### Job warnings
 
 At creation the rollback job gets, when they apply: "The import created <n> media items, which are
-kept (EmDash cannot tell whether other content uses them): <ids>, …" (at most 100 IDs); and
-"The import created <n> terms, which are kept (EmDash 1.2.0 has no term deletion for plugins);
-the import's records list them under newTerms". Both come from `Job.created`, a summary the
-import job keeps while it runs (term names and media IDs, at most 100 of each, with totals),
-saved with each batch, so creating the rollback job scans no rows. A job with a journal always
-has it once it has created anything; a job without one cannot be rolled back.
+kept (EmDash cannot tell whether other content uses them): <ids>, …" (at most 100 IDs, in `seq`
+order); and "The import created <n> terms, which are kept (EmDash 1.2.0 has no term deletion for
+plugins); the import's records list them under newTerms". The media part is one `journalMedia`
+query of at most 100 rows by `jobId` (plugin storage has no count, so a longer list reads "more
+than 100 ... and more"); it does not depend on a batch having saved. The terms come from
+`Job.created.termCount`, a summary the import job keeps while it runs and saves with each batch.
+Creating the rollback job scans no records. A job with a journal always has the summary once it
+has created a term; a job without a journal cannot be rolled back.
 
 | Code | Kind | When |
 | --- | --- | --- |
@@ -454,8 +456,13 @@ extra content reads: everything in the pre-image comes from the reads the import
 `purgeExpired` deletes an expired job's `journal` and `journalMedia` rows with its records. An
 original that a rollback job names (`rollbackOf`, real or dry run, in any status) is kept while
 that rollback job exists; when the rollback job has expired and is pruned, its original goes in
-the same run if it has also expired. A job whose rows could not all be deleted stays for the next
-run. Link rows are kept, as before.
+the same run if it has also expired, whatever the rollback job's status: a paused rollback is
+pruned with its original once both have expired, so the rollback window equals the retention
+period. Before it deletes any row of a job, retention marks the job `purging` with a
+compare-and-set (and skips an original a rollback job was created for since its scan).
+`jobs/rollback` refuses a purging job (409), and a rollback job whose original is gone or purging
+fails with `rollback_original_gone` when it next runs, so it never completes with no rows. A job
+whose rows could not all be deleted stays, marked, for the next run. Link rows are kept, as before.
 
 ## Testing
 
