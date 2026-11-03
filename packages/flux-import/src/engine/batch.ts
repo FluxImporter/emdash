@@ -270,6 +270,10 @@ type RecordCtx = {
 	target: Target;
 	/** The schedule the record makes, as its `publishAt` change (M5b); absent when none. */
 	schedule?: Change;
+	/** The record's `publishAt` time, whatever its target (M5b, for crash repair); null when none. */
+	publishAt: string | null;
+	/** The `not_scheduled` warning a written update carries (M5b); absent when none. */
+	notScheduled?: RecordError;
 	/** The job may already have written the entry (see `JournalTarget.mayHaveWritten`). */
 	mayHaveWritten: boolean;
 	/** The record's earlier row was `writing` (see `JournalTarget.resuming`). */
@@ -292,6 +296,8 @@ type RecordCtx = {
 
 const PENDING_DRAFT_MESSAGE =
 	"Not imported: the entry has an unpublished draft that this import did not write";
+const PENDING_SCHEDULE_MESSAGE =
+	"Not imported: the entry is scheduled, and this import did not schedule it";
 const REV_CONFLICT_MESSAGE = "Not imported: the entry changed since it was read; retry to re-apply";
 const LOCKED_MESSAGE = "Not imported: the entry is being edited (locked)";
 
@@ -771,6 +777,7 @@ async function decideRecord(
 		stored: null,
 		linkSaved: false,
 		target: targetOf(job, mapped.value, deps.now()),
+		publishAt: mapped.value.publishAt ?? null,
 		mayHaveWritten: false,
 		resuming: false,
 		save,
@@ -1027,8 +1034,14 @@ async function decideRecord(
 		const target = ctx.target;
 		const scheduled =
 			target.kind === "at" ? schedulePlan(job, entry, link, plan, record, target.at) : null;
-		if (scheduled !== null && "warning" in scheduled) found.warnings.push(scheduled.warning);
+		if (scheduled !== null && "warning" in scheduled) ctx.notScheduled = scheduled.warning;
 		if (scheduled !== null && "change" in scheduled) ctx.schedule = scheduled.change;
+		// `not_scheduled` describes a write that went live, so only a written update carries it.
+		const write = async (p: RecordPlan) => {
+			const row = await writeRecord(ctx, entry, p, unprotected(ctx, record, guarded));
+			if (ctx.notScheduled && row.status === "updated") found.warnings.push(ctx.notScheduled);
+			return row;
+		};
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
@@ -1042,6 +1055,7 @@ async function decideRecord(
 				if (!listed.has(url)) found.newMedia.push(`${field}: ${url}`);
 			}
 			const schedule = ctx.schedule;
+			if (ctx.notScheduled) found.warnings.push(ctx.notScheduled);
 			return {
 				status: "planned",
 				sourceKey,
@@ -1065,7 +1079,7 @@ async function decideRecord(
 					entry.id,
 					plan.action,
 					code,
-					PENDING_DRAFT_MESSAGE,
+					entry.scheduledAt === null ? PENDING_DRAFT_MESSAGE : PENDING_SCHEDULE_MESSAGE,
 				);
 			}
 			if (await deps.content.isLocked(collection, locale, entry.id)) {
@@ -1074,7 +1088,7 @@ async function decideRecord(
 		}
 		if (!lookups && misses.length === 0) {
 			await setFields(ctx, entry, record, plan, links, guarded);
-			return await writeRecord(ctx, entry, plan, unprotected(ctx, record, guarded));
+			return await write(plan);
 		}
 		// Downloads only for a record that will be written, after the draft and lock checks: field
 		// media first, then Portable Text images in document order.
@@ -1130,14 +1144,14 @@ async function decideRecord(
 			const again = schedulePlan(job, entry, link, final, record, target.at);
 			if (again !== null && "change" in again) ctx.schedule = again.change;
 			else delete ctx.schedule;
-			const warned = scheduled !== null && "warning" in scheduled;
-			if (again !== null && "warning" in again && !warned) found.warnings.push(again.warning);
+			if (again !== null && "warning" in again) ctx.notScheduled = again.warning;
+			else delete ctx.notScheduled;
 		}
 		await setFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
 			return await finishUnchanged(ctx, entry, link, existing, repaired);
 		}
-		return await writeRecord(ctx, entry, final, unprotected(ctx, record, guarded));
+		return await write(final);
 	} catch (e) {
 		// A missing collection or a broken source-id field fails every record: fail the job instead.
 		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
@@ -1311,6 +1325,15 @@ async function finishUnchanged(
 			const failure = journaling(job) ? await journalPublish(ctx, entry, link) : null;
 			if (failure) return { status: "failed", sourceKey, entryId, errors: [failure] };
 			if (target.kind === "at" && ctx.schedule !== undefined) {
+				// The revision scheduled, saved first: a stop before the link put is then repaired as a
+				// write's is, by `scheduleLanded`.
+				await ctx.save({
+					status: "writing",
+					sourceKey,
+					entryId,
+					action: "update",
+					writtenRev: entry.rev,
+				});
 				const scheduled = await scheduleRev(ctx, entryId, entry.rev, target.at);
 				if (!scheduled.ok)
 					return scheduleFailed(scheduled.reason, sourceKey, entryId, "update", entry.rev);
@@ -1336,14 +1359,44 @@ async function finishUnchanged(
 	// version-derived, so a different entry (an editor's copy) can carry the same string.
 	const proven =
 		writtenRev !== undefined && existing?.entryId === entry.id && entry.rev === writtenRev;
-	if (job.publish && entry.pendingPublish && target.kind === "at") {
+	// A schedule this record sent may have landed before the stop, whatever the record's target is
+	// now (spec M5b "Crash repair"): the same version as the write's, a later updated_at, and the
+	// record's time; or the scheduler has since published it (`sweptSince`).
+	const { publishAt } = ctx;
+	const ours = writtenRev !== undefined && existing?.entryId === entry.id;
+	const landed =
+		ours &&
+		publishAt !== null &&
+		writtenRev !== undefined &&
+		scheduleLanded(entry, writtenRev, publishAt);
+	const swept =
+		ours &&
+		publishAt !== null &&
+		writtenRev !== undefined &&
+		sweptSince(
+			{
+				collection: job.template.collection,
+				locale: job.template.locale,
+				sourceKey,
+				entryId,
+				writtenRev,
+				scheduledAt: publishAt,
+			},
+			entry,
+		);
+	if (swept && publishAt !== null) {
+		// The scheduler's publish is the importer's: the link takes its revision, so rollback owns it.
+		await putLink(ctx, entryId, entry.rev, publishAt);
+	} else if (landed && publishAt !== null && target.kind !== "at") {
+		// The time is now within the lead (or past): adopt the schedule, then publish it now.
+		await putLink(ctx, entryId, entry.rev, publishAt);
+		if (target.kind === "now") {
+			const published = await publishRev(ctx, entryId, entry.rev);
+			if (!published.ok)
+				return publishFailed(published.reason, sourceKey, entryId, action, writtenRev);
+		}
+	} else if (job.publish && entry.pendingPublish && target.kind === "at") {
 		const at = target.at;
-		// A schedule this record sent may have landed before the stop: the same version as the
-		// write's, a later updated_at, and the time asked for (spec M5b "Crash repair").
-		const landed =
-			writtenRev !== undefined &&
-			existing?.entryId === entry.id &&
-			scheduleLanded(entry, writtenRev, at);
 		if (landed || (proven && sameInstant(entry.scheduledAt, at))) {
 			await putLink(ctx, entryId, entry.rev, at);
 		} else if (proven) {

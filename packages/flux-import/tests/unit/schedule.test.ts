@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
-import { transitionJob } from "../../src/engine/jobs.js";
+import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { decodeRev } from "../../src/engine/revs.js";
 import { NOT_SCHEDULED_MESSAGE, SCHEDULE_LEAD_MS } from "../../src/engine/rules.js";
+import type { SchemaField } from "../../src/engine/template.js";
 import type { LinkRow } from "../../src/engine/types.js";
+import { makeDeps } from "./fakes.js";
 import {
 	csv,
 	type Deps,
@@ -486,5 +488,304 @@ describe("publishAt: publish now or schedule (M5b)", () => {
 			jobId: job.id,
 			scheduledAt: at(HOUR),
 		});
+	});
+});
+
+/** Drops a crashed batch's lease, so the next batch resumes the job at once. */
+async function unlease(deps: Deps, id: string) {
+	const leased = (await deps.jobs.get(id)) as NonNullable<Awaited<ReturnType<Deps["jobs"]["get"]>>>;
+	await deps.jobs.put(id, { ...leased, lease: null });
+}
+
+/** Stops the first batch of a job right after its schedule call landed. */
+async function crashAfterSchedule(deps: Deps, jobId: string) {
+	deps.content.afterSchedule = () => {
+		throw new Error("crash");
+	};
+	await expect(runBatch(deps, jobId, "w1")).rejects.toThrow("crash");
+	deps.content.afterSchedule = () => {};
+}
+
+describe("publishAt: crash repair and someone else's schedule (M5b)", () => {
+	it("repairs a stop after scheduling the importer's own draft, before the link put", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		await importRows(deps, [desk], { publish: false });
+		const job = await start(deps, csv([desk]), scheduleAt(at(HOUR)));
+		await crashAfterSchedule(deps, job.id);
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "writing", action: "update" });
+		await unlease(deps, job.id);
+		await runToEnd(deps, job.id);
+		const e = entryOf(deps, "A1");
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "updated", action: "update" });
+		expect(await linkOf(deps)).toMatchObject({
+			writtenRev: deps.content.revOf(e.id),
+			jobId: job.id,
+			scheduledAt: at(HOUR),
+		});
+		// The schedule is the importer's own, so the next run updates the entry.
+		const next = await importRows(deps, [{ ...desk, price: 12 }], scheduleAt(at(HOUR)));
+		expect((await records(deps, next.id))[0]).toMatchObject({ status: "updated" });
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "scheduled", scheduledAt: at(HOUR) });
+	});
+
+	it("adopts a landed schedule and publishes it when its time is now within the lead", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const job = await start(deps, csv([desk]), scheduleAt(at(90_000)));
+		await crashAfterSchedule(deps, job.id);
+		clock.t = T0 + 45_000;
+		await unlease(deps, job.id);
+		await runToEnd(deps, job.id);
+		const e = entryOf(deps, "A1");
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "created" });
+		expect(e).toMatchObject({ status: "published", scheduledAt: null });
+		const link = await linkOf(deps);
+		expect(link).toMatchObject({ writtenRev: deps.content.revOf(e.id), jobId: job.id });
+		expect(link).not.toHaveProperty("scheduledAt");
+	});
+
+	it("adopts the scheduler's publish of a landed schedule, at the swept revision", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const job = await start(deps, csv([desk]), scheduleAt(at(HOUR)));
+		await crashAfterSchedule(deps, job.id);
+		clock.t = T0 + 2 * HOUR;
+		const e = entryOf(deps, "A1");
+		expect(deps.content.runScheduled()).toEqual([e.id]);
+		await unlease(deps, job.id);
+		await runToEnd(deps, job.id);
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "created" });
+		expect(await linkOf(deps)).toMatchObject({
+			writtenRev: deps.content.revOf(e.id),
+			jobId: job.id,
+			scheduledAt: at(HOUR),
+		});
+		expect(deps.content.calls).not.toContain(`publish:${e.id}`);
+	});
+
+	it("refuses an editor's schedule of a published entry for a template without publishAt", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		await importRows(deps, [desk]);
+		const e = entryOf(deps, "A1");
+		await deps.content.schedule({
+			collection: "products",
+			locale: "en",
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			scheduledAt: at(HOUR),
+		});
+		const job = await importRows(deps, [{ ...desk, price: 12 }]);
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "conflict",
+			errors: [
+				{
+					code: "pending_draft",
+					message: "Not imported: the entry is scheduled, and this import did not schedule it",
+				},
+			],
+		});
+		expect(entryOf(deps, "A1")).toMatchObject({
+			status: "published",
+			scheduledAt: at(HOUR),
+			data: { price: 10 },
+		});
+	});
+
+	it("puts no not_scheduled warning on a locked or pending row", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		await importRows(deps, [desk]);
+		const e = entryOf(deps, "A1");
+		deps.content.locked.add(e.id);
+		const locked = await importRows(deps, [{ ...desk, tags: "sale" }], scheduleAt(at(HOUR)));
+		const [lockedRow] = await records(deps, locked.id);
+		expect(lockedRow).toMatchObject({ status: "locked" });
+		expect(lockedRow).not.toHaveProperty("warnings");
+		deps.content.locked.clear();
+		await deps.content.schedule({
+			collection: "products",
+			locale: "en",
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			scheduledAt: at(HOUR),
+		});
+		const pending = await importRows(deps, [{ ...desk, tags: "sale" }], scheduleAt(at(2 * HOUR)));
+		const [pendingRow] = await records(deps, pending.id);
+		expect(pendingRow).toMatchObject({ status: "conflict", errors: [{ code: "pending_draft" }] });
+		expect(pendingRow).not.toHaveProperty("warnings");
+	});
+
+	it("puts no not_scheduled warning on an update the write itself refused", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		// Locked after the lock check: the update call answers locked.
+		deps.content.isLocked = async () => false;
+		deps.content.locked.add(entryOf(deps, "A1").id);
+		const job = await importRows(deps, [{ ...desk, tags: "sale" }], scheduleAt(at(HOUR)));
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "locked", errors: [{ code: "locked" }] });
+		expect(row).not.toHaveProperty("warnings");
+	});
+
+	it("plans not_scheduled in a dry run", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [{ ...desk, tags: "sale" }], {
+			...scheduleAt(at(HOUR)),
+			dryRun: true,
+		});
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "planned",
+			action: "update",
+			changes: [{ field: "taxonomies.tag" }],
+			warnings: [{ code: "not_scheduled", message: NOT_SCHEDULED_MESSAGE }],
+		});
+	});
+
+	it("does not adopt the schedule of an editor's entry that crash repair finds by source ID", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const realPut = deps.links.put.bind(deps.links);
+		let crash = true;
+		deps.links.put = async (id, data) => {
+			if (crash && data.writtenRev !== undefined) {
+				crash = false;
+				throw new Error("crash");
+			}
+			return realPut(id, data);
+		};
+		const job = await start(deps, csv([desk]), scheduleAt(at(HOUR)));
+		await expect(runBatch(deps, job.id, "w1")).rejects.toThrow("crash");
+		// The editor replaces the import's entry with an identical one of the same version, and
+		// schedules it for the record's time.
+		const mine = entryOf(deps, "A1");
+		await deps.content.trash("products", mine.id);
+		await deps.content.permanentDelete("products", mine.id);
+		const copy = await deps.content.create({
+			collection: "products",
+			locale: "en",
+			...(mine.slug === null ? {} : { slug: mine.slug }),
+			data: structuredClone(mine.data),
+			taxonomies: structuredClone(mine.taxonomies),
+			references: structuredClone(mine.references),
+			bylines: structuredClone(mine.bylines),
+		});
+		await deps.content.schedule({
+			collection: "products",
+			locale: "en",
+			id: copy.id,
+			rev: copy.rev,
+			scheduledAt: at(HOUR),
+		});
+		const wrote = decodeRev((await records(deps, job.id))[0]?.writtenRev ?? "");
+		expect(decodeRev(deps.content.revOf(copy.id))?.version).toBe(wrote?.version);
+		await unlease(deps, job.id);
+		await runToEnd(deps, job.id);
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "conflict",
+			entryId: copy.id,
+			errors: [{ code: "schedule_unverified" }],
+		});
+		expect(await linkOf(deps)).not.toHaveProperty("scheduledAt");
+	});
+
+	it("warns not_scheduled when protection leaves only links to update", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const rules = { rules: { protectEdited: true } };
+		await importRows(deps, [desk], { extra: rules });
+		const e = entryOf(deps, "A1");
+		const edited = await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { price: 15 },
+		});
+		if (!edited.ok) throw new Error("edit failed");
+		await deps.content.publish({ id: e.id, rev: edited.rev });
+		const job = await importRows(
+			deps,
+			[{ ...desk, price: 12, tags: "sale" }],
+			scheduleAt(at(HOUR), { extra: rules }),
+		);
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "updated", changes: [{ field: "taxonomies.tag" }] });
+		expect(row?.warnings?.map((w) => w.code)).toEqual(["field_edited", "not_scheduled"]);
+		expect(later(deps)).toEqual([]);
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "published", scheduledAt: null });
+	});
+
+	it("fails a record whose time passed before the schedule call, and a retry publishes it", async () => {
+		const { deps, clock } = setup();
+		// Downloads that outlast the lead: the time is past when the schedule call is made.
+		deps.content.beforeSchedule = () => {
+			clock.t = T0 + 2 * HOUR;
+		};
+		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "failed",
+			errors: [{ code: "emdash_validation_error" }],
+		});
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		deps.content.beforeSchedule = () => {};
+		await transitionJob(deps, job.id, "retry");
+		const retried = await runToEnd(deps, job.id);
+		expect(retried.counters).toMatchObject({ updated: 1, failed: 0 });
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "published", scheduledAt: null });
+	});
+});
+
+describe("publishAt on translations (M5b, M4e)", () => {
+	const fields: SchemaField[] = [
+		{ slug: "title", type: "string" },
+		{ slug: "flux_source_id", type: "string", translatable: false },
+	];
+	async function run(deps: ReturnType<typeof makeDeps>["deps"], template: unknown, body: string) {
+		const upload = `u${deps.source.uploads.size + 1}`;
+		deps.source.add(upload, body);
+		const job = await createJob(deps, {
+			uploadId: upload,
+			template,
+			schemaFields: fields,
+			linkSchema: { targets: { products: fields } },
+		});
+		return runToEnd(deps, job.id);
+	}
+
+	it("creates a translation and schedules it, leaving its source published", async () => {
+		const { deps } = makeDeps();
+		await run(
+			deps,
+			{
+				version: 1,
+				collection: "products",
+				locale: "en",
+				key: { from: "id" },
+				fields: { title: { from: "Name", type: "text" } },
+			},
+			"id,Name\nE1,Desk\n",
+		);
+		const job = await run(
+			deps,
+			{
+				version: 1,
+				collection: "products",
+				locale: "fr",
+				key: { from: "id" },
+				translationOf: { from: "en_id", locale: "en" },
+				fields: { title: { from: "Nom", type: "text" } },
+				publishAt: { expr: `'${at(HOUR)}'` },
+			},
+			"id,en_id,Nom\nF1,E1,Bureau\n",
+		);
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "created", action: "create" });
+		expect(row?.changes?.map((c) => c.field)).toEqual(["title", "translationOf", "publishAt"]);
+		const entries = [...deps.content.entries.values()];
+		const en = entries.find((x) => x.locale === "en");
+		const fr = entries.find((x) => x.locale === "fr");
+		expect(en).toMatchObject({ status: "published", scheduledAt: null });
+		expect(fr).toMatchObject({ status: "scheduled", scheduledAt: at(HOUR), group: en?.group });
 	});
 });

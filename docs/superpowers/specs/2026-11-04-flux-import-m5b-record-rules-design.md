@@ -388,6 +388,16 @@ nothing changes (draft).
 | someone else's pending state (draft or schedule) | update | `pending_draft` (as today) | `pending_draft` |
 | someone else's pending state | unchanged | `unchanged` (as today) | `unchanged` |
 
+- **Someone else's schedule, a deliberate change.** The pending check counts a schedule the
+  link's `writtenRev` does not account for, even on a published entry without a draft, for every
+  template, those without `publishAt` included. Before M5b such an update was written and
+  published, which cleared the editor's schedule (F4). It is now `pending_draft`, with the message
+  "Not imported: the entry is scheduled, and this import did not schedule it" (a pending draft
+  keeps "Not imported: the entry has an unpublished draft that this import did not write").
+- **`not_scheduled` only on a written update.** The warning describes an update that went live
+  at once, so a row that was not written (`locked`, `pending_draft`, a rev conflict) does not
+  carry it. A dry run's planned row does. When downloads leave only links to update, the plan made
+  after them decides it.
 - **The schedule call.** It is made right after the write, with the write's `_rev`, in place of
   the publish. It saves the link with the `_rev` it returned and `scheduledAt: T`. A stale `_rev`
   or an editor's lock gives `schedule_conflict` or `schedule_locked` ("Saved as a draft: the entry
@@ -408,6 +418,21 @@ nothing changes (draft).
   Otherwise the row is `conflict`, `schedule_unverified` ("Saved as a draft and maybe scheduled:
   the entry may have changed after the import wrote it, so it was not verified"), as
   `publish_unverified` is.
+  - Scheduling the importer's own pending draft (no write) first saves a `writing` row with the
+    draft's `_rev` as `writtenRev`, so a stop after that call is repaired the same way.
+  - A landed schedule is recognised by the record's `publishAt` whatever the target is when the
+    record resumes. If the time is now within the lead, the schedule is adopted (link saved with
+    `scheduledAt`) and then published. If the sweep already published it (`sweptSince`: one
+    `version` past `writtenRev`, at or after the time, published, no draft, no schedule), the
+    link is saved at the swept `_rev` with `scheduledAt`, so rollback owns the result.
+  - Both checks need the row's `entryId` to be the entry found: an editor's entry that crash
+    repair finds by `flux_source_id` is never taken as landed, even at the same `version` and
+    time.
+- **Downloads that outlast the lead.** The target is fixed when the record is read. If the
+  record's downloads take longer than `SCHEDULE_LEAD_MS`, the time may be past when the schedule
+  call is made. EmDash then refuses it (`VALIDATION_ERROR`, F2), and the record fails with
+  `emdash_validation_error` after the write, leaving the importer's own draft. A retry finds the
+  time past and publishes that draft now.
 - **The sweep.** EmDash publishes the entry at `T` (F5). The next import finds it published
   without a draft and treats it as any published entry. The link's `writtenRev` is then stale,
   which matters only to rollback ownership (below) and to no import decision. With
@@ -521,7 +546,7 @@ the revert sequence then runs from the published state. A row that fails it stay
 | --- | --- | --- |
 | `rules.updateFields` | 1-200 unique names, each mapped | A template maps at most a few dozen; schema bound |
 | Fingerprints per link row | One per mapping, 16 characters each | No growth past the template |
-| `SCHEDULE_LEAD_MS` | 60,000 | EmDash refuses a time that is not in the future at its own clock (F2); a minute absorbs the time between the record's read and the call |
+| `SCHEDULE_LEAD_MS` | 60,000 | EmDash refuses a time that is not in the future at its own clock (F2); a minute absorbs the time between the record's read and the call. Downloads that take longer fail the record with `emdash_validation_error`; a retry publishes it ("Publish, draft or schedule", Crash repair) |
 | `publishAt` years | 0000-9999 | `dateConverter` (M4a) |
 | New batch caps | none (V7) | |
 
