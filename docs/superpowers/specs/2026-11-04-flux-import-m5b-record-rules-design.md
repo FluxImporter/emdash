@@ -167,9 +167,18 @@ Job creation also:
 // Job gains: revisions?: boolean   (set when the template maps publishAt)
 // LinkRow gains:
 //   fields?: Record<string, string>   (mapping name -> fingerprint; see "Fingerprints")
+//   unconfirmed?: string[]            (mappings whose fingerprint writtenRev does not vouch for;
+//                                      see "Unconfirmed fingerprints"; omitted when empty)
 //   scheduledAt?: string              (the time the write that produced writtenRev scheduled the entry for)
-// JournalBefore.link gains: fields?: Record<string, string>; scheduledAt?: string
-// EntrySnapshot: unchanged (status, scheduledAt, hasDraft, live are there since M5a)
+// JournalBefore.link gains: fields?: Record<string, string>; unconfirmed?: string[]; scheduledAt?: string
+// EntrySnapshot gains: publishedAt?: string | null   (EmDash's published_at; null: never published)
+//   (status, scheduledAt, hasDraft, live are there since M5a)
+// JournalEntry.wrote gains (written when a publish or a schedule follows the write; see
+// "Ownership after the scheduler published" and "Crash repair"):
+//   fields?: Record<string, string>   (field -> fingerprint of the data the publish makes live)
+//   slug?: string                     (the slug the write sends, when it sends one)
+//   publishedAt?: string | null       (the entry's as read before the write; null for a create)
+// journalCreate(target, sourceIdValue, wrote?)   (a create's row carries wrote too)
 // ContentPort gains:
 //   schedule(input: { collection; locale; id; rev; scheduledAt }): Promise<WriteResult>
 //     (lock-checked like publish; SCHEDULE_REJECTED and other EmDash errors throw ContentWriteError)
@@ -437,6 +446,26 @@ nothing changes (draft).
   - Both checks need the row's `entryId` to be the entry found: an editor's entry that crash
     repair finds by `flux_source_id` is never taken as landed, even at the same `version` and
     time.
+  - (Final review A-I1.) "Holds the record's values for every mapping" compares only the
+    mappings the plan compares: `updateFields` leaves the others out, and the importer's own
+    draft may hold fields no mapping covers. So the swept entry is adopted only when, in
+    addition, its whole live data is what the job journalled for the scheduled write: the
+    journal row's `wrote.fields` (and `wrote.slug`, and the `publishedAt` rule) as in "Ownership
+    after the scheduler published", one shared check (`holdsScheduled`). A job without a journal
+    (`journal: false`), or a row without `wrote.fields`, adopts nothing: the link stays as
+    written and the next run judges the entry.
+- **A publish whose link save a stop lost** (final review A-I2). Each publish the importer sends
+  is preceded by a `writing` row with the `_rev` it publishes as `writtenRev`: a write's (saved
+  since M2) and, now, the importer's own pending draft's (`finishUnchanged`, as the schedule of
+  that draft already does). A resumed row whose target is now adopts the entry (the link saved at
+  its `_rev`, no `scheduledAt`) only when all hold: its `_rev` decodes to exactly one `version`
+  past `writtenRev`; it is `published` with no draft and no schedule; no mapping is protected;
+  and its live data and slug are what the journal recorded the publish makes live
+  (`wrote.fields`, `wrote.slug`, `holdsWrote`). The journal therefore records `wrote` for every
+  write a publish follows, not only scheduled ones. An editor's save on a collection without
+  revisions, or a discard of the importer's draft, leaves the same shape with other values and is
+  not adopted; without a journal nothing is. Otherwise the link is left alone and a rollback
+  reports `rollback_changed`.
 - **Downloads that outlast the lead.** The target is fixed when the record is read. If the
   record's downloads take longer than `SCHEDULE_LEAD_MS`, the time may be past when the schedule
   call is made. EmDash then refuses it (`VALIDATION_ERROR`, F2), and the record fails with
@@ -444,8 +473,10 @@ nothing changes (draft).
   time past and publishes that draft now.
 - **The sweep.** EmDash publishes the entry at `T` (F5). The next import finds it published
   without a draft and treats it as any published entry. The link's `writtenRev` is then stale,
-  which matters only to rollback ownership (below) and to no import decision. With
-  `protectEdited`, fingerprints are value-based, so the sweep changes none of them.
+  which matters only to rollback ownership (below) and to protection. With `protectEdited`,
+  fingerprints are value-based, so the sweep changes none of their values; but the moved `_rev`
+  vouches for none of them, so the next link save carries them as `unconfirmed` until a run finds
+  them equal ("Unconfirmed fingerprints", Task 5 review round 2).
 - **Dry run.** It plans the same: the `publishAt` change, and `not_scheduled` when `Job.revisions`
   is false and the entry is published.
 - **Translations.** Each locale has its own status, and each template its own `publishAt`. When
@@ -483,7 +514,7 @@ For a template with `rules` or `publishAt` (others keep M5a's order):
 
 **Journal format.** `before.link` gains the link row's `fields`, `unconfirmed` and `scheduledAt`
 when present.
-Both are optional, so M5a rows read as before and an M5a rollback ignores them. No new journal
+All three are optional, so M5a rows read as before and an M5a rollback ignores them. No new journal
 kind is needed.
 
 **Revert sequence, step 7 `unschedule`** (new, after M5a's six):
@@ -557,11 +588,15 @@ the revert sequence then runs from the published state. A row that fails it stay
   mapping per record. The schedule call replaces the publish (M5a Results: 28-29 D1 queries for a
   schedule, 76 for a publish), so a scheduled record costs no more than a published one. A refresh
   adds one plugin storage put, once per entry after the upgrade and once when a protection lifts.
-  The link row grows by about 30 bytes per mapping.
+  The link row grows by about 40-100 bytes per mapping (the name, quoted, and a 16-character
+  fingerprint), plus the name again while it is listed in `unconfirmed`. A journal row of a write
+  that a publish or schedule follows grows by the same per data field (`wrote.fields`).
 - **Caps.** `WORKERS_BATCH_CAP` (11), `WORKERS_LINKED_BATCH_CAP` (6) and
   `WORKERS_ROLLBACK_BATCH_CAP` (3) stay, subject to V7. The rollback's longest sequence keeps five
-  content calls, because step 7 replaces step 6. `STEP_COST.unschedule` is 15, as for schedule, and
-  `ROW_RESERVE` (135) is unchanged.
+  content calls, because step 7 replaces step 6. `STEP_COST.unschedule` is 15, as for schedule.
+  `ROW_RESERVE` is 165 (Task 7 review, from 135): `COST_RECORD` (25), the longest sequence
+  (update, publish, unpublish, update, and schedule or unschedule: 35 + 35 + 15 + 35 + 15) and a
+  term read (5).
 - **Lookup budget.** Protected links are looked up as unprotected ones are (`COST_READ`, the M4b
   costs). Unlisted mappings cost nothing.
 - **Node.** No change: the job's `batchSize` applies.
@@ -574,7 +609,7 @@ the revert sequence then runs from the published state. A row that fails it stay
 | Fingerprints per link row | One per mapping, 16 characters each | No growth past the template |
 | `SCHEDULE_LEAD_MS` | 60,000 | EmDash refuses a time that is not in the future at its own clock (F2); a minute absorbs the time between the record's read and the call. Downloads that take longer fail the record with `emdash_validation_error`; a retry publishes it ("Publish, draft or schedule", Crash repair) |
 | `publishAt` years | 0000-9999 | `dateConverter` (M4a) |
-| New batch caps | none (V7) | |
+| New batch caps | none (V7), pending Task 10's re-measurement on the finished code | V7 measured 772 D1 queries for the largest batch; Task 10 measures again, including the longest rollback sequence (final review) |
 
 ## Testing
 
@@ -614,13 +649,13 @@ the revert sequence then runs from the published state. A row that fails it stay
 
 ## Plan sizing
 
-About seven tasks: (0) prove V1-V7; (1) template schema, job checks, `Job.revisions`, site time
-zone, `publishAt` conversion; (2) the early lookup, modes and `updateFields` narrowing; (3)
-fingerprints: canonical forms, recording, refresh, link merge; (4) protection, side-effect-free
-resolution and `field_edited`; (5) publish, draft or schedule: the `schedule` port, the decision
-table, crash repair, journal rows; (6) rollback: step 7, the link hand-back of `fields` and
-`scheduledAt`, ownership after the scheduler; (7) integration and parity tests and the review
-note.
+Ten tasks, as planned (amended): (0) prove V1-V7; (1) template rules, `publishAt`, job options
+and `Job.revisions`; (2) fingerprints and canonical forms; (3) revisions (`encodeRev`,
+`decodeRev`), the `schedule` port, the adapter and the fakes; (4) the early lookup, modes,
+`updateFields` and fingerprint recording; (5) protection; (6) publish, draft or schedule, with its
+crash repair; (7) rollback step 7, ownership after the scheduler and the link hand-back; (8) Node
+integration; (9) workerd parity; (10) the review run and note. A final fix wave follows the
+whole-branch review.
 
 ## Out of scope for M5b
 
@@ -671,6 +706,16 @@ plugins, translation sync), which counts as edits; predicting duplicate keys in 
     is EmDash's internal format. A change to it in a later EmDash release makes both rules fail
     closed (`rollback_changed`, `schedule_unverified`).
   - A dry run in `create` mode plans `create` for every duplicate key.
+  - `rules: {}` (an empty rules object) makes `ruled()` true, so the template takes the early
+    lookup order (spec "Order of a record") without changing any decision. Harmless; noted in the
+    final review.
+  - The crash-repair and rollback value checks compare the fields the journal recorded
+    (`wrote.fields`). A field that was null (absent) when the job wrote and that an editor set
+    since is not among them. Any such edit also adds a `version`, so it is caught only by the
+    version count, which an editor's single save on a collection without revisions passes.
+  - The root `biome.json` lints `packages/**` and the root JSON files only, so `sites/**` (the
+    test sites' pages, `run-scheduled.ts` included) is not linted by `pnpm lint`. Unchanged by
+    M5b.
   - The sweep's re-run of `content:beforePublish` can refuse at `T` and unschedule the entry (F5).
     The import does not see this, and the entry stays an importer-owned draft at a `_rev` the link
     does not name. The next run reports it `pending_draft`.

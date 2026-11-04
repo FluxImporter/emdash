@@ -51,7 +51,10 @@ export const WORKERS_LINKED_BATCH_CAP = 6;
  * Rollback rows one jobs/next call reverts on Workers (M5a). A reverted update runs up to seven
  * content calls, about 175-265 D1 queries with EmDash's own (Fact V7), so three rows
  * stay under the 1,000-query limit (measured in the M5a review: 744 queries for three scheduled
- * updates with every link kind, 214 for three deletes).
+ * updates with every link kind, 214 for three deletes). M5b adds step 7 (unschedule), which
+ * excludes step 6, so the longest sequence stays five steps and the engine's per-row reserve
+ * (`ROW_RESERVE` in `src/engine/revert.ts`) is 165; the M5b plan's V7 measured 490 queries for
+ * three linked rollback rows, and the final review re-measures it in Task 10.
  */
 export const WORKERS_ROLLBACK_BATCH_CAP = 3;
 
