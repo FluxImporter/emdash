@@ -23,7 +23,7 @@ import {
 	termOfGroup,
 } from "./resolve.js";
 import { restoredData, sameStored } from "./rollback-values.js";
-import { dataFingerprints, sameInstant, sweptSince } from "./rules.js";
+import { holdsScheduled, sameInstant, sweptSince } from "./rules.js";
 import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	bump,
@@ -290,32 +290,6 @@ type RowCtx = {
 
 type Found = EntrySnapshot & { trashed: boolean };
 
-/**
- * Whether the entry shows what the job left it to publish (M5b, `JournalEntry.wrote`): live data
- * with the journalled fingerprints, the slug the job sent, and the `publishedAt` the scheduler
- * gives it: the one read before the job, which it keeps, or, for an entry never published, the
- * link's scheduled time (`src/scheduled-publish.ts:164-165`). Times compare as instants, since
- * EmDash normalizes stored times. False when the journal holds no scheduled data, or none, so a
- * row the job did not leave scheduled never passes.
- */
-async function holdsScheduled(
-	job: Job,
-	journal: JournalEntry,
-	link: LinkRow,
-	entry: Found,
-): Promise<boolean> {
-	const wrote = journal.wrote;
-	const fields = wrote?.fields;
-	if (fields === undefined || Object.keys(fields).length === 0) return false;
-	if (wrote?.publishedAt === undefined || entry.publishedAt === undefined) return false;
-	const due = wrote.publishedAt ?? link.scheduledAt ?? null;
-	if (due === null || !sameInstant(entry.publishedAt, due)) return false;
-	if (wrote.slug !== undefined && entry.slug !== wrote.slug) return false;
-	// Each journalled field, absent read as null, as the journal computed it.
-	const now = await dataFingerprints(job, entry.live ?? entry.data, Object.keys(fields));
-	return Object.entries(fields).every(([name, value]) => now[name] === value);
-}
-
 /** Step 1 of "Per row": the entry by ID (active first, then in Trash), or a create's by source ID. */
 async function findEntry(ctx: RowCtx): Promise<{ entry: Found; adopted: boolean } | null> {
 	const { deps, journal, existing } = ctx;
@@ -394,7 +368,8 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		existing?.step !== undefined &&
 		existing.entryId === entry.id &&
 		existing.writtenRev === entry.rev;
-	// M5b: also an entry the import scheduled and EmDash's scheduler published since (Ruling 9),
+	// M5b: also an entry the import scheduled and EmDash's scheduler published since (spec M5b
+	// "Ownership after the scheduler published"),
 	// which still holds the values the job scheduled. An editor's unschedule and discard after the
 	// time leaves the same revision shape with the values from before the job (Task 5 review, P6).
 	const owned =
@@ -404,7 +379,7 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		(link.writtenRev === entry.rev ||
 			(!entry.trashed &&
 				sweptSince(link, entry) &&
-				(await holdsScheduled(job, journal, link, entry))));
+				(await holdsScheduled(job, journal.wrote, link.scheduledAt, entry))));
 	// A create made after the write-ahead row and never changed since (spec M5a V3): found by
 	// source ID after a crash, or one whose link was never saved. A link that names the entry and a
 	// revision settles it: EmDash keeps `updated_at` when an edit only stages a draft

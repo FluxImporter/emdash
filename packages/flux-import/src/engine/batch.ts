@@ -68,12 +68,15 @@ import { originalProblem } from "./rollback.js";
 import {
 	dataFingerprints,
 	editedMappings,
+	holdsScheduled,
+	holdsWrote,
 	mappingOf,
 	modeSkip,
 	narrowRecord,
 	ownPending,
 	protectedMappings,
 	protectPlan,
+	publishedSince,
 	ruled,
 	sameFields,
 	sameInstant,
@@ -105,6 +108,7 @@ import {
 	emptyCounters,
 	type Job,
 	type JournalEntry,
+	journalKey,
 	type LinkRow,
 	linkKey,
 	type RecordError,
@@ -442,20 +446,26 @@ async function setFields(
 }
 
 /**
- * What the journal keeps of a write after which the entry may still be scheduled (M5b): a
- * schedule the record makes, or one the entry has, which an update keeps and a publish that then
- * fails leaves (review M1). The rollback's ownership after the scheduler compares it with the
- * entry: the fingerprints of the data the scheduled publish makes live (`data`: the entry's, its
- * pending draft included, with what the write sends), the slug the write sends, and
- * `publishedAt` as read. Undefined when no schedule can follow the write.
+ * What the journal keeps of a write that a publish or a schedule follows (M5b): the record
+ * publishes now, makes a schedule, or the entry has one, which an update keeps and a publish that
+ * then fails leaves (review M1). Ownership of a revision the job did not see written compares it
+ * with the entry (`holdsWrote`, `holdsScheduled`): the scheduler's publish in crash repair and
+ * rollback, and a publish whose link save a stop lost in crash repair (final review A-I2). It
+ * holds the fingerprints of the data the publish makes live (`data`: the entry's, its pending
+ * draft included, with what the write sends), the slug the write sends, and `publishedAt` as
+ * read. Undefined when the write stays a draft.
  */
-async function scheduledWrote(
+async function liveWrote(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
 	data: Readonly<Record<string, unknown>>,
 	slug: string | undefined,
 ): Promise<NonNullable<JournalEntry["wrote"]> | undefined> {
-	if (ctx.schedule === undefined && (entry?.scheduledAt ?? null) === null) return undefined;
+	const live =
+		ctx.target.kind === "now" ||
+		ctx.schedule !== undefined ||
+		(entry?.scheduledAt ?? null) !== null;
+	if (!live) return undefined;
 	const publishedAt = entry === null ? null : entry.publishedAt;
 	return {
 		fields: await dataFingerprints(ctx.job, data),
@@ -502,6 +512,15 @@ async function refreshFields(ctx: RecordCtx, entry: EntrySnapshot): Promise<void
 		fields: ctx.fields,
 		...(unconfirmed.length > 0 ? { unconfirmed } : {}),
 	});
+}
+
+/**
+ * What the job's journal row for the record holds of the data its write makes live
+ * (`liveWrote`); undefined for a job without a journal, so crash repair then adopts nothing.
+ */
+async function journalledWrote(ctx: RecordCtx): Promise<JournalEntry["wrote"]> {
+	if (!journaling(ctx.job)) return undefined;
+	return (await ctx.deps.journal.get(journalKey(ctx.job.id, ctx.linkId)))?.wrote;
 }
 
 async function publishRev(ctx: RecordCtx, id: string, rev: string) {
@@ -1387,6 +1406,15 @@ async function finishUnchanged(
 					changes: [ctx.schedule],
 				};
 			}
+			// The revision published, saved first: a stop before the link put is then repaired by
+			// `publishedSince` (final review A-I2).
+			await ctx.save({
+				status: "writing",
+				sourceKey,
+				entryId,
+				action: "update",
+				writtenRev: entry.rev,
+			});
 			const published = await publishRev(ctx, entryId, entry.rev);
 			if (!published.ok)
 				return publishFailed(published.reason, sourceKey, entryId, "update", entry.rev);
@@ -1412,7 +1440,9 @@ async function finishUnchanged(
 		writtenRev !== undefined &&
 		scheduleLanded(entry, writtenRev, publishAt);
 	// The sweep's shape is also what an editor's unschedule and discard after the time leave, so it
-	// is adopted only when the entry holds the record's values for every mapping: none protected.
+	// is adopted only when the entry holds the record's values for every mapping (none protected)
+	// and its whole live data is what the job journalled for the scheduled write (final review
+	// A-I1): `updateFields` and the importer's own draft leave fields the plan does not compare.
 	const swept =
 		ours &&
 		publishAt !== null &&
@@ -1428,10 +1458,25 @@ async function finishUnchanged(
 				scheduledAt: publishAt,
 			},
 			entry,
-		);
+		) &&
+		(await holdsScheduled(job, await journalledWrote(ctx), publishAt, entry));
+	// A publish this record sent may have landed before the stop lost its link save (final review
+	// A-I2): one version past the revision saved before it, published, no draft, and the job's
+	// journalled values live. An editor's save without revisions, or discard of the importer's
+	// draft, leaves the same shape with other values.
+	const publishedOurs =
+		!swept &&
+		ours &&
+		target.kind === "now" &&
+		(ctx.kept?.size ?? 0) === 0 &&
+		writtenRev !== undefined &&
+		publishedSince(entry, writtenRev) &&
+		(await holdsWrote(job, await journalledWrote(ctx), entry));
 	if (swept && publishAt !== null) {
 		// The scheduler's publish is the importer's: the link takes its revision, so rollback owns it.
 		await putLink(ctx, entryId, entry.rev, publishAt);
+	} else if (publishedOurs) {
+		await putLink(ctx, entryId, entry.rev);
 	} else if (landed && publishAt !== null && target.kind !== "at") {
 		// The time is now within the lead (or past): adopt the schedule, then publish it now.
 		await putLink(ctx, entryId, entry.rev, publishAt);
@@ -1577,12 +1622,7 @@ async function journalPublish(
 	};
 	const before = preImage(entry, link, touched, undefined);
 	if ("code" in before) return before;
-	return journalUpdate(
-		ctx,
-		entry.id,
-		before,
-		await scheduledWrote(ctx, entry, entry.data, undefined),
-	);
+	return journalUpdate(ctx, entry.id, before, await liveWrote(ctx, entry, entry.data, undefined));
 }
 
 /**
@@ -1598,7 +1638,7 @@ async function journalWrite(
 	slug: string | undefined,
 ): Promise<RecordError | null> {
 	if (!entry) {
-		const wrote = await scheduledWrote(ctx, null, data, slug);
+		const wrote = await liveWrote(ctx, null, data, slug);
 		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey, wrote);
 		return null;
 	}
@@ -1640,7 +1680,7 @@ async function journalWrite(
 		]),
 	);
 	const sent = sendsData(plan, data, media);
-	const scheduled = await scheduledWrote(
+	const scheduled = await liveWrote(
 		ctx,
 		entry,
 		sent ? { ...entry.data, ...data } : entry.data,

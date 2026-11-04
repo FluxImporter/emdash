@@ -46,6 +46,8 @@ describe("the journal of a real import (M5a)", () => {
 				entryId: null,
 				sourceIdValue: "A1",
 				at: "2026-10-07T10:00:00.000Z",
+				// What the publish makes live, for crash repair of a lost link save (final review).
+				wrote: { fields: expect.any(Object), slug: "desk", publishedAt: null },
 			},
 		]);
 		const [row] = await journalOf(deps, job.id);
@@ -100,8 +102,14 @@ describe("the journal of a real import (M5a)", () => {
 				},
 			},
 			at: "2026-10-07T10:00:00.000Z",
-			// What the job gave the taxonomy, for the rollback's term check.
-			wrote: { taxonomies: { tag: [termGroup(deps, "sale")] } },
+			// What the job gave the taxonomy, for the rollback's term check, and what the publish
+			// makes live, for crash repair of a lost link save (final review A-I2).
+			wrote: {
+				taxonomies: { tag: [termGroup(deps, "sale")] },
+				fields: expect.any(Object),
+				slug: "table",
+				publishedAt: "2026-10-07T10:00:00.000Z",
+			},
 		});
 	});
 

@@ -132,8 +132,9 @@ describe("ownership after the scheduler (M5b)", () => {
 	it("journals what the scheduled publish makes live: every field, the slug sent, publishedAt", async () => {
 		const { deps } = setupTicking();
 		const first = await importRows(deps, [desk]);
-		// Published now, with no schedule before: nothing is journalled for the scheduler.
-		expect((await journalOf(deps, first.id))[0]?.wrote).toBeUndefined();
+		// Published now: what the publish makes live is journalled for crash repair (final review
+		// A-I2), with the publishedAt read before it, none for a create.
+		expect((await journalOf(deps, first.id))[0]?.wrote).toMatchObject({ publishedAt: null });
 		const id = entryOf(deps, "A1").id;
 		const publishedAt = (await deps.content.get("products", "en", id))?.publishedAt;
 		expect(publishedAt).toEqual(expect.any(String));

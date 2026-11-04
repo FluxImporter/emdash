@@ -14,7 +14,7 @@ import type { LinkRequests } from "./links.js";
 import type { EntrySnapshot } from "./ports.js";
 import { decodeRev } from "./revs.js";
 import { type MappedRecord, SOURCE_ID_FIELD, type Template } from "./template.js";
-import type { Job, LinkRow, RecordError, RecordRow } from "./types.js";
+import type { Job, JournalEntry, LinkRow, RecordError, RecordRow } from "./types.js";
 
 /**
  * Whether the template uses M5b's record rules: then the entry is looked up right after the key
@@ -105,7 +105,7 @@ export function sameFields(
  * The mappings that count as edited outside the import (spec M5b "Protection"), from the link row
  * and the fingerprints of the entry's current values. A mapping is always compared with its
  * fingerprint when it is a taxonomy (term edits leave `_rev`, F8), a reference field (edges set
- * from the other entry or through a translation leave it too, F19) or unconfirmed (its
+ * from the other entry or through a translation leave it too, F15) or unconfirmed (its
  * fingerprint is not the value at `writtenRev`); it is edited when they differ. Any other
  * mapping is edited only once the entry has moved past `writtenRev` and its fingerprint differs:
  * an unmoved `_rev` vouches for it, also when the read cannot show a slug staged in the
@@ -166,26 +166,74 @@ export async function dataFingerprints(
 }
 
 /**
+ * Whether the entry shows one publish of the revision `writtenRev` and nothing since: its `_rev`
+ * decodes to exactly one `version` past `writtenRev`, published, without a draft or a schedule
+ * (spec M5b F4, F6). A `writtenRev` that does not decode never passes. An editor's discard of a
+ * published entry's draft, or a save on a collection without revisions, leaves the same shape, so
+ * this proves ownership only with the values checked too (`holdsWrote`).
+ */
+export function publishedSince(entry: EntrySnapshot, writtenRev: string): boolean {
+	const now = decodeRev(entry.rev);
+	const wrote = decodeRev(writtenRev);
+	if (now === null || wrote === null) return false;
+	return (
+		now.version === wrote.version + 1 &&
+		entry.status === "published" &&
+		!entry.hasDraft &&
+		entry.scheduledAt === null
+	);
+}
+
+/**
  * Whether the entry shows the scheduler's publish of the link's own schedule and nothing since
- * (Ruling 9, spec M5b F6): its `_rev` decodes to exactly one `version` past `writtenRev`, with
- * `updatedAt` at or after the link's `scheduledAt`, published, without a draft or a schedule. A
- * `writtenRev` that does not decode never passes. An editor who unschedules after the time and
- * then discards the draft leaves the same shape, so this proves ownership only where the values
- * are checked too (crash repair reaches it for an unchanged record; rollback); protection never
+ * (spec M5b "Ownership after the scheduler published", F6): `publishedSince` the link's
+ * `writtenRev`, with `updatedAt` at or after the link's `scheduledAt`. An editor who unschedules
+ * after the time and then discards the draft leaves the same shape, so this proves ownership only
+ * where the values are checked too (`holdsScheduled`: crash repair, rollback); protection never
  * uses it.
  */
 export function sweptSince(link: LinkRow, entry: EntrySnapshot): boolean {
 	if (link.scheduledAt === undefined || link.writtenRev === undefined) return false;
 	const now = decodeRev(entry.rev);
-	const wrote = decodeRev(link.writtenRev);
-	if (now === null || wrote === null) return false;
-	return (
-		now.version === wrote.version + 1 &&
-		Date.parse(now.updatedAt) >= Date.parse(link.scheduledAt) &&
-		entry.status === "published" &&
-		!entry.hasDraft &&
-		entry.scheduledAt === null
-	);
+	if (now === null || !publishedSince(entry, link.writtenRev)) return false;
+	return Date.parse(now.updatedAt) >= Date.parse(link.scheduledAt);
+}
+
+/**
+ * Whether the entry's live data and slug are what the journal recorded that the job's write
+ * makes live (M5b, `JournalEntry.wrote`): each journalled field, an absent one read as null, as
+ * `dataFingerprints` computed it, and the slug the write sent. False when the journal holds no
+ * such data, so a write the job did not journal (`journal: false`) never passes.
+ */
+export async function holdsWrote(
+	job: Job,
+	wrote: JournalEntry["wrote"],
+	entry: EntrySnapshot,
+): Promise<boolean> {
+	const fields = wrote?.fields;
+	if (fields === undefined || Object.keys(fields).length === 0) return false;
+	if (wrote?.slug !== undefined && entry.slug !== wrote.slug) return false;
+	const now = await dataFingerprints(job, entry.live ?? entry.data, Object.keys(fields));
+	return Object.entries(fields).every(([name, value]) => now[name] === value);
+}
+
+/**
+ * Whether the entry shows what the job left it to publish at `scheduledAt` (M5b): `holdsWrote`,
+ * and the `publishedAt` the scheduler gives it: the one read before the job, which it keeps, or,
+ * for an entry never published, the scheduled time (`src/scheduled-publish.ts:164-165`). Times
+ * compare as instants, since EmDash normalizes stored times. Used by crash repair and rollback
+ * alike for the scheduler's publish.
+ */
+export async function holdsScheduled(
+	job: Job,
+	wrote: JournalEntry["wrote"],
+	scheduledAt: string | undefined,
+	entry: EntrySnapshot,
+): Promise<boolean> {
+	if (wrote?.publishedAt === undefined || entry.publishedAt === undefined) return false;
+	const due = wrote.publishedAt ?? scheduledAt ?? null;
+	if (due === null || !sameInstant(entry.publishedAt, due)) return false;
+	return holdsWrote(job, wrote, entry);
 }
 
 /**

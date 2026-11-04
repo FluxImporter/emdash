@@ -1497,8 +1497,8 @@ describe("final review: drafts, stops and edits the revision does not show (M5a)
 		await importRows(deps, [desk]);
 		const job = await importRows(deps, [changed]);
 		const [journal] = (await deps.journal.query({ where: { jobId: job.id } })).items;
-		expect(journal?.data.wrote).toEqual({
-			taxonomies: { tag: [deps.lookups.storedTerms.find((t) => t.slug === "sale")?.group] },
+		expect(journal?.data.wrote?.taxonomies).toEqual({
+			tag: [deps.lookups.storedTerms.find((t) => t.slug === "sale")?.group],
 		});
 		// As an admin term assignment: the terms change, the revision does not.
 		const e = entryOf(deps, "A1");
