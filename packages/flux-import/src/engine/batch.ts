@@ -66,6 +66,7 @@ import {
 import { rollbackPass, rollbackRetryPass } from "./revert.js";
 import { originalProblem } from "./rollback.js";
 import {
+	dataFingerprints,
 	editedMappings,
 	mappingOf,
 	modeSkip,
@@ -103,6 +104,7 @@ import {
 	type EngineDeps,
 	emptyCounters,
 	type Job,
+	type JournalEntry,
 	type LinkRow,
 	linkKey,
 	type RecordError,
@@ -266,12 +268,6 @@ type RecordCtx = {
 	unconfirmed?: string[];
 	/** The record's protected mappings (M5b), which the entry holds differently from the feed. */
 	kept?: ReadonlySet<string>;
-	/**
-	 * The fingerprints of `fields` for the record's data, media, Portable Text and slug mappings
-	 * that are not protected (M5b): the values the entry holds once the record's write is live. A
-	 * record that leaves the entry scheduled journals them (`JournalEntry.wrote.fields`).
-	 */
-	valueFields?: Record<string, string>;
 	/** A link save of this record carried `fields` (M5b), so no refresh is needed. */
 	linkSaved: boolean;
 	/** When the record's content goes live (M5b). */
@@ -443,32 +439,46 @@ async function setFields(
 	ctx.fields = { ...(own?.fields ?? {}), ...(await fingerprintsOf(forms)) };
 	ctx.unconfirmed = unconfirmedOf(carried, kept, own, entry?.rev ?? null);
 	ctx.kept = kept;
-	const linked = new Set([
-		...Object.keys(record.links?.references ?? {}),
-		...Object.keys(record.links?.taxonomies ?? {}).map((name) => `taxonomies.${name}`),
-		...(record.links?.bylines === undefined ? [] : ["bylines"]),
-	]);
-	const fields = ctx.fields;
-	ctx.valueFields = Object.fromEntries(
-		Object.keys(forms)
-			.filter((name) => !linked.has(name))
-			.map((name) => [name, fields[name] as string]),
-	);
 }
 
 /**
- * What the journal keeps of a record that leaves the entry scheduled (M5b): its value mappings'
- * fingerprints, for the rollback's ownership after the scheduler. A schedule it makes, or one an
- * update keeps; a publish clears any.
+ * What the journal keeps of a write after which the entry may still be scheduled (M5b): a
+ * schedule the record makes, or one the entry has, which an update keeps and a publish that then
+ * fails leaves (review M1). The rollback's ownership after the scheduler compares it with the
+ * entry: the fingerprints of the data the scheduled publish makes live (`data`: the entry's, its
+ * pending draft included, with what the write sends), the slug the write sends, and
+ * `publishedAt` as read. Undefined when no schedule can follow the write.
  */
-function scheduledWrote(
+async function scheduledWrote(
 	ctx: RecordCtx,
 	entry: EntrySnapshot | null,
-): { fields: Record<string, string> } | undefined {
-	const leaves =
-		ctx.target.kind !== "now" &&
-		(ctx.schedule !== undefined || (entry?.scheduledAt ?? null) !== null);
-	return leaves && ctx.valueFields !== undefined ? { fields: ctx.valueFields } : undefined;
+	data: Readonly<Record<string, unknown>>,
+	slug: string | undefined,
+): Promise<NonNullable<JournalEntry["wrote"]> | undefined> {
+	if (ctx.schedule === undefined && (entry?.scheduledAt ?? null) === null) return undefined;
+	const publishedAt = entry === null ? null : entry.publishedAt;
+	return {
+		fields: await dataFingerprints(ctx.job, data),
+		...(slug === undefined ? {} : { slug }),
+		...(publishedAt === undefined ? {} : { publishedAt }),
+	};
+}
+
+/**
+ * Whether an update sends data and slug: not when only links changed, which on a collection with
+ * revisions would stage a draft identical to the live entry. A media alt change is a data change.
+ */
+function sendsData(
+	plan: RecordPlan,
+	data: Readonly<Record<string, FieldValue>>,
+	media: Readonly<Record<string, FieldValue>>,
+): boolean {
+	return plan.changes.some(
+		(c) =>
+			c.field === "slug" ||
+			Object.hasOwn(data, c.field) ||
+			(c.field.endsWith(".alt") && Object.hasOwn(media, c.field.slice(0, -4))),
+	);
 }
 
 /**
@@ -1567,7 +1577,12 @@ async function journalPublish(
 	};
 	const before = preImage(entry, link, touched, undefined);
 	if ("code" in before) return before;
-	return journalUpdate(ctx, entry.id, before, scheduledWrote(ctx, entry));
+	return journalUpdate(
+		ctx,
+		entry.id,
+		before,
+		await scheduledWrote(ctx, entry, entry.data, undefined),
+	);
 }
 
 /**
@@ -1580,9 +1595,11 @@ async function journalWrite(
 	plan: RecordPlan,
 	data: Readonly<Record<string, FieldValue>>,
 	media: Readonly<Record<string, FieldValue>>,
+	slug: string | undefined,
 ): Promise<RecordError | null> {
 	if (!entry) {
-		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey, scheduledWrote(ctx, null));
+		const wrote = await scheduledWrote(ctx, null, data, slug);
+		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey, wrote);
 		return null;
 	}
 	const changed = new Set(plan.changes.map((c) => c.field));
@@ -1622,7 +1639,13 @@ async function journalWrite(
 			(resolved?.taxonomies?.[t] ?? []).flatMap((i) => (i.group === null ? [] : [i.group])),
 		]),
 	);
-	const scheduled = scheduledWrote(ctx, entry);
+	const sent = sendsData(plan, data, media);
+	const scheduled = await scheduledWrote(
+		ctx,
+		entry,
+		sent ? { ...entry.data, ...data } : entry.data,
+		sent ? slug : undefined,
+	);
 	return journalUpdate(ctx, entry.id, before, {
 		...(touched.taxonomies.length > 0 ? { taxonomies: terms } : {}),
 		...scheduled,
@@ -1648,7 +1671,7 @@ async function writeRecord(
 	const data = { ...mapped.data, ...media };
 	// The journal row comes before the first write, so a crash leaves nothing it does not know of.
 	if (journaling(job)) {
-		const failure = await journalWrite(ctx, entry, plan, data, media);
+		const failure = await journalWrite(ctx, entry, plan, data, media, mapped.slug);
 		if (failure) {
 			return {
 				status: "failed",
@@ -1683,14 +1706,8 @@ async function writeRecord(
 			...createLinks(ctx.links),
 		});
 	} else {
-		// When only links changed, data and slug stay out: on a collection with revisions that
-		// would stage a draft identical to the live entry. A media alt change is a data change.
-		const dataChanged = plan.changes.some(
-			(c) =>
-				c.field === "slug" ||
-				Object.hasOwn(data, c.field) ||
-				(c.field.endsWith(".alt") && Object.hasOwn(media, c.field.slice(0, -4))),
-		);
+		// When only links changed, data and slug stay out (`sendsData`).
+		const dataChanged = sendsData(plan, data, media);
 		const result = await deps.content.update({
 			collection,
 			locale,

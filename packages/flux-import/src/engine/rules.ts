@@ -2,12 +2,18 @@
  * Record rules (spec M5b): write modes, the `updateFields` scope, and the link row's
  * fingerprints. `batch.ts` applies them while it decides a record.
  */
-import type { Change, RecordPlan } from "./diff.js";
-import { fingerprint, recordMappings } from "./fingerprints.js";
+import { type Change, comparisonsOf, type RecordPlan } from "./diff.js";
+import {
+	canonicalData,
+	canonicalMedia,
+	canonicalRichText,
+	fingerprint,
+	recordMappings,
+} from "./fingerprints.js";
 import type { LinkRequests } from "./links.js";
 import type { EntrySnapshot } from "./ports.js";
 import { decodeRev } from "./revs.js";
-import type { MappedRecord, Template } from "./template.js";
+import { type MappedRecord, SOURCE_ID_FIELD, type Template } from "./template.js";
 import type { Job, LinkRow, RecordError, RecordRow } from "./types.js";
 
 /**
@@ -126,6 +132,33 @@ export function editedMappings(
 		if (stored === undefined || stored !== current[name]) edited.add(name);
 	}
 	return edited;
+}
+
+/**
+ * The fingerprint of every field of an entry's data (M5b), each in the canonical form its
+ * template mapping gives it (`currentForms`, `sentForms`): media and Portable Text as theirs,
+ * any other field, mapped or not, as data under its comparison. The source ID is left out. The
+ * journal keeps these for what a scheduled publish makes live; a rollback compares them with the
+ * entry's live values (ownership after the scheduler).
+ */
+export async function dataFingerprints(
+	job: Job,
+	data: Readonly<Record<string, unknown>>,
+): Promise<Record<string, string>> {
+	const comparisons = comparisonsOf(job.template, job.targetFields);
+	const out: Record<string, string> = {};
+	for (const [field, value] of Object.entries(data)) {
+		if (field === SOURCE_ID_FIELD) continue;
+		const type = job.template.fields[field]?.type;
+		const form =
+			type === "image" || type === "file"
+				? canonicalMedia(value)
+				: type === "portableText"
+					? canonicalRichText(value)
+					: canonicalData(value, comparisons.get(field) ?? "plain");
+		out[field] = await fingerprint(form);
+	}
+	return out;
 }
 
 /**

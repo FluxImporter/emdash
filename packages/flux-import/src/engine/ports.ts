@@ -58,6 +58,11 @@ export interface EntrySnapshot {
 	scheduledAt: string | null;
 	/** The entry has a draft revision (`draftRevisionId`, M5a). */
 	hasDraft: boolean;
+	/**
+	 * EmDash's `publishedAt` (M5b): set at the first publication (the scheduler's sets it to the
+	 * scheduled time), then kept; null when never published, absent when EmDash gives none.
+	 */
+	publishedAt?: string | null;
 	/** The live column values while the entry has a draft (EmDash `liveData`, M5a). */
 	live?: Record<string, unknown>;
 	/** ISO timestamps of the entry's row (M5a); absent when EmDash gives none. */

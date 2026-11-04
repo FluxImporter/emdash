@@ -188,8 +188,9 @@ export function mergeBefore(first: JournalBefore, next: JournalBefore): JournalB
 }
 
 /**
- * What the job wrote so far with what a later write of it adds: each taxonomy's groups and each
- * mapping's fingerprint as the latest write left them. Undefined when neither holds anything.
+ * What the job wrote so far with what a later write of it adds: each taxonomy's groups as the
+ * latest write left them; the scheduled data (each write's covers the entry's whole data), slug
+ * and `publishedAt` of the latest write that recorded them. Undefined when nothing is held.
  */
 function mergeWrote(
 	first: JournalEntry["wrote"],
@@ -198,9 +199,16 @@ function mergeWrote(
 	const taxonomies = next?.taxonomies
 		? { ...first?.taxonomies, ...next.taxonomies }
 		: first?.taxonomies;
-	const fields = next?.fields ? { ...first?.fields, ...next.fields } : first?.fields;
-	if (taxonomies === undefined && fields === undefined) return undefined;
-	return { ...(taxonomies ? { taxonomies } : {}), ...(fields ? { fields } : {}) };
+	const fields = next?.fields ?? first?.fields;
+	const slug = next?.slug ?? first?.slug;
+	const publishedAt = next?.publishedAt !== undefined ? next.publishedAt : first?.publishedAt;
+	const out = {
+		...(taxonomies ? { taxonomies } : {}),
+		...(fields ? { fields } : {}),
+		...(slug === undefined ? {} : { slug }),
+		...(publishedAt === undefined ? {} : { publishedAt }),
+	};
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

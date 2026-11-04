@@ -305,13 +305,20 @@ export interface JournalEntry {
 	wrote?: {
 		taxonomies?: Record<string, string[]>;
 		/**
-		 * M5b, a record that leaves the entry scheduled (create or update): the fingerprints of the
-		 * values its data, media, Portable Text and slug mappings have once the schedule publishes
-		 * them, as on its link row. A rollback owns an entry the scheduler published only when its
-		 * live values still have them: an editor's unschedule and discard after the time leaves the
-		 * same `_rev` shape with the values from before the job.
+		 * M5b, a write after which the entry may still be scheduled (a schedule it makes or keeps,
+		 * also when its publish then fails): what the scheduler's publish makes live. `fields`
+		 * holds the fingerprint of every field of the scheduled data (`dataFingerprints`): the
+		 * entry's data, its own pending draft's included, with the values the write sends. `slug`
+		 * is the slug the write sends, when it sends one. `publishedAt` is the entry's when the
+		 * record read it (null: never published), which the scheduler keeps, or, when null, sets to
+		 * the scheduled time. A rollback owns an entry the scheduler published only when it shows
+		 * all three: an editor's unschedule and discard after the time leaves the same `_rev` shape
+		 * with the values from before the job, and an editor's reschedule or publish of a never
+		 * published entry another `publishedAt`.
 		 */
 		fields?: Record<string, string>;
+		slug?: string;
+		publishedAt?: string | null;
 	};
 }
 

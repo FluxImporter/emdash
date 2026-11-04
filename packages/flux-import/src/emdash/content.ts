@@ -141,6 +141,8 @@ const itemResult = z.object({
 		liveData: z.record(z.string(), z.unknown()).optional(),
 		draftRevisionId: z.string().nullable().optional(),
 		scheduledAt: z.string().nullable().optional(),
+		/** ContentItem.publishedAt (src/database/repositories/types.ts:311). */
+		publishedAt: z.string().nullable().optional(),
 		createdAt: z.string().optional(),
 		updatedAt: z.string().optional(),
 		deletedAt: z.string().nullable().optional(),
@@ -202,6 +204,7 @@ function snapshotOf(
 		status: item.status,
 		scheduledAt: item.scheduledAt ?? null,
 		hasDraft,
+		...(item.publishedAt === undefined ? {} : { publishedAt: item.publishedAt }),
 		...(hasDraft && item.liveData !== undefined ? { live: item.liveData } : {}),
 		...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
 		...(item.updatedAt === undefined ? {} : { updatedAt: item.updatedAt }),

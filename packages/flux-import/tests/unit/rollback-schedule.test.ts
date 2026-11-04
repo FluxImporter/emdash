@@ -43,7 +43,7 @@ function setupTicking() {
 }
 
 /** An editor's step through the admin, at the entry's current revision. */
-async function editorStep(deps: Deps, id: string, step: "unschedule" | "discard") {
+async function editorStep(deps: Deps, id: string, step: "unschedule" | "discard" | "publish") {
 	const result = await deps.content.revertStep({
 		collection: "products",
 		locale: "en",
@@ -98,10 +98,13 @@ describe("ownership after the scheduler (M5b)", () => {
 
 	it("deletes a created entry the scheduler published", async () => {
 		const { deps, clock } = setupTicking();
-		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		// Written without milliseconds: EmDash stores and returns the time normalized, so the
+		// scheduler's publishedAt is compared as an instant.
+		const job = await importRows(deps, [desk], scheduleAt("2026-10-07T11:00:00Z"));
 		const id = entryOf(deps, "A1").id;
 		clock.t = T0 + HOUR;
 		expect(deps.content.runScheduled()).toEqual([id]);
+		expect((await deps.content.get("products", "en", id))?.publishedAt).toBe(at(HOUR));
 		const done = await rollBack(deps, job.id);
 		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
 		expect(deps.content.entries.has(id)).toBe(false);
@@ -126,23 +129,41 @@ describe("ownership after the scheduler (M5b)", () => {
 		});
 	});
 
-	it("journals the values a scheduled record leaves, as fingerprints", async () => {
+	it("journals what the scheduled publish makes live: every field, the slug sent, publishedAt", async () => {
 		const { deps } = setupTicking();
-		await importRows(deps, [desk]);
-		const job = await importRows(deps, [{ ...desk, price: 12 }], scheduleAt(at(HOUR)));
+		const first = await importRows(deps, [desk]);
+		// Published now, with no schedule before: nothing is journalled for the scheduler.
+		expect((await journalOf(deps, first.id))[0]?.wrote).toBeUndefined();
+		const id = entryOf(deps, "A1").id;
+		const publishedAt = (await deps.content.get("products", "en", id))?.publishedAt;
+		expect(publishedAt).toEqual(expect.any(String));
+		const job = await importRows(
+			deps,
+			[{ ...desk, price: 12, featured: true, img: url("a.png") }],
+			scheduleAt(at(HOUR)),
+		);
 		const link = (await deps.links.get(KEY)) as LinkRow;
 		const [row] = await journalOf(deps, job.id);
-		// Data, media and slug mappings; not the links, which no discard can take back.
+		// Every field of the scheduled data, in the forms the link's fingerprints use; not the
+		// source ID, nor the links, which no discard can take back.
+		expect(Object.keys(row?.wrote?.fields ?? {}).sort()).toEqual([
+			"featured",
+			"photo",
+			"price",
+			"title",
+		]);
 		expect(row?.wrote?.fields).toEqual({
 			title: link.fields?.title,
 			price: link.fields?.price,
 			featured: link.fields?.featured,
 			photo: link.fields?.photo,
-			slug: link.fields?.slug,
 		});
-		// A record published now leaves nothing for the scheduler: no values are journalled.
+		expect(row?.wrote).toMatchObject({ slug: entryOf(deps, "A1").slug, publishedAt });
+		// Published now over a schedule: journalled too, in case the publish fails (review M1).
 		const now = await importRows(deps, [{ ...desk, price: 14 }]);
-		expect((await journalOf(deps, now.id))[0]?.wrote?.fields).toBeUndefined();
+		expect((await journalOf(deps, now.id))[0]?.wrote?.fields).toMatchObject({
+			price: expect.any(String),
+		});
 	});
 
 	it("refuses an entry an editor published before the time, or changed after the scheduler", async () => {
@@ -275,6 +296,160 @@ describe("ownership after the scheduler (M5b)", () => {
 		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
 		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Desk", price: 10 });
 	});
+
+	it("refuses a never published entry an editor rescheduled, which the scheduler then published (P4)", async () => {
+		const { deps, clock } = setupTicking();
+		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const id = entryOf(deps, "A1").id;
+		await deps.content.schedule({
+			collection: "products",
+			locale: "en",
+			id,
+			rev: deps.content.revOf(id),
+			scheduledAt: at(2 * HOUR),
+		});
+		clock.t = T0 + 3 * HOUR;
+		expect(deps.content.runScheduled()).toEqual([id]);
+		// The sweep's revision shape and the job's values, but published at the editor's time.
+		expect(await deps.content.get("products", "en", id)).toMatchObject({
+			publishedAt: at(2 * HOUR),
+		});
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect((await records(deps, done.id))[0]?.errors?.[0]?.code).toBe("rollback_changed");
+		expect(deps.content.entries.has(id)).toBe(true);
+	});
+
+	it("refuses a never published entry an editor published by hand after the time", async () => {
+		const { deps, clock } = setupTicking();
+		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const id = entryOf(deps, "A1").id;
+		clock.t = T0 + HOUR + 1000;
+		await editorStep(deps, id, "publish");
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(deps.content.entries.has(id)).toBe(true);
+	});
+
+	it("refuses the importer's own draft an editor unscheduled and discarded, with updateFields (P3, P3b)", async () => {
+		for (const updateFields of [["title"], ["related"]]) {
+			const { deps, clock } = setupTicking();
+			await importRows(deps, [desk]);
+			// An earlier run stages price 12 in a draft, not published.
+			await importRows(deps, [{ ...desk, price: 12 }], { publish: false });
+			// This run maps only an unchanged mapping and schedules the importer's own draft.
+			const job = await importRows(
+				deps,
+				[{ ...desk, price: 12 }],
+				scheduleAt(at(HOUR), { extra: { rules: { updateFields } } }),
+			);
+			const label = String(updateFields);
+			const id = entryOf(deps, "A1").id;
+			expect(entryOf(deps, "A1"), label).toMatchObject({ scheduledAt: at(HOUR) });
+			// The whole scheduled draft is journalled, the unlisted price included: never {}.
+			expect((await journalOf(deps, job.id))[0]?.wrote?.fields, label).toHaveProperty("price");
+			clock.t = T0 + HOUR + 1000;
+			await editorStep(deps, id, "unschedule");
+			await editorStep(deps, id, "discard");
+			expect(entryOf(deps, "A1").data, label).toMatchObject({ price: 10 });
+			const done = await rollBack(deps, job.id);
+			expect(done.counters, label).toMatchObject({ conflict: 1, reverted: 0 });
+			expect(entryOf(deps, "A1").data, label).toMatchObject({ price: 10 });
+		}
+	});
+
+	it("fails closed on a journal row whose scheduled data is empty, or without publishedAt (P3b)", async () => {
+		for (const broken of ["empty fields", "no publishedAt"] as const) {
+			const { deps, clock } = setupTicking();
+			await importRows(deps, [desk]);
+			const job = await importRows(deps, [{ ...desk, price: 12 }], scheduleAt(at(HOUR)));
+			const [row] = await journalOf(deps, job.id);
+			if (!row?.wrote) throw new Error("no journalled schedule");
+			const { publishedAt: _p, ...rest } = row.wrote;
+			await deps.journal.put(journalKey(job.id, KEY), {
+				...row,
+				wrote: broken === "empty fields" ? { ...row.wrote, fields: {} } : rest,
+			});
+			clock.t = T0 + HOUR;
+			deps.content.runScheduled();
+			const done = await rollBack(deps, job.id);
+			expect(done.counters, broken).toMatchObject({ conflict: 1, reverted: 0 });
+			expect(entryOf(deps, "A1").data, broken).toMatchObject({ price: 12 });
+		}
+	});
+
+	it("refuses a scheduled slug change an editor unscheduled and discarded", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk]);
+		const id = entryOf(deps, "A1").id;
+		const slug = entryOf(deps, "A1").slug;
+		// Only the slug is listed: the draft stages the new slug and no data change.
+		const job = await importRows(
+			deps,
+			[{ ...desk, name: "Table" }],
+			scheduleAt(at(HOUR), { extra: { rules: { updateFields: ["slug"] } } }),
+		);
+		expect((await journalOf(deps, job.id))[0]?.wrote?.slug).not.toBe(slug);
+		clock.t = T0 + HOUR + 1000;
+		await editorStep(deps, id, "unschedule");
+		await editorStep(deps, id, "discard");
+		expect(entryOf(deps, "A1")).toMatchObject({ slug, data: { title: "Desk" } });
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+	});
+
+	it("compares publishedAt as an instant, in whatever format it was stored", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [{ ...desk, price: 12 }], scheduleAt(at(HOUR)));
+		const [row] = await journalOf(deps, job.id);
+		const read = row?.wrote?.publishedAt;
+		if (!row?.wrote || typeof read !== "string") throw new Error("no journalled publishedAt");
+		// The same instant, written with an offset, as a database may normalize it.
+		const shifted = new Date(Date.parse(read) + 2 * HOUR).toISOString().replace("Z", "+02:00");
+		expect(Date.parse(shifted)).toBe(Date.parse(read));
+		await deps.journal.put(journalKey(job.id, KEY), {
+			...row,
+			wrote: { ...row.wrote, publishedAt: shifted },
+		});
+		clock.t = T0 + HOUR;
+		deps.content.runScheduled();
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+	});
+
+	it("restores a scheduled slug change the scheduler published", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk]);
+		const slug = entryOf(deps, "A1").slug;
+		const job = await importRows(
+			deps,
+			[{ ...desk, name: "Table" }],
+			scheduleAt(at(HOUR), { extra: { rules: { updateFields: ["slug"] } } }),
+		);
+		clock.t = T0 + HOUR;
+		deps.content.runScheduled();
+		expect(entryOf(deps, "A1").slug).not.toBe(slug);
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expect(entryOf(deps, "A1").slug).toBe(slug);
+	});
+
+	it("owns the sweep of a schedule a failed publish-now left (P5)", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const id = entryOf(deps, "A1").id;
+		deps.content.failPublish = () => "locked";
+		const job = await importRows(deps, [{ ...desk, price: 12 }]);
+		deps.content.failPublish = () => null;
+		expect((await records(deps, job.id))[0]?.status).toBe("locked");
+		expect((await journalOf(deps, job.id))[0]?.wrote?.fields).toHaveProperty("price");
+		clock.t = T0 + HOUR;
+		expect(deps.content.runScheduled()).toEqual([id]);
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expect(entryOf(deps, "A1").data).toMatchObject({ price: 10 });
+	});
 });
 
 describe("rollback step 7, unschedule (M5b)", () => {
@@ -320,6 +495,8 @@ describe("rollback step 7, unschedule (M5b)", () => {
 		await rollBack(deps, job.id);
 		const id = entryOf(deps, "A1").id;
 		expect(entryOf(deps, "A1")).toMatchObject({ status: "scheduled", scheduledAt: at(HOUR) });
+		// Left scheduled for the earlier job's time: the link keeps it (review I1).
+		expect((await deps.links.get(KEY))?.scheduledAt).toBe(at(HOUR));
 		expect(count(deps, `unschedule:${id}`)).toBe(0);
 		// Again, once the first time has passed: the entry is left a draft without a schedule.
 		const { deps: other, clock: otherClock } = setupTicking();
@@ -411,5 +588,70 @@ describe("rollback step 7, unschedule (M5b)", () => {
 		const last = await importRows(deps, [{ ...desk, price: 16 }], protect);
 		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Editor", price: 16 });
 		expect((await records(deps, last.id))[0]?.warnings?.map((w) => w.field)).toEqual(["title"]);
+	});
+
+	it("hands back no schedule step 7 removed, so an editor's publish stays the editor's (P1)", async () => {
+		const { deps, clock } = setupTicking();
+		const first = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const second = await importRows(deps, [desk], scheduleAt(at(3 * HOUR)));
+		const id = entryOf(deps, "A1").id;
+		clock.t = T0 + 2 * HOUR;
+		await rollBack(deps, second.id);
+		expect(count(deps, `unschedule:${id}`)).toBe(1);
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		const link = (await deps.links.get(KEY)) as LinkRow;
+		expect(link.jobId).toBe(first.id);
+		expect(link.scheduledAt).toBeUndefined();
+		// The warning says "left as a draft": an editor publishes it by hand.
+		await editorStep(deps, id, "publish");
+		const done = await rollBack(deps, first.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect((await records(deps, done.id))[0]?.errors?.[0]?.code).toBe("rollback_changed");
+		expect(deps.content.entries.has(id)).toBe(true);
+	});
+
+	it("removes a passed schedule of the pre-image that the job's link does not record", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		// A draft write over the importer's own schedule keeps it.
+		const job = await importRows(deps, [{ ...desk, price: 12 }], { publish: false });
+		expect(entryOf(deps, "A1")).toMatchObject({ scheduledAt: at(HOUR) });
+		// As a link saved before M5b: no scheduledAt.
+		const { scheduledAt: _s, ...m5a } = (await deps.links.get(KEY)) as LinkRow;
+		await deps.links.put(KEY, m5a);
+		clock.t = T0 + 2 * HOUR;
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		expect(entryOf(deps, "A1").data).toMatchObject({ price: 10 });
+	});
+
+	it("leaves an editor's schedule set after a lost step 1 (P2)", async () => {
+		const { deps } = setupTicking();
+		await importRows(deps, [desk], { publish: false });
+		const job = await importRows(deps, [{ ...desk, price: 12 }], { publish: false });
+		const id = entryOf(deps, "A1").id;
+		const { rollback } = await createRollback(deps, { id: job.id });
+		// Step 1 reaches EmDash; the stop comes before the row save.
+		deps.content.afterStep = (step) => {
+			if (step === "update") throw new Error("stop");
+		};
+		await expect(runBatch(deps, rollback.id, "driver")).rejects.toThrow("stop");
+		deps.content.afterStep = () => {};
+		expect(entryOf(deps, "A1").data).toMatchObject({ price: 10 });
+		await deps.content.schedule({
+			collection: "products",
+			locale: "en",
+			id,
+			rev: deps.content.revOf(id),
+			scheduledAt: at(5 * HOUR),
+		});
+		const stopped = (await deps.jobs.get(rollback.id)) as Job;
+		await deps.jobs.put(rollback.id, { ...stopped, lease: null });
+		const done = await runToEnd(deps, rollback.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect((await records(deps, done.id))[0]?.errors?.[0]?.code).toBe("rollback_changed");
+		expect(count(deps, `unschedule:${id}`)).toBe(0);
+		expect(entryOf(deps, "A1")).toMatchObject({ scheduledAt: at(5 * HOUR) });
 	});
 });

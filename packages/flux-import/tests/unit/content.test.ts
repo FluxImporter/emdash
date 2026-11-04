@@ -16,6 +16,7 @@ type Item = {
 	draftRevisionId: string | null;
 	version: number;
 	scheduledAt?: string | null;
+	publishedAt?: string | null;
 	deletedAt?: string | null;
 	liveData?: Record<string, unknown>;
 	createdAt?: string;
@@ -565,6 +566,7 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 			status: "published",
 			draftRevisionId: "d1",
 			scheduledAt: "2026-12-01T00:00:00.000Z",
+			publishedAt: "2026-11-01T12:00:00.000Z",
 			liveData: { title: "Live" },
 			createdAt: "2026-11-01T00:00:00.000Z",
 			updatedAt: "2026-11-02T00:00:00.000Z",
@@ -574,6 +576,7 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 			scheduledAt: "2026-12-01T00:00:00.000Z",
 			hasDraft: true,
 			pendingPublish: true,
+			publishedAt: "2026-11-01T12:00:00.000Z",
 			live: { title: "Live" },
 			createdAt: "2026-11-01T00:00:00.000Z",
 			updatedAt: "2026-11-02T00:00:00.000Z",
@@ -583,6 +586,11 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 		expect(plain).toMatchObject({ hasDraft: false, pendingPublish: false });
 		expect(plain).not.toHaveProperty("live");
 		expect(plain).not.toHaveProperty("trashed");
+		// M5b: never published is null; a runtime that gives none leaves it out.
+		item.publishedAt = null;
+		expect(await content.get("products", "en", "e1")).toMatchObject({ publishedAt: null });
+		delete item.publishedAt;
+		expect(await content.get("products", "en", "e1")).not.toHaveProperty("publishedAt");
 	});
 
 	it("reads a trashed entry, moves entries to Trash and deletes trashed ones", async () => {

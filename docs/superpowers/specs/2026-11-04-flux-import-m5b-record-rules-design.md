@@ -490,7 +490,7 @@ kind is needed.
 
 | Step | When | Call |
 | --- | --- | --- |
-| 7 unschedule | `state.scheduledAt` is set and `before.scheduledAt` is null, or has passed (`rollback_schedule_passed`) | `handleContentUnschedule` with the previous step's `_rev` (F3) |
+| 7 unschedule | `state.scheduledAt` is set and `before.scheduledAt` is null, or has passed (`rollback_schedule_passed`), and the schedule is the import's: the job link's `scheduledAt`, or the passed `before.scheduledAt`. Any other schedule (an editor's, set after a stop) makes the row `rollback_changed` (Task 7 review I2) | `handleContentUnschedule` with the previous step's `_rev` (F3) |
 
 Step 6 and step 7 exclude each other. Step 2 (publish) already clears a schedule (F4), so step 7
 runs only for an entry the rollback leaves unpublished or published without republishing, for
@@ -503,7 +503,12 @@ difference that way, so a second `publishAt` change would report it twice).
 
 **Link hand-back.** The restored link carries `before.link.fields`, `before.link.unconfirmed` and
 `before.link.scheduledAt`.
-When `before.link` was null, the link is deleted (M5a).
+When `before.link` was null, the link is deleted (M5a). Amended in the Task 7 review: when the
+link moves to the rollback's revision (the entry was as the earlier job left it), every restored
+fingerprint is unconfirmed, since it was confirmed at the earlier job's revision (P5); and
+`scheduledAt` is handed back only when the entry is left scheduled for that time, so a schedule
+step 7 removed, or one that passed, never lets the earlier job's rollback take an editor's later
+publish for the scheduler's (I1).
 
 **Ownership after the scheduler published.** A rollback row whose link names the job
 (`jobId === rollbackOf`, `entryId` matching) but whose `writtenRev` differs from the entry's `_rev`
@@ -512,11 +517,22 @@ is owned when all of these hold:
 - the link has `scheduledAt`;
 - the entry's `_rev` decodes to exactly one `version` more than `writtenRev`;
 - the entry is `published` with no draft and no `scheduledAt`;
-- its `updatedAt` is at or after the link's `scheduledAt`.
+- its `updatedAt` is at or after the link's `scheduledAt`;
+- (Task 7 review) the entry shows what the job left it to publish, from the journal row's
+  `wrote`: its live data has the fingerprint of every field the scheduled publish made live (the
+  entry's data with the importer's own pending draft and what the write sent, recorded on any
+  write after which the entry may stay scheduled, a publish that then fails included), its slug
+  is the one the write sent, and its `publishedAt` is the one the scheduler gives it. The sweep
+  sets `publishedAt` to the scheduled time only on a first publication and keeps it otherwise
+  (`src/scheduled-publish.ts:164-165`), so the expected value is the `publishedAt` read before the
+  write, or the link's `scheduledAt` when that was null. Times compare as instants. A row without
+  `wrote.fields`, or with none, fails.
 
 That is exactly the sweep's publish (F6). An editor's manual "publish now" before `T` fails the
-`updatedAt` test. An editor's publish after `T` passes it, but changes no content. Any edit adds
-a `version`. The rule applies to created entries (delete) and changed ones (revert) alike, and
+`updatedAt` test. An editor's unschedule and discard after `T` fails the values. On an entry
+never published, an editor's publish after `T`, or a reschedule the sweep then publishes, fails
+`publishedAt`; on one published before, such a publish changes no content and is not told apart.
+Any edit adds a `version`. The rule applies to created entries (delete) and changed ones (revert) alike, and
 the revert sequence then runs from the published state. A row that fails it stays
 `rollback_changed`, as in M5a.
 

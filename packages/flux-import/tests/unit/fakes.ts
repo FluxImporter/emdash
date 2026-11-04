@@ -349,6 +349,7 @@ export class FakeContent implements ContentPort {
 			status: e.status,
 			scheduledAt: e.scheduledAt,
 			hasDraft: this.hasDraft(e),
+			publishedAt: e.publishedAt,
 			...(e.live
 				? { live: structuredClone(e.live.data) }
 				: e.stale

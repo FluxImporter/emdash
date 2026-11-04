@@ -1794,10 +1794,10 @@ describe("final review, second pass (M5a)", () => {
 	});
 
 	it("does not start a row the batch budget cannot cover", async () => {
-		// The first row spends 95 (25 + update 35 + publish 35); the second needs 135 more.
+		// The first row spends 95 (25 + update 35 + publish 35); the second needs 165 more.
 		for (const [budget, reverted] of [
-			[229, 1],
-			[230, 2],
+			[259, 1],
+			[260, 2],
 		] as const) {
 			const { deps } = setup();
 			await importRows(deps, [

@@ -4,8 +4,7 @@
  * then deletes a created entry or restores a changed one, step by step so that a resumed batch
  * continues where it stopped. A dry run decides every row the same way and writes nothing.
  */
-import { type Change, comparisonsOf } from "./diff.js";
-import { currentForms, fingerprintsOf } from "./fingerprints.js";
+import type { Change } from "./diff.js";
 import {
 	ContentWriteError,
 	type EntrySnapshot,
@@ -24,8 +23,8 @@ import {
 	termOfGroup,
 } from "./resolve.js";
 import { restoredData, sameStored } from "./rollback-values.js";
-import { sweptSince } from "./rules.js";
-import { type MappedRecord, SOURCE_ID_FIELD } from "./template.js";
+import { dataFingerprints, sameInstant, sweptSince } from "./rules.js";
+import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	bump,
 	type Counters,
@@ -184,11 +183,12 @@ export async function rollbackRetryPass(
 }
 
 /**
- * What a row may spend at most before its references: `COST_RECORD` (25), a full revert sequence
- * of update, publish, unpublish, discard and schedule (35 + 35 + 15 + 10 + 15), a term read (5) and
- * the trash and delete (none of those with the sequence), rounded up.
+ * What a row may spend at most before its references: `COST_RECORD` (25), the longest revert
+ * sequence, update, publish, unpublish, update and schedule or unschedule (35 + 35 + 15 + 35 +
+ * 15; steps 4 and 5 exclude each other, as steps 6 and 7 do), and a term read (5). The trash and
+ * delete (50) never run with the sequence.
  */
-const ROW_RESERVE = 135;
+const ROW_RESERVE = 165;
 
 /**
  * Whether the batch's budget still covers a row: `ROW_RESERVE` plus a read for each reference ID
@@ -291,26 +291,28 @@ type RowCtx = {
 type Found = EntrySnapshot & { trashed: boolean };
 
 /**
- * Whether the entry's live values are those the job left it to publish (M5b, `wrote.fields`): the
- * fingerprint of each journalled data, media, Portable Text and slug mapping, as the import
- * computes it. False when the journal holds none, so a row the job did not schedule never passes.
+ * Whether the entry shows what the job left it to publish (M5b, `JournalEntry.wrote`): live data
+ * with the journalled fingerprints, the slug the job sent, and the `publishedAt` the scheduler
+ * gives it: the one read before the job, which it keeps, or, for an entry never published, the
+ * link's scheduled time (`src/scheduled-publish.ts:164-165`). Times compare as instants, since
+ * EmDash normalizes stored times. False when the journal holds no scheduled data, or none, so a
+ * row the job did not leave scheduled never passes.
  */
-async function holdsScheduled(job: Job, journal: JournalEntry, entry: Found): Promise<boolean> {
-	const wrote = journal.wrote?.fields;
-	if (wrote === undefined) return false;
-	// The record's mappings by kind, from the template, as `applyTemplate` sorts them.
-	const record: MappedRecord = { key: journal.sourceKey, data: {}, media: {}, portableText: {} };
-	for (const name of Object.keys(wrote)) {
-		const type = job.template.fields[name]?.type;
-		if (name === "slug" && type === undefined) record.slug = "";
-		else if (type === "image" || type === "file") (record.media ?? {})[name] = null;
-		else if (type === "portableText") (record.portableText ?? {})[name] = null;
-		else record.data[name] = null;
-	}
-	const live = { ...entry, data: entry.live ?? entry.data };
-	const comparisons = comparisonsOf(job.template, job.targetFields);
-	const now = await fingerprintsOf(currentForms(live, record, comparisons, {}, new Set()));
-	return Object.entries(wrote).every(([name, value]) => now[name] === value);
+async function holdsScheduled(
+	job: Job,
+	journal: JournalEntry,
+	link: LinkRow,
+	entry: Found,
+): Promise<boolean> {
+	const wrote = journal.wrote;
+	const fields = wrote?.fields;
+	if (fields === undefined || Object.keys(fields).length === 0) return false;
+	if (wrote?.publishedAt === undefined || entry.publishedAt === undefined) return false;
+	const due = wrote.publishedAt ?? link.scheduledAt ?? null;
+	if (due === null || !sameInstant(entry.publishedAt, due)) return false;
+	if (wrote.slug !== undefined && entry.slug !== wrote.slug) return false;
+	const now = await dataFingerprints(job, entry.live ?? entry.data);
+	return Object.entries(fields).every(([name, value]) => (now[name] ?? null) === value);
 }
 
 /** Step 1 of "Per row": the entry by ID (active first, then in Trash), or a create's by source ID. */
@@ -399,7 +401,9 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		link.jobId === job.rollbackOf &&
 		link.entryId === entry.id &&
 		(link.writtenRev === entry.rev ||
-			(!entry.trashed && sweptSince(link, entry) && (await holdsScheduled(job, journal, entry))));
+			(!entry.trashed &&
+				sweptSince(link, entry) &&
+				(await holdsScheduled(job, journal, link, entry))));
 	// A create made after the write-ahead row and never changed since (spec M5a V3): found by
 	// source ID after a crash, or one whose link was never saved. A link that names the entry and a
 	// revision settles it: EmDash keeps `updated_at` when an edit only stages a draft
@@ -454,7 +458,14 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 	}
 	return journal.kind === "create"
 		? deleteCreated(ctx, entry, adopted, link)
-		: restoreChanged(ctx, entry, link?.entryId === entry.id, pending);
+		: restoreChanged(
+				ctx,
+				entry,
+				link?.entryId === entry.id,
+				pending,
+				// The schedule the job's link records: the only one step 7 may remove (review I2).
+				link?.entryId === entry.id && link.jobId === job.rollbackOf ? link.scheduledAt : undefined,
+			);
 }
 
 /** "Created entries": Trash, then a permanent delete when the import's own create made it. */
@@ -720,6 +731,7 @@ async function restoreChanged(
 	entry: Found,
 	linked: boolean,
 	pending: number | undefined,
+	jobSchedule: string | undefined,
 ): Promise<RowFields> {
 	const { deps, job, journal } = ctx;
 	const { collection, locale } = journal;
@@ -871,11 +883,19 @@ async function restoreChanged(
 			const same = state.scheduledAt !== null && Date.parse(state.scheduledAt) === Date.parse(at);
 			return same ? null : run(6, { step: "schedule", scheduledAt: at });
 		},
-		// Step 2's publish already cleared a schedule (F4); step 6 excludes this one.
-		async () =>
-			state.scheduledAt !== null && (before.scheduledAt === null || passed.length > 0)
-				? run(7, { step: "unschedule" })
-				: null,
+		// Step 2's publish already cleared a schedule (F4); step 6 excludes this one. Only a
+		// schedule the import set is removed: the job's, or the pre-image's that has passed. Any
+		// other is someone else's, set after a stop (review I2).
+		async (): Promise<StepFailure | null> => {
+			if (state.scheduledAt === null || (before.scheduledAt !== null && passed.length === 0)) {
+				return null;
+			}
+			const ours =
+				(jobSchedule !== undefined && sameInstant(state.scheduledAt, jobSchedule)) ||
+				(passed.length > 0 && sameInstant(state.scheduledAt, before.scheduledAt));
+			if (!ours) return { ok: false, reason: "conflict", message: "not the import's schedule" };
+			return run(7, { step: "unschedule" });
+		},
 	];
 	for (const [i, next] of steps.entries()) {
 		const failed = await next();
@@ -912,6 +932,15 @@ async function restoreChanged(
 			before.link.writtenRev !== undefined &&
 			before.rev !== undefined &&
 			before.rev === before.link.writtenRev;
+		// At the rollback's revision the link records the schedule the entry is left with: the
+		// earlier job's only while the entry is still scheduled for that time (review I1). A
+		// schedule step 7 removed, or one that passed, would let the earlier job's rollback take
+		// an editor's later publish for the scheduler's.
+		const scheduledAt = moved
+			? sameInstant(state.scheduledAt, before.link.scheduledAt ?? null)
+				? before.link.scheduledAt
+				: undefined
+			: before.link.scheduledAt;
 		// M5b: the fingerprints describe the entry at that job's revision, not at the rollback's, so
 		// a link moved to the rollback's revision vouches for none of them (Task 5 review, P5).
 		const unconfirmed = moved
@@ -929,7 +958,7 @@ async function restoreChanged(
 			// M5b: the fingerprints and schedule the link had before the job.
 			...(before.link.fields === undefined ? {} : { fields: before.link.fields }),
 			...(unconfirmed.length > 0 ? { unconfirmed } : {}),
-			...(before.link.scheduledAt === undefined ? {} : { scheduledAt: before.link.scheduledAt }),
+			...(scheduledAt === undefined ? {} : { scheduledAt }),
 		});
 	}
 	return rowOf(ctx, "reverted");
