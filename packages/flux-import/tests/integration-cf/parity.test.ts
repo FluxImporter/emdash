@@ -83,6 +83,20 @@ async function importCsv(collection: string, csv: string, batchSize = 50) {
 	return client.runToEnd(job.id);
 }
 
+/** The products template with M5b `rules` or `publishAt`. */
+async function importRules(collection: string, csv: string, extra: object) {
+	const { uploadId } = await client.upload(csv);
+	const job = await client.plugin("jobs/create", {
+		uploadId,
+		template: { ...template(collection), ...extra },
+		dryRun: false,
+		budgetMs: 20_000,
+	});
+	return client.runToEnd(job.id);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 describe("workerd parity (D1, R2)", () => {
 	it("uploads to R2 and imports 10 rows through plugin routes that reach the runtime", async () => {
 		await client.createProducts("cf_e2e");
@@ -736,5 +750,100 @@ describe("workerd parity (D1, R2)", () => {
 			productsCsv(2, () => "4"),
 		);
 		expect(blocked.counters).toMatchObject({ updated: 1, locked: 1 });
+	});
+
+	it("applies M5b write modes on D1: create only, then update only", async () => {
+		await client.createProducts("cf_m5b_modes");
+		await importCsv("cf_m5b_modes", productsCsv(2));
+		const create = await importRules(
+			"cf_m5b_modes",
+			productsCsv(4, () => "7"),
+			{
+				rules: { mode: "create" },
+			},
+		);
+		expect(create.counters).toMatchObject({ created: 2, unchanged: 2, failed: 0 });
+		const update = await importRules(
+			"cf_m5b_modes",
+			productsCsv(6, () => "8"),
+			{
+				rules: { mode: "update" },
+			},
+		);
+		expect(update.counters).toMatchObject({ updated: 4, unchanged: 2, failed: 0 });
+		const entries = await byKey("cf_m5b_modes");
+		expect(entries.size).toBe(4);
+		expect([...entries.values()].every((e) => e.data.price === 8)).toBe(true);
+	});
+
+	it("keeps an M5b edited field on D1 and updates the others", async () => {
+		await client.createProducts("cf_m5b_protect");
+		await importCsv("cf_m5b_protect", productsCsv(1));
+		const id = (await byKey("cf_m5b_protect")).get("SKU-0")?.id ?? "";
+		const { _rev } = await client.getEntry("cf_m5b_protect", id);
+		const saved = await client.api<{ _rev: string }>(
+			"PUT",
+			`/_emdash/api/content/cf_m5b_protect/${id}?locale=en`,
+			{ data: { title: "Editor's title" }, _rev },
+		);
+		await client.api("POST", `/_emdash/api/content/cf_m5b_protect/${id}/publish?locale=en`, {
+			_rev: saved._rev,
+		});
+		const job = await importRules(
+			"cf_m5b_protect",
+			productsCsv(1, () => "9"),
+			{ rules: { protectEdited: true } },
+		);
+		expect(job.counters).toMatchObject({ updated: 1, failed: 0 });
+		const [row] = await client.records(job.id);
+		expect(row?.changes?.map((c) => c.field)).toEqual(["price"]);
+		expect(row?.warnings?.map((w) => [w.code, w.field])).toEqual([["field_edited", "title"]]);
+		expect((await client.getEntry("cf_m5b_protect", id)).item.data).toMatchObject({
+			title: "Editor's title",
+			price: 9,
+		});
+	});
+
+	it("schedules an M5b create and update on D1, publishes them by the scheduler, and rolls back", async () => {
+		await client.createProducts("cf_m5b_sched");
+		await importCsv("cf_m5b_sched", productsCsv(1));
+		const before = (await byKey("cf_m5b_sched")).get("SKU-0");
+		// Past the 60-second lead; nothing sweeps under astro dev until the test route runs.
+		const at = new Date(Date.now() + 75_000).toISOString();
+		const job = await importRules(
+			"cf_m5b_sched",
+			productsCsv(2, () => "11"),
+			{
+				publishAt: { expr: `'${at}'` },
+			},
+		);
+		expect(job.counters).toMatchObject({ created: 1, updated: 1, failed: 0 });
+		const stateOf = async (key: string) => {
+			const entry = (await byKey("cf_m5b_sched")).get(key);
+			const { item } = await client.getEntry("cf_m5b_sched", entry?.id ?? "");
+			const { scheduledAt } = item as Product & { scheduledAt?: string | null };
+			return { status: item.status, scheduledAt, draft: item.draftRevisionId !== null };
+		};
+		expect(await stateOf("SKU-0")).toEqual({ status: "published", scheduledAt: at, draft: true });
+		expect(await stateOf("SKU-1")).toEqual({ status: "scheduled", scheduledAt: at, draft: false });
+		await sleep(Math.max(0, Date.parse(at) - Date.now()));
+		for (let i = 0; ; i++) {
+			const res = await fetch(`${client.baseUrl}/test/run-scheduled`, {
+				method: "POST",
+				headers: { "X-EmDash-Request": "1" },
+			});
+			expect(res.status).toBe(200);
+			const states = [await stateOf("SKU-0"), await stateOf("SKU-1")];
+			if (states.every((s) => s.status === "published" && s.scheduledAt === null)) break;
+			// Under WSL a long timer can fire before the wall clock reaches the time.
+			if (i > 60) throw new Error(`Not published: ${JSON.stringify(states)}`);
+			await sleep(1_000);
+		}
+		const rollback = await client.plugin("jobs/rollback", { id: job.id, budgetMs: 20_000 });
+		const done = await client.runToEnd(rollback.id);
+		expect(done.counters).toMatchObject({ reverted: 2, conflict: 0, failed: 0 });
+		const after = await byKey("cf_m5b_sched");
+		expect([...after.keys()]).toEqual(["SKU-0"]);
+		expect(after.get("SKU-0")).toMatchObject({ status: "published", data: before?.data });
 	});
 });
