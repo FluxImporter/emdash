@@ -134,19 +134,6 @@ function relationOf(
 }
 
 /**
- * Whether the collection keeps revisions (M5b): its `supports` lists `"revisions"`
- * (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). False for a collection that does not
- * exist, which job creation then refuses.
- */
-export async function collectionRevisions(
-	registry: SchemaRegistryLike,
-	collection: string,
-): Promise<boolean> {
-	const found = await registry.getCollectionWithFields(collection);
-	return found?.supports?.includes("revisions") ?? false;
-}
-
-/**
  * The collection a request's template maps `publishAt` into, read once: its fields and whether
  * it keeps revisions (M5b). Null when the template maps no `publishAt` or the collection is missing.
  */
@@ -187,7 +174,11 @@ export async function listSchemaFields(
 /** A collection's schema fields and whether it keeps revisions, from one registry read (M5b). */
 export type CollectionRead = { fields: SchemaField[]; revisions: boolean };
 
-/** `listSchemaFields` and `collectionRevisions` together; null when the collection does not exist. */
+/**
+ * A collection's fields (`listSchemaFields`) and whether it keeps revisions (M5b): its `supports`
+ * lists `"revisions"` (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). Null when the
+ * collection does not exist, which job creation then refuses.
+ */
 export async function readCollection(
 	registry: SchemaRegistryLike,
 	collection: string,

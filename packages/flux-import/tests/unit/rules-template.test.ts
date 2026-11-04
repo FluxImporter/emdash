@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-	collectionRevisions,
 	listSchemaFields,
 	publishAtCollection,
+	readCollection,
 	readPublishAtCollection,
 } from "../../src/emdash/schema.js";
 import { needsSiteTimezone } from "../../src/emdash/timezone.js";
@@ -251,7 +251,7 @@ describe("jobs with rules and publishAt (M5b)", () => {
 	});
 });
 
-describe("collectionRevisions and publishAtCollection (M5b)", () => {
+describe("readCollection and publishAtCollection (M5b)", () => {
 	const registry = (supports?: string[]) => ({
 		getField: async () => null,
 		createField: async () => null,
@@ -261,10 +261,12 @@ describe("collectionRevisions and publishAtCollection (M5b)", () => {
 	});
 
 	it("reads revisions from the collection's supports", async () => {
-		expect(await collectionRevisions(registry(["drafts", "revisions"]), "products")).toBe(true);
-		expect(await collectionRevisions(registry(["drafts"]), "products")).toBe(false);
-		expect(await collectionRevisions(registry(), "products")).toBe(false);
-		expect(await collectionRevisions(registry(["revisions"]), "missing")).toBe(false);
+		const revisions = async (supports: string[] | undefined, slug = "products") =>
+			(await readCollection(registry(supports), slug))?.revisions ?? null;
+		expect(await revisions(["drafts", "revisions"])).toBe(true);
+		expect(await revisions(["drafts"])).toBe(false);
+		expect(await revisions(undefined)).toBe(false);
+		expect(await revisions(["revisions"], "missing")).toBeNull();
 	});
 
 	it("reads fields and revisions in one registry call, and passes revisions: false on", async () => {

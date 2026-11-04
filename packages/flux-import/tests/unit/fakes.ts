@@ -43,6 +43,11 @@ import {
 import { streamOf } from "./helpers.js";
 
 /** A copy without null values, as EmDash's mapRow reads an entry's columns. */
+/** EmDash's NOT_FOUND for an entry in Trash, as `writeError` turns it into a record error. */
+function trashedError(op: string, id: string): ContentWriteError {
+	return new ContentWriteError("emdash_not_found", `${op} failed: Content item not found: ${id}`);
+}
+
 function withoutNulls(data: Record<string, unknown>): Record<string, unknown> {
 	return Object.fromEntries(
 		Object.entries(structuredClone(data)).filter(([, value]) => value !== null),
@@ -277,6 +282,11 @@ export class FakeContent implements ContentPort {
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
 	/** M5a: collections without revisions, whose writes go straight to the live columns. */
 	readonly plainCollections = new Set<string>();
+	/**
+	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. EmDash makes
+	 * collections routable by default; the fake opts in, since most tests import without a slug.
+	 */
+	readonly routableCollections = new Set<string>();
 	/** M5a: return a message to make a `content:beforeDelete` hook refuse the trash. */
 	blockDelete: (id: string) => string | null = () => null;
 	/** M5a: return a message to make a policy hook refuse a publish, unpublish or schedule. */
@@ -340,6 +350,20 @@ export class FakeContent implements ContentPort {
 		}
 	}
 
+	/**
+	 * As EmDash on a routable collection (`routable` is true unless set to 0, api/handlers/
+	 * content.ts:257-276): publish (with the staged slug, repositories/content.ts:2603-2607) and
+	 * schedule refuse an entry without a slug.
+	 */
+	private requireSlug(e: StoredEntry, slug: string | null, op: string): void {
+		if (this.routableCollections.has(e.collection) && !slug?.trim()) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				`${op} failed: Cannot publish routable content without a slug`,
+			);
+		}
+	}
+
 	private hasDraft(e: StoredEntry): boolean {
 		return e.live !== null || e.stale !== null;
 	}
@@ -354,7 +378,10 @@ export class FakeContent implements ContentPort {
 			// (repositories/content.ts:2926-2934); a pending draft revision's data keeps its nulls.
 			data: e.live
 				? structuredClone(e.data)
-				: withoutNulls(e.stale ? { ...e.data, ...e.stale.data } : e.data),
+				: e.stale
+					? // As hydrateDraftData: the revision's data, nulls included, over the row's.
+						{ ...withoutNulls(e.data), ...structuredClone(e.stale.data) }
+					: withoutNulls(e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
 			status: e.status,
@@ -637,6 +664,8 @@ export class FakeContent implements ContentPort {
 	): Promise<WriteResult> {
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
+		// As EmDash: the update's lookup skips Trash (`findByIdOrSlug`, emdash-runtime.ts:3685-3698).
+		if (e.trashed) throw trashedError("Updating the entry", e.id);
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
@@ -675,10 +704,13 @@ export class FakeContent implements ContentPort {
 		this.beforePublish(input.id);
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
+		// As EmDash: the policy check's `handleContentGet` skips Trash (emdash-runtime.ts:4448-4455).
+		if (e.trashed) throw trashedError("Publishing the entry", e.id);
 		const forced = this.failPublish(e.id);
 		if (forced) return { ok: false, reason: forced };
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		this.requireSlug(e, e.slug, "Publishing the entry");
 		this.makeLive(e);
 		this.calls.push(`publish:${e.id}`);
 		return { ok: true, rev: this.encoded(e) };
@@ -699,7 +731,9 @@ export class FakeContent implements ContentPort {
 		// As EmDash without revisions: the live revision is created at the first publish after an
 		// unpublish and then kept (repositories/content.ts:2489-2499); with revisions each publish
 		// makes the draft the live revision.
-		if (this.plainCollections.has(e.collection)) e.published ??= { data: structuredClone(e.data) };
+		// Without revisions the live revision is made from the row as mapRow reads it, without its
+		// null columns (`revisionRepo.create({ data: existing.data })`, :2489-2499, :2928-2934).
+		if (this.plainCollections.has(e.collection)) e.published ??= { data: withoutNulls(e.data) };
 		else e.published = { data: structuredClone(e.data) };
 		this.touch(e);
 	}
@@ -736,6 +770,8 @@ export class FakeContent implements ContentPort {
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		// The live slug: a slug staged in a draft is not the row's (api/handlers/content.ts:2177-2181).
+		this.requireSlug(e, e.live?.slug ?? e.slug, "Scheduling the entry");
 		const blocked = this.blockStep("schedule", e.id);
 		if (blocked !== null) {
 			throw new ContentWriteError(

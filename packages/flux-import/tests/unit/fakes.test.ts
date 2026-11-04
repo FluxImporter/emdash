@@ -733,3 +733,75 @@ describe("FakeContent as EmDash schedules and revises (M5b)", () => {
 		]);
 	});
 });
+
+describe("FakeContent final review fixes (M5b)", () => {
+	function setup() {
+		const clock = { t: Date.parse("2026-10-07T10:00:00Z") };
+		const content = new FakeContent();
+		content.now = () => clock.t;
+		return { content, clock };
+	}
+	const step = (content: FakeContent, id: string, s: "publish" | "unpublish", collection: string) =>
+		content.revertStep({ collection, locale: "en", id, rev: content.revOf(id), step: s });
+
+	it("reads a stale draft over the columns, keeping the revision's nulls, as hydrateDraftData", async () => {
+		const { content } = setup();
+		content.plainCollections.add("plain");
+		const base = { collection: "plain", locale: "en" };
+		const { id } = await content.create({ ...base, slug: "a", data: { t: "A", n: null } });
+		await step(content, id, "publish", "plain");
+		await content.update({ id, rev: content.revOf(id), data: { n: 1, m: 2 } });
+		await step(content, id, "unpublish", "plain");
+		// The live revision was made from the row as mapRow reads it, without its null columns
+		// (repositories/content.ts:2489-2499, :2928-2934), so the draft has no `n`.
+		expect(content.entries.get(id)?.stale).toEqual({ data: { t: "A" } });
+		expect((await content.get("plain", "en", id))?.data).toEqual({ t: "A", n: 1, m: 2 });
+		// A revision's own null overlays the column (emdash-runtime.ts:3389-3440,
+		// `{ ...liveData, ...revisionData }`).
+		const stored = content.entries.get(id);
+		if (stored) stored.stale = { data: { t: "A", m: null } };
+		expect((await content.get("plain", "en", id))?.data).toEqual({ t: "A", n: 1, m: null });
+		expect((await content.get("plain", "en", id))?.live).toEqual({ t: "A", n: 1, m: 2 });
+	});
+
+	it("refuses to publish or update a trashed entry, as EmDash reads past Trash", async () => {
+		const { content } = setup();
+		const { id, rev } = await content.create({ collection: "products", locale: "en", data: {} });
+		await content.trash("products", id);
+		await expect(content.publish({ id, rev })).rejects.toMatchObject({
+			code: "emdash_not_found",
+			message: `Publishing the entry failed: Content item not found: ${id}`,
+		});
+		await expect(content.update({ id, rev, data: { t: "B" } })).rejects.toMatchObject({
+			code: "emdash_not_found",
+			message: `Updating the entry failed: Content item not found: ${id}`,
+		});
+	});
+
+	it("refuses to publish or schedule a routable collection's entry without a slug", async () => {
+		const { content } = setup();
+		content.routableCollections.add("products");
+		const base = { collection: "products", locale: "en" };
+		const bare = await content.create({ ...base, data: {} });
+		await expect(content.publish({ id: bare.id, rev: bare.rev })).rejects.toMatchObject({
+			code: "emdash_validation_error",
+			message: "Publishing the entry failed: Cannot publish routable content without a slug",
+		});
+		await expect(
+			content.schedule({
+				...base,
+				id: bare.id,
+				rev: bare.rev,
+				scheduledAt: "2026-10-08T10:00:00Z",
+			}),
+		).rejects.toMatchObject({
+			code: "emdash_validation_error",
+			message: "Scheduling the entry failed: Cannot publish routable content without a slug",
+		});
+		const named = await content.create({ ...base, slug: "a", data: {} });
+		expect((await content.publish({ id: named.id, rev: named.rev })).ok).toBe(true);
+		// A collection that is not routable publishes without a slug.
+		const plain = await content.create({ ...base, collection: "notes", data: {} });
+		expect((await content.publish({ id: plain.id, rev: plain.rev })).ok).toBe(true);
+	});
+});
