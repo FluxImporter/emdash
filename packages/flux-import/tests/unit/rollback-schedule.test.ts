@@ -418,6 +418,54 @@ describe("ownership after the scheduler (M5b)", () => {
 		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
 	});
 
+	it("deletes a swept create with empty cells, which EmDash reads back without them (N1)", async () => {
+		const { deps, clock } = setupTicking();
+		// No Featured or Img cell: the import sends featured and photo as null.
+		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const id = entryOf(deps, "A1").id;
+		expect(entryOf(deps, "A1").data).toMatchObject({ featured: null, photo: null });
+		expect(Object.keys((await journalOf(deps, job.id))[0]?.wrote?.fields ?? {})).toEqual(
+			expect.arrayContaining(["featured", "photo"]),
+		);
+		clock.t = T0 + HOUR;
+		expect(deps.content.runScheduled()).toEqual([id]);
+		// As mapRow: null columns are left out of the read.
+		const read = await deps.content.get("products", "en", id);
+		expect(read?.data).not.toHaveProperty("featured");
+		expect(read?.data).not.toHaveProperty("photo");
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expect(deps.content.entries.has(id)).toBe(false);
+	});
+
+	it("restores a swept update over an entry read back without its nulls (N2)", async () => {
+		const { deps, clock } = setupTicking();
+		await importRows(deps, [desk]);
+		const id = entryOf(deps, "A1").id;
+		expect((await deps.content.get("products", "en", id))?.data).not.toHaveProperty("featured");
+		const job = await importRows(deps, [{ ...desk, price: 12 }], scheduleAt(at(HOUR)));
+		clock.t = T0 + HOUR;
+		expect(deps.content.runScheduled()).toEqual([id]);
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0 });
+		expect(entryOf(deps, "A1").data).toMatchObject({ price: 10 });
+	});
+
+	it("refuses a swept entry whose empty cell an editor filled after the sweep", async () => {
+		const { deps, clock } = setupTicking();
+		const job = await importRows(deps, [desk], scheduleAt(at(HOUR)));
+		const id = entryOf(deps, "A1").id;
+		clock.t = T0 + HOUR;
+		deps.content.runScheduled();
+		// The value changes without a new revision, as the scheduler's shape keeps it.
+		const e = deps.content.entries.get(id);
+		if (!e) throw new Error("no entry");
+		e.data.featured = 1;
+		const done = await rollBack(deps, job.id);
+		expect(done.counters).toMatchObject({ conflict: 1, reverted: 0 });
+		expect(deps.content.entries.has(id)).toBe(true);
+	});
+
 	it("restores a scheduled slug change the scheduler published", async () => {
 		const { deps, clock } = setupTicking();
 		await importRows(deps, [desk]);

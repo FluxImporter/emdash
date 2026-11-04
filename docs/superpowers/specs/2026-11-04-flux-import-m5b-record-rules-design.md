@@ -526,7 +526,8 @@ is owned when all of these hold:
   sets `publishedAt` to the scheduled time only on a first publication and keeps it otherwise
   (`src/scheduled-publish.ts:164-165`), so the expected value is the `publishedAt` read before the
   write, or the link's `scheduledAt` when that was null. Times compare as instants. A row without
-  `wrote.fields`, or with none, fails.
+  `wrote.fields`, or with none, fails. On both sides an absent field counts as null: EmDash reads
+  an entry without its null columns (`mapRow`, `repositories/content.ts:2926-2934`).
 
 That is exactly the sweep's publish (F6). An editor's manual "publish now" before `T` fails the
 `updatedAt` test. An editor's unschedule and discard after `T` fails the values. On an entry

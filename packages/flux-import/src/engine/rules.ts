@@ -135,20 +135,24 @@ export function editedMappings(
 }
 
 /**
- * The fingerprint of every field of an entry's data (M5b), each in the canonical form its
- * template mapping gives it (`currentForms`, `sentForms`): media and Portable Text as theirs,
- * any other field, mapped or not, as data under its comparison. The source ID is left out. The
- * journal keeps these for what a scheduled publish makes live; a rollback compares them with the
- * entry's live values (ownership after the scheduler).
+ * The fingerprint of fields of an entry's data (M5b), each in the canonical form its template
+ * mapping gives it (`currentForms`, `sentForms`): media and Portable Text as theirs, any other
+ * field, mapped or not, as data under its comparison. The source ID is left out. By default every
+ * field `data` holds; with `names`, those fields. An absent field has a null value: EmDash reads
+ * an entry without its null columns (`mapRow`), so a null the import sends comes back absent.
+ * The journal keeps these for what a scheduled publish makes live; a rollback computes them for
+ * the same names over the entry's live values (ownership after the scheduler).
  */
 export async function dataFingerprints(
 	job: Job,
 	data: Readonly<Record<string, unknown>>,
+	names: readonly string[] = Object.keys(data),
 ): Promise<Record<string, string>> {
 	const comparisons = comparisonsOf(job.template, job.targetFields);
 	const out: Record<string, string> = {};
-	for (const [field, value] of Object.entries(data)) {
+	for (const field of names) {
 		if (field === SOURCE_ID_FIELD) continue;
+		const value = Object.hasOwn(data, field) ? data[field] : null;
 		const type = job.template.fields[field]?.type;
 		const form =
 			type === "image" || type === "file"

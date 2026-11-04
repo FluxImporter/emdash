@@ -42,6 +42,13 @@ import {
 } from "../../src/sources/media-fetch.js";
 import { streamOf } from "./helpers.js";
 
+/** A copy without null values, as EmDash's mapRow reads an entry's columns. */
+function withoutNulls(data: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(structuredClone(data)).filter(([, value]) => value !== null),
+	);
+}
+
 function matches(data: Record<string, unknown>, where: Where): boolean {
 	return Object.entries(where).every(([k, cond]) => {
 		const v = data[k];
@@ -343,7 +350,11 @@ export class FakeContent implements ContentPort {
 			rev: this.encoded(e),
 			// As hydrateDraftData: a pending draft changes the data, never the live slug.
 			slug: e.live?.slug ?? e.slug,
-			data: structuredClone(e.stale ? { ...e.data, ...e.stale.data } : e.data),
+			// The columns are read as mapRow reads them, without nulls
+			// (repositories/content.ts:2926-2934); a pending draft revision's data keeps its nulls.
+			data: e.live
+				? structuredClone(e.data)
+				: withoutNulls(e.stale ? { ...e.data, ...e.stale.data } : e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
 			status: e.status,
@@ -351,9 +362,9 @@ export class FakeContent implements ContentPort {
 			hasDraft: this.hasDraft(e),
 			publishedAt: e.publishedAt,
 			...(e.live
-				? { live: structuredClone(e.live.data) }
+				? { live: withoutNulls(e.live.data) }
 				: e.stale
-					? { live: structuredClone(e.data) }
+					? { live: withoutNulls(e.data) }
 					: {}),
 			createdAt: e.createdAt,
 			updatedAt: e.updatedAt,

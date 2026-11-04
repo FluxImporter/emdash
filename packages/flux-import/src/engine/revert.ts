@@ -311,8 +311,9 @@ async function holdsScheduled(
 	const due = wrote.publishedAt ?? link.scheduledAt ?? null;
 	if (due === null || !sameInstant(entry.publishedAt, due)) return false;
 	if (wrote.slug !== undefined && entry.slug !== wrote.slug) return false;
-	const now = await dataFingerprints(job, entry.live ?? entry.data);
-	return Object.entries(fields).every(([name, value]) => (now[name] ?? null) === value);
+	// Each journalled field, absent read as null, as the journal computed it.
+	const now = await dataFingerprints(job, entry.live ?? entry.data, Object.keys(fields));
+	return Object.entries(fields).every(([name, value]) => now[name] === value);
 }
 
 /** Step 1 of "Per row": the entry by ID (active first, then in Trash), or a create's by source ID. */
