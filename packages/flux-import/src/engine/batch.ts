@@ -266,6 +266,12 @@ type RecordCtx = {
 	unconfirmed?: string[];
 	/** The record's protected mappings (M5b), which the entry holds differently from the feed. */
 	kept?: ReadonlySet<string>;
+	/**
+	 * The fingerprints of `fields` for the record's data, media, Portable Text and slug mappings
+	 * that are not protected (M5b): the values the entry holds once the record's write is live. A
+	 * record that leaves the entry scheduled journals them (`JournalEntry.wrote.fields`).
+	 */
+	valueFields?: Record<string, string>;
 	/** A link save of this record carried `fields` (M5b), so no refresh is needed. */
 	linkSaved: boolean;
 	/** When the record's content goes live (M5b). */
@@ -437,6 +443,32 @@ async function setFields(
 	ctx.fields = { ...(own?.fields ?? {}), ...(await fingerprintsOf(forms)) };
 	ctx.unconfirmed = unconfirmedOf(carried, kept, own, entry?.rev ?? null);
 	ctx.kept = kept;
+	const linked = new Set([
+		...Object.keys(record.links?.references ?? {}),
+		...Object.keys(record.links?.taxonomies ?? {}).map((name) => `taxonomies.${name}`),
+		...(record.links?.bylines === undefined ? [] : ["bylines"]),
+	]);
+	const fields = ctx.fields;
+	ctx.valueFields = Object.fromEntries(
+		Object.keys(forms)
+			.filter((name) => !linked.has(name))
+			.map((name) => [name, fields[name] as string]),
+	);
+}
+
+/**
+ * What the journal keeps of a record that leaves the entry scheduled (M5b): its value mappings'
+ * fingerprints, for the rollback's ownership after the scheduler. A schedule it makes, or one an
+ * update keeps; a publish clears any.
+ */
+function scheduledWrote(
+	ctx: RecordCtx,
+	entry: EntrySnapshot | null,
+): { fields: Record<string, string> } | undefined {
+	const leaves =
+		ctx.target.kind !== "now" &&
+		(ctx.schedule !== undefined || (entry?.scheduledAt ?? null) !== null);
+	return leaves && ctx.valueFields !== undefined ? { fields: ctx.valueFields } : undefined;
 }
 
 /**
@@ -1535,7 +1567,7 @@ async function journalPublish(
 	};
 	const before = preImage(entry, link, touched, undefined);
 	if ("code" in before) return before;
-	return journalUpdate(ctx, entry.id, before);
+	return journalUpdate(ctx, entry.id, before, scheduledWrote(ctx, entry));
 }
 
 /**
@@ -1550,7 +1582,7 @@ async function journalWrite(
 	media: Readonly<Record<string, FieldValue>>,
 ): Promise<RecordError | null> {
 	if (!entry) {
-		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey);
+		await journalCreate(ctx, ctx.translationOf?.value ?? ctx.sourceKey, scheduledWrote(ctx, null));
 		return null;
 	}
 	const changed = new Set(plan.changes.map((c) => c.field));
@@ -1590,12 +1622,11 @@ async function journalWrite(
 			(resolved?.taxonomies?.[t] ?? []).flatMap((i) => (i.group === null ? [] : [i.group])),
 		]),
 	);
-	return journalUpdate(
-		ctx,
-		entry.id,
-		before,
-		touched.taxonomies.length > 0 ? { taxonomies: terms } : undefined,
-	);
+	const scheduled = scheduledWrote(ctx, entry);
+	return journalUpdate(ctx, entry.id, before, {
+		...(touched.taxonomies.length > 0 ? { taxonomies: terms } : {}),
+		...scheduled,
+	});
 }
 
 async function writeRecord(

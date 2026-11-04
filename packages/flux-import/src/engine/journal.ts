@@ -188,6 +188,22 @@ export function mergeBefore(first: JournalBefore, next: JournalBefore): JournalB
 }
 
 /**
+ * What the job wrote so far with what a later write of it adds: each taxonomy's groups and each
+ * mapping's fingerprint as the latest write left them. Undefined when neither holds anything.
+ */
+function mergeWrote(
+	first: JournalEntry["wrote"],
+	next: JournalEntry["wrote"],
+): JournalEntry["wrote"] {
+	const taxonomies = next?.taxonomies
+		? { ...first?.taxonomies, ...next.taxonomies }
+		: first?.taxonomies;
+	const fields = next?.fields ? { ...first?.fields, ...next.fields } : first?.fields;
+	if (taxonomies === undefined && fields === undefined) return undefined;
+	return { ...(taxonomies ? { taxonomies } : {}), ...(fields ? { fields } : {}) };
+}
+
+/**
  * Write-ahead for an update: stores the pre-image before the job's first write to the entry
  * (put-if-absent), or adds what this write touches first to the row an earlier write stored. A
  * row an attempt stored that never wrote (`mayHaveWritten` false) is replaced, since the entry
@@ -205,7 +221,7 @@ export async function journalUpdate(
 		kind: "update",
 		entryId,
 		before,
-		...(wrote?.taxonomies ? { wrote } : {}),
+		...(wrote?.taxonomies || wrote?.fields ? { wrote } : {}),
 	};
 	const large = tooLarge(row);
 	if (large) return large;
@@ -229,16 +245,14 @@ export async function journalUpdate(
 		if (t.resuming && first.rev !== before.rev && !ownRev && !first.uncertain) {
 			merged = { ...(merged ?? structuredClone(first)), uncertain: true };
 		}
-		const terms = wrote?.taxonomies
-			? { ...stored.value.wrote?.taxonomies, ...wrote.taxonomies }
-			: stored.value.wrote?.taxonomies;
-		const termsChanged =
-			JSON.stringify(terms ?? null) !== JSON.stringify(stored.value.wrote?.taxonomies ?? null);
-		if (merged === null && !termsChanged) return null;
+		const after = mergeWrote(stored.value.wrote, wrote);
+		const wroteChanged =
+			JSON.stringify(after ?? null) !== JSON.stringify(stored.value.wrote ?? null);
+		if (merged === null && !wroteChanged) return null;
 		const next: JournalEntry = {
 			...stored.value,
 			before: merged ?? first,
-			...(terms ? { wrote: { taxonomies: terms } } : {}),
+			...(after ? { wrote: after } : {}),
 		};
 		const larger = tooLarge(next);
 		if (larger) return larger;
@@ -251,9 +265,19 @@ export async function journalUpdate(
  * Write-ahead for a create: `entryId` stays null until the create returns. A create row an
  * earlier attempt stored is kept; an update row (its entry has gone since) is replaced.
  */
-export async function journalCreate(t: JournalTarget, sourceIdValue: string): Promise<void> {
+export async function journalCreate(
+	t: JournalTarget,
+	sourceIdValue: string,
+	wrote?: NonNullable<JournalEntry["wrote"]>,
+): Promise<void> {
 	const key = journalKey(t.job.id, t.linkId);
-	const row: JournalEntry = { ...base(t), kind: "create", entryId: null, sourceIdValue };
+	const row: JournalEntry = {
+		...base(t),
+		kind: "create",
+		entryId: null,
+		sourceIdValue,
+		...(wrote?.fields ? { wrote } : {}),
+	};
 	if ((await t.deps.journal.compareAndSet(key, null, row)).applied) return;
 	const stored = await t.deps.journal.get(key);
 	if (stored?.kind === "create") return;

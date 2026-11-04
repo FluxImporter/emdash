@@ -297,11 +297,22 @@ export interface JournalEntry {
 	/** ISO time of the write-ahead put. */
 	at: string;
 	/**
-	 * Final review I3, update only: the term translation groups the job wrote, by taxonomy (the
-	 * after state of each taxonomy in `before.links.taxonomies`). Term edits do not move `_rev`,
-	 * so the rollback compares them with the entry's terms before restoring.
+	 * What the job wrote. `taxonomies` (final review I3, update only): the term translation groups
+	 * the job wrote, by taxonomy (the after state of each taxonomy in `before.links.taxonomies`).
+	 * Term edits do not move `_rev`, so the rollback compares them with the entry's terms before
+	 * restoring.
 	 */
-	wrote?: { taxonomies?: Record<string, string[]> };
+	wrote?: {
+		taxonomies?: Record<string, string[]>;
+		/**
+		 * M5b, a record that leaves the entry scheduled (create or update): the fingerprints of the
+		 * values its data, media, Portable Text and slug mappings have once the schedule publishes
+		 * them, as on its link row. A rollback owns an entry the scheduler published only when its
+		 * live values still have them: an editor's unschedule and discard after the time leaves the
+		 * same `_rev` shape with the values from before the job.
+		 */
+		fields?: Record<string, string>;
+	};
 }
 
 /** A media item a job's upload created (plugin storage `journalMedia`, `journalMediaKey`). */
