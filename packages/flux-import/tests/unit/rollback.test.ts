@@ -614,7 +614,7 @@ describe("refusals and warnings during a rollback (M5a)", () => {
 		const job = await importRows(deps, [desk]);
 		const key = journalKey(job.id, linkKey("products", "en", "A1"));
 		const row = await deps.journal.get(key);
-		await deps.journal.put(key, { ...row!, kind: "trash" as never });
+		await deps.journal.put(key, { ...row!, kind: "archive" as never });
 		const done = await rollBack(deps, job.id);
 		const [rolled] = await records(deps, done.id);
 		expect(rolled).toMatchObject({ status: "failed", errors: [{ code: "journal_kind_unknown" }] });

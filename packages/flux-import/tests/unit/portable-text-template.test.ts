@@ -166,6 +166,7 @@ describe("portableText mappings", () => {
 		] as const) {
 			expect(await applyTemplate(c, { id: "1", html: value })).toEqual({
 				ok: false,
+				key: "1",
 				errors: [
 					{
 						field: "body",
@@ -181,11 +182,13 @@ describe("portableText mappings", () => {
 		);
 		expect(await applyTemplate(required, { id: "1", html: "<iframe></iframe>" })).toEqual({
 			ok: false,
+			key: "1",
 			errors: [{ field: "body", code: "required", message: "The field is required" }],
 			warnings: [{ field: "body", code: "removed_markup", message: "Removed 1 <iframe> element" }],
 		});
 		expect(await applyTemplate(required, { id: "1" })).toEqual({
 			ok: false,
+			key: "1",
 			errors: [{ field: "body", code: "required", message: "The field is required" }],
 		});
 	});
@@ -198,6 +201,7 @@ describe("portableText mappings", () => {
 		});
 		expect(result).toEqual({
 			ok: false,
+			key: "1",
 			errors: [
 				{ field: "body", code: "unknown_markup", message: "Kept the text of 1 <dl> element" },
 				{
@@ -241,6 +245,7 @@ describe("portableText mappings", () => {
 		});
 		expect(failed).toEqual({
 			ok: false,
+			key: "1",
 			errors: [
 				{
 					field: "strict",
@@ -305,6 +310,7 @@ describe("portableText mappings", () => {
 		expect((await applyTemplate(c, { id: "1", a: big, b: big })).ok).toBe(true);
 		expect(await applyTemplate(c, { id: "1", a: big, b: big, c: big })).toEqual({
 			ok: false,
+			key: "1",
 			errors: [
 				{
 					field: "c",
@@ -341,6 +347,7 @@ describe("portableText source limits", () => {
 		const part = `<x-a>a</x-a>${"a".repeat(200 * 1024)}`;
 		expect(await applyTemplate(c, { id: "1", a: part, b: part, c: part })).toEqual({
 			ok: false,
+			key: "1",
 			errors: [
 				{
 					field: "c",
@@ -372,6 +379,7 @@ describe("portableText source limits", () => {
 		});
 		expect(result).toEqual({
 			ok: false,
+			key: "1",
 			errors: [
 				{
 					field: "c",

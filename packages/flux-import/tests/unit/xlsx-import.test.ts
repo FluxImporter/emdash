@@ -262,6 +262,44 @@ describe("startImport", () => {
 			delete global.FixedLengthStream;
 		}
 	});
+
+	it("passes the rows the converter skipped to the job as unkeyed (M5c)", async () => {
+		const { deps, staging, stage } = setup();
+		const header = row(
+			1,
+			'<c r="A1" t="inlineStr"><is><t>sku</t></is></c><c r="B1" t="inlineStr"><is><t>Name</t></is></c>',
+		);
+		const rows =
+			header +
+			row(
+				2,
+				'<c r="A2" t="inlineStr"><is><t>K1</t></is></c><c r="B2" t="inlineStr"><is><t>One</t></is></c>',
+			) +
+			// 29 February 1900 with a date style: unreadable, and the row's only value.
+			row(3, '<c r="A3" s="1"><v>60</v></c>');
+		const book = await stage(
+			await workbook({ sheets: [{ name: "Sheet1", rows }], cellXfs: [0, 14] }),
+		);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			source: { format: "xlsx" },
+			key: { from: "sku" },
+			fields: { title: { from: "Name", type: "text" } },
+			rules: { owner: "o", missing: { action: "trash" } },
+		};
+		const job = await startImport(
+			deps,
+			staging,
+			{ uploadId: book, template, dryRun: false },
+			fields,
+		);
+		expect(job.unkeyed).toBe(1);
+		expect(job.warnings).toContain(
+			"1 row had only unreadable cells and was skipped (first at row 3)",
+		);
+	});
 });
 
 describe("a missing column header", () => {

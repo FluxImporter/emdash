@@ -4,6 +4,7 @@ import { sameStored } from "./rollback-values.js";
 import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	type EngineDeps,
+	iso,
 	type Job,
 	type JournalBefore,
 	type JournalEntry,
@@ -38,8 +39,6 @@ export type JournalTarget = {
 	/** The link row read before this write; a resumed write it names at the entry's `_rev` is known. */
 	link?: LinkRow | null;
 };
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
 function base(t: JournalTarget): Omit<JournalEntry, "kind" | "entryId"> {
 	const { collection, locale } = t.job.template;
@@ -137,13 +136,17 @@ export function preImage(
 	};
 }
 
-function linkBefore(link: LinkRow): NonNullable<JournalBefore["link"]> {
+/** The link row as a journal pre-image keeps it (M5a), with M5b's and M5c's fields. */
+export function linkBefore(link: LinkRow): NonNullable<JournalBefore["link"]> {
 	return {
 		...(link.jobId === undefined ? {} : { jobId: link.jobId }),
 		...(link.writtenRev === undefined ? {} : { writtenRev: link.writtenRev }),
 		...(link.fields === undefined ? {} : { fields: link.fields }),
 		...(link.unconfirmed === undefined ? {} : { unconfirmed: link.unconfirmed }),
 		...(link.scheduledAt === undefined ? {} : { scheduledAt: link.scheduledAt }),
+		...(link.owner === undefined ? {} : { owner: link.owner }),
+		...(link.ownerSource === undefined ? {} : { ownerSource: link.ownerSource }),
+		...(link.missing === undefined ? {} : { missing: link.missing }),
 	};
 }
 

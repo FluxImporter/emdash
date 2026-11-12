@@ -1,4 +1,4 @@
-import { batchOptions, JobError, upgradeJob } from "./jobs.js";
+import { batchOptions, JobError, settleStoppedJob, upgradeJob } from "./jobs.js";
 import { type EngineDeps, emptyCounters, type Job } from "./types.js";
 
 /** Media IDs the rollback job's warning lists; past them it says there are more. */
@@ -85,6 +85,16 @@ async function rollbackWarnings(
 	return warnings;
 }
 
+/** The job, versioned, or the `JobError` that refuses its rollback now. */
+async function refuseRollback(deps: EngineDeps, id: string) {
+	const current = await deps.jobs.getVersioned(id);
+	if (!current) throw new JobError("not_found", `Job ${id} not found`);
+	const original = upgradeJob(current.value);
+	const refusal = rollbackRefusal(original, deps.now());
+	if (refusal !== null) throw new JobError("invalid_transition", refusal);
+	return { current, original };
+}
+
 /**
  * Creates the rollback job of an import (`jobs/rollback`), driven by `jobs/next`. A real rollback
  * marks the original `rolledBackBy` with compare-and-set after creating the rollback job, and
@@ -95,11 +105,13 @@ export async function createRollback(
 	input: RollbackInput,
 ): Promise<{ rollback: Job; original: Job }> {
 	const { batchSize, budgetMs } = batchOptions(input);
-	const current = await deps.jobs.getVersioned(input.id);
-	if (!current) throw new JobError("not_found", `Job ${input.id} not found`);
-	const original = upgradeJob(current.value);
-	const refusal = rollbackRefusal(original, deps.now());
-	if (refusal !== null) throw new JobError("invalid_transition", refusal);
+	// Refused before anything is settled: a job that cannot be rolled back is left as it is.
+	await refuseRollback(deps, input.id);
+	// M5c: a missing phase a batch stopped in gets its landed trashes' marked links first, which
+	// the rollback's ownership test reads (spec "Crash repair"). No-op for any other job.
+	if (input.dryRun !== true) await settleStoppedJob(deps, input.id);
+	// Read again after the settle, which may have saved the job, and checked again.
+	const { current, original } = await refuseRollback(deps, input.id);
 	const dryRun = input.dryRun ?? false;
 	const warnings = await rollbackWarnings(deps, original);
 	const now = new Date(deps.now()).toISOString();

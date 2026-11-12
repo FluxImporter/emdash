@@ -96,6 +96,12 @@ export interface ContentRuntime {
 		id: string,
 		options?: { _rev?: string },
 	): Promise<HandlerResult>;
+	/** M5c: src/emdash-runtime.ts:4136-4161 (no hook can refuse it, no lock check; spec M5c F2). */
+	handleContentRestore(
+		collection: string,
+		id: string,
+		options?: { _rev?: string },
+	): Promise<HandlerResult>;
 }
 
 /** The codes EmDash's policy hooks refuse a publish, unpublish or schedule with (M5a). */
@@ -378,6 +384,10 @@ export class EmDashContent implements ContentPort {
 				break;
 			case "unschedule":
 				result = await this.runtime.handleContentUnschedule(collection, id, { _rev: rev });
+				break;
+			case "restore":
+				// Lock checked above like every step, although EmDash's restore does not check it.
+				result = await this.runtime.handleContentRestore(collection, id, { _rev: rev });
 				break;
 		}
 		const op = `Rolling back the entry (${input.step})`;

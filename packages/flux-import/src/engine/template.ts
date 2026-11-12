@@ -273,14 +273,46 @@ const publishAtMapping = z
 /** The most names `rules.updateFields` lists (M5b). */
 export const MAX_UPDATE_FIELDS = 200;
 
-/** How each record treats the entry it matches (M5b); every rule is optional. */
+/** A `rules.owner` name (M5c): it is stored on every owned link row and used as a query value. */
+export const OWNER_PATTERN = /^[A-Za-z0-9._:-]{1,100}$/;
+
+/**
+ * How each record treats the entry it matches (M5b), and the entries a later feed no longer
+ * holds (M5c); every rule is optional.
+ *
+ * `owner` (M5c) names the entries this template's jobs create; `missing` needs it. One owner
+ * name, one feed: two templates with the same owner, collection and locale act as one import,
+ * each one's missing phase treating the other's entries as its own. The phase refuses when it
+ * can tell that two URL sources share the owner; it cannot tell for uploads and pastes. With the
+ * default `maxPercent` of 25, an owner with fewer than four entries refuses as soon as one is
+ * missing (1 of 3 is 34%), and one with four accepts one. Feeds whose items come back should use
+ * `unpublish`: a trashed entry whose key returns stays a `missing_trashed` conflict until it is
+ * restored. A refused run is re-run with the job option `missing: { maxPercent }`, for an
+ * unchanged URL source also with `force: true`.
+ */
 const rulesSchema = z
 	.object({
 		mode: z.enum(["upsert", "create", "update"]).optional(),
 		updateFields: z.array(z.string().min(1).max(200)).min(1).max(MAX_UPDATE_FIELDS).optional(),
 		protectEdited: z.boolean().optional(),
+		owner: z
+			.string()
+			.regex(OWNER_PATTERN, "An owner is 1-100 characters of A-Z, a-z, 0-9, '.', '_', ':' and '-'")
+			.optional(),
+		missing: z
+			.object({
+				action: z.enum(["trash", "unpublish"]),
+				maxPercent: z.number().int().min(0).max(100).optional(),
+			})
+			.strict()
+			.optional(),
 	})
-	.strict();
+	.strict()
+	// M5c: refused in every template check, with its path (spec Ruling 34).
+	.refine((rules) => rules.missing === undefined || rules.owner !== undefined, {
+		message: "rules.missing needs rules.owner",
+		path: ["missing"],
+	});
 
 /**
  * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
@@ -745,7 +777,7 @@ export async function applyTemplate(
 	value: unknown,
 ): Promise<
 	| { ok: true; value: MappedRecord; warnings?: ValueWarning[] }
-	| { ok: false; errors: ValueError[]; warnings?: ValueWarning[] }
+	| { ok: false; errors: ValueError[]; warnings?: ValueWarning[]; key?: string }
 > {
 	const t = c.template;
 	const errors: ValueError[] = [];
@@ -787,6 +819,9 @@ export async function applyTemplate(
 		}
 	}
 
+	// M5c (Ruling 24): the key is the first mapping read, so it was read and is valid exactly when
+	// no error was pushed so far; a record with such a key is in the feed whatever else fails.
+	const keyRead = keyRaw !== FAILED && errors.length === 0;
 	let translationOf: string | undefined;
 	// A value that cannot be read still names a source: the record fails, without reading the
 	// shared mappings.
@@ -915,7 +950,7 @@ export async function applyTemplate(
 	}
 
 	const reported = warnings.length > 0 ? { warnings } : {};
-	if (errors.length > 0) return { ok: false, errors, ...reported };
+	if (errors.length > 0) return { ok: false, errors, ...reported, ...(keyRead ? { key } : {}) };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
 	if (translationOf !== undefined) mapped.translationOf = translationOf;
 	if (publishAt !== undefined) mapped.publishAt = publishAt;

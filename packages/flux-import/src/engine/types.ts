@@ -22,6 +22,38 @@ export interface Counters {
 	filtered: number;
 	/** Rollback jobs: rows reverted, or that a dry run would revert. Absent on imports (read as 0). */
 	reverted?: number;
+	/**
+	 * Import jobs (M5c): entries the missing phase moved to Trash or unpublished, or that a dry run
+	 * would. Absent until the first one (read as 0).
+	 */
+	removed?: number;
+}
+
+/** What the missing phase does to an owned entry the feed no longer holds (M5c). */
+export type MissingAction = "trash" | "unpublish";
+
+/** The mark the missing phase leaves on a link it acted on (M5c); any import write clears it. */
+export type LinkMissing = { jobId: string; action: MissingAction; at: string };
+
+/** The default `rules.missing.maxPercent` (spec M5c, Ruling 7). */
+export const MISSING_MAX_PERCENT_DEFAULT = 25;
+
+/** The missing phase's state on its job (spec M5c "Template and job"). */
+export interface MissingState {
+	stage: "count" | "act" | "done";
+	/** The first seq of the phase's rows: the import's record count. */
+	fromSeq: number;
+	/** The links query cursor within the stage; absent at a stage's start. */
+	cursor?: string;
+	/** Count stage: candidate links. */
+	owned: number;
+	/** Count stage: unseen candidates whose entry exists. */
+	found: number;
+	/** Act stage: rows written. */
+	rows: number;
+	/** Act stage: entries trashed or unpublished (or planned); recounted at each act batch. */
+	removed: number;
+	verdict?: "act" | "refused" | "skipped";
 }
 
 /** A term a dry run plans to create, kept on the job so later batches see it. */
@@ -65,6 +97,18 @@ export interface Job {
 	 * scheduled. Absent when the template maps no `publishAt`.
 	 */
 	revisions?: boolean;
+	/**
+	 * M5c: the missing phase's threshold, resolved at job creation from `rules.missing` and the job
+	 * option `missing` (`false`: the option turned the phase off). Absent without `rules.missing`.
+	 */
+	missingLimit?: { maxPercent: number } | false;
+	/**
+	 * M5c: first-pass rows without a readable key, the rows the XLSX converter skipped included.
+	 * Any skips the missing phase (spec "When it runs"). Absent: 0.
+	 */
+	unkeyed?: number;
+	/** M5c: the missing phase; absent until the job's first pass completes. */
+	missing?: MissingState;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -128,7 +172,7 @@ export interface Job {
 	cursor: { offset: number; seq: number };
 	counters: Counters;
 	lease: { holder: string; expiresAt: number } | null;
-	phase: "import" | "retry";
+	phase: "import" | "retry" | "missing";
 	retryFromSeq: number;
 	schemaReady: boolean;
 	error: { code: string; message: string } | null;
@@ -148,10 +192,11 @@ export type RecordStatus =
 	| "failed"
 	| "planned"
 	| "filtered"
-	| "reverted";
+	| "reverted"
+	| "removed";
 
-/** What a rollback row does to its entry (M5a). */
-export type RollbackAction = "delete" | "trash" | "revert";
+/** What a rollback row does to its entry (M5a); M5c adds `restore`, for a `trash` journal row. */
+export type RollbackAction = "delete" | "trash" | "revert" | "restore";
 
 export interface RecordError {
 	field?: string;
@@ -167,7 +212,7 @@ export interface RecordRow {
 	status: RecordStatus;
 	sourceKey: string | null;
 	entryId: string | null;
-	action?: PlanAction | RollbackAction;
+	action?: PlanAction | RollbackAction | MissingAction;
 	changes?: Change[];
 	errors?: RecordError[];
 	/** The content revision this job wrote, saved before publishing so crash repair publishes only it. */
@@ -225,6 +270,15 @@ export interface LinkRow {
 	 * the schedule it set, or one an update kept. Absent when none.
 	 */
 	scheduledAt?: string;
+	/**
+	 * M5c: the `rules.owner` of the template whose job created the entry. Kept by link saves of
+	 * that owner, dropped by any record of another owner or of none (spec "Owner").
+	 */
+	owner?: string;
+	/** M5c: the URL source of the job that stamped `owner`; absent for uploads and pastes. */
+	ownerSource?: string;
+	/** M5c: the missing phase moved the entry to Trash or unpublished it. */
+	missing?: LinkMissing;
 }
 
 /** The pre-image of an entry a job updated (M5a): what the entry held before its first write. */
@@ -239,6 +293,10 @@ export interface JournalBefore {
 		fields?: Record<string, string>;
 		unconfirmed?: string[];
 		scheduledAt?: string;
+		/** M5c: the owner stamp and missing mark, restored with the rest of the link. */
+		owner?: string;
+		ownerSource?: string;
+		missing?: LinkMissing;
 	} | null;
 	/**
 	 * The entry's `_rev` when the pre-image was read. When it is not `link.writtenRev`, someone
@@ -285,7 +343,8 @@ export interface JournalEntry {
 	collection: string;
 	locale: string;
 	sourceKey: string;
-	kind: "create" | "update";
+	/** `trash` (M5c): the missing phase moved the entry to Trash; `entryId` and `before` are set. */
+	kind: "create" | "update" | "trash";
 	/** null until a create returns. */
 	entryId: string | null;
 	/** create: this job's create call returned `entryId` (not found by crash repair). */
@@ -368,6 +427,12 @@ export interface EngineDeps {
 	now: () => number;
 	newId: () => string;
 }
+
+/** A record row's own fields: what a decision fills in, the key fields and `updatedAt` left out. */
+export type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
+
+/** The engine's clock as an ISO timestamp, for `updatedAt` and `at` fields. */
+export const iso = (deps: Pick<EngineDeps, "now">): string => new Date(deps.now()).toISOString();
 
 export function recordKey(jobId: string, seq: number): string {
 	return `${jobId}:${String(seq).padStart(10, "0")}`;

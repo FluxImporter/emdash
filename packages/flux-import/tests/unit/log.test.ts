@@ -76,6 +76,22 @@ describe("recordsToCsvLines", () => {
 	});
 });
 
+describe("missing-phase rows in the log (M5c)", () => {
+	it("leaves the record cell empty from the job's missing.fromSeq on", () => {
+		const lines = recordsToCsvLines([row(0), row(1, { status: "removed", action: "trash" })], 1);
+		expect(lines).toBe("1,created,S0,e0,,,,,\r\n,removed,S1,e1,trash,,,,\r\n");
+		expect(recordsToCsvLines([row(1)])).toBe("2,created,S1,e1,,,,,\r\n");
+	});
+
+	it("is applied by buildLogCsv's missingFrom", async () => {
+		const { deps } = makeDeps();
+		await deps.records.put(recordKey("j1", 0), row(0));
+		await deps.records.put(recordKey("j1", 1), row(1, { status: "removed", action: "unpublish" }));
+		const lines = (await buildLogCsv(deps, "j1", { missingFrom: 1 })).split("\r\n");
+		expect(lines.slice(1, 3)).toEqual(["1,created,S0,e0,,,,,", ",removed,S1,e1,unpublish,,,,"]);
+	});
+});
+
 describe("capWarnings", () => {
 	it("keeps at most 20 warnings, the last saying how many more there were", () => {
 		const warnings = Array.from({ length: 25 }, (_, i) => ({

@@ -1,4 +1,5 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
+import { counterFor } from "./counters.js";
 import {
 	type Change,
 	type CurrentLinks,
@@ -15,6 +16,7 @@ import {
 	JobError,
 	jobReader,
 	jobTemplate,
+	settleStoppedJob,
 	updateJob,
 	upgradeJob,
 	withoutPlannedTerms,
@@ -38,6 +40,8 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
+import { enterMissing, missingPass, settleStopped, withSettleFailed } from "./missing.js";
+import { foreignStamp, ownerOf, ownership, withoutStamp } from "./owner.js";
 import {
 	lookupPortableTextImages,
 	obtainPortableTextImages,
@@ -48,6 +52,7 @@ import {
 	ContentWriteError,
 	type EntrySnapshot,
 	type GetOptions,
+	JOB_LEVEL_WRITE_ERRORS,
 	type LinkWrites,
 	type MediaInfo,
 	SourceMissingError,
@@ -107,6 +112,7 @@ import {
 	capWarnings,
 	type EngineDeps,
 	emptyCounters,
+	iso,
 	type Job,
 	type JournalEntry,
 	journalKey,
@@ -114,6 +120,7 @@ import {
 	linkKey,
 	type RecordError,
 	type RecordRow,
+	type RowFields,
 	recordKey,
 } from "./types.js";
 
@@ -124,32 +131,8 @@ export const LEASE_GRACE_MS = 30_000;
  */
 export const MEDIA_GRACE_MS = 20_000;
 const CAS_ATTEMPTS = 5;
-/** Content errors that fail the job rather than the record being written. */
-const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
-	"collection_missing",
-	"source_id_field_invalid",
-	"media_config",
-]);
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
-type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
-
-function counterFor(row: RowFields): keyof Counters | null {
-	switch (row.status) {
-		case "planned":
-			return row.action === "create"
-				? "created"
-				: row.action === "update"
-					? "updated"
-					: "unchanged";
-		case "writing":
-			return null;
-		default:
-			return row.status;
-	}
-}
 
 async function claim(
 	deps: EngineDeps,
@@ -199,6 +182,9 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.deferred ? { deferred: job.deferred } : {}),
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			...(job.created ? { created: job.created } : {}),
+			...(job.unkeyed ? { unkeyed: job.unkeyed } : {}),
+			// M5c: the missing phase.
+			...(job.missing ? { missing: job.missing } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
@@ -227,6 +213,7 @@ export async function processRecord(
 		// Only reached after a crash: the batch that wrote this row never saved its cursor and counters.
 		const counter = counterFor(existing);
 		if (counter) bump(job.counters, counter);
+		if (unkeyedRow(existing)) job.unkeyed = (job.unkeyed ?? 0) + 1;
 		return;
 	}
 
@@ -250,6 +237,12 @@ export async function processRecord(
 	}
 	const counter = counterFor(row);
 	if (counter) bump(job.counters, counter);
+	if (!opts.retry && unkeyedRow(row)) job.unkeyed = (job.unkeyed ?? 0) + 1;
+}
+
+/** M5c: a row whose record had no readable key (a reader, filter or key error). */
+function unkeyedRow(row: Pick<RecordRow, "status" | "sourceKey">): boolean {
+	return row.status === "failed" && row.sourceKey === null;
 }
 
 /** What the write helpers need about the record being processed. */
@@ -262,6 +255,17 @@ type RecordCtx = {
 	linkId: string;
 	/** The link row as read before any write of this record; null when there is none. */
 	link: LinkRow | null;
+	/**
+	 * M5c: the link row as `entryByLink` read it, before crash repair; null until then. A foreign
+	 * owner stamp on it is dropped once the record is decided (`settleOwner`).
+	 */
+	read: LinkRow | null;
+	/** M5c: `entryByLink` read the link row (Ruling 30). */
+	linkRead: boolean;
+	/** M5c: a link put of this record happened (a save, a refresh or a repair). */
+	linkPut: boolean;
+	/** M5c: this job created the entry, so its link saves stamp the owner (spec "Owner"). */
+	stamp: boolean;
 	/**
 	 * The link row as stored once the entry is known: `link`, or the one crash repair saved (M5b,
 	 * for the fingerprint refresh); null when there is none.
@@ -358,6 +362,10 @@ function putLink(
 ): Promise<void> {
 	const { collection, locale } = ctx.job.template;
 	ctx.linkSaved = true;
+	ctx.linkPut = true;
+	// M5c: the owner as this job's create stamps it or its own owner keeps it; a write never
+	// carries the missing mark (spec Ruling 14).
+	const stored = ctx.stored?.entryId === entryId ? ctx.stored : null;
 	return ctx.deps.links.put(ctx.linkId, {
 		collection,
 		locale,
@@ -368,6 +376,7 @@ function putLink(
 		...(ctx.fields === undefined ? {} : { fields: ctx.fields }),
 		...(ctx.unconfirmed?.length ? { unconfirmed: ctx.unconfirmed } : {}),
 		...(scheduledAt === null ? {} : { scheduledAt }),
+		...ownership(ctx.job, stored, ctx.stamp),
 	});
 }
 
@@ -506,13 +515,82 @@ async function refreshFields(ctx: RecordCtx, entry: EntrySnapshot): Promise<void
 	const unconfirmed = ctx.unconfirmed ?? [];
 	const was = new Set(stored.unconfirmed);
 	const same = was.size === unconfirmed.length && unconfirmed.every((name) => was.has(name));
-	if (same && sameFields(stored.fields, ctx.fields)) return;
-	const { unconfirmed: _old, ...rest } = stored;
+	const foreign = foreignStamp(ctx.job, stored);
+	if (same && sameFields(stored.fields, ctx.fields) && !foreign) return;
+	const { unconfirmed: _old, ...rest } = foreign ? withoutStamp(stored) : stored;
+	ctx.linkPut = true;
 	await ctx.deps.links.put(ctx.linkId, {
 		...rest,
 		fields: ctx.fields,
 		...(unconfirmed.length > 0 ? { unconfirmed } : {}),
 	});
+}
+
+/**
+ * M5c (spec Rulings 2, 21): a record that reached a link stamped with another owner, or whose
+ * template has none, drops the stamp whatever its outcome. A record whose own link put already
+ * applied `ownership` needs nothing more; any other puts the link once, every other field kept.
+ * A dry run drops nothing. Not journalled. A record that defers (`MediaDeferred`) or hits a
+ * job-level error throws past this, so it skips the drop until it is decided again.
+ */
+async function settleOwner(ctx: RecordCtx): Promise<void> {
+	if (ctx.job.dryRun || ctx.linkPut) return;
+	const link = ctx.stored ?? ctx.read;
+	if (link === null || !foreignStamp(ctx.job, link)) return;
+	await ctx.deps.links.put(ctx.linkId, withoutStamp(link));
+}
+
+/**
+ * M5c (spec Ruling 30): a record that failed after its key was read but before it read its
+ * link (a mapping, link or media error) is still in the feed, so it drops a foreign stamp as
+ * `settleOwner` does, at the cost of one link read. A dry run reads and drops nothing. The read
+ * is needed whatever the job's owner: a stamp is foreign when it differs from the job's owner,
+ * so a job with owner "a" cannot tell a link stamped "b" (to drop) from one stamped "a" (to keep)
+ * without reading it (spec Ruling 33).
+ */
+async function settleUnread(deps: EngineDeps, job: Job, sourceKey: string): Promise<void> {
+	if (job.dryRun) return;
+	const { collection, locale } = job.template;
+	const linkId = linkKey(collection, locale, sourceKey);
+	const link = await deps.links.get(linkId);
+	if (link !== null && foreignStamp(job, link)) await deps.links.put(linkId, withoutStamp(link));
+}
+
+/** The import message of a key whose entry the missing phase moved to Trash (spec Ruling 15). */
+export const MISSING_TRASHED_MESSAGE = (jobId: string) =>
+	`Not imported: the import moved this entry to Trash because it was missing from an earlier feed (job ${jobId}); restore it from Trash, or roll that job back, then retry`;
+
+/** M5c: the conflict of a record whose link says the import trashed its entry, which is gone. */
+function trashedByImport(
+	link: LinkRow | null,
+	entry: EntrySnapshot | null,
+	sourceKey: string,
+): RowFields | null {
+	if (entry !== null || link?.missing?.action !== "trash") return null;
+	return {
+		status: "conflict",
+		sourceKey,
+		entryId: link.entryId,
+		errors: [{ code: "missing_trashed", message: MISSING_TRASHED_MESSAGE(link.missing.jobId) }],
+	};
+}
+
+/**
+ * M5c: whether this job created the entry it now resumes (spec "Owner", Ruling 29 M7): its row
+ * was `writing` a create of that entry, or its journal row records a create of it that this
+ * job's own call returned (`confirmed`). An entry found by source ID alone is not.
+ */
+async function createdHere(ctx: RecordCtx, existing: RecordRow, entryId: string): Promise<boolean> {
+	if (
+		existing.status === "writing" &&
+		existing.action === "create" &&
+		existing.entryId === entryId
+	) {
+		return true;
+	}
+	if (!journaling(ctx.job)) return false;
+	const row = await ctx.deps.journal.get(journalKey(ctx.job.id, ctx.linkId));
+	return row?.kind === "create" && row.confirmed === true && row.entryId === entryId;
 }
 
 /**
@@ -672,6 +750,8 @@ async function entryByLink(
 ): Promise<{ link: LinkRow | null; entry: EntrySnapshot | null }> {
 	const { collection, locale } = ctx.job.template;
 	const link = await ctx.deps.links.get(ctx.linkId);
+	ctx.read = link;
+	ctx.linkRead = true;
 	if (link && lookingUp) cache.spend(COST_READ);
 	const entry = link ? await ctx.deps.content.get(collection, locale, link.entryId, read) : null;
 	return { link, entry };
@@ -681,7 +761,13 @@ async function entryByLink(
  * What a record found to create or download, and the warnings of its conversion and images,
  * listed on its row whatever happens to it.
  */
-type Found = { newTerms: string[]; newMedia: string[]; warnings: RecordError[] };
+type Found = {
+	newTerms: string[];
+	newMedia: string[];
+	warnings: RecordError[];
+	/** M5c: the record's context once its key was read, for `settleOwner`. */
+	ctx?: RecordCtx;
+};
 
 /**
  * Decides and writes one record. Terms that resolution creates (or, in a dry run, would create)
@@ -706,6 +792,10 @@ async function decide(
 	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
 	try {
 		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
+		if (found.ctx?.linkRead) await settleOwner(found.ctx);
+		else if (row.status === "failed" && row.sourceKey !== null) {
+			await settleUnread(deps, job, row.sourceKey);
+		}
 	} catch (e) {
 		if (e instanceof MediaDeferred) {
 			// Keep what this attempt created for the record's row in the next batch.
@@ -826,8 +916,15 @@ async function decideRecord(
 	if (!filter.keep) return { status: "filtered", sourceKey: null, entryId: null };
 	const mapped = await applyTemplate(template, rec.value);
 	found.warnings.push(...(mapped.warnings ?? []));
-	if (!mapped.ok)
-		return { status: "failed", sourceKey: null, entryId: null, errors: mapped.errors };
+	if (!mapped.ok) {
+		// M5c (Ruling 24): the key, when it was read, marks the record as in the feed.
+		return {
+			status: "failed",
+			sourceKey: mapped.key ?? null,
+			entryId: null,
+			errors: mapped.errors,
+		};
+	}
 
 	const { key: sourceKey } = mapped.value;
 	const { collection, locale } = job.template;
@@ -838,6 +935,10 @@ async function decideRecord(
 		sourceKey,
 		linkId: linkKey(collection, locale, sourceKey),
 		link: null,
+		read: null,
+		linkRead: false,
+		linkPut: false,
+		stamp: false,
 		stored: null,
 		linkSaved: false,
 		target: targetOf(job, mapped.value, deps.now()),
@@ -846,6 +947,7 @@ async function decideRecord(
 		resuming: false,
 		save,
 	};
+	found.ctx = ctx;
 	// Known so far, so that a ContentWriteError from any content call still reports it.
 	let entryId: string | null = null;
 	let action: PlanAction | undefined;
@@ -868,6 +970,8 @@ async function decideRecord(
 			const narrowed =
 				listed === undefined ? record : narrowRecord(record, (name) => names.has(name));
 			early = await entryByLink(ctx, cache, readFor(narrowed), lookingUpFor(narrowed));
+			const trashed = trashedByImport(early.link, early.entry, sourceKey);
+			if (trashed) return trashed;
 			const skip = modeSkip(job.template, early.entry, existing);
 			if (skip !== null) {
 				found.warnings.push(skip);
@@ -996,6 +1100,8 @@ async function decideRecord(
 		}
 		if (errors.length > 0) return { status: "failed", sourceKey, entryId: null, errors };
 		let { link, entry } = early ?? (await entryByLink(ctx, cache, read, lookingUp));
+		const trashed = early ? null : trashedByImport(link, entry, sourceKey);
+		if (trashed) return trashed;
 		// Any earlier row of this job may stand for a write whose link was never saved: a crash
 		// mid-write, or a crash repair whose lookup failed. Look the entry up before creating one.
 		let repaired = false;
@@ -1041,8 +1147,17 @@ async function decideRecord(
 			// the whole group (M4e).
 			return { status: "failed", sourceKey, entryId, errors: [sharedOnTranslation()] };
 		}
+		// M5c (Ruling 29 M7): crash repair stamps only an entry this job is shown to have created,
+		// decided before the repaired link's put and its journal row, so the stamp lands whatever
+		// the rest of the record decides. Only a repair: a record that found its link (a retry pass
+		// included) never stamps again, since another owner may have dropped the stamp since.
+		if (repaired && entry && existing && ownerOf(job) !== undefined && !job.dryRun) {
+			ctx.stamp = await createdHere(ctx, existing, entry.id);
+		}
 		// A repaired link is saved only for an entry the record may write.
 		if (repaired && link) {
+			link = { ...link, ...ownership(job, null, ctx.stamp) };
+			ctx.linkPut = true;
 			await deps.links.put(ctx.linkId, link);
 			// Crash repair may have found an editor's entry: a rollback only moves it to Trash.
 			if (entry && journaling(job)) await journalCreated(ctx, entry.id, false);
@@ -1772,6 +1887,8 @@ async function writeRecord(
 		written = { id: entry.id, rev: result.rev };
 	}
 	if (!entry && journaling(job)) await journalCreated(ctx, written.id, true);
+	// M5c: the job's own create (a linked one included) stamps the owner on the link.
+	if (!entry) ctx.stamp = true;
 	// Record the revision we wrote before anything else, so crash repair can prove a draft is ours
 	// and publishes or links only that revision.
 	await save({
@@ -1917,7 +2034,12 @@ async function retryPass(
 			where: {
 				jobId: job.id,
 				status: { in: ["failed", "conflict", "locked", "writing"] },
-				seq: { gte: job.retryFromSeq },
+				// M5c: the missing phase's rows read no record; a retry leaves them (spec "Retry",
+				// Ruling 26).
+				seq:
+					job.missing === undefined
+						? { gte: job.retryFromSeq }
+						: { gte: job.retryFromSeq, lt: job.missing.fromSeq },
 			},
 			orderBy: { seq: "asc" },
 			limit: Math.min(limit, RETRY_PAGE),
@@ -1951,6 +2073,8 @@ async function importBatch(
 	limit: number,
 	cache: LookupCache,
 ): Promise<Outcome> {
+	// M5c: the missing phase reads links and entries, not the source.
+	if (job.phase === "missing") return missingPass(deps, job, started, limit, cache);
 	if (!job.dryRun && !job.schemaReady) {
 		await deps.content.ensureSourceIdField(job.template.collection);
 		job.schemaReady = true;
@@ -1969,9 +2093,10 @@ async function importBatch(
 		};
 	}
 	const template = compiled.compiled;
-	return job.phase === "retry"
-		? retryPass(deps, job, template, started, limit, cache)
-		: importPass(deps, job, template, started, limit, cache);
+	if (job.phase === "retry") return retryPass(deps, job, template, started, limit, cache);
+	const outcome = await importPass(deps, job, template, started, limit, cache);
+	// M5c: a completed first pass enters the missing phase, or completes when it is skipped.
+	return outcome.done ? enterMissing(job) : outcome;
 }
 
 /**
@@ -2035,6 +2160,13 @@ export async function runBatch(
 		}
 	}
 	keepPlannedTerms(job, cache);
+	// M5c: an error fails the job, so a landed trash gets its marked link first (spec "Crash
+	// repair"). The error stays the job's; one the settling meets becomes a job warning.
+	if (outcome.error) {
+		await settleStopped(deps, job).catch((e: unknown) => {
+			job.warnings = withSettleFailed(job.warnings, e);
+		});
+	}
 	return release(deps, job, holder, outcome);
 }
 
@@ -2061,11 +2193,21 @@ const MAX_FAILURES = 3;
  */
 async function noteFailure(deps: EngineDeps, jobId: string, holder: string, e: unknown) {
 	const message = e instanceof Error ? e.message : String(e);
-	await updateJob(deps, jobId, (stored) => {
+	const noted = await updateJob(deps, jobId, (stored) => {
 		if (stored.lease?.holder !== holder) return stored;
 		const failures = stored.failures + 1;
 		const next: Job = { ...stored, error: { code: "internal", message }, failures };
 		if (failures < MAX_FAILURES) return next;
 		return { ...next, status: stored.status === "running" ? "failed" : stored.status, lease: null };
 	});
+	// M5c: the job failed, so a landed trash gets its marked link (spec "Crash repair"). An error
+	// the settling meets is the job's warning, as in `runBatch`, not lost in the caller's catch.
+	if (noted.status === "failed" && noted.lease === null) {
+		await settleStoppedJob(deps, jobId).catch((settling: unknown) =>
+			updateJob(deps, jobId, (stored) => ({
+				...stored,
+				warnings: withSettleFailed(stored.warnings, settling),
+			})),
+		);
+	}
 }

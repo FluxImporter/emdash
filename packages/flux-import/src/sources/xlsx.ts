@@ -30,6 +30,8 @@ export interface XlsxSheet {
 	lines: AsyncGenerator<string>;
 	/** Header renames, then cells ignored or unreadable so far: all of them once `lines` is done. */
 	warnings(): string[];
+	/** M5c: rows skipped so far because their only values were unreadable (spec P2). */
+	skipped(): number;
 }
 
 /** A cell's value as JSON text, and as text for a header. */
@@ -311,6 +313,7 @@ export async function openXlsx(bytes: Uint8Array, options: XlsxOptions = {}): Pr
 	return {
 		columns: names,
 		lines: lines(),
+		skipped: () => converter.skipped,
 		warnings: () => [
 			...renames,
 			...(converter.ignored > 0

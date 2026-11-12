@@ -103,9 +103,23 @@ export type StepResult =
 
 /**
  * The rollback's writes to a changed entry (spec M5a "Revert sequence"); M5b adds `unschedule`
- * (step 7), which no hook can refuse (spec M5b F3).
+ * (step 7), which no hook can refuse (spec M5b F3). M5c adds `restore` (step 8): out of Trash,
+ * fenced on the trashed entry's `_rev`, back as a draft with no schedule (spec M5c F2).
  */
-export type RevertStep = "update" | "publish" | "unpublish" | "discard" | "schedule" | "unschedule";
+export type RevertStep =
+	| "update"
+	| "publish"
+	| "unpublish"
+	| "discard"
+	| "schedule"
+	| "unschedule"
+	| "restore";
+
+/**
+ * EmDash's message for a restore into a locale its translation group fills again (`emdash`
+ * src/api/handlers/content.ts:1952, spec M5c F2, V1), which a `restore` conflict carries.
+ */
+export const TRANSLATION_SLOT_TAKEN = "An active translation already exists in this locale";
 
 export interface ContentPort {
 	get(
@@ -320,6 +334,13 @@ export interface SourcePort {
 	 */
 	open(uploadId: string, offset: number): Promise<ReadableStream<Uint8Array>>;
 }
+
+/** Content errors that fail the job rather than the record or entry being written. */
+export const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
+	"collection_missing",
+	"source_id_field_invalid",
+	"media_config",
+]);
 
 export class ContentWriteError extends Error {
 	constructor(

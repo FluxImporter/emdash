@@ -266,6 +266,7 @@ describe("image and file mappings", () => {
 		});
 		expect(await applyTemplate(c, { sku: "A1", Img: "", Pdf: " " })).toEqual({
 			ok: false,
+			key: "A1",
 			errors: [{ field: "manual", code: "required", message: "The field is required" }],
 		});
 	});
@@ -284,6 +285,7 @@ describe("image and file mappings", () => {
 			}),
 		).toEqual({
 			ok: false,
+			key: "A1",
 			errors: [
 				{
 					field: "photo.alt",

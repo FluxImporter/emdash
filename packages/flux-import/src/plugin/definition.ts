@@ -30,7 +30,8 @@ export const STORAGE = {
 			["jobId", "sourceKey"],
 		],
 	},
-	links: { indexes: ["entryId"] },
+	// M5c: the missing phase pages an owner's links in the template's collection and locale.
+	links: { indexes: ["entryId", ["owner", "collection", "locale"]] },
 	sources: { indexes: ["name", "createdAt"] },
 	media: { indexes: ["jobId", "mediaId"] },
 	journal: { indexes: ["jobId", ["jobId", "seq"]] },
@@ -53,11 +54,14 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// declared for disclosure too: image and file fields are uploaded through the runtime's
 		// handleMediaUpload, not ctx.media. URL sources and media are fetched with the runtime's
 		// own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through ctx.http,
-		// so no network capability is declared.
+		// so no network capability is declared. content:restore (M5c) is declared for disclosure
+		// too: a rollback of the missing phase restores trashed entries through the runtime's
+		// handleContentRestore, not ctx.content (emdash src/plugins/manifest-schema.ts:37).
 		capabilities: [
 			"content:read",
 			"content:write",
 			"content:publish",
+			"content:restore",
 			"schema:read",
 			"taxonomies:write",
 			"bylines:read",

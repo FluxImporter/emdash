@@ -89,6 +89,7 @@ const RECORD_STATUSES = [
 	"planned",
 	"filtered",
 	"reverted",
+	"removed",
 ] as const satisfies readonly RecordStatus[];
 
 const jobId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid job ID");
@@ -255,6 +256,13 @@ const createInput = z
 		budgetMs: z.number().int().optional(),
 		/** Keep a journal so the job can be rolled back (M5a); default true. */
 		journal: z.boolean().optional(),
+		/** M5c: skip the missing phase for this run, or replace its threshold. */
+		missing: z
+			.union([
+				z.literal(false),
+				z.object({ maxPercent: z.number().int().min(0).max(100) }).strict(),
+			])
+			.optional(),
 	})
 	.refine((input) => (input.uploadId === undefined) !== (input.sourceId === undefined), {
 		message: "Set exactly one of uploadId and sourceId",
@@ -415,6 +423,7 @@ export const routes: Record<string, PluginRoute> = {
 					dryRun: input.dryRun,
 					...(fromSource === undefined ? {} : { sourceId: fromSource }),
 					...(input.journal === undefined ? {} : { journal: input.journal }),
+					...(input.missing === undefined ? {} : { missing: input.missing }),
 					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 					...(siteTimezone === undefined ? {} : { siteTimezone }),
 					...(revisions === undefined ? {} : { revisions }),

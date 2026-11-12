@@ -96,10 +96,11 @@ describe("malformed input", () => {
 		});
 		const failed = await client.records(done.id, "failed");
 		expect(failed.map((r) => r.errors?.[0]?.code)).toEqual(["column_count", "invalid_number"]);
-		// A row that fails mapping has no trusted key; the record number locates it.
+		// A reader error has no key, so the record number locates it; a row that fails after its
+		// key keeps the key (M5c, Ruling 24).
 		expect(failed.map((r) => [r.seq, r.sourceKey])).toEqual([
 			[2, null],
-			[3, null],
+			[3, "M-4"],
 		]);
 		const created = await client.records(done.id, "created");
 		expect(created.map((r) => [r.sourceKey, r.action])).toEqual([
@@ -127,7 +128,7 @@ describe("malformed input", () => {
 		expect(cells.map((c) => c[1])).toEqual(["failed", "failed"]);
 		expect(cells.map((c) => [c[0], c[2]])).toEqual([
 			["3", ""],
-			["4", ""],
+			["4", "M-4"],
 		]);
 		expect(cells.map((c) => c[5])).toEqual(["column_count", "invalid_number"]);
 		expect(cells[1]?.[6]).toBe("price");

@@ -6,6 +6,7 @@ import {
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "./media.js";
+import { CANCEL_LIVE_WARNING, settleStopped, settles } from "./missing.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
@@ -35,6 +36,7 @@ import {
 	emptyCounters,
 	type Job,
 	type JobStatus,
+	MISSING_MAX_PERCENT_DEFAULT,
 } from "./types.js";
 
 export type JobErrorCode =
@@ -83,7 +85,28 @@ export type CreateJobInput = {
 	sourceId?: string;
 	/** Whether the collection keeps revisions (M5b), for templates that map `publishAt`; default true. */
 	revisions?: boolean;
+	/**
+	 * M5c: `false` skips the missing phase for this run; `{ maxPercent }` replaces the template's
+	 * threshold for this run. Only with `rules.missing`.
+	 */
+	missing?: false | { maxPercent: number };
+	/** M5c, XLSX: rows the converter skipped because their only values were unreadable. */
+	skippedRows?: number;
 };
+
+/**
+ * The job's missing-phase threshold (M5c): absent without `rules.missing`, `false` when the job
+ * option turns the phase off, else the option's `maxPercent` or the template's (default 25).
+ */
+export function missingLimitOf(
+	template: Template,
+	option: CreateJobInput["missing"],
+): Job["missingLimit"] {
+	const rule = template.rules?.missing;
+	if (rule === undefined) return undefined;
+	if (option === false) return false;
+	return { maxPercent: option?.maxPercent ?? rule.maxPercent ?? MISSING_MAX_PERCENT_DEFAULT };
+}
 
 /** Records read at job creation to warn about JSON and XML paths that none of them has. */
 export const WARNING_SAMPLE = 20;
@@ -127,6 +150,34 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const template = parsed.data;
 	if (template.publishAt !== undefined && input.publish === false) {
 		throw new JobError("invalid_options", "publishAt needs publish: true");
+	}
+	// M5c (spec "Template and job"): the refusals of the job option missing. The template schema
+	// refuses rules.missing without rules.owner (spec Ruling 34).
+	if (input.missing !== undefined && template.rules?.missing === undefined) {
+		throw new JobError(
+			"invalid_options",
+			"The job option missing needs rules.missing in the template",
+		);
+	}
+	const percent =
+		input.missing === undefined || input.missing === false ? 0 : input.missing.maxPercent;
+	if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
+		throw new JobError(
+			"invalid_options",
+			"The job option missing.maxPercent must be an integer from 0 to 100",
+		);
+	}
+	// The job option missing: false turns the phase off, so nothing needs undoing (spec Ruling 35).
+	if (
+		template.rules?.missing !== undefined &&
+		input.missing !== false &&
+		!input.dryRun &&
+		input.journal === false
+	) {
+		throw new JobError(
+			"invalid_options",
+			"rules.missing needs the journal, so its changes can be rolled back",
+		);
 	}
 	const compiled = compileTemplate(template);
 	if (!compiled.ok) {
@@ -180,6 +231,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 
 	const now = new Date(deps.now()).toISOString();
 	const dryRun = input.dryRun ?? false;
+	const missingLimit = missingLimitOf(template, input.missing);
 	const job: Job = {
 		id: deps.newId(),
 		status: "created",
@@ -187,6 +239,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		...(dryRun ? {} : { journal: input.journal ?? true }),
 		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
+		...(missingLimit === undefined ? {} : { missingLimit }),
+		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
 		uploadId: input.uploadId,
 		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,
@@ -318,11 +372,36 @@ export function withoutPlannedTerms(job: Job): Job {
 	return rest;
 }
 
-export function transitionJob(
+/**
+ * M5c: settles a stopped job's missing phase before it ends or is rolled back (spec "Crash
+ * repair"), so a trash that landed carries its marked link. Skipped while a batch holds a live
+ * lease: that batch finishes its own calls. The counts are saved only when no batch ran since.
+ */
+export async function settleStoppedJob(deps: EngineDeps, id: string): Promise<"live" | "done"> {
+	const stored = await deps.jobs.get(id);
+	if (!stored) return "done";
+	if (stored.lease && stored.lease.expiresAt > deps.now()) {
+		return settles(upgradeJob(stored)) ? "live" : "done";
+	}
+	const job = structuredClone(upgradeJob(stored));
+	if (!(await settleStopped(deps, job)) || job.missing === undefined) return "done";
+	const missing = job.missing;
+	const progress = (j: Job) => JSON.stringify([j.missing, j.counters, j.lease]);
+	const was = progress(upgradeJob(stored));
+	await updateJob(deps, id, (current) =>
+		progress(current) === was ? { ...current, counters: job.counters, missing } : current,
+	);
+	return "done";
+}
+
+export async function transitionJob(
 	deps: EngineDeps,
 	id: string,
 	action: "pause" | "resume" | "cancel" | "retry",
 ): Promise<Job> {
+	// M5c: a cancel ends the job, so a stopped batch's landed trash is finished first. A batch
+	// that still holds its lease finishes its own calls; the job says so, not silently.
+	const live = action === "cancel" && (await settleStoppedJob(deps, id)) === "live";
 	return updateJob(deps, id, (job) => {
 		if (!ALLOWED[action].includes(job.status) || (action === "retry" && job.dryRun)) {
 			throw new JobError(
@@ -350,7 +429,13 @@ export function transitionJob(
 			case "resume":
 				return { ...job, status: "running", error: null, failures: 0 };
 			case "cancel":
-				return { ...withoutPlannedTerms(job), status: "cancelled" };
+				return {
+					...withoutPlannedTerms(job),
+					status: "cancelled",
+					...(live && !job.warnings?.includes(CANCEL_LIVE_WARNING)
+						? { warnings: [...(job.warnings ?? []), CANCEL_LIVE_WARNING] }
+						: {}),
+				};
 			case "retry":
 				// A rollback retries its rows newest first, like its first pass.
 				return {
