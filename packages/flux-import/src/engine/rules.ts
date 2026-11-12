@@ -166,6 +166,21 @@ export async function dataFingerprints(
 }
 
 /**
+ * The fields a journal's `wrote.fields` covers (final review P3): every field `data` holds and
+ * every target field the job snapshotted that the content table stores (a mapped reference keeps
+ * its values outside it, spec M4b), so a field that was null, and so absent from the entry's
+ * read, is journalled as null and an editor who sets it is seen. Only the data's fields for a job
+ * without a snapshot (created before M4a).
+ */
+export function journalledNames(job: Job, data: Readonly<Record<string, unknown>>): string[] {
+	const names = new Set(Object.keys(data));
+	for (const [name, target] of Object.entries(job.targetFields ?? {})) {
+		if (target.type !== "reference") names.add(name);
+	}
+	return [...names];
+}
+
+/**
  * Whether the entry shows one publish of the revision `writtenRev` and nothing since: its `_rev`
  * decodes to exactly one `version` past `writtenRev`, published, without a draft or a schedule
  * (spec M5b F4, F6). A `writtenRev` that does not decode never passes. An editor's discard of a

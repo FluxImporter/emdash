@@ -227,10 +227,14 @@ describe("crash repair: a publish whose link save a stop lost (A-I2)", () => {
 		expect(await rollBack(deps, job.id)).toMatchObject({ status: "reverted", action: "delete" });
 	});
 
-	it("journals what the publish makes live", async () => {
+	it("journals what the publish makes live: every stored target field, null ones included", async () => {
 		const { deps } = setup();
 		await importRows(deps, [desk]);
-		const job = await importRows(deps, [{ ...desk, price: 12 }]);
+		// Only the price is sent; the entry reads without its null featured and photo. They are
+		// journalled as null all the same, so an editor who sets one is seen (final review P3).
+		const job = await importRows(deps, [{ ...desk, price: 12 }], {
+			extra: { rules: { updateFields: ["price"] } },
+		});
 		const [row] = await journalOf(deps, job.id);
 		expect(Object.keys(row?.wrote?.fields ?? {}).sort()).toEqual([
 			"featured",
@@ -266,6 +270,51 @@ describe("crash repair: a publish whose link save a stop lost (A-I2)", () => {
 			errors: [{ code: "rollback_changed" }],
 		});
 		expect(entryOf(deps, "A1").data).toMatchObject({ title: "Edited", price: 12 });
+	});
+
+	it("journals the entry's own fields the template does not map, as well as the target's", async () => {
+		const { deps } = setup();
+		deps.content.plainCollections.add("products");
+		await importRows(deps, [desk], { revisions: false });
+		const e = entryOf(deps, "A1");
+		// A field of the collection no mapping covers, set by an editor and live at once.
+		await deps.content.update({ id: e.id, rev: deps.content.revOf(e.id), data: { notes: "kept" } });
+		const job = await importRows(deps, [{ ...desk, price: 12 }], { revisions: false });
+		const [row] = await journalOf(deps, job.id);
+		expect(Object.keys(row?.wrote?.fields ?? {}).sort()).toEqual([
+			"featured",
+			"notes",
+			"photo",
+			"price",
+			"title",
+		]);
+	});
+
+	it("does not adopt an editor's one save of a field that was null, without revisions (P3)", async () => {
+		const { deps } = setup();
+		deps.content.plainCollections.add("products");
+		const listed = { extra: { rules: { updateFields: ["price"] } }, revisions: false };
+		await importRows(deps, [desk], listed);
+		const e = entryOf(deps, "A1");
+		expect((await deps.content.get("products", "en", e.id))?.data).not.toHaveProperty("featured");
+		const job = await start(deps, csv([{ ...desk, price: 12 }]), listed);
+		await stopBeforePublish(deps, job.id);
+		const written = (await records(deps, job.id))[0]?.writtenRev;
+		// The editor sets the unlisted, empty field in one save: one version, published, no draft.
+		const saved = await deps.content.update({
+			id: e.id,
+			rev: deps.content.revOf(e.id),
+			data: { featured: true },
+		});
+		expect(saved.ok).toBe(true);
+		await unlease(deps, job.id);
+		await runToEnd(deps, job.id);
+		expect((await linkOf(deps)).writtenRev).toBe(written);
+		expect(await rollBack(deps, job.id)).toMatchObject({
+			status: "conflict",
+			errors: [{ code: "rollback_changed" }],
+		});
+		expect(entryOf(deps, "A1").data).toMatchObject({ featured: true, price: 12 });
 	});
 
 	it("does not adopt an editor's discard of the importer's draft as its publish", async () => {

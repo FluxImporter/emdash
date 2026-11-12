@@ -462,7 +462,13 @@ nothing changes (draft).
   past `writtenRev`; it is `published` with no draft and no schedule; no mapping is protected;
   and its live data and slug are what the journal recorded the publish makes live
   (`wrote.fields`, `wrote.slug`, `holdsWrote`). The journal therefore records `wrote` for every
-  write a publish follows, not only scheduled ones. An editor's save on a collection without
+  write a publish follows, not only scheduled ones.
+- **The fields the journal covers** (final review P3). `wrote.fields` holds every field the data
+  published holds and every field of the job's target snapshot (`Job.targetFields`) that the
+  content table stores, references excepted (their values live in the relation tables, M4b). A
+  field the entry reads without, because it is null, is journalled as null, so an editor who sets
+  it in one save on a collection without revisions fails the value check. A job without a target
+  snapshot (created before M4a) journals the data's fields only. An editor's save on a collection without
   revisions, or a discard of the importer's draft, leaves the same shape with other values and is
   not adopted; without a journal nothing is. Otherwise the link is left alone and a rollback
   reports `rollback_changed`.
@@ -647,6 +653,12 @@ the revert sequence then runs from the published state. A row that fails it stay
   edited field on D1; a scheduled create and update, the sweep through the probe, then a rollback
   restoring them; V1-V7 on D1.
 
+- **The fakes' routable check is opt-in.** EmDash makes every collection routable unless
+  `routable` is 0 (F2), and refuses to publish or schedule a routable entry without a slug. The
+  fakes check only the collections a test lists in `routableCollections`, a deliberate divergence
+  so that the many tests importing without a slug need no slug mapping; `schedule.test.ts` covers
+  what a record reports when the publish or the schedule is refused.
+
 ## Plan sizing
 
 Ten tasks, as planned (amended): (0) prove V1-V7; (1) template rules, `publishAt`, job options
@@ -709,10 +721,6 @@ plugins, translation sync), which counts as edits; predicting duplicate keys in 
   - `rules: {}` (an empty rules object) makes `ruled()` true, so the template takes the early
     lookup order (spec "Order of a record") without changing any decision. Harmless; noted in the
     final review.
-  - The crash-repair and rollback value checks compare the fields the journal recorded
-    (`wrote.fields`). A field that was null (absent) when the job wrote and that an editor set
-    since is not among them. Any such edit also adds a `version`, so it is caught only by the
-    version count, which an editor's single save on a collection without revisions passes.
   - The root `biome.json` lints `packages/**` and the root JSON files only, so `sites/**` (the
     test sites' pages, `run-scheduled.ts` included) is not linted by `pnpm lint`. Unchanged by
     M5b.

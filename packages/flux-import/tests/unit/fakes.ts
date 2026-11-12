@@ -42,12 +42,12 @@ import {
 } from "../../src/sources/media-fetch.js";
 import { streamOf } from "./helpers.js";
 
-/** A copy without null values, as EmDash's mapRow reads an entry's columns. */
 /** EmDash's NOT_FOUND for an entry in Trash, as `writeError` turns it into a record error. */
 function trashedError(op: string, id: string): ContentWriteError {
 	return new ContentWriteError("emdash_not_found", `${op} failed: Content item not found: ${id}`);
 }
 
+/** A copy without null values, as EmDash's mapRow reads an entry's columns. */
 function withoutNulls(data: Record<string, unknown>): Record<string, unknown> {
 	return Object.fromEntries(
 		Object.entries(structuredClone(data)).filter(([, value]) => value !== null),
@@ -283,8 +283,10 @@ export class FakeContent implements ContentPort {
 	/** M5a: collections without revisions, whose writes go straight to the live columns. */
 	readonly plainCollections = new Set<string>();
 	/**
-	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. EmDash makes
-	 * collections routable by default; the fake opts in, since most tests import without a slug.
+	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. A deliberate
+	 * divergence: EmDash makes every collection routable unless `routable` is 0
+	 * (api/handlers/content.ts:257-267), while the fake checks only the collections listed here,
+	 * since most tests import without a slug.
 	 */
 	readonly routableCollections = new Set<string>();
 	/** M5a: return a message to make a `content:beforeDelete` hook refuse the trash. */

@@ -70,6 +70,7 @@ import {
 	editedMappings,
 	holdsScheduled,
 	holdsWrote,
+	journalledNames,
 	mappingOf,
 	modeSkip,
 	narrowRecord,
@@ -468,7 +469,7 @@ async function liveWrote(
 	if (!live) return undefined;
 	const publishedAt = entry === null ? null : entry.publishedAt;
 	return {
-		fields: await dataFingerprints(ctx.job, data),
+		fields: await dataFingerprints(ctx.job, data, journalledNames(ctx.job, data)),
 		...(slug === undefined ? {} : { slug }),
 		...(publishedAt === undefined ? {} : { publishedAt }),
 	};

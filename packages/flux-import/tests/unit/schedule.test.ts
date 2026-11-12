@@ -789,3 +789,39 @@ describe("publishAt on translations (M5b, M4e)", () => {
 		expect(fr).toMatchObject({ status: "scheduled", scheduledAt: at(HOUR), group: en?.group });
 	});
 });
+
+describe("publishAt on a routable collection without a slug (M5b, spec F2)", () => {
+	it("saves as a draft and fails the record when EmDash refuses the publish or the schedule", async () => {
+		const { deps } = setup();
+		// Routable checking is opt-in in the fakes (EmDash makes collections routable by default).
+		deps.content.routableCollections.add("products");
+		const unslugged = { extra: { slug: undefined } };
+		const now = await importRows(deps, [desk], unslugged);
+		const later = await importRows(deps, [{ ...desk, sku: "B2", name: "Lamp" }], {
+			extra: { slug: undefined, publishAt: { expr: `'${at(HOUR)}'` } },
+		});
+		const refused = (op: string) => ({
+			status: "failed",
+			action: "create",
+			// The write landed before the refusal, which the catch reports as for any thrown call.
+			entryId: null,
+			errors: [
+				{
+					code: "emdash_validation_error",
+					message: `${op} the entry failed: Cannot publish routable content without a slug`,
+				},
+			],
+		});
+		expect((await records(deps, now.id))[0]).toMatchObject(refused("Publishing"));
+		expect((await records(deps, later.id))[0]).toMatchObject(refused("Scheduling"));
+		// Both entries stay the importer's drafts, linked, and nothing went live or was scheduled.
+		for (const key of ["A1", "B2"]) {
+			const e = entryOf(deps, key);
+			expect(e).toMatchObject({ slug: null, status: "draft", scheduledAt: null });
+			expect(await deps.links.get(`products:en:${key}`)).toMatchObject({
+				entryId: e.id,
+				writtenRev: deps.content.revOf(e.id),
+			});
+		}
+	});
+});
