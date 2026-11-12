@@ -19,6 +19,7 @@ import {
 	type StepResult,
 	type TaxonomyDef,
 	type TermInfo,
+	TRANSLATION_SLOT_TAKEN,
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
@@ -463,6 +464,7 @@ export class FakeContent implements ContentPort {
 		} & LinkWrites,
 	): Promise<StepResult> {
 		this.beforeStep(input.step, input.id);
+		if (input.step === "restore") return this.restore(input);
 		const e = this.entries.get(input.id);
 		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
 			// As EmDash: unschedule has no policy read, so the repository's `findById`, which skips
@@ -541,6 +543,56 @@ export class FakeContent implements ContentPort {
 			this.calls.push(`${input.step}:${e.id}`);
 		}
 		this.afterStep(input.step, e.id);
+		return {
+			ok: true,
+			state: {
+				rev: this.encoded(e),
+				status: e.status,
+				scheduledAt: e.scheduledAt,
+				hasDraft: this.hasDraft(e),
+			},
+		};
+	}
+	/**
+	 * As EmDash's restore (repositories/content.ts:1643-1674, spec M5c F2): fenced on `version` and
+	 * `updated_at`; an entry not in Trash is a conflict (the UPDATE matches no row); a group that
+	 * fills the locale again is a conflict with EmDash's message. The entry comes back as a draft
+	 * without a live revision or schedule, one version on, its slug, `publishedAt` and any draft
+	 * kept.
+	 */
+	private restore(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+	}): StepResult {
+		const e = this.entries.get(input.id);
+		if (!e || e.collection !== input.collection || e.locale !== input.locale) {
+			throw new ContentWriteError(
+				"emdash_not_found",
+				`Rolling back the entry (restore) failed: Trashed content item not found: ${input.id}`,
+			);
+		}
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
+		if (!e.trashed || this.encoded(e) !== input.rev) {
+			return { ok: false, reason: "conflict", message: "Content changed while restoring" };
+		}
+		const taken = [...this.entries.values()].some(
+			(o) =>
+				o.id !== e.id &&
+				!o.trashed &&
+				o.group === e.group &&
+				o.locale.toLowerCase() === e.locale.toLowerCase(),
+		);
+		if (taken) return { ok: false, reason: "conflict", message: TRANSLATION_SLOT_TAKEN };
+		e.trashed = false;
+		e.published = null;
+		e.status = "draft";
+		e.scheduledAt = null;
+		e.pendingPublish = true;
+		this.touch(e);
+		this.calls.push(`restore:${e.id}`);
+		this.afterStep("restore", e.id);
 		return {
 			ok: true,
 			state: {
@@ -1131,7 +1183,8 @@ export function makeDeps(opts: { clock?: { t: number } } = {}) {
 		mediaFetcher: new FakeMediaFetcher(clock),
 		source: new FakeSource(),
 		now: () => clock.t,
-		newId: () => `id${++id}`,
+		// Sortable like EmDash's ULIDs, so a later job's ID sorts after an earlier one's (M5c).
+		newId: () => `id${String(++id).padStart(8, "0")}`,
 	} satisfies EngineDeps;
 	return { deps, clock };
 }

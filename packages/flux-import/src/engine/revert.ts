@@ -80,6 +80,8 @@ const STEP_COST: Readonly<Record<RevertStep, number>> = {
 	schedule: 15,
 	// M5b step 7, costed as a schedule (spec M5b "Caps").
 	unschedule: 15,
+	// M5c step 8: 18 D1 queries (plan Fact V8), costed as an unpublish.
+	restore: 15,
 };
 /** Trash and permanent delete, which V7 did not measure: `COST_READ` x 5. */
 const COST_DELETE = COST_READ * 5;

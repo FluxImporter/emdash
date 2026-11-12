@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { TRANSLATION_SLOT_TAKEN } from "../../src/engine/ports.js";
 import { decodeRev, encodeRev } from "../../src/engine/revs.js";
-import { FakeContent, MemoryKv } from "./fakes.js";
+import { FakeContent, MemoryKv, makeDeps } from "./fakes.js";
 
 describe("MemoryKv", () => {
 	it("returns the revision actually stored when writers interleave", async () => {
@@ -803,5 +804,119 @@ describe("FakeContent final review fixes (M5b)", () => {
 		// A collection that is not routable publishes without a slug.
 		const plain = await content.create({ ...base, collection: "notes", data: {} });
 		expect((await content.publish({ id: plain.id, rev: plain.rev })).ok).toBe(true);
+	});
+});
+
+describe("FakeContent restore from Trash (M5c, spec F1, F2)", () => {
+	const make = async () => {
+		const { deps } = makeDeps();
+		const created = await deps.content.create({
+			collection: "products",
+			locale: "en",
+			slug: "desk",
+			data: { title: "Desk" },
+		});
+		const published = await deps.content.publish({ id: created.id, rev: created.rev });
+		if (!published.ok) throw new Error("publish");
+		return { deps, id: created.id, rev: published.rev };
+	};
+
+	it("trashes without moving _rev, and restores as a draft one version on, fenced", async () => {
+		const { deps, id, rev } = await make();
+		expect(await deps.content.trash("products", id)).toEqual({ ok: true });
+		expect(deps.content.revOf(id)).toBe(rev);
+		const stale = await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id,
+			rev: "c3RhbGU=",
+			step: "restore",
+		});
+		expect(stale).toMatchObject({ ok: false, reason: "conflict" });
+		const restored = await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id,
+			rev,
+			step: "restore",
+		});
+		expect(restored).toMatchObject({
+			ok: true,
+			state: { status: "draft", scheduledAt: null, hasDraft: false },
+		});
+		expect(restored.ok && restored.state.rev).not.toBe(rev);
+		const snap = await deps.content.get("products", "en", id);
+		expect(snap).toMatchObject({ status: "draft", slug: "desk", data: { title: "Desk" } });
+		expect(deps.content.calls).toContain(`restore:${id}`);
+		const again = await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id,
+			rev: restored.ok ? restored.state.rev : "",
+			step: "restore",
+		});
+		// An active entry is not in Trash: EmDash's restore is a conflict then.
+		expect(again).toMatchObject({ ok: false, reason: "conflict" });
+	});
+
+	it("publishes a restored entry back to its data, keeping publishedAt", async () => {
+		const { deps, id, rev } = await make();
+		const publishedAt = (await deps.content.get("products", "en", id))?.publishedAt;
+		await deps.content.trash("products", id);
+		const restored = await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id,
+			rev,
+			step: "restore",
+		});
+		if (!restored.ok) throw new Error("restore");
+		const back = await deps.content.revertStep({
+			collection: "products",
+			locale: "en",
+			id,
+			rev: restored.state.rev,
+			step: "publish",
+		});
+		expect(back).toMatchObject({ ok: true, state: { status: "published", hasDraft: false } });
+		expect(await deps.content.get("products", "en", id)).toMatchObject({
+			status: "published",
+			publishedAt,
+			data: { title: "Desk" },
+		});
+	});
+
+	it("refuses a restore into a locale its group fills again", async () => {
+		const { deps, id } = await make();
+		const fr = await deps.content.create({
+			collection: "products",
+			locale: "fr",
+			data: { title: "Bureau" },
+			translationOf: id,
+		});
+		const rev = deps.content.revOf(fr.id);
+		await deps.content.trash("products", fr.id);
+		await deps.content.create({
+			collection: "products",
+			locale: "fr",
+			data: { title: "Pupitre" },
+			translationOf: id,
+		});
+		expect(
+			await deps.content.revertStep({
+				collection: "products",
+				locale: "fr",
+				id: fr.id,
+				rev,
+				step: "restore",
+			}),
+		).toEqual({ ok: false, reason: "conflict", message: TRANSLATION_SLOT_TAKEN });
+	});
+
+	it("gives job IDs that sort in creation order", () => {
+		const { deps } = makeDeps();
+		const ids = Array.from({ length: 12 }, () => deps.newId());
+		expect(ids[0]).toBe("id00000001");
+		expect([...ids].sort()).toEqual(ids);
 	});
 });

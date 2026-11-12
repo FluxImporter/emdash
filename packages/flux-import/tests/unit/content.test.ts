@@ -181,6 +181,27 @@ class FakeRuntime implements ContentRuntime {
 			if (item.status !== "published") item.status = "draft";
 		});
 	}
+	async handleContentRestore(
+		collection: string,
+		id: string,
+		options: Record<string, unknown> = {},
+	) {
+		this.calls.push(["restore", collection, id, options]);
+		const forced = this.override();
+		if (forced) return forced;
+		const item = this.items.get(id);
+		if (!item) return fail("NOT_FOUND", `Trashed content item not found: ${id}`);
+		// As EmDash: an active entry matches no row of the restore UPDATE (repositories/content.ts:1670).
+		if (!item.deletedAt || options._rev !== `rev-${item.version}`) {
+			return fail("CONFLICT", "Content changed while restoring");
+		}
+		item.deletedAt = null;
+		item.status = "draft";
+		item.scheduledAt = null;
+		item.version++;
+		const envelope = this.envelope(item);
+		return ok({ restored: true, ...(envelope.data as object) });
+	}
 }
 
 const actor = { id: "u1", role: 50 };
@@ -791,6 +812,42 @@ describe("EmDashContent schedule and unschedule (M5b)", () => {
 		expect(await content.revertStep({ ...base, rev: "rev-3", step: "unschedule" })).toMatchObject({
 			ok: false,
 			reason: "locked",
+		});
+	});
+});
+
+describe("EmDashContent restore (M5c)", () => {
+	const base = { collection: "products", locale: "en", id: "e1" };
+
+	it("restores as revert step 8, lock checked, with the revision only", async () => {
+		const locked = new Set<string>();
+		const { runtime, content } = setup((_c, id) => locked.has(id));
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.trash("products", "e1");
+		const restored = await content.revertStep({ ...base, rev: "rev-1", step: "restore" });
+		expect(restored).toMatchObject({ ok: true, state: { rev: "rev-2", status: "draft" } });
+		expect(runtime.calls.at(-1)).toEqual(["restore", "products", "e1", { _rev: "rev-1" }]);
+		await content.trash("products", "e1");
+		expect(await content.revertStep({ ...base, rev: "rev-1", step: "restore" })).toMatchObject({
+			ok: false,
+			reason: "conflict",
+		});
+		locked.add("e1");
+		expect(await content.revertStep({ ...base, rev: "rev-2", step: "restore" })).toMatchObject({
+			ok: false,
+			reason: "locked",
+		});
+	});
+
+	it("passes a slot conflict on with EmDash's message", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.trash("products", "e1");
+		runtime.stepOverride = fail("CONFLICT", "An active translation already exists in this locale");
+		expect(await content.revertStep({ ...base, rev: "rev-1", step: "restore" })).toEqual({
+			ok: false,
+			reason: "conflict",
+			message: "An active translation already exists in this locale",
 		});
 	});
 });
