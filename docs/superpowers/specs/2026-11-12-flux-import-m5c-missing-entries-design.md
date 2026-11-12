@@ -791,6 +791,20 @@ by hand.
   - A swept entry is owned only while the scheduling job's journal exists (retention period); after
     it is purged, the entry reads as edited.
   - A file that is itself truncated is not detectable; the threshold is the guard.
+  - **(Task 5 review) A trash without its mark can duplicate.** A batch dies between the trash
+    call and the link put (act steps 4 and 5), and an import of the key runs before any resume,
+    cancel or rollback of that job settles the row. The link is not marked, so the import does not
+    report `missing_trashed`; it creates the entry again (a duplicate when the slug differs,
+    `SLUG_CONFLICT` when it is the same, F5). The window is one call. Accepted: closing it needs a
+    `getIncludingTrashed` read for every import record whose entry is gone. A cancel while a batch
+    holds its lease leaves that batch's calls to it, and the job warns ("Missing entries: the job
+    was cancelled while one of its batches was running, …"). When a later import has moved the
+    link to another entry, the stopped row becomes `missing_unverified`, no link is put, and the
+    journal row stays: the job cannot prove the entry any more, so its rollback reports
+    `rollback_changed` and the trashed entry waits for a restore by hand.
+  - `missing_unverified` rows are conflicts, not removals: Ruling 20's bound (`removed` never past
+    `found`) covers the removals the phase can prove; an unverified call may also have removed its
+    entry.
 - **From M5b** (`2026-11-04-m5b-review.md`), unchanged: translation sync moving `_rev`; CPU on
   Workers for heavy Portable Text; the measured headroom of the linked cap; the M5b spec's open
   issues; the known gaps; the ledger items; the known flakes (F1, F2, F3 on port 4397).

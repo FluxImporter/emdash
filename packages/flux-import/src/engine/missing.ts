@@ -408,11 +408,18 @@ async function repair(
 }
 
 /**
- * A `writing` row a stopped batch left (spec "Crash repair"). Its link already carries this job's
- * mark: the row becomes `removed`. Its call landed: finished at step 5, once. The entry moved and
- * the call may have landed: `missing_unverified`, and its journal row stays. The call did not
- * land: with `restart`, its journal row is deleted and the entry decided again at the same seq
- * (plan Ruling 14); without, the row is left for a resume. Returns whether the row was settled.
+ * A `writing` row a stopped batch left (spec "Crash repair"). Every write below is made only
+ * while the key's link still names the row's entry, so a link a later import moved to another
+ * entry is never stamped with this job's mark:
+ * - the link names the entry and carries this job's mark: a stop after step 5's link put, before
+ *   the row save; the row becomes `removed`;
+ * - the link names the entry and is still a candidate: `landed` decides. Landed, it is finished
+ *   at step 5, once; moved since, `missing_unverified` with its journal row kept. Not landed:
+ *   with `restart`, the journal row is deleted and the entry decided again at the same seq (plan
+ *   Ruling 14); without, the row is left for a resume;
+ * - any other link, or none: the call may have landed on an entry the job can no longer prove,
+ *   so `missing_unverified`, no link put, and the journal row stays for a rollback.
+ * Returns whether the row was settled.
  */
 async function settleWriting(
 	deps: EngineDeps,
@@ -425,14 +432,27 @@ async function settleWriting(
 	const { collection, locale } = job.template;
 	if (row.sourceKey === null) return false;
 	const key = linkKey(collection, locale, row.sourceKey);
+	const action = actionOf(job);
 	cache.spend(COST_CALL);
 	const link = await deps.links.get(key);
-	if (link === null) return false;
-	const ctx: ActCtx = { deps, job, m, link, action: actionOf(job), cache };
+	const sameEntry = link !== null && link.entryId === row.entryId;
+	const marked = sameEntry && link.missing?.jobId === job.id;
+	if (link === null || !(marked || (sameEntry && isCandidate(link, job)))) {
+		const fields: RowFields = {
+			status: "conflict",
+			sourceKey: row.sourceKey,
+			entryId: row.entryId,
+			action,
+			errors: [issue("missing_unverified", UNVERIFIED_MESSAGE)],
+		};
+		await saver({ deps, job }, row.seq)(fields);
+		tally(job, m, fields);
+		return true;
+	}
+	const ctx: ActCtx = { deps, job, m, link, action, cache };
 	const save = saver(ctx, row.seq);
 	let fields: RowFields | null;
-	if (link.missing?.jobId === job.id) {
-		// A stop after step 5's link put, before the row save.
+	if (marked) {
 		fields = rowOf(
 			ctx,
 			"removed",
@@ -455,7 +475,7 @@ async function settleWriting(
 		count(ctx, fields);
 		return true;
 	}
-	if (!restart || !isCandidate(link, job)) return false;
+	if (!restart) return false;
 	cache.spend(COST_CALL);
 	await deps.journal.delete(journalKey(job.id, key));
 	await decideNew(ctx, row.seq);
@@ -464,8 +484,9 @@ async function settleWriting(
 
 /**
  * Whether a stopped call landed (spec "Crash repair"): its finished row, null when it did not
- * (the entry is active at the row's `writtenRev`, or active at all for a trash, plan Ruling 14),
- * or a `missing_unverified` row for any other state.
+ * (the entry is active at the row's `writtenRev`), or a `missing_unverified` row for any other
+ * state. For a trash that includes an entry active at another revision: an editor may have
+ * restored it from Trash after the trash landed, so it is not decided again.
  */
 async function landed(ctx: ActCtx, id: string, rev: string): Promise<RowFields | null> {
 	const { deps, job, action, cache } = ctx;
@@ -473,7 +494,7 @@ async function landed(ctx: ActCtx, id: string, rev: string): Promise<RowFields |
 	cache.spend(COST_READ);
 	const active = await deps.content.get(collection, locale, id);
 	if (action === "trash") {
-		if (active !== null) return null;
+		if (active !== null) return active.rev === rev ? null : unverified(ctx, id);
 		// Plan Ruling 3: only here does the act stage look in Trash. Trash keeps `_rev` (spec F1).
 		cache.spend(COST_READ);
 		const trashed = await deps.content.getIncludingTrashed(collection, locale, id);
@@ -509,16 +530,35 @@ function unverified(ctx: ActCtx, id: string | null): RowFields {
  */
 export async function settleStopped(deps: EngineDeps, job: Job): Promise<boolean> {
 	const m = job.missing;
-	if (job.kind === "rollback" || job.dryRun || job.phase !== "missing" || m?.stage !== "act") {
-		return false;
-	}
+	if (!settles(job) || m === undefined) return false;
 	const rows = m.rows;
 	await repair(deps, job, m, new LookupCache(), false);
 	return m.rows !== rows;
 }
 
+/** Whether `settleStopped` has anything to do: a real import job in its act stage. */
+export function settles(job: Job): boolean {
+	return (
+		job.kind !== "rollback" &&
+		!job.dryRun &&
+		job.phase === "missing" &&
+		job.missing?.stage === "act"
+	);
+}
+
+/**
+ * The job warning of a cancel that left a running batch's calls to it (spec "Open issues"): a
+ * trash that batch made without its mark can no longer be told apart by a later import.
+ */
+export const CANCEL_LIVE_WARNING =
+	"Missing entries: the job was cancelled while one of its batches was running, so an entry that batch moved to Trash may not be marked; roll the job back, or restore such entries from Trash, before a feed that holds their keys is imported again, which would create them anew";
+
+/** The job warning of a failed job whose stopped changes could not be finished. */
+export const settleFailedWarning = (message: string) =>
+	`Missing entries: the changes a stopped batch made could not be finished before the job failed (${message}); resume the job or roll it back`;
+
 /** Saves a missing row at `seq` (start and end 0: it reads no record). */
-function saver(ctx: ActCtx, seq: number) {
+function saver(ctx: Pick<ActCtx, "deps" | "job">, seq: number) {
 	const { deps, job } = ctx;
 	return (fields: RowFields) =>
 		deps.records.put(recordKey(job.id, seq), {
@@ -552,6 +592,11 @@ function count(ctx: ActCtx, row: RowFields): void {
 	tally(ctx.job, ctx.m, row);
 }
 
+/**
+ * A `missing_unverified` row is a `conflict`, so it never counts toward `removed`: Ruling 20's
+ * bound (`removed` never past `found`) holds for the removals the phase can prove. A call that
+ * threw or a stop it cannot tell apart from an editor's change may still have removed its entry.
+ */
 function tally(job: Job, m: MissingState, row: Pick<RecordRow, "status" | "action">): void {
 	const counter = counterFor(row);
 	if (counter) bump(job.counters, counter);

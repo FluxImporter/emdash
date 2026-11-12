@@ -6,7 +6,7 @@ import {
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "./media.js";
-import { settleStopped } from "./missing.js";
+import { CANCEL_LIVE_WARNING, settleStopped, settles } from "./missing.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
@@ -373,17 +373,21 @@ export function withoutPlannedTerms(job: Job): Job {
  * repair"), so a trash that landed carries its marked link. Skipped while a batch holds a live
  * lease: that batch finishes its own calls. The counts are saved only when no batch ran since.
  */
-export async function settleStoppedJob(deps: EngineDeps, id: string): Promise<void> {
+export async function settleStoppedJob(deps: EngineDeps, id: string): Promise<"live" | "done"> {
 	const stored = await deps.jobs.get(id);
-	if (!stored || (stored.lease && stored.lease.expiresAt > deps.now())) return;
+	if (!stored) return "done";
+	if (stored.lease && stored.lease.expiresAt > deps.now()) {
+		return settles(upgradeJob(stored)) ? "live" : "done";
+	}
 	const job = structuredClone(upgradeJob(stored));
-	if (!(await settleStopped(deps, job)) || job.missing === undefined) return;
+	if (!(await settleStopped(deps, job)) || job.missing === undefined) return "done";
 	const missing = job.missing;
 	const progress = (j: Job) => JSON.stringify([j.missing, j.counters, j.lease]);
 	const was = progress(upgradeJob(stored));
 	await updateJob(deps, id, (current) =>
 		progress(current) === was ? { ...current, counters: job.counters, missing } : current,
 	);
+	return "done";
 }
 
 export async function transitionJob(
@@ -391,8 +395,9 @@ export async function transitionJob(
 	id: string,
 	action: "pause" | "resume" | "cancel" | "retry",
 ): Promise<Job> {
-	// M5c: a cancel ends the job, so a stopped batch's landed trash is finished first.
-	if (action === "cancel") await settleStoppedJob(deps, id);
+	// M5c: a cancel ends the job, so a stopped batch's landed trash is finished first. A batch
+	// that still holds its lease finishes its own calls; the job says so, not silently.
+	const live = action === "cancel" && (await settleStoppedJob(deps, id)) === "live";
 	return updateJob(deps, id, (job) => {
 		if (!ALLOWED[action].includes(job.status) || (action === "retry" && job.dryRun)) {
 			throw new JobError(
@@ -420,7 +425,13 @@ export async function transitionJob(
 			case "resume":
 				return { ...job, status: "running", error: null, failures: 0 };
 			case "cancel":
-				return { ...withoutPlannedTerms(job), status: "cancelled" };
+				return {
+					...withoutPlannedTerms(job),
+					status: "cancelled",
+					...(live && !job.warnings?.includes(CANCEL_LIVE_WARNING)
+						? { warnings: [...(job.warnings ?? []), CANCEL_LIVE_WARNING] }
+						: {}),
+				};
 			case "retry":
 				// A rollback retries its rows newest first, like its first pass.
 				return {

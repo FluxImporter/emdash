@@ -40,7 +40,7 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
-import { enterMissing, missingPass, settleStopped } from "./missing.js";
+import { enterMissing, missingPass, settleFailedWarning, settleStopped } from "./missing.js";
 import { foreignStamp, ownerOf, ownership, withoutStamp } from "./owner.js";
 import {
 	lookupPortableTextImages,
@@ -2159,8 +2159,13 @@ export async function runBatch(
 	}
 	keepPlannedTerms(job, cache);
 	// M5c: an error fails the job, so a landed trash gets its marked link first (spec "Crash
-	// repair"); the error stays the job's whatever the settling meets.
-	if (outcome.error) await settleStopped(deps, job).catch(() => false);
+	// repair"). The error stays the job's; one the settling meets becomes a job warning.
+	if (outcome.error) {
+		await settleStopped(deps, job).catch((e: unknown) => {
+			const warning = settleFailedWarning(e instanceof Error ? e.message : String(e));
+			job.warnings = [...(job.warnings ?? []), warning];
+		});
+	}
 	return release(deps, job, holder, outcome);
 }
 

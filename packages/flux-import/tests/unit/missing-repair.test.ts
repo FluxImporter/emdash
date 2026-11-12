@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { transitionJob } from "../../src/engine/jobs.js";
+import { CANCEL_LIVE_WARNING } from "../../src/engine/missing.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
 import { createRollback } from "../../src/engine/rollback.js";
 import { type Job, journalKey, type LinkRow, type RecordRow } from "../../src/engine/types.js";
@@ -177,18 +178,40 @@ describe("a stop during an act (M5c crash repair)", () => {
 		expect(await rowOf(deps, done, "K6")).toMatchObject({ seq: 6, status: "removed" });
 	});
 
-	it("reports an edit after the stop as edited, and drops the stopped attempt's journal row", async () => {
+	it("reports an entry active at another revision after the stop as unverified, not decided again", async () => {
+		// An edit and an editor's restore from Trash after a landed trash look the same (spec
+		// "Crash repair": any other state), so the journal row stays for a rollback.
 		const { deps, job } = await second("trash");
 		stopAt(deps, "beforeStep", "trash");
 		await runUntilStop(deps, job.id);
 		await edit(deps, "K6");
 		const done = await runToEnd(deps, job.id);
-		expect((await rowOf(deps, done, "K6"))?.warnings?.map((w) => w.code)).toEqual([
-			"missing_edited",
-		]);
-		expect(await journalRow(deps, job, "K6")).toBeNull();
+		expect(await rowOf(deps, done, "K6")).toMatchObject({
+			status: "conflict",
+			errors: [{ code: "missing_unverified" }],
+		});
+		expect(await journalRow(deps, job, "K6")).not.toBeNull();
 		expect(entryOf(deps, "K6").trashed).toBe(false);
-		expect(done.counters.removed).toBe(1);
+		expect(done.counters).toMatchObject({ removed: 1, conflict: 1 });
+	});
+
+	it("reports a landed trash an editor restored before the resume as unverified", async () => {
+		const { deps, job } = await second("trash");
+		stopAfterTrash(deps);
+		await runUntilStop(deps, job.id);
+		const k6 = entryOf(deps, "K6");
+		// The editor's restore: back from Trash, one version on (spec F2).
+		k6.trashed = false;
+		k6.rev++;
+		const done = await runToEnd(deps, job.id);
+		expect(await rowOf(deps, done, "K6")).toMatchObject({
+			status: "conflict",
+			errors: [{ code: "missing_unverified" }],
+		});
+		expect(await journalRow(deps, job, "K6")).not.toBeNull();
+		expect(k6.trashed).toBe(false);
+		expect(deps.content.calls.filter((c) => c === `trash:${k6.id}`)).toHaveLength(1);
+		expect(await linkOf(deps, "K6")).not.toHaveProperty("missing");
 	});
 
 	it("drops a journal row a stop left before its writing row (plan Ruling 14)", async () => {
@@ -281,10 +304,123 @@ describe("a stop during an act (M5c crash repair)", () => {
 			[{ sku: "K6", name: "Item 6", price: 66 }],
 			opts("trash", { missing: false }),
 		);
-		expect(await linkOf(deps, "K6")).toMatchObject({ jobId: later.id });
+		const theirs = await linkOf(deps, "K6");
+		expect(theirs).toMatchObject({ jobId: later.id });
 		const done = await runToEnd(deps, job.id);
 		expect(entryOf(deps, "K6").trashed).toBe(false);
-		expect(await rowOf(deps, done, "K6")).toMatchObject({ status: "writing" });
+		expect(await rowOf(deps, done, "K6")).toMatchObject({
+			status: "conflict",
+			errors: [{ code: "missing_unverified" }],
+		});
+		expect(await linkOf(deps, "K6")).toEqual(theirs);
+	});
+
+	describe("a later import of the key between a landed trash and its link put", () => {
+		/** The probe's sequence: K6's trash lands, the batch stops, a later import writes K6. */
+		async function landedThenLater(name: string) {
+			const made = await second("trash");
+			stopAfterTrash(made.deps);
+			await runUntilStop(made.deps, made.job.id);
+			const trashedId = entryOf(made.deps, "K6").id;
+			const later = await importRows(
+				made.deps,
+				[{ sku: "K6", name, price: 66 }],
+				opts("trash", { missing: false }),
+			);
+			return { ...made, later, trashedId };
+		}
+
+		it("never marks the entry the later import created (resume)", async () => {
+			const { deps, job, later, trashedId } = await landedThenLater("Item 6b");
+			const theirs = await linkOf(deps, "K6");
+			expect(theirs).toMatchObject({ jobId: later.id });
+			expect(theirs.entryId).not.toBe(trashedId);
+			const done = await runToEnd(deps, job.id);
+			expect(await rowOf(deps, done, "K6")).toMatchObject({
+				status: "conflict",
+				entryId: trashedId,
+				errors: [{ code: "missing_unverified" }],
+			});
+			expect(await linkOf(deps, "K6")).toEqual(theirs);
+			// The call may have landed: the journal row stays.
+			expect(await journalRow(deps, job, "K6")).not.toBeNull();
+			expect(done.counters).toMatchObject({ removed: 1, conflict: 1 });
+			// The later job's rollback still owns its entry; this job's leaves the trashed one alone.
+			const { rollback } = await createRollback(deps, { id: done.id });
+			const rolled = await runToEnd(deps, rollback.id);
+			expect((await records(deps, rolled.id)).find((r) => r.sourceKey === "K6")).toMatchObject({
+				status: "conflict",
+				errors: [{ code: "rollback_changed" }],
+			});
+			const { rollback: theirsBack } = await createRollback(deps, { id: later.id });
+			const reverted = await runToEnd(deps, theirsBack.id);
+			expect((await records(deps, reverted.id)).find((r) => r.sourceKey === "K6")).toMatchObject({
+				status: "reverted",
+				action: "delete",
+			});
+		});
+
+		it("never marks the entry the later import created (cancel)", async () => {
+			const { deps, job, later, trashedId } = await landedThenLater("Item 6b");
+			const theirs = await linkOf(deps, "K6");
+			const cancelled = await transitionJob(deps, job.id, "cancel");
+			expect(await rowOf(deps, cancelled, "K6")).toMatchObject({
+				status: "conflict",
+				entryId: trashedId,
+				errors: [{ code: "missing_unverified" }],
+			});
+			expect(await linkOf(deps, "K6")).toEqual(theirs);
+			expect(await journalRow(deps, job, "K6")).not.toBeNull();
+			const { rollback } = await createRollback(deps, { id: later.id });
+			const reverted = await runToEnd(deps, rollback.id);
+			expect((await records(deps, reverted.id)).find((r) => r.sourceKey === "K6")).toMatchObject({
+				status: "reverted",
+				action: "delete",
+			});
+		});
+
+		for (const [what, change] of [
+			["names another entry", (l: LinkRow, other: string) => ({ ...l, entryId: other })],
+			[
+				"names the entry but a later job wrote it",
+				(l: LinkRow) => ({ ...l, jobId: "zz-later-job" }),
+			],
+			[
+				"carries this job's mark on another entry",
+				(l: LinkRow, other: string, jobId: string) => ({
+					...l,
+					entryId: other,
+					missing: { jobId, action: "trash" as const, at: "2026-10-07T10:00:00.000Z" },
+				}),
+			],
+		] as const) {
+			it(`puts no link when the link ${what}`, async () => {
+				const { deps, job } = await second("trash");
+				stopAfterTrash(deps);
+				await runUntilStop(deps, job.id);
+				const changed = change(await linkOf(deps, "K6"), entryOf(deps, "K5").id, job.id) as LinkRow;
+				await deps.links.put("products:en:K6", changed);
+				const done = await runToEnd(deps, job.id);
+				expect(await rowOf(deps, done, "K6")).toMatchObject({
+					status: "conflict",
+					errors: [{ code: "missing_unverified" }],
+				});
+				expect(await linkOf(deps, "K6")).toEqual(changed);
+				expect(await journalRow(deps, job, "K6")).not.toBeNull();
+			});
+		}
+
+		it("finishes the trash when the later import could not take the key (same slug)", async () => {
+			const { deps, first, job, later, trashedId } = await landedThenLater("Item 6");
+			expect((await records(deps, later.id)).find((r) => r.sourceKey === "K6")).toMatchObject({
+				status: "failed",
+			});
+			expect(await linkOf(deps, "K6")).toMatchObject({ entryId: trashedId, jobId: first.id });
+			const done = await runToEnd(deps, job.id);
+			expect(await rowOf(deps, done, "K6")).toMatchObject({ status: "removed" });
+			expect(await linkOf(deps, "K6")).toMatchObject({ missing: { jobId: job.id } });
+			await expectRestored(deps, done, first);
+		});
 	});
 
 	it("journals and deletes nothing in a dry run", async () => {
@@ -540,6 +676,45 @@ describe("cancel, failure and rollback (M5c)", () => {
 		await expectRestored(deps, failed, first);
 	});
 
+	it("records an error the failure's settling meets as a job warning", async () => {
+		const { deps, job } = await second("trash");
+		let broken = false;
+		stopAfterTrash(deps, () => {
+			broken = true;
+			return new ContentWriteError("collection_missing", "Collection is gone");
+		});
+		const get = deps.links.get.bind(deps.links);
+		deps.links.get = async (k) => {
+			if (broken) throw new Error("D1 went away");
+			return get(k);
+		};
+		const failed = await runToEnd(deps, job.id);
+		expect(failed).toMatchObject({ status: "failed", error: { code: "collection_missing" } });
+		expect(failed.warnings).toContain(
+			"Missing entries: the changes a stopped batch made could not be finished before the job failed (D1 went away); resume the job or roll it back",
+		);
+	});
+
+	it("adds no warning to a cancel of a running job outside the act stage", async () => {
+		const { deps, clock, job } = await second("trash");
+		const created = await stored(deps, job.id);
+		await deps.jobs.put(job.id, {
+			...created,
+			status: "running",
+			lease: { holder: "other", expiresAt: clock.t + 600_000 },
+		});
+		const cancelled = await transitionJob(deps, job.id, "cancel");
+		expect(cancelled.warnings ?? []).not.toContain(CANCEL_LIVE_WARNING);
+	});
+
+	it("adds no warning to a cancel with no batch running", async () => {
+		const { deps, job } = await second("trash");
+		stopAfterTrash(deps);
+		await runUntilStop(deps, job.id);
+		const cancelled = await transitionJob(deps, job.id, "cancel");
+		expect(cancelled.warnings ?? []).not.toContain(CANCEL_LIVE_WARNING);
+	});
+
 	it("resumes a job failed before its trash landed, and trashes the entry once", async () => {
 		const { deps, job } = await second("trash");
 		const trash = deps.content.trash.bind(deps.content);
@@ -592,6 +767,8 @@ describe("cancel, failure and rollback (M5c)", () => {
 		const cancelled = await transitionJob(deps, job.id, "cancel");
 		expect(await rowOf(deps, cancelled, "K6")).toMatchObject({ status: "writing" });
 		expect(await linkOf(deps, "K6")).not.toHaveProperty("missing");
+		// Not silent: the job says a running batch's trash may lack its mark.
+		expect(cancelled.warnings).toContain(CANCEL_LIVE_WARNING);
 		clock.t += cancelled.budgetMs + 60_000;
 		await expectRestored(deps, cancelled, first);
 	});
