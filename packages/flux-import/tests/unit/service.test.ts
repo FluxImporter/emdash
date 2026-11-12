@@ -22,6 +22,8 @@ import {
 	WORKERS_BATCH_CAP,
 	WORKERS_LINKED_BATCH_CAP,
 	WORKERS_MEDIA_MAX_BYTES,
+	WORKERS_MISSING_BATCH_CAP,
+	WORKERS_MISSING_SCAN_CAP,
 	workersBatchCap,
 } from "../../src/plugin/service.js";
 import { FakeStorage, makeDeps } from "./fakes.js";
@@ -582,5 +584,25 @@ describe("nextBatch on Workers", () => {
 			fields,
 		);
 		expect((await nextBatch(deps, new Uploads(), job.id, "h")).cursor.seq).toBe(50);
+	});
+});
+
+describe("Workers caps of the missing phase (M5c)", () => {
+	it("reads at most 40 entries per count batch and decides at most 10 per act batch", () => {
+		const job = { kind: "import", phase: "missing", template: { version: 1 } } as unknown as Job;
+		expect(WORKERS_MISSING_SCAN_CAP).toBe(40);
+		expect(WORKERS_MISSING_BATCH_CAP).toBe(10);
+		expect(
+			workersBatchCap({
+				...job,
+				missing: { stage: "count", fromSeq: 0, owned: 0, found: 0, rows: 0, removed: 0 },
+			}),
+		).toBe(40);
+		expect(
+			workersBatchCap({
+				...job,
+				missing: { stage: "act", fromSeq: 0, owned: 0, found: 0, rows: 0, removed: 0 },
+			}),
+		).toBe(10);
 	});
 });

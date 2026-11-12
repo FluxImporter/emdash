@@ -38,6 +38,7 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
+import { enterMissing, missingPass } from "./missing.js";
 import { foreignStamp, ownerOf, ownership, withoutStamp } from "./owner.js";
 import {
 	lookupPortableTextImages,
@@ -137,14 +138,18 @@ type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt"
 
 const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
-function counterFor(row: RowFields): keyof Counters | null {
+/** The counter a row counts toward; null for a `writing` row. */
+export function counterFor(row: RowFields): keyof Counters | null {
 	switch (row.status) {
 		case "planned":
+			// M5c: a dry run's planned trash or unpublish counts as removed (Ruling 29 M10).
 			return row.action === "create"
 				? "created"
 				: row.action === "update"
 					? "updated"
-					: "unchanged";
+					: row.action === "trash" || row.action === "unpublish"
+						? "removed"
+						: "unchanged";
 		case "writing":
 			return null;
 		default:
@@ -201,6 +206,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			...(job.created ? { created: job.created } : {}),
 			...(job.unkeyed ? { unkeyed: job.unkeyed } : {}),
+			// M5c: the missing phase.
+			...(job.missing ? { missing: job.missing } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,
@@ -2081,6 +2088,8 @@ async function importBatch(
 	limit: number,
 	cache: LookupCache,
 ): Promise<Outcome> {
+	// M5c: the missing phase reads links and entries, not the source.
+	if (job.phase === "missing") return missingPass(deps, job, started, limit, cache);
 	if (!job.dryRun && !job.schemaReady) {
 		await deps.content.ensureSourceIdField(job.template.collection);
 		job.schemaReady = true;
@@ -2099,9 +2108,10 @@ async function importBatch(
 		};
 	}
 	const template = compiled.compiled;
-	return job.phase === "retry"
-		? retryPass(deps, job, template, started, limit, cache)
-		: importPass(deps, job, template, started, limit, cache);
+	if (job.phase === "retry") return retryPass(deps, job, template, started, limit, cache);
+	const outcome = await importPass(deps, job, template, started, limit, cache);
+	// M5c: a completed first pass enters the missing phase, or completes when it is skipped.
+	return outcome.done ? enterMissing(job) : outcome;
 }
 
 /**

@@ -60,6 +60,20 @@ export const WORKERS_LINKED_BATCH_CAP = 6;
 export const WORKERS_ROLLBACK_BATCH_CAP = 3;
 
 /**
+ * Entries one jobs/next call reads in the missing phase's count stage on Workers (M5c). Every
+ * read counts, misses included (spec Ruling 29 M8). Plan Fact V8 projects about 260 D1 queries
+ * for 40; Task 9 measures it.
+ */
+export const WORKERS_MISSING_SCAN_CAP = 40;
+
+/**
+ * Entries one jobs/next call decides in the missing phase's act stage on Workers (M5c): a read,
+ * a lock check, the journal row, two row saves, the trash or unpublish (19 or 33 D1 queries) and
+ * the link. Plan Fact V8 projects about 470 queries for 10 unpublishes; Task 9 measures it.
+ */
+export const WORKERS_MISSING_BATCH_CAP = 10;
+
+/**
  * The lookup cost one jobs/next call may spend on Workers (see `COST_READ`): D1 allows 1,000
  * queries per invocation, and EmDash's lookups run several queries per call.
  */
@@ -88,6 +102,9 @@ export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolea
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
 	if (job.kind === "rollback") return WORKERS_ROLLBACK_BATCH_CAP;
+	if (job.phase === "missing") {
+		return job.missing?.stage === "count" ? WORKERS_MISSING_SCAN_CAP : WORKERS_MISSING_BATCH_CAP;
+	}
 	return usesLinks(job.template) || usesMedia(job.template)
 		? WORKERS_LINKED_BATCH_CAP
 		: WORKERS_BATCH_CAP;
