@@ -53,8 +53,9 @@ export const WORKERS_LINKED_BATCH_CAP = 6;
  * stay under the 1,000-query limit (measured in the M5a review: 744 queries for three scheduled
  * updates with every link kind, 214 for three deletes). M5b adds step 7 (unschedule), which
  * excludes step 6, so the longest sequence stays five steps and the engine's per-row reserve
- * (`ROW_RESERVE` in `src/engine/revert.ts`) is 165; the M5b plan's V7 measured 490 queries for
- * three linked rollback rows, and the final review re-measures it in Task 10.
+ * (`ROW_RESERVE` in `src/engine/revert.ts`) is 165. Measured in the M5b review (V7): 555 queries
+ * for three rows of that longest sequence, 502 for three linked scheduled updates and 465 for three
+ * linked scheduled drafts (step 7).
  */
 export const WORKERS_ROLLBACK_BATCH_CAP = 3;
 
