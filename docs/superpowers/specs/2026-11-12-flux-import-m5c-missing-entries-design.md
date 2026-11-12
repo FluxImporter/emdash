@@ -210,7 +210,9 @@ Refused at job creation:
   save right after the job's own create in `writeRecord` (a linked create included), or crash
   repair finishing a row whose journal `create` row names the entry with `confirmed: true`, or whose
   record row is `writing` with `action: "create"` and that `entryId`. An entry crash repair adopted
-  by `flux_source_id` alone (`confirmed: false`) is not stamped.
+  by `flux_source_id` alone (`confirmed: false`) is not stamped. Only a repair stamps this way: a
+  record that finds its link (a `jobs/retry` pass included) never stamps again, since another
+  owner may have dropped the stamp since (Ruling 30).
 - **Keeping.** A link save by a template whose `rules.owner` equals the stored link's keeps
   `owner` and `ownerSource`. `putLink` reads them from `ctx.link` (or `ctx.stored` after crash
   repair), which every record already reads (no extra read). The M5b fingerprint refresh keeps
@@ -224,6 +226,12 @@ Refused at job creation:
   costs one link put, only when the owners differ, and only once per link (the next record finds
   no stamp). A dry run drops nothing. The drop is not journalled: a rollback of this job restores
   the stamp only where the journal's link snapshot holds it, which fails safe.
+- **Dropping before the link read (Ruling 30).** A record of another owner, or of none, that fails
+  after its key was read but before it read the link (a mapping error, or on the plain path a link
+  or media resolution error before the entry lookup) reads the link once and drops a foreign stamp
+  the same way. That costs one link read per such failure, and nothing in a dry run. A record
+  whose key failed reads nothing. A record that defers (`MediaDeferred`) or hits a job-level error
+  skips the drop until it is decided again.
 - **Rollback.** The journal's link snapshot holds `owner`, `ownerSource` and `missing`, and the
   M5a link hand-back restores them with the rest of `before.link`. A rolled-back create deletes its
   link (M5a).
@@ -739,6 +747,12 @@ Added by the spec review (binding rulings of the coordinator):
     - M9: `rules.owner` (not `rules.missing.owner`) amends the M5a outline, so a template can stamp
       entries before it turns the phase on.
     - M10: `counterFor` and `tallyCounters` count the `removed` status and planned missing rows.
+30. **(Task 2 review) Every failed record that holds a key drops a foreign stamp, and a retry never
+    restamps.** A record that failed after its key but before its link read would otherwise leave
+    another template's stamp on an entry its feed still holds, and that template's next run could
+    remove it. One link read per such failure is the price. Crash repair stamps only when it
+    repairs the link: a confirmed journal create from an earlier pass would otherwise restamp, on
+    `jobs/retry`, an entry whose stamp another owner dropped.
 
 ## Out of scope for M5c
 

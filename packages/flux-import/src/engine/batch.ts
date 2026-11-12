@@ -276,6 +276,8 @@ type RecordCtx = {
 	 * owner stamp on it is dropped once the record is decided (`settleOwner`).
 	 */
 	read: LinkRow | null;
+	/** M5c: `entryByLink` read the link row (Ruling 30). */
+	linkRead: boolean;
 	/** M5c: a link put of this record happened (a save, a refresh or a repair). */
 	linkPut: boolean;
 	/** M5c: this job created the entry, so its link saves stamp the owner (spec "Owner"). */
@@ -544,13 +546,27 @@ async function refreshFields(ctx: RecordCtx, entry: EntrySnapshot): Promise<void
  * M5c (spec Rulings 2, 21): a record that reached a link stamped with another owner, or whose
  * template has none, drops the stamp whatever its outcome. A record whose own link put already
  * applied `ownership` needs nothing more; any other puts the link once, every other field kept.
- * A dry run drops nothing. Not journalled.
+ * A dry run drops nothing. Not journalled. A record that defers (`MediaDeferred`) or hits a
+ * job-level error throws past this, so it skips the drop until it is decided again.
  */
 async function settleOwner(ctx: RecordCtx): Promise<void> {
 	if (ctx.job.dryRun || ctx.linkPut) return;
 	const link = ctx.stored ?? ctx.read;
 	if (link === null || !foreignStamp(ctx.job, link)) return;
 	await ctx.deps.links.put(ctx.linkId, withoutStamp(link));
+}
+
+/**
+ * M5c (spec Ruling 30): a record that failed after its key was read but before it read its
+ * link (a mapping, link or media error) is still in the feed, so it drops a foreign stamp as
+ * `settleOwner` does, at the cost of one link read. A dry run reads and drops nothing.
+ */
+async function settleUnread(deps: EngineDeps, job: Job, sourceKey: string): Promise<void> {
+	if (job.dryRun) return;
+	const { collection, locale } = job.template;
+	const linkId = linkKey(collection, locale, sourceKey);
+	const link = await deps.links.get(linkId);
+	if (link !== null && foreignStamp(job, link)) await deps.links.put(linkId, withoutStamp(link));
 }
 
 /** The import message of a key whose entry the missing phase moved to Trash (spec Ruling 15). */
@@ -748,6 +764,7 @@ async function entryByLink(
 	const { collection, locale } = ctx.job.template;
 	const link = await ctx.deps.links.get(ctx.linkId);
 	ctx.read = link;
+	ctx.linkRead = true;
 	if (link && lookingUp) cache.spend(COST_READ);
 	const entry = link ? await ctx.deps.content.get(collection, locale, link.entryId, read) : null;
 	return { link, entry };
@@ -788,7 +805,10 @@ async function decide(
 	for (const { key, error } of carried?.failed ?? []) cache.mediaFailed.set(key, error);
 	try {
 		row = await decideRecord(deps, job, template, rec, existing, save, cache, found);
-		if (found.ctx) await settleOwner(found.ctx);
+		if (found.ctx?.linkRead) await settleOwner(found.ctx);
+		else if (row.status === "failed" && row.sourceKey !== null) {
+			await settleUnread(deps, job, row.sourceKey);
+		}
 	} catch (e) {
 		if (e instanceof MediaDeferred) {
 			// Keep what this attempt created for the record's row in the next batch.
@@ -929,6 +949,7 @@ async function decideRecord(
 		linkId: linkKey(collection, locale, sourceKey),
 		link: null,
 		read: null,
+		linkRead: false,
 		linkPut: false,
 		stamp: false,
 		stored: null,
@@ -1141,8 +1162,9 @@ async function decideRecord(
 		}
 		// M5c (Ruling 29 M7): crash repair stamps only an entry this job is shown to have created,
 		// decided before the repaired link's put and its journal row, so the stamp lands whatever
-		// the rest of the record decides.
-		if (entry && existing && ownerOf(job) !== undefined && !job.dryRun) {
+		// the rest of the record decides. Only a repair: a record that found its link (a retry pass
+		// included) never stamps again, since another owner may have dropped the stamp since.
+		if (repaired && entry && existing && ownerOf(job) !== undefined && !job.dryRun) {
 			ctx.stamp = await createdHere(ctx, existing, entry.id);
 		}
 		// A repaired link is saved only for an entry the record may write.

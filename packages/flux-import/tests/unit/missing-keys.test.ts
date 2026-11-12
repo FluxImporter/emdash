@@ -118,6 +118,9 @@ describe("unkeyed (M5c, Rulings 24 and 25)", () => {
 			(await start(deps, body, { extra: { source: { format: "csv", filter: "Price > 6" } } })).id,
 		);
 		expect(broken.unkeyed).toBe(2);
+		expect(broken.counters.failed).toBe(2);
+		const codes = (await records(deps, broken.id)).map((r) => r.errors?.[0]?.code);
+		expect(codes).toEqual(["filter_error", "filter_error"]);
 	});
 
 	it("counts blank CSV lines not at all", async () => {

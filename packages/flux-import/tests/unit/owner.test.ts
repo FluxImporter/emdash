@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LEASE_GRACE_MS, runBatch } from "../../src/engine/batch.js";
-import { createJob } from "../../src/engine/jobs.js";
+import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import type { SchemaField } from "../../src/engine/template.js";
 import {
 	type JournalEntry,
@@ -314,3 +314,97 @@ describe("the journal's link snapshot (M5c)", () => {
 		expect(await deps.journal.get(journalKey(job.id, linkId))).not.toBeNull();
 	});
 });
+
+describe("keeping the stamp on a refresh (M5c)", () => {
+	it("keeps the owner and its source when the fingerprints are refreshed", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk], { ...owned("a"), sourceId: "src1" });
+		// A link from before M5b: no fingerprints, so the next unchanged record refreshes them.
+		const { fields: _fields, ...old } = await linkOf(deps, "A1");
+		await deps.links.put("products:en:A1", old);
+		const puts = countPuts(deps);
+		const job = await importRows(deps, [desk], owned("a"));
+		expect(job.counters).toMatchObject({ unchanged: 1 });
+		expect(puts).toEqual(["products:en:A1"]);
+		const link = await linkOf(deps, "A1");
+		expect(link.fields).toBeDefined();
+		expect(link).toMatchObject({ owner: "a", ownerSource: "src1" });
+	});
+});
+
+describe("a retry pass never stamps again (M5c review)", () => {
+	it("leaves K unowned after another owner dropped the stamp", async () => {
+		const { deps } = setup();
+		// A creates K, and its publish fails as locked, so the row can be retried.
+		deps.content.failPublish = () => "locked";
+		const a = await importRows(deps, [desk], owned("a"));
+		deps.content.failPublish = () => null;
+		expect((await records(deps, a.id))[0]).toMatchObject({ status: "locked" });
+		expect(await linkOf(deps, "A1")).toMatchObject({ owner: "a" });
+		// B imports K and drops the stamp.
+		await importRows(deps, [desk], owned("b"));
+		expect(await linkOf(deps, "A1")).not.toHaveProperty("owner");
+		// A's retry finds K by its link: no crash repair, so no stamp.
+		await transitionJob(deps, a.id, "retry");
+		await runToEnd(deps, a.id);
+		expect(await linkOf(deps, "A1")).not.toHaveProperty("owner");
+	});
+});
+
+/**
+ * Spec Ruling 30: a record of another owner, or of none, that fails after its key was read but
+ * before it read the link still drops the stamp, with one link read and at most one put.
+ */
+describe("dropping a foreign stamp before the link read (M5c, Ruling 30)", () => {
+	const failing: [string, Row][] = [
+		["a mapping error", { ...desk, price: "n/a" as never }],
+		["a reference that resolves to nothing", { ...desk, related: "Z9" } as Row],
+	];
+	for (const owner of ["b", undefined]) {
+		for (const [name, row] of failing) {
+			it(`drops it when B (${owner ?? "no owner"}) fails on ${name}`, async () => {
+				const { deps } = setup();
+				await importRows(deps, [desk], owned("a"));
+				const before = await linkOf(deps, "A1");
+				const puts = countPuts(deps);
+				const job = await importRows(deps, [row], owner ? owned(owner) : {});
+				expect((await records(deps, job.id))[0]).toMatchObject({
+					status: "failed",
+					sourceKey: "A1",
+				});
+				const after = await linkOf(deps, "A1");
+				expect(after).not.toHaveProperty("owner");
+				expect(puts).toEqual(["products:en:A1"]);
+				expect(after).toEqual(withoutOwner(before));
+			});
+		}
+	}
+
+	it("keeps it for a failure of the same owner, and drops nothing in a dry run", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk], owned("a"));
+		const puts = countPuts(deps);
+		await importRows(deps, [{ ...desk, price: "n/a" as never }], owned("a"));
+		await importRows(deps, [{ ...desk, price: "n/a" as never }], { ...owned("b"), dryRun: true });
+		expect(puts).toEqual([]);
+		expect(await linkOf(deps, "A1")).toMatchObject({ owner: "a" });
+	});
+
+	it("reads no link for a record whose key failed", async () => {
+		const { deps } = setup();
+		await importRows(deps, [desk], owned("a"));
+		const reads: string[] = [];
+		const get = deps.links.get.bind(deps.links);
+		deps.links.get = async (id: string) => {
+			reads.push(id);
+			return get(id);
+		};
+		await importRows(deps, [{ ...desk, sku: "" }], owned("b"));
+		expect(reads).toEqual([]);
+	});
+});
+
+const withoutOwner = (link: LinkRow): LinkRow => {
+	const { owner: _owner, ownerSource: _source, ...rest } = link;
+	return rest;
+};
