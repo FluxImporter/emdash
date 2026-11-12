@@ -832,7 +832,12 @@ describe("FakeContent restore from Trash (M5c, spec F1, F2)", () => {
 			rev: "c3RhbGU=",
 			step: "restore",
 		});
-		expect(stale).toMatchObject({ ok: false, reason: "conflict" });
+		// EmDash's revision precondition, before the Trash fence (repositories/content.ts:52-58).
+		expect(stale).toEqual({
+			ok: false,
+			reason: "conflict",
+			message: "Content changed while the operation was in progress",
+		});
 		const restored = await deps.content.revertStep({
 			collection: "products",
 			locale: "en",
@@ -856,7 +861,11 @@ describe("FakeContent restore from Trash (M5c, spec F1, F2)", () => {
 			step: "restore",
 		});
 		// An active entry is not in Trash: EmDash's restore is a conflict then.
-		expect(again).toMatchObject({ ok: false, reason: "conflict" });
+		expect(again).toEqual({
+			ok: false,
+			reason: "conflict",
+			message: "Content changed while restoring",
+		});
 	});
 
 	it("publishes a restored entry back to its data, keeping publishedAt", async () => {

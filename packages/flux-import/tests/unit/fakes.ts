@@ -574,7 +574,16 @@ export class FakeContent implements ContentPort {
 			);
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
-		if (!e.trashed || this.encoded(e) !== input.rev) {
+		// EmDash checks `_rev` first (`assertRevisionPrecondition`, repositories/content.ts:52-58),
+		// then fences the update on `deleted_at IS NOT NULL` (:1654-1668).
+		if (this.encoded(e) !== input.rev) {
+			return {
+				ok: false,
+				reason: "conflict",
+				message: "Content changed while the operation was in progress",
+			};
+		}
+		if (!e.trashed) {
 			return { ok: false, reason: "conflict", message: "Content changed while restoring" };
 		}
 		const taken = [...this.entries.values()].some(
