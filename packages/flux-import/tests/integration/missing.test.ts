@@ -14,7 +14,7 @@ import {
 	translationNames,
 	translationTemplate,
 } from "../fixtures/translations.js";
-import { Client, devBypass } from "./client.js";
+import { ApiError, Client, devBypass } from "./client.js";
 import { productsCsv, template } from "./fixtures.js";
 import { type DevServer, startServer, stopServer } from "./server.js";
 
@@ -141,6 +141,7 @@ describe("M5c missing entries on Node", () => {
 		const created = await client.plugin("jobs/rollback", { id: job.id, batchSize: 10 });
 		const rolled = await client.runToEnd(created.id);
 		expect(rolled.counters).toMatchObject({ reverted: 1, conflict: 0, failed: 0 });
+		expect(await trashed("it_m5c_trash")).toEqual([]);
 		const restored = (await byKey("it_m5c_trash")).get("SKU-7");
 		expect(restored).toMatchObject({ status: "published", slug: before?.slug, data: before?.data });
 		const rerun = await importCsv(productsCsv(8), t);
@@ -207,6 +208,7 @@ describe("M5c missing entries on Node", () => {
 		const t = owned("it_m5c_limit", { action: "unpublish" });
 		await importCsv(productsCsv(20), t);
 		const refused = await importCsv(productsCsv(10), t);
+		expect(refused.job.status).toBe("completed");
 		expect(refused.job.missing).toMatchObject({ found: 10, removed: 0, verdict: "refused" });
 		expect(refused.job.warnings?.some((w) => w.includes("missing: { maxPercent: 50 }"))).toBe(true);
 		expect([...(await byKey("it_m5c_limit")).values()].every((e) => e.status === "published")).toBe(
@@ -214,6 +216,13 @@ describe("M5c missing entries on Node", () => {
 		);
 		const dry = await importCsv(productsCsv(10), t, { dryRun: true, missing: { maxPercent: 50 } });
 		expect(dry.job.counters.removed).toBe(10);
+		expect(dry.job.missing).toMatchObject({ found: 10, verdict: "act" });
+		// A dry run keeps no journal and saves no removed row: its missing rows are plans.
+		expect(dry.job.journal).toBeFalsy();
+		const dryRows = [...missingRows(dry.job, dry.rows).values()];
+		expect(dryRows).toHaveLength(10);
+		expect(dryRows.every((r) => r.status === "planned")).toBe(true);
+		expect(dry.rows.filter((r) => r.status === "removed")).toEqual([]);
 		expect([...(await byKey("it_m5c_limit")).values()].every((e) => e.status === "published")).toBe(
 			true,
 		);
@@ -231,7 +240,8 @@ describe("M5c missing entries on Node", () => {
 		expect(await trashed("it_m5c_skip")).toEqual([]);
 		// Another owner's record reaches SKU-3: neither owner counts it from now on (Ruling 21).
 		const onlyThree =
-			"sku,Name,Price,Released,Handle\r\n" + productsCsv(4).split("\r\n")[4] + "\r\n";
+			"sku,Name,Price,Released,Handle\r\n" +
+			`SKU-3,"Product 3, ""quoted""",3.5,04/03/2026,product-3\r\n`;
 		await importCsv(onlyThree, owned("it_m5c_skip", undefined, "other"));
 		const after = await importCsv(productsCsv(3), t);
 		expect(after.job.missing).toMatchObject({ owned: 3, found: 0 });
@@ -259,12 +269,18 @@ describe("M5c missing entries on Node", () => {
 		const lampBefore = (await listLocale(client, n.products, "en")).find(
 			(e) => e.data.title === "Lamp",
 		);
+		const lampe = (await listLocale(client, n.products, "fr")).find(
+			(e) => e.data.title === "Lampe",
+		);
+		expect(lampe).toBeDefined();
 		// F2 is missing from the French feed: it goes to Trash, and its English source stays (Fact V7).
 		const fr = await importCsv(translationCsv(frenchRows.slice(0, 1)), {
 			...french,
 			rules: { owner: "shop-fr", missing: trash },
 		});
+		expect(fr.job.missing).toMatchObject({ verdict: "act", removed: 1 });
 		expect(fr.job.counters.removed).toBe(1);
+		expect(await trashed(n.products, "fr")).toEqual([lampe?.id]);
 		expect((await listLocale(client, n.products, "fr")).map((e) => e.data.title)).toEqual([
 			"Bureau",
 		]);
@@ -280,10 +296,13 @@ describe("M5c missing entries on Node", () => {
 	});
 
 	it("survives a kill mid-act: every missing entry is unpublished once", async () => {
+		const TOTAL = 500;
+		const FED = 200;
+		const MISSING = TOTAL - FED;
 		await client.createProducts("it_m5c_crash");
 		const t = owned("it_m5c_crash", { action: "unpublish", maxPercent: 70 });
-		await importCsv(productsCsv(1000), t, { batchSize: 100 });
-		const { uploadId } = await client.upload(productsCsv(400));
+		await importCsv(productsCsv(TOTAL), t, { batchSize: 100 });
+		const { uploadId } = await client.upload(productsCsv(FED));
 		const created = await client.plugin("jobs/create", {
 			uploadId,
 			template: t,
@@ -293,22 +312,43 @@ describe("M5c missing entries on Node", () => {
 		});
 		let job = await client.plugin("jobs/next", { id: created.id });
 		while (job.missing?.stage !== "act") job = await client.plugin("jobs/next", { id: created.id });
-		const inFlight = client.plugin("jobs/next", { id: created.id }).catch(() => null);
-		// An act batch of 100 takes about 350 ms here: the kill lands inside it.
-		await sleep(150);
+		// Only a dropped connection counts as the kill's doing; an API error is a real failure.
+		const inFlight = client.plugin("jobs/next", { id: created.id }).catch((e: unknown) => {
+			if (e instanceof ApiError) throw e;
+			return null;
+		});
+		// Kill once the act stage has a row in flight or some, but not all, entries removed.
+		let seen = "";
+		for (let i = 0; i < 200 && seen === ""; i++) {
+			await sleep(20);
+			const writing = (await client.records(created.id, "writing")).length;
+			const removed = (await client.records(created.id, "removed")).length;
+			if (writing > 0) seen = `writing ${writing}`;
+			else if (removed > 0 && removed < MISSING) seen = `removed ${removed}`;
+		}
 		await stopServer(server, "SIGKILL");
-		const interrupted = (await inFlight) === null;
+		expect(seen, "the kill must land mid-act").not.toBe("");
+		expect(await inFlight, "the kill must cut off the jobs/next call").toBeNull();
+		console.info(`killed mid-act with ${seen} of ${MISSING}`);
 		await restart();
 		await waitForLease(created.id);
-		if (!interrupted) throw new Error("The kill did not cut off a jobs/next call in flight");
 		const done = await client.runToEnd(created.id);
 		expect(done).toMatchObject({
 			status: "completed",
-			counters: { unchanged: 400, removed: 600, failed: 0, conflict: 0 },
-			missing: { stage: "done", removed: 600 },
+			counters: { unchanged: FED, removed: MISSING, failed: 0, conflict: 0 },
+			missing: { stage: "done", removed: MISSING },
 		});
 		expect(await client.records(created.id, "writing")).toEqual([]);
-		const entries = await byKey("it_m5c_crash");
-		expect([...entries.values()].filter((e) => e.status === "draft")).toHaveLength(600);
+		// Once each: as many missing rows as keys, every one removed, none unverified.
+		const rows = [...missingRows(done, await client.records(created.id)).values()];
+		const all = (await client.records(created.id)).filter(
+			(r) => r.seq >= (done.missing?.fromSeq ?? Infinity),
+		);
+		expect(all).toHaveLength(MISSING);
+		expect(new Set(all.map((r) => r.sourceKey)).size).toBe(MISSING);
+		expect(rows.every((r) => r.status === "removed" && codes(r).length === 0)).toBe(true);
+		const entries = [...(await byKey("it_m5c_crash")).values()];
+		expect(entries.filter((e) => e.status === "draft")).toHaveLength(MISSING);
+		expect(entries.filter((e) => e.status === "published")).toHaveLength(FED);
 	}, 300_000);
 });
