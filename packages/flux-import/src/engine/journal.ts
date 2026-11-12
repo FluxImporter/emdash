@@ -137,13 +137,17 @@ export function preImage(
 	};
 }
 
-function linkBefore(link: LinkRow): NonNullable<JournalBefore["link"]> {
+/** The link row as a journal pre-image keeps it (M5a), with M5b's and M5c's fields. */
+export function linkBefore(link: LinkRow): NonNullable<JournalBefore["link"]> {
 	return {
 		...(link.jobId === undefined ? {} : { jobId: link.jobId }),
 		...(link.writtenRev === undefined ? {} : { writtenRev: link.writtenRev }),
 		...(link.fields === undefined ? {} : { fields: link.fields }),
 		...(link.unconfirmed === undefined ? {} : { unconfirmed: link.unconfirmed }),
 		...(link.scheduledAt === undefined ? {} : { scheduledAt: link.scheduledAt }),
+		...(link.owner === undefined ? {} : { owner: link.owner }),
+		...(link.ownerSource === undefined ? {} : { ownerSource: link.ownerSource }),
+		...(link.missing === undefined ? {} : { missing: link.missing }),
 	};
 }
 

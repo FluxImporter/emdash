@@ -133,6 +133,7 @@ describe("applyTemplate with translationOf", () => {
 		expect(await applyTemplate(c, row)).toMatchObject({ ok: true, value: { translationOf: "E1" } });
 		expect(await applyTemplate(c, { ...row, en_id: "" })).toEqual({
 			ok: false,
+			key: "F1",
 			errors: [{ field: "sku", code: "required", message: "The field is required" }],
 		});
 	});
@@ -143,6 +144,7 @@ describe("applyTemplate with translationOf", () => {
 		expect(await value(12)).toMatchObject({ ok: true, value: { translationOf: "12" } });
 		expect(await value({ id: "E1" })).toEqual({
 			ok: false,
+			key: "F1",
 			errors: [
 				{
 					field: "translationOf",
@@ -153,6 +155,7 @@ describe("applyTemplate with translationOf", () => {
 		});
 		expect(await value("x".repeat(257))).toEqual({
 			ok: false,
+			key: "F1",
 			errors: [
 				{
 					field: "translationOf",
@@ -182,6 +185,7 @@ describe("applyTemplate with translationOf", () => {
 		});
 		expect(await applyTemplate(compiled(broken), row)).toEqual({
 			ok: false,
+			key: "F1",
 			errors: [
 				{
 					field: "translationOf",
@@ -304,6 +308,7 @@ describe("applyTemplate with translationOf: shared mappings stay unread", () => 
 		] as const) {
 			expect(await applyTemplate(c, { ...data, en_id })).toEqual({
 				ok: false,
+				key: "F1",
 				errors: [{ field: "translationOf", code, message: expect.any(String) }],
 			});
 		}
@@ -334,6 +339,7 @@ describe("applyTemplate with translationOf: shared mappings stay unread", () => 
 		});
 		expect(await applyTemplate(compiled(unmapped, ["sku"]), row)).toEqual({
 			ok: false,
+			key: "F1",
 			errors: [{ field: "sku", code: "required", message: "The field is required" }],
 		});
 	});

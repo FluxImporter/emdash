@@ -772,7 +772,7 @@ export async function applyTemplate(
 	value: unknown,
 ): Promise<
 	| { ok: true; value: MappedRecord; warnings?: ValueWarning[] }
-	| { ok: false; errors: ValueError[]; warnings?: ValueWarning[] }
+	| { ok: false; errors: ValueError[]; warnings?: ValueWarning[]; key?: string }
 > {
 	const t = c.template;
 	const errors: ValueError[] = [];
@@ -814,6 +814,9 @@ export async function applyTemplate(
 		}
 	}
 
+	// M5c (Ruling 24): the key is the first mapping read, so it was read and is valid exactly when
+	// no error was pushed so far; a record with such a key is in the feed whatever else fails.
+	const keyRead = keyRaw !== FAILED && errors.length === 0;
 	let translationOf: string | undefined;
 	// A value that cannot be read still names a source: the record fails, without reading the
 	// shared mappings.
@@ -942,7 +945,7 @@ export async function applyTemplate(
 	}
 
 	const reported = warnings.length > 0 ? { warnings } : {};
-	if (errors.length > 0) return { ok: false, errors, ...reported };
+	if (errors.length > 0) return { ok: false, errors, ...reported, ...(keyRead ? { key } : {}) };
 	const mapped: MappedRecord = slug === undefined ? { key, data } : { key, slug, data };
 	if (translationOf !== undefined) mapped.translationOf = translationOf;
 	if (publishAt !== undefined) mapped.publishAt = publishAt;

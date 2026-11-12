@@ -477,7 +477,7 @@ describe("reads", () => {
 		const job = await startJob(deps, { uploadId: "u1", template, dryRun: false }, fields);
 		await drive(deps, uploads, job.id);
 		const log = await jobLogCsv(deps, job.id, "failed");
-		expect(log.split("\r\n")[1]).toMatch(/^2,failed,,,,invalid_number,price,/);
+		expect(log.split("\r\n")[1]).toMatch(/^2,failed,S1,,,invalid_number,price,/);
 		const row = (await deps.records.query({ where: { jobId: job.id, seq: 0 } })).items[0]!;
 		await deps.records.put(row.id, {
 			...row.data,

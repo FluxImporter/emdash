@@ -105,6 +105,10 @@ export type StartOptions = {
 	batchSize?: number;
 	/** M5b: whether the collection keeps revisions, for templates that map publishAt. */
 	revisions?: boolean;
+	/** M5c: the URL source the job's file came from (`Job.sourceId`). */
+	sourceId?: string;
+	/** M5c: the job option `missing`. */
+	missing?: false | { maxPercent: number };
 	extra?: Record<string, unknown>;
 };
 
