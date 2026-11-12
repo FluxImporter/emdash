@@ -1,4 +1,4 @@
-import { batchOptions, JobError, upgradeJob } from "./jobs.js";
+import { batchOptions, JobError, settleStoppedJob, upgradeJob } from "./jobs.js";
 import { type EngineDeps, emptyCounters, type Job } from "./types.js";
 
 /** Media IDs the rollback job's warning lists; past them it says there are more. */
@@ -95,6 +95,9 @@ export async function createRollback(
 	input: RollbackInput,
 ): Promise<{ rollback: Job; original: Job }> {
 	const { batchSize, budgetMs } = batchOptions(input);
+	// M5c: a missing phase a batch stopped in gets its landed trashes' marked links first, which
+	// the rollback's ownership test reads (spec "Crash repair"). No-op for any other job.
+	if (input.dryRun !== true) await settleStoppedJob(deps, input.id);
 	const current = await deps.jobs.getVersioned(input.id);
 	if (!current) throw new JobError("not_found", `Job ${input.id} not found`);
 	const original = upgradeJob(current.value);

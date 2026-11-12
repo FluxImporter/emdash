@@ -6,6 +6,7 @@ import {
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "./media.js";
+import { settleStopped } from "./missing.js";
 import { SourceMissingError } from "./ports.js";
 import {
 	checkTemplate,
@@ -367,11 +368,31 @@ export function withoutPlannedTerms(job: Job): Job {
 	return rest;
 }
 
-export function transitionJob(
+/**
+ * M5c: settles a stopped job's missing phase before it ends or is rolled back (spec "Crash
+ * repair"), so a trash that landed carries its marked link. Skipped while a batch holds a live
+ * lease: that batch finishes its own calls. The counts are saved only when no batch ran since.
+ */
+export async function settleStoppedJob(deps: EngineDeps, id: string): Promise<void> {
+	const stored = await deps.jobs.get(id);
+	if (!stored || (stored.lease && stored.lease.expiresAt > deps.now())) return;
+	const job = structuredClone(upgradeJob(stored));
+	if (!(await settleStopped(deps, job)) || job.missing === undefined) return;
+	const missing = job.missing;
+	const progress = (j: Job) => JSON.stringify([j.missing, j.counters, j.lease]);
+	const was = progress(upgradeJob(stored));
+	await updateJob(deps, id, (current) =>
+		progress(current) === was ? { ...current, counters: job.counters, missing } : current,
+	);
+}
+
+export async function transitionJob(
 	deps: EngineDeps,
 	id: string,
 	action: "pause" | "resume" | "cancel" | "retry",
 ): Promise<Job> {
+	// M5c: a cancel ends the job, so a stopped batch's landed trash is finished first.
+	if (action === "cancel") await settleStoppedJob(deps, id);
 	return updateJob(deps, id, (job) => {
 		if (!ALLOWED[action].includes(job.status) || (action === "retry" && job.dryRun)) {
 			throw new JobError(

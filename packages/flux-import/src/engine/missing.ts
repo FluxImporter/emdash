@@ -8,7 +8,8 @@ import { counterFor } from "./counters.js";
 import { linkBefore } from "./journal.js";
 import { ownerOf } from "./owner.js";
 import { ContentWriteError, type EntrySnapshot, JOB_LEVEL_WRITE_ERRORS } from "./ports.js";
-import { COST_CALL, COST_READ, type LookupCache } from "./resolve.js";
+import { COST_CALL, COST_READ, LookupCache } from "./resolve.js";
+import { decodeRev } from "./revs.js";
 import { holdsScheduled, sweptSince } from "./rules.js";
 import {
 	bump,
@@ -241,7 +242,6 @@ async function countStage(
 			];
 			return { done: true };
 		}
-		m.owned += candidates.length;
 		const seen = await seenOf(
 			deps,
 			job,
@@ -249,12 +249,17 @@ async function countStage(
 			candidates.map((l) => l.sourceKey),
 			cache,
 		);
+		// The page's tallies reach the job only with its cursor (spec "Crash repair"): an error
+		// part way saves neither, so the page is counted again, once.
+		let found = 0;
 		for (const link of candidates) {
 			if (seen.get(link.sourceKey)?.imported) continue;
 			cache.spend(COST_READ);
 			reads++;
-			if ((await deps.content.get(collection, locale, link.entryId)) !== null) m.found++;
+			if ((await deps.content.get(collection, locale, link.entryId)) !== null) found++;
 		}
+		m.owned += candidates.length;
+		m.found += found;
 		if (!page.hasMore || page.cursor === undefined) return { done: finishCount(job, m) };
 		m.cursor = page.cursor;
 		if (deps.now() - started >= job.budgetMs) return { done: false };
@@ -322,10 +327,9 @@ async function actStage(
 	limit: number,
 	cache: LookupCache,
 ): Promise<Outcome> {
-	const action = job.template.rules?.missing?.action;
-	if (action === undefined) throw new Error(`Job ${job.id} has no rules.missing`);
+	const action = actionOf(job);
+	let decided = await repair(deps, job, m, cache, true);
 	let seq = m.fromSeq + m.rows;
-	let decided = 0;
 	let paged = false;
 	for (;;) {
 		const size = Math.min(LINK_PAGE, limit - decided);
@@ -343,7 +347,7 @@ async function actStage(
 		for (const link of candidates) {
 			const s = seen.get(link.sourceKey);
 			if (s?.imported) continue;
-			// A row this phase already decided (Task 5 resumes a `writing` one).
+			// A row this phase already decided; `repair` settled a `writing` one.
 			if (s?.own) continue;
 			await decideNew({ deps, job, m, link, action, cache }, seq);
 			seq++;
@@ -358,6 +362,159 @@ async function actStage(
 		m.cursor = page.cursor;
 		if (deps.now() - started >= job.budgetMs) return { done: false };
 	}
+}
+
+function actionOf(job: Job): MissingAction {
+	const action = job.template.rules?.missing?.action;
+	if (action === undefined) throw new Error(`Job ${job.id} has no rules.missing`);
+	return action;
+}
+
+/**
+ * The rows a stopped batch saved past the saved `rows` (spec "Crash repair", Ruling 29 M1): its
+ * release was lost, so they are counted here, on the job's counters and on `removed`, and the
+ * next seq follows the last of them, so none is overwritten. A `writing` row among them is
+ * settled (`settleWriting`); with `restart`, one whose call did not land is decided again at its
+ * seq. Returns how many `writing` rows it settled.
+ */
+async function repair(
+	deps: EngineDeps,
+	job: Job,
+	m: MissingState,
+	cache: LookupCache,
+	restart: boolean,
+): Promise<number> {
+	let settled = 0;
+	let cursor: string | undefined;
+	do {
+		cache.spend(COST_CALL);
+		const page = await deps.records.query({
+			where: { jobId: job.id, seq: { gte: m.fromSeq + m.rows } },
+			orderBy: { seq: "asc" },
+			limit: LINK_PAGE,
+			...(cursor === undefined ? {} : { cursor }),
+		});
+		for (const { data: row } of page.items) {
+			if (row.status === "writing") {
+				// Without `restart`, a row left `writing` stays past `rows`, for a resume to settle.
+				if (!(await settleWriting(deps, job, m, row, cache, restart)) && !restart) return settled;
+				settled++;
+			} else tally(job, m, row);
+			m.rows = Math.max(m.rows, row.seq + 1 - m.fromSeq);
+		}
+		cursor = page.hasMore ? page.cursor : undefined;
+	} while (cursor !== undefined);
+	return settled;
+}
+
+/**
+ * A `writing` row a stopped batch left (spec "Crash repair"). Its link already carries this job's
+ * mark: the row becomes `removed`. Its call landed: finished at step 5, once. The entry moved and
+ * the call may have landed: `missing_unverified`, and its journal row stays. The call did not
+ * land: with `restart`, its journal row is deleted and the entry decided again at the same seq
+ * (plan Ruling 14); without, the row is left for a resume. Returns whether the row was settled.
+ */
+async function settleWriting(
+	deps: EngineDeps,
+	job: Job,
+	m: MissingState,
+	row: RecordRow,
+	cache: LookupCache,
+	restart: boolean,
+): Promise<boolean> {
+	const { collection, locale } = job.template;
+	if (row.sourceKey === null) return false;
+	const key = linkKey(collection, locale, row.sourceKey);
+	cache.spend(COST_CALL);
+	const link = await deps.links.get(key);
+	if (link === null) return false;
+	const ctx: ActCtx = { deps, job, m, link, action: actionOf(job), cache };
+	const save = saver(ctx, row.seq);
+	let fields: RowFields | null;
+	if (link.missing?.jobId === job.id) {
+		// A stop after step 5's link put, before the row save.
+		fields = rowOf(
+			ctx,
+			"removed",
+			row.entryId,
+			link.writtenRev === undefined ? {} : { writtenRev: link.writtenRev },
+		);
+	} else {
+		try {
+			fields =
+				row.entryId === null || row.writtenRev === undefined
+					? null
+					: await landed(ctx, row.entryId, row.writtenRev);
+		} catch (e) {
+			if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
+			fields = unverified(ctx, row.entryId);
+		}
+	}
+	if (fields !== null) {
+		await save(fields);
+		count(ctx, fields);
+		return true;
+	}
+	if (!restart || !isCandidate(link, job)) return false;
+	cache.spend(COST_CALL);
+	await deps.journal.delete(journalKey(job.id, key));
+	await decideNew(ctx, row.seq);
+	return true;
+}
+
+/**
+ * Whether a stopped call landed (spec "Crash repair"): its finished row, null when it did not
+ * (the entry is active at the row's `writtenRev`, or active at all for a trash, plan Ruling 14),
+ * or a `missing_unverified` row for any other state.
+ */
+async function landed(ctx: ActCtx, id: string, rev: string): Promise<RowFields | null> {
+	const { deps, job, action, cache } = ctx;
+	const { collection, locale } = job.template;
+	cache.spend(COST_READ);
+	const active = await deps.content.get(collection, locale, id);
+	if (action === "trash") {
+		if (active !== null) return null;
+		// Plan Ruling 3: only here does the act stage look in Trash. Trash keeps `_rev` (spec F1).
+		cache.spend(COST_READ);
+		const trashed = await deps.content.getIncludingTrashed(collection, locale, id);
+		return trashed?.trashed === true && trashed.rev === rev
+			? finish(ctx, id, rev)
+			: unverified(ctx, id);
+	}
+	if (active === null) return unverified(ctx, id);
+	if (active.rev === rev) return null;
+	// An unpublish moves the version on by one and leaves a draft without a schedule (spec V2, F7).
+	const now = decodeRev(active.rev);
+	const was = decodeRev(rev);
+	const unpublished =
+		now !== null &&
+		was !== null &&
+		now.version === was.version + 1 &&
+		active.status !== "published" &&
+		active.scheduledAt === null;
+	return unpublished ? finish(ctx, id, active.rev) : unverified(ctx, id);
+}
+
+function unverified(ctx: ActCtx, id: string | null): RowFields {
+	return rowOf(ctx, "conflict", id, {
+		errors: [issue("missing_unverified", UNVERIFIED_MESSAGE)],
+	});
+}
+
+/**
+ * Before a stopped job ends, cancelled or failed, or is rolled back (spec "Crash repair",
+ * Ruling 29 M3): counts the rows a lost release left out and settles their `writing` rows, so a
+ * trash that landed always carries its marked link (the rollback's ownership test needs the
+ * mark). Nothing is decided anew. Returns whether the job's counters or phase moved.
+ */
+export async function settleStopped(deps: EngineDeps, job: Job): Promise<boolean> {
+	const m = job.missing;
+	if (job.kind === "rollback" || job.dryRun || job.phase !== "missing" || m?.stage !== "act") {
+		return false;
+	}
+	const rows = m.rows;
+	await repair(deps, job, m, new LookupCache(), false);
+	return m.rows !== rows;
 }
 
 /** Saves a missing row at `seq` (start and end 0: it reads no record). */
@@ -392,9 +549,13 @@ const issue = (code: string, message: string): RecordError => ({ code, message }
 
 /** Counts a decided row on the job, and `removed` on the phase. */
 function count(ctx: ActCtx, row: RowFields): void {
+	tally(ctx.job, ctx.m, row);
+}
+
+function tally(job: Job, m: MissingState, row: Pick<RecordRow, "status" | "action">): void {
 	const counter = counterFor(row);
-	if (counter) bump(ctx.job.counters, counter);
-	if (counter === "removed") ctx.m.removed++;
+	if (counter) bump(job.counters, counter);
+	if (counter === "removed") m.removed++;
 }
 
 /**
@@ -431,7 +592,12 @@ async function verdictOf(ctx: ActCtx, entry: EntrySnapshot | null): Promise<Miss
 	return null;
 }
 
-/** Decides a candidate the phase has no row for yet, and saves its row at `seq`. */
+/**
+ * Decides a candidate the phase has no row for yet (or a stopped one starts over), and saves its
+ * row at `seq`. A left-alone row of a real run deletes the journal row under its key (plan
+ * Ruling 14): a batch that stopped between the journal put and the `writing` row left one, and
+ * sent no call.
+ */
 async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 	const { deps, job, m, link, action, cache } = ctx;
 	const { collection, locale } = job.template;
@@ -441,10 +607,16 @@ async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 		cache.spend(COST_READ);
 		const entry = await deps.content.get(collection, locale, link.entryId);
 		const code = await verdictOf(ctx, entry);
-		if (entry === null || code !== null)
-			row = unchanged(ctx, entry?.id ?? null, code ?? "missing_gone");
-		else if (m.removed >= m.found) row = unchanged(ctx, entry.id, "missing_over_count");
-		else if (job.dryRun) {
+		let left: RowFields | null = null;
+		if (entry === null || code !== null) {
+			left = unchanged(ctx, entry?.id ?? null, code ?? "missing_gone");
+		} else if (m.removed >= m.found) left = unchanged(ctx, entry.id, "missing_over_count");
+		if (left !== null) {
+			if (!job.dryRun) await dropJournal(ctx);
+			row = left;
+		} else if (entry === null) {
+			throw new Error("unreachable: an act verdict without an entry");
+		} else if (job.dryRun) {
 			row = rowOf(ctx, "planned", entry.id, {
 				changes: [
 					{
@@ -456,7 +628,7 @@ async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 			});
 		} else row = await act(ctx, entry, seq, save);
 	} catch (e) {
-		// Plan Ruling 10: the write-ahead row stays, since the call may have landed.
+		// A read or lock check failed (a failed call is `send`'s): EmDash's code, as an import row.
 		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
 		row = rowOf(ctx, "failed", link.entryId, { errors: [issue(e.code, e.message)] });
 	}
@@ -478,6 +650,7 @@ async function act(
 	const { collection, locale } = job.template;
 	cache.spend(COST_CALL);
 	if (await deps.content.isLocked(collection, locale, entry.id)) {
+		await dropJournal(ctx);
 		return rowOf(ctx, "locked", entry.id, { errors: [issue("locked", LOCKED_MESSAGE)] });
 	}
 	const key = journalKey(job.id, linkKey(collection, locale, link.sourceKey));
@@ -505,11 +678,30 @@ async function act(
 	return send(ctx, entry.id, entry.rev, key);
 }
 
+/** Deletes the journal row under the link's key: no call of this job's went out for it. */
+async function dropJournal(ctx: ActCtx): Promise<void> {
+	const { collection, locale } = ctx.job.template;
+	ctx.cache.spend(COST_CALL);
+	await ctx.deps.journal.delete(
+		journalKey(ctx.job.id, linkKey(collection, locale, ctx.link.sourceKey)),
+	);
+}
+
 /**
  * The call (step 4) and, when it landed, the link (step 5). A call that did not land deletes the
- * write-ahead journal row (Ruling 29 M2).
+ * write-ahead journal row (Ruling 29 M2). A call that threw may have landed: `missing_unverified`,
+ * and the journal row stays for a rollback; a job-level error fails the job, the row `writing`.
  */
 async function send(ctx: ActCtx, id: string, rev: string, key: string): Promise<RowFields> {
+	try {
+		return await call(ctx, id, rev, key);
+	} catch (e) {
+		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
+		return unverified(ctx, id);
+	}
+}
+
+async function call(ctx: ActCtx, id: string, rev: string, key: string): Promise<RowFields> {
 	const { deps, job, action, cache } = ctx;
 	const { collection, locale } = job.template;
 	if (action === "trash") {

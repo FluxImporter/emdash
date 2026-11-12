@@ -16,6 +16,7 @@ import {
 	JobError,
 	jobReader,
 	jobTemplate,
+	settleStoppedJob,
 	updateJob,
 	upgradeJob,
 	withoutPlannedTerms,
@@ -39,7 +40,7 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
-import { enterMissing, missingPass } from "./missing.js";
+import { enterMissing, missingPass, settleStopped } from "./missing.js";
 import { foreignStamp, ownerOf, ownership, withoutStamp } from "./owner.js";
 import {
 	lookupPortableTextImages,
@@ -2031,7 +2032,12 @@ async function retryPass(
 			where: {
 				jobId: job.id,
 				status: { in: ["failed", "conflict", "locked", "writing"] },
-				seq: { gte: job.retryFromSeq },
+				// M5c: the missing phase's rows read no record; a retry leaves them (spec "Retry",
+				// Ruling 26).
+				seq:
+					job.missing === undefined
+						? { gte: job.retryFromSeq }
+						: { gte: job.retryFromSeq, lt: job.missing.fromSeq },
 			},
 			orderBy: { seq: "asc" },
 			limit: Math.min(limit, RETRY_PAGE),
@@ -2152,6 +2158,9 @@ export async function runBatch(
 		}
 	}
 	keepPlannedTerms(job, cache);
+	// M5c: an error fails the job, so a landed trash gets its marked link first (spec "Crash
+	// repair"); the error stays the job's whatever the settling meets.
+	if (outcome.error) await settleStopped(deps, job).catch(() => false);
 	return release(deps, job, holder, outcome);
 }
 
@@ -2178,11 +2187,13 @@ const MAX_FAILURES = 3;
  */
 async function noteFailure(deps: EngineDeps, jobId: string, holder: string, e: unknown) {
 	const message = e instanceof Error ? e.message : String(e);
-	await updateJob(deps, jobId, (stored) => {
+	const noted = await updateJob(deps, jobId, (stored) => {
 		if (stored.lease?.holder !== holder) return stored;
 		const failures = stored.failures + 1;
 		const next: Job = { ...stored, error: { code: "internal", message }, failures };
 		if (failures < MAX_FAILURES) return next;
 		return { ...next, status: stored.status === "running" ? "failed" : stored.status, lease: null };
 	});
+	// M5c: the job failed, so a landed trash gets its marked link (spec "Crash repair").
+	if (noted.status === "failed" && noted.lease === null) await settleStoppedJob(deps, jobId);
 }
