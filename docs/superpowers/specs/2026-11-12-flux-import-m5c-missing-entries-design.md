@@ -1,7 +1,9 @@
 # Flux Import M5c: missing entries
 
 Status: approved 2026-10-27 (the user approved all remaining milestones up front; design decisions
-are the implementer's rulings). Revised 2026-11-12 after the spec review (Rulings 21-29). Third of
+are the implementer's rulings). Revised 2026-11-12 after the spec review (Rulings 21-29), and
+amended after implementation to match the code (Rulings 31-38, "Amendments after
+implementation"). Third of
 three parts of Milestone 5 (Record rules and safety) of
 [the roadmap](./2026-10-07-flux-import-roadmap-design.md#milestone-5-split). Builds on M5b
 ([spec](./2026-11-04-flux-import-m5b-record-rules-design.md),
@@ -42,18 +44,18 @@ owner loses the stamp when one of its records reaches it (Rulings 2, 21).
 | Shape | `rules.owner: string` and `rules.missing: { action, maxPercent? }` sit in `rules`, next to M5b's `mode`, `updateFields` and `protectEdited`, so a saved template (M6) carries them. `missing` needs `owner`. The job option `missing` overrides the threshold or turns the phase off for one run. All optional and additive, so `version` stays 1 (Rulings 1, 7, 28). |
 | What "owner" means | An explicit name, stamped on `LinkRow.owner` by the job's own creates. The code has no other stable identity: `LinkRow` is keyed `collection:locale:sourceKey` and shared by every template with that key (`src/engine/types.ts:200-228`, `linkKey` `:376-378`); `jobId` names the last job that wrote the link and changes every run (`putLink`, `src/engine/batch.ts:353-372`); `lastImport` is per URL source, not per template, and names only the newest job (`src/plugin/sources.ts:33-43`). Templates have no ID until M6 (Ruling 1). |
 | Losing ownership | Any record of a template whose owner differs, or that has none, that reaches a link stamped with an owner drops the stamp, whatever its outcome: written, unchanged, skipped by its mode, protected (Rulings 2, 21). |
-| Which run acts | Only a real import job's first pass that **completed** (no job-level error), read at least one record with a key, and had no record without a readable key (record errors, unreadable keys, rows a reader skipped). Not a cancelled, failed or paused pass, not a retry pass, not a rollback job, not a job with `journal: false` (refused at creation). A dry run plans (Rulings 5, 24, 25). |
+| Which run acts | Only a real import job's first pass that **completed** (no job-level error), read at least one record with a key, and had no record without a readable key (record errors, unreadable keys, rows a reader skipped). Not a cancelled, failed or paused pass, not a retry pass, not a rollback job, not a job with `journal: false` (refused at creation, unless the job option is `missing: false`, Ruling 35). A dry run plans (Rulings 5, 24, 25). |
 | What "seen" means | A record row of this job, from its first pass, with the entry's source key, in any status, including a record that failed on another field after its key was read (Ruling 24). A filtered record is not seen: the filter is part of what the feed selects (Ruling 4). |
 | Two stages | **Count** reads every owned link and every unseen entry; **act** runs only when the count passes the threshold, and decides and acts on each entry again. A stop between them loses nothing (Ruling 6). |
 | Threshold | Refused when `found × 100 > maxPercent × base`. `found` counts every unseen candidate whose entry exists, whether or not the act stage would change it (Ruling 22). `base` is the owner's unmarked candidate links minus this job's creates (`counters.created`) on a real run, the candidate links on a dry run (Ruling 23). A refusal changes nothing, sets `Job.missing.verdict = "refused"` with a job warning, and the job still completes (Rulings 6, 7). |
 | Editor safety | An entry is acted on only when it is as the importer left it: its `_rev` is the link's `writtenRev`, or EmDash's scheduler published the importer's schedule since (M5b "Ownership after the scheduler published"). Otherwise it is `unchanged` with `missing_edited`, **whatever `protectEdited` says** (Ruling 8). |
 | Pending state | An entry with a pending draft or a schedule is `unchanged` with `missing_pending`, also when the importer made it (Ruling 9). |
 | Translations | Trash leaves a group root with other active entries (`missing_has_translations`), as M5a's rollback does. Unpublish acts on the one locale. Each locale's template has its own owner and links (Ruling 10). |
-| Concurrent jobs | A link whose `jobId` is a job created after this one is not counted and not acted on (job IDs are ULIDs, F15) (Ruling 11). |
+| Concurrent jobs | A link whose `jobId` is a job created after this one, or in the same millisecond, is not counted and not acted on (job IDs are ULIDs, F15) (Rulings 11, 37). |
 | Mixed sources | The phase refuses as a whole when an owned candidate link was stamped by a job from another URL source (`LinkRow.ownerSource`, Ruling 27). Two templates sharing one owner name is otherwise the operator's responsibility ("Template documentation"). |
 | Delete | Not offered. A permanent delete cannot be rolled back (F4) (Ruling 12). |
 | Journal | Trash: a `trash` journal row with the M5a `before`. Unpublish: an `update` row with `before.status: "published"` and empty `live`, which the M5a revert sequence already rolls back (Ruling 13). |
-| Rollback | Trash rows: step 8 `restore` (`handleContentRestore` with `_rev`, F2), then step 9 `republish` when the entry was published. Unpublish rows: the M5a sequence (step 2 publishes). The link goes back to `before.link`, owner included (Ruling 13). |
+| Rollback | Trash rows: step 8 `restore` (`handleContentRestore` with `_rev`, F2), then step 9 `republish` when the entry was published. Unpublish rows: the M5a sequence (step 2 publishes). The link goes back to `before.link`; its owner stamp only while the link it replaces still carries that owner (Rulings 13, 31). |
 | Marked links | After acting, the link row is saved with `missing: { jobId, action, at }`. A marked link is left out of later counts. Any import write to the entry clears the mark (Ruling 14). |
 | Keys that come back | An unpublished entry that reappears is republished by the M2/M5b rule for the importer's own pending state. A trashed one is not restored automatically: its record is `conflict`, `missing_trashed` (Ruling 15). |
 | Rows and counters | Each entry the act stage decides gets a record row after the import's rows (`seq >= Job.missing.fromSeq`): `removed` (new status and counter) with `action: "trash" \| "unpublish"`, or `unchanged`, `locked`, `conflict`, `failed` with a code. `jobs/retry` does not touch these rows; the next completed run decides their entries afresh (Rulings 17, 26). |
@@ -128,8 +130,8 @@ without, through a temporary probe route as in M5a and M5b.
   link's job and a job read (one per distinct `jobId`, cached per batch), and this spec is amended.
 - **V7. Trash of a translation.** Trashing a non-root translation leaves its source's data, terms,
   references and status unchanged, and `translations()` of the source no longer lists it.
-- **V8. D1 query counts.** A count batch at `WORKERS_MISSING_SCAN_CAP` (provisional 40 reads), an
-  act batch at `WORKERS_MISSING_BATCH_CAP` (provisional 10) of trashes and one of unpublishes, each
+- **V8. D1 query counts.** A count batch at `WORKERS_MISSING_SCAN_CAP` (40 reads, measured in
+  Task 9), an act batch at `WORKERS_MISSING_BATCH_CAP` (10, measured in Task 9) of trashes and one of unpublishes, each
   with the journal and the `removed` recount, and a rollback batch at `WORKERS_ROLLBACK_BATCH_CAP`
   (3) of trash rows (steps 8 and 9) and of unpublish rows. Each must stay under 900 queries (the
   margin M5b kept). A cap that does not fit is lowered to what does.
@@ -162,10 +164,13 @@ If V1, V2 or V4 fail, the plan stops and this spec is amended before Task 1.
 
 Refused at job creation:
 
-- `rules.missing` without `rules.owner`: `invalid_template`, "rules.missing needs rules.owner".
+- `rules.missing` without `rules.owner`: `invalid_template`. The template schema refuses it, so
+  every template check (`jobs/create`, the schema inference and apply routes) reports it with its
+  path: "rules.missing: rules.missing needs rules.owner" in the error's details (Ruling 34).
 - The job option `missing` when the template has no `rules.missing`: `invalid_options`.
-- `rules.missing` with `journal: false`: `invalid_options`, "rules.missing needs the journal, so
-  its changes can be rolled back".
+- `rules.missing` with `journal: false`, unless the job option is `missing: false` (the phase is
+  off, so nothing needs undoing; Ruling 35): `invalid_options`, "rules.missing needs the journal,
+  so its changes can be rolled back".
 
 ```ts
 // Template rules gain (zod, strict):
@@ -184,7 +189,8 @@ Refused at job creation:
 //     found: number;              // count stage: unseen candidates whose entry exists
 //     rows: number;               // act stage: rows written
 //     removed: number;            // act stage: entries trashed or unpublished (or planned);
-//                                 //   recounted from the rows at each act batch (Ruling 29 M1)
+//                                 //   rows past fromSeq + rows recounted at each act batch
+//                                 //   (Ruling 29 M1, incremental: Ruling 37)
 //     verdict?: "act" | "refused" | "skipped";
 //   }
 // Job.phase gains "missing". Counters gain removed?: number (absent: 0).
@@ -232,8 +238,12 @@ Refused at job creation:
   the same way. That costs one link read per such failure, and nothing in a dry run. A record
   whose key failed reads nothing. A record that defers (`MediaDeferred`) or hits a job-level error
   skips the drop until it is decided again.
-- **Rollback.** The journal's link snapshot holds `owner`, `ownerSource` and `missing`, and the
-  M5a link hand-back restores them with the rest of `before.link`. A rolled-back create deletes its
+- **Rollback (Ruling 31).** The journal's link snapshot holds `owner`, `ownerSource` and `missing`,
+  and the M5a link hand-back restores `missing` with the rest of `before.link`. It restores `owner`
+  and `ownerSource` only when the link it replaces names the entry and still carries that same
+  owner; a link whose stamp another owner's record dropped since stays unowned, so the owner's next
+  run never removes an entry another feed holds (an M5a update rolled back after the drop, or a
+  trash rolled back after a `missing_trashed` record dropped it). A rolled-back create deletes its
   link (M5a).
 - **Not stamped.** Entries created before M5c, or by a template without `rules.owner`, have no
   owner and stay unowned: there is no adoption (Out of scope). An editor's entry never has a link
@@ -298,7 +308,8 @@ links.query({ where: { owner, collection, locale }, limit: 100, cursor })   // n
 ```
 
 A link is a **candidate** when it has no `missing` mark and its `jobId` is not a job created after
-this one (`link.jobId > job.id`, F15, Ruling 11). Each candidate counts toward `owned`.
+this one (`laterJob`: `link.jobId > job.id`, or both are ULIDs of the same millisecond, which
+`ulid()` does not order; F15, Rulings 11, 37). Each candidate counts toward `owned`.
 
 **Mixed sources (Ruling 27).** A candidate with an `ownerSource` that is not this job's `sourceId`
 (also when this job has none) means a job from another URL source created entries under this
@@ -313,8 +324,9 @@ records.query({ where: { jobId: job.id, sourceKey: { in: keys } }, limit: 100 })
 ```
 
 A key with a row whose `seq < fromSeq` is **seen**. A row with `seq >= fromSeq` is this phase's
-own earlier row (crash repair, below). Every unseen candidate is read (`content.get`, with
-`getIncludingTrashed` when it misses) and decided.
+own earlier row (crash repair, below). Every unseen candidate is read with `content.get` only (a
+miss, active or in Trash, is `missing_gone` either way; plan Ruling 3, Ruling 37) and decided.
+Only crash repair reads `getIncludingTrashed`, to tell a landed trash.
 
 ### Verdicts
 
@@ -339,12 +351,12 @@ edited.
 ### Count stage
 
 Pages candidates and reads each unseen one, tallying `owned` and `found` on the job (saved with the
-cursor at each release). Every read counts against `WORKERS_MISSING_SCAN_CAP`, misses and the
-`getIncludingTrashed` that follows them included (Ruling 29 M8). When the links are exhausted, with
+cursor at each release). Every read counts against `WORKERS_MISSING_SCAN_CAP`, misses included
+(Ruling 29 M8); the count stage reads `content.get` only (Ruling 37). When the links are exhausted, with
 `base = owned - counters.created` on a real run (this job's creates are owned links that cannot be
 missing, Ruling 23) and `base = owned` on a dry run (whose creates made no links):
 
-- `found === 0`: `stage: "done"`, nothing to do, the job completes.
+- `found === 0`: `verdict: "act"`, `stage: "done"`, nothing to do, the job completes.
 - over the threshold (`found × 100 > maxPercent × base`):
   - real run: `verdict: "refused"`, `stage: "done"`, job warning "Missing entries were left alone:
     <found> of the <base> entries owner <owner> created before this import are not in the feed
@@ -358,13 +370,15 @@ missing, Ruling 23) and `base = owned` on a dry run (whose creates made no links
 
 ### Act stage
 
-Each act batch first recounts `removed` from this phase's rows (`records.query` by `jobId`, status
-`removed` or, on a dry run, `planned`, and `seq >= fromSeq`, paged; Ruling 29 M1), so a batch lost
-after acting cannot let the cap below be exceeded. It then pages candidates again (a fresh cursor at
-the stage's start) and decides each unseen one again (state may have changed since the count). Each
-decided entry gets a row `recordKey(job.id, seq)` with `seq = max(fromSeq + rows, last missing
-row's seq + 1)` (the last one read once per batch, `records.query` by `seq` descending, limit 1),
-`start` and `end` 0, the link's `sourceKey` and the entry ID.
+Each act batch first counts the rows a lost release left out (Ruling 37): `records.query` by
+`jobId` and `seq >= fromSeq + rows`, by `seq` ascending, paged. Each such row is added to the job's
+counters and to `removed` (a `removed` row, or a planned one on a dry run), its `writing` rows are
+settled (Crash repair), and `rows` moves past the last of them; so a batch lost after acting cannot
+let the cap below be exceeded (Ruling 29 M1), and the rows the saved `rows` already covers are
+never read again. It then pages candidates again (a fresh cursor at the stage's start) and decides
+each unseen one again (state may have changed since the count). Each decided entry gets a row
+`recordKey(job.id, seq)` with `seq = fromSeq + rows` after that count, `start` and `end` 0, the
+link's `sourceKey` and the entry ID. A batch whose repair settled its whole limit takes no page.
 
 - **Not more than counted.** Once `removed === found`, a further act verdict is `unchanged`,
   `missing_over_count` ("Left alone: more entries were missing than when the import counted them;
@@ -372,7 +386,9 @@ row's seq + 1)` (the last one read once per batch, `records.query` by `seq` desc
 - **Dry run.** An act verdict is `planned` with `action` and `changes: [{ field: "status", before:
   <status>, after: "trashed" | "draft" }]`; nothing is written, no journal, no link.
 - **Real run, act.** For entry `E` at `_rev` `R` and link `L`:
-  1. `isLocked`: `locked`, `locked` ("Not changed: the entry is being edited (locked)").
+  1. `isLocked`: `locked`, `locked` ("Not changed: the entry is being edited (locked)"). A locked
+     or left-alone row of a real run deletes the journal row under its key (one delete each): a
+     batch that stopped between step 2 and step 3 left one, and sent no call (plan Ruling 14).
   2. Journal write-ahead, put-if-absent at `journalKey(job.id, linkId)`: `{ kind: "trash" |
      "update", seq, entryId: E.id, before: { link: snapshot(L), rev: R, status: E.status,
      scheduledAt: null, live: {} }, at }`.
@@ -382,7 +398,9 @@ row's seq + 1)` (the last one read once per batch, `records.query` by `seq` desc
      <message>"). Unpublish `conflict`: `conflict`, `missing_changed` ("Not changed: the entry
      changed since it was read"); `locked`: `locked`. Trash `not_found`: `unchanged`,
      `missing_gone`. In each of these cases the call did not land, so the journal row of step 2 is
-     deleted before the row is saved (Ruling 29 M2): the rollback then has nothing to look at.
+     deleted before the row is saved (Ruling 29 M2): the rollback then has nothing to look at. A
+     call that throws (not a job-level error) may have landed: `conflict`, `missing_unverified`,
+     and the journal row stays for a rollback.
   5. `putLink`-like save of `L` with `writtenRev` (trash: `R`, which Trash keeps, F1; unpublish:
      the returned `_rev`), `jobId: job.id`, `missing: { jobId, action, at }`, and `owner`,
      `ownerSource`, `fields`, `unconfirmed`, `scheduledAt` as they were.
@@ -395,6 +413,19 @@ resumed, or a job that fails (three unexpected errors) leaves the phase unfinish
 fewer entries than a full run would, are removed. This is safe: every change made is journalled
 and owned, the threshold was approved before the first one, and the next completed run of the feed
 decides the rest afresh. A paused or failed job resumes the stage where it stopped.
+
+**Settling a stopped phase (Ruling 38).** Before a job in its act stage ends or is rolled back,
+`settleStoppedJob` counts the rows a lost release left out and settles their `writing` rows without
+deciding anything anew, so a trash that landed always carries its marked link (the rollback's
+ownership test needs the mark). It runs on a cancel (`transitionJob`), on a failure (a job-level
+error in `runBatch`, and the third unexpected error in `noteFailure`), and in `createRollback`
+after the rollback is known to be allowed. A cancel while a batch holds a live lease leaves that
+batch's calls to it and adds the job warning "Missing entries: the job was cancelled while one of
+its batches was running, so an entry that batch moved to Trash may not be marked; roll the job
+back, or restore such entries from Trash, before a feed that holds their keys is imported again,
+which would create them anew". An error the settling meets becomes the job warning "Missing
+entries: the changes a stopped batch made could not be finished before the job failed (<message>);
+resume the job or roll it back", kept once (the latest) across resumes.
 
 ## Editor safety
 
@@ -460,9 +491,11 @@ optional; no other change. A `trash` row read by an M5b rollback is `journal_kin
 `restoreChanged`):
 
 1. **Find.** By `entryId`, active first, then in Trash.
-2. **Ownership.** In Trash, and the link names the job (`jobId === rollbackOf`, `entryId`) at
-   `writtenRev === entry.rev` (Trash keeps `_rev`, F1); or the row is this rollback's own
-   (`writing` with `writtenRev === entry.rev`, resuming). Active and as `before` read it (link
+2. **Ownership.** In Trash, and the link names the entry and the job (`jobId === rollbackOf`) and
+   carries this job's missing mark (`missing.jobId === rollbackOf`), at `writtenRev === entry.rev
+   === before.rev` (Trash keeps `_rev`, F1; Ruling 38); or the row is this rollback's own
+   (`writing` with `writtenRev === entry.rev`, resuming), or a step it sent shows its result
+   (`reachedTrash`, below). Active and as `before` read it (link
    equal to `before.link`, `rev === before.rev`): the trash never ran (a stop before the journal
    row's deletion), `unchanged`, `nothing_to_roll_back`. Otherwise `conflict`, `rollback_changed`
    ("Not rolled back: the entry was restored or changed after the import moved it to Trash").
@@ -472,8 +505,9 @@ optional; no other change. A `trash` row read by an M5b rollback is `journal_kin
 5. **Step 9 `republish`** when `before.status === "published"`: `publish` with step 8's `_rev`. A
    hook's refusal is `failed`, `rollback_blocked`; `jobs/retry` of the rollback continues from
    step 8.
-6. **Link.** Put back as `before.link` (owner kept, no `missing` mark), `writtenRev` the final
-   `_rev` when `before.rev === before.link.writtenRev` (M5a hand-back). The row is `reverted`,
+6. **Link.** Put back as `before.link` (no `missing` mark; the owner only while the marked link
+   still carries it, Ruling 31), `writtenRev` the final `_rev` when `before.rev ===
+   before.link.writtenRev` (M5a hand-back). The row is `reverted`,
    `action: "restore"`.
 
 | Step | When | Call |
@@ -482,9 +516,11 @@ optional; no other change. A `trash` row read by an M5b rollback is `journal_kin
 | 9 republish | trash rows: after step 8, `before.status === "published"` | `handleContentPublish` with step 8's `_rev` (F3) |
 
 Steps 8 and 9 run only for `trash` rows, and steps 1-7 never do, so the saved `step` numbers keep
-their meaning for every row kind. `reached()` (the resumed-step check) treats step 8 as reached
-when the entry is active, a draft, without a schedule and one `version` past `before.rev`, and
-step 9 when it is also published without a draft (V1). A dry-run rollback plans `{ field:
+their meaning for every row kind. `reachedTrash` (the resumed-step check of a step sent before a
+stop whose row save was lost) measures against the revision the row saved when the step was sent
+(its `writtenRev`), not `before.rev`: step 8 is reached when the entry is active, a draft, without
+a schedule and one `version` past it, and step 9 when it is published without a draft, one
+`version` past it (V1, Ruling 38). A dry-run rollback plans `{ field:
 "status", before: "trashed", after: before.status }`. `STEP_COST.restore` is 15; `ROW_RESERVE`
 (165) covers restore plus republish.
 
@@ -511,16 +547,25 @@ The rollback's `counterOf` is unchanged: `restore` joins its rollback actions.
   fromSeq`). A row that is not `writing` is skipped (its outcome is already in the recounted
   `removed` and in the counters the release saved, or is recounted by `tallyCounters`). A `writing`
   row resumes:
-  - Trash: the entry in Trash at the row's `writtenRev` with the link not yet marked: the trash
-    landed (it keeps `_rev`, F1); finish at step 5. Active at `writtenRev`: send the trash. Any
-    other state: `conflict`, `missing_unverified` ("Maybe changed: the import stopped while
-    changing this entry and cannot tell whether someone changed it since").
-  - Unpublish: active at `writtenRev`: send it. In F7's state (a draft with a draft pointer, no
-    live pointer, no schedule) exactly one `version` past `writtenRev` (M5b F1), with the link not
-    yet moved: the unpublish landed; finish at step 5. Otherwise `missing_unverified`.
-- **Act stage, rows written but not counted.** The next seq is read from the last missing row,
-  never from the saved `rows` alone, so a row a lost batch wrote is not overwritten; `removed` is
-  recounted from the rows (Act stage).
+  - The link names the entry and already carries this job's mark: a stop after step 5, before
+    the row save; the row becomes `removed`.
+  - The link names the entry and is still a candidate:
+    - Trash: the entry in Trash at the row's `writtenRev`: the trash landed (it keeps `_rev`, F1);
+      finish at step 5. Active at `writtenRev`: the call did not land. Any other state, an entry
+      active at another revision included (an editor may have restored the landed trash):
+      `conflict`, `missing_unverified` ("Maybe changed: the import stopped while changing this
+      entry and cannot tell whether someone changed it since"), the journal row kept.
+    - Unpublish: active at `writtenRev`: the call did not land. Not published, without a
+      schedule, exactly one `version` past `writtenRev` (F7, M5b F1): the unpublish landed; finish
+      at step 5. Otherwise, an entry that is gone included, `missing_unverified`.
+    - A call that did not land: the journal row is deleted and the entry decided again at the
+      same seq (plan Ruling 14, Ruling 37); within `settleStoppedJob` the row is left for a resume.
+  - Any other link, or none (a later import moved it to another entry): the call may have landed
+    on an entry the job can no longer prove, so `missing_unverified`, no link put, and the journal
+    row stays for a rollback.
+- **Act stage, rows written but not counted.** The rows past `fromSeq + rows` are counted and
+  `rows` moves past them before anything is decided, so a row a lost batch wrote is not
+  overwritten and is counted once (Act stage, Ruling 37).
 - **No retry (Ruling 26).** `retryPass` reads only rows with `seq < missing.fromSeq` (`seq: { gte:
   retryFromSeq, lt: fromSeq }`). A missing row left `locked`, `conflict`, `failed` or
   `missing_unverified` stays as it is; its link is not marked, so the next completed run of the
@@ -537,22 +582,25 @@ so its own "creates" are never candidates.
 
 ## Workers and Node
 
-- **Count stage cost.** One links query per 100 links, one records query per 50 keys, and one
-  `content.get` (10-12 queries, M5a Results) per unseen candidate, plus `getIncludingTrashed` on a
-  miss, `translations()` for a trashed root, and one journal read for a swept entry. On Workers a
-  batch makes at most `WORKERS_MISSING_SCAN_CAP` reads (provisional 40, V8), every read counted.
-  The lookup budget is charged `COST_CALL` per storage query and `COST_READ` per read. Seen
-  candidates cost no read.
-- **Act stage cost.** The `removed` recount (one query per 100 rows), the same reads again, then
-  per acted entry a lock check, the journal put-if-absent, two row saves, the call (trash:
-  `COST_READ` × 5 as in M5a; unpublish 15), a link put, and a journal delete when the call did not
-  land. On Workers a batch decides at most `WORKERS_MISSING_BATCH_CAP` entries (provisional 10, V8).
+- **Count stage cost.** One links query per page, one records query per 50 keys, and one
+  `content.get` (about 12 D1 queries, 14 with references) per unseen candidate; nothing else
+  (Ruling 37). On Workers a batch makes at most `WORKERS_MISSING_SCAN_CAP` reads (40, measured in
+  Task 9), every read counted. The lookup budget is charged `COST_CALL` per storage query and
+  `COST_MISSING_READ` (12) per content read (Ruling 32). Seen candidates cost no read. A batch takes
+  at most `MISSING_PAGES_PER_BATCH` (20) link pages.
+- **Act stage cost.** The count of rows past `fromSeq + rows` (one query per 100 rows), the same
+  reads again (`COST_MISSING_READ`), `translations()` for a trashed root and one journal read for a
+  swept entry, then per acted entry a lock check, the journal put-if-absent, two row saves, the
+  call (trash: `COST_READ` × 5 as in M5a; unpublish 15), a link put, and a journal delete when the
+  call did not land. On Workers a batch decides at most `WORKERS_MISSING_BATCH_CAP` entries (10,
+  measured in Task 9), on at most `MISSING_PAGES_PER_BATCH` (20) link pages.
 - **Rollback.** Steps 8 and 9 cost about a restore and a publish (76 queries, M5a Results); the
   3-row cap holds (V8).
 - **Import cost.** One link put per link whose owner stamp a record of another owner drops (once
   per link, Ruling 21). Nothing else: the owner comes from the link already read, `unkeyed` is a
   job counter, and `missing_trashed` uses the link already read.
-- **Node.** The job's `batchSize` bounds both stages.
+- **Node.** The job's `batchSize` bounds both stages, with `MISSING_PAGES_PER_BATCH` link pages
+  a batch and `budgetMs`.
 - `workersBatchCap(job)` returns the missing caps while `job.phase === "missing"`.
 
 ## Bounded work
@@ -563,14 +611,17 @@ so its own "creates" are never candidates.
 | `maxPercent` | 0-100 | A share |
 | `MISSING_PAGE` | 50 keys per seen query | D1's 100 bound parameters (F13), with room for the plugin, collection and job parameters |
 | Links per query | 100 | Plugin storage maximum (F10) |
-| `WORKERS_MISSING_SCAN_CAP` | 40 reads per call (provisional) | About 500 queries for reads, V8 |
-| `WORKERS_MISSING_BATCH_CAP` | 10 entries per call (provisional) | Up to about 70 queries per unpublish, V8 |
+| `WORKERS_MISSING_SCAN_CAP` | 40 reads per call (measured in Task 9) | About 560 queries for reads, V8 |
+| `WORKERS_MISSING_BATCH_CAP` | 10 entries per call (measured in Task 9) | Up to about 70 queries per unpublish, V8 |
+| `MISSING_PAGES_PER_BATCH` | 20 link pages per batch, both stages | Worst count batch about 660 D1 queries, worst act batch about 800 (Ruling 32) |
+| `COST_MISSING_READ` | 12 per content read | A D1 `content.get` runs about 12 queries (Ruling 32) |
 | Acts per job | at most `found` | Ruling 20 |
 
 ## Testing
 
 - **Unit, template and job:** the `owner` and `missing` schemas (strict, bounds, defaults); the
-  refusals (`missing` without `owner`, the job option without `rules.missing`, `journal: false`);
+  refusals (`missing` without `owner`, in the schema with its path; the job option without
+  `rules.missing`; `journal: false`, allowed with `missing: false`);
   `missingLimit` resolved from template and option, `false`; `skippedRows` stored as `unkeyed`.
 - **Unit, reading the key:** `applyTemplate` returns the key with a later mapping's error, and not
   with a key error (missing, empty, not scalar, too long); the failed row carries the key and is
@@ -666,7 +717,8 @@ V8 re-measured, and the note. A final fix wave follows the whole-branch review.
     site.
 11. **Links written by a later job are not candidates.** A later job of the same owner may be
     creating entries while this phase runs; their keys are not in this job's feed. Job IDs are
-    time-ordered ULIDs (F15, V6), so the test costs no read.
+    time-ordered ULIDs (F15, V6), so the test costs no read. Amended by Ruling 37: a job of the
+    same millisecond counts as later.
 12. **No permanent delete.** It cannot be rolled back (F4), which the milestone's acceptance needs;
     an administrator empties Trash.
 13. **`trash` is a new journal kind; unpublish is an `update`; rollback adds steps 8 and 9.**
@@ -686,7 +738,8 @@ V8 re-measured, and the note. A final fix wave follows the whole-branch review.
     a refusal is about; the warning states the verdict a real run would reach.
 17. **Missing rows are record rows after the import's, with status `removed`.** They then appear
     in `jobs/records` and `jobs/log.csv` and order the journal for rollback. A status of their own
-    keeps `updated` meaning a written update. Amended by Ruling 26: `jobs/retry` does not take them.
+    keeps `updated` meaning a written update. Amended by Ruling 26: `jobs/retry` does not take them,
+    and by Ruling 36: their `record` cell in `jobs/log.csv` is empty.
 18. **`content:restore` is declared.** For disclosure, as the other content capabilities (F12):
     the rollback restores through the trusted runtime.
 19. **New Workers caps, set by measurement.** The phase's per-entry cost differs from a record's,
@@ -754,6 +807,76 @@ Added by the spec review (binding rulings of the coordinator):
     repairs the link: a confirmed journal create from an earlier pass would otherwise restamp, on
     `jobs/retry`, an entry whose stamp another owner dropped.
 
+## Amendments after implementation
+
+Added by the final whole-branch review and its fix wave (binding rulings of the coordinator). Each
+amends the text above, which now reads as the code does.
+
+31. **(Final review A) The rollback's link hand-back keeps the owner stamp only while the link it
+    replaces still carries that owner.** `handBack` copied `before.link.owner` and `ownerSource`
+    from the journal whatever the current link held. A rollback of the owner's own job then
+    restored a stamp another owner's record had dropped, and the owner's next run removed an entry
+    that feed still held: an M5a update, then B's record drops the stamp, then the rollback (P1);
+    or an M5c trash, then B's record meets `missing_trashed` and drops the stamp, then the rollback
+    (P2). The hand-back now keeps both fields only when the link it replaces names the entry and
+    carries the same owner; otherwise the link stays unowned (Owner, "Rollback"). Rulings 2 and 21
+    are the core promise. If wrong, a rolled-back owned entry loses its stamp and is never removed
+    automatically, which is safe.
+32. **(Final review B) The missing phase charges a content read at 12 and takes at most 20 link
+    pages a batch.** `fits()` charged a read at `COST_READ` (5), but a D1 `content.get` runs about
+    12 queries (14 with references): after about 199 all-seen pages a count batch could still
+    read 40 entries, about 900-980 D1 queries. Every content read of the phase (`content.get`, and
+    `getIncludingTrashed` in crash repair) is now charged `COST_MISSING_READ` = 12, in `fits` and
+    in the spend, and a batch takes at most `MISSING_PAGES_PER_BATCH` = 20 link pages in either
+    stage. With an all-seen page at about 2 D1 queries and about 60 for the batch's own job, lease
+    and row bookkeeping, the worst count batch is 20 × 2 + 40 × 14 + 60 = 660 queries and the worst
+    act batch 20 × 2 + 10 × 70 + 60 = 800, both under 900 (F13). On Workers the lookup budget binds
+    first on the act stage (an act page fits only at 48 spent or less of 600). Task 9 measures it.
+    The act stage also takes no page in a batch whose crash repair settled the whole limit, so a
+    batch never decides one entry past its cap.
+33. **(Final review B) `settleUnread` keeps its link read for every owner.** The review asked to
+    skip it for the template's own owner. It cannot be skipped: a stamp is foreign when it differs
+    from the job's owner, so a job with owner `a` cannot tell a link stamped `b` (to drop) from one
+    stamped `a` (to keep) without reading it; only a dry run skips it (Ruling 30's price stands).
+34. **(Final review B) "rules.missing needs rules.owner" is a template schema refinement.** Every
+    template check (`jobs/create`, schema inference and apply) reports it with the path
+    `rules.missing`; `createJob` no longer checks it separately.
+35. **(Final review B) `journal: false` is allowed with the job option `missing: false`.** The phase
+    is off for that run, so nothing needs undoing; the refusal blocked a valid run.
+36. **(Final review B) The `record` cell of a missing row in `jobs/log.csv` is empty.** Missing
+    rows read no record, so `seq + 1` named a record that does not exist. A row of an import job
+    with `seq >= missing.fromSeq` leaves the cell empty; rollback rows keep the number of the
+    import record they revert.
+37. **The plan's rulings, as the code has them.**
+    - Plan Ruling 1: `laterJob` counts a link of a job in the same millisecond as later (both ULIDs
+      with the same 10-character time prefix), since `ulid()` does not order them (V6).
+    - Plan Ruling 3: the count and act stages read `content.get` only; only crash repair reads
+      `getIncludingTrashed`, to tell a landed trash. The count stage costs no `translations()` and
+      no journal read.
+    - Plan Ruling 14: a resumed `writing` row whose call did not land has its journal row deleted
+      and its entry decided again at the same seq. A left-alone or locked row of a real run also
+      deletes the journal row under its key.
+    - The `removed` recount is incremental: each act batch counts the rows from `fromSeq + rows` on
+      and moves `rows` past them, instead of recounting every missing row.
+38. **Crash repair and rollback, as the code has them.**
+    - `missing_unverified` covers a thrown call error (journal kept), a link moved to another entry
+      or gone, a landed trash an editor restored from Trash, and an unpublish whose entry is gone; a
+      link that already carries this job's mark gives `removed`.
+    - The landed unpublish check: not published, no schedule, exactly one `version` past
+      `writtenRev`.
+    - A stopped act stage is settled by `settleStoppedJob` on cancel, failure and rollback, with the
+      cancel warning and the settle-failed warning (kept once, the latest) (Act stage, "Settling a
+      stopped phase"). `createRollback` checks that the job can be rolled back before settling it.
+    - `found === 0` gives `verdict: "act"` with `stage: "done"`.
+    - Rollback ownership of a `trash` row needs the link's missing mark naming the job and
+      `entry.rev === before.rev`, stricter than the first draft and fail-safe.
+    - `reachedTrash` measures a sent step against the revision the row saved when the step was
+      sent.
+    - The Workers caps are marked "measured in Task 9"; Ruling 30 stands as written.
+    - `FLUX_IMPORT_VERSION` is 0.2.0: the storage docs ask for a version bump whenever a storage
+      index is added (https://docs.emdashcms.com/plugins/creating-plugins/storage/, "Adding
+      indexes"), and M5c adds `["owner", "collection", "locale"]` to `links`.
+
 ## Out of scope for M5c
 
 Permanent delete as an action; adopting entries created without an owner; restoring a trashed
@@ -805,6 +928,25 @@ by hand.
   - `missing_unverified` rows are conflicts, not removals: Ruling 20's bound (`removed` never past
     `found`) covers the removals the phase can prove; an unverified call may also have removed its
     entry.
+  - **(Final review) One owner across source kinds.** An upload or paste carries no
+    `ownerSource` (P3), so a URL-source job and an upload job with the same owner are told apart
+    only from the URL side: the URL job refuses on a link stamped by another URL source, never on
+    one stamped by an upload, and an upload job refuses on any link that carries an `ownerSource`
+    but not on another upload's. Two templates on one URL source with the same owner share its
+    `sourceId`, so the mixed-source check cannot tell them apart either; the documentation's "one
+    owner name, one feed" is the only guard.
+  - **(Ledger) A version-only resume check.** `reachedTrash` and the M5a `reached()` decide a sent
+    step by the entry's shape and its `version`, so an editor's hand restore or republish made
+    between the stop and the resume is adopted as the rollback's step 8 or 9. No data is lost: the
+    entry is in the state the step would have left.
+  - **(Ledger) `rollback_changed` noise.** A call that never went out, whose link a later job then
+    wrote, becomes `missing_unverified` with its journal kept; this job's rollback then reports
+    `rollback_changed` for an entry the phase never changed.
+  - **(Ledger) Act-stage paging.** On Workers an act page holds at most the batch's 10 links, so a
+    large healthy feed spends many act batches paging seen links (20 pages a batch at most,
+    Ruling 32).
+  - **(Ledger) The trash call takes no `_rev`** (F1, "The window" above): an edit between the read
+    and the call is not seen.
 - **From M5b** (`2026-11-04-m5b-review.md`), unchanged: translation sync moving `_rev`; CPU on
   Workers for heavy Portable Text; the measured headroom of the linked cap; the M5b spec's open
   issues; the known gaps; the ledger items; the known flakes (F1, F2, F3 on port 4397).
