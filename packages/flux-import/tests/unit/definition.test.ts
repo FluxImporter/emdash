@@ -59,7 +59,7 @@ describe("createPlugin", () => {
 			["jobId", "sourceKey"],
 		]);
 		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
-		expect(STORAGE.links.indexes).toEqual(["entryId"]);
+		expect(STORAGE.links.indexes).toEqual(["entryId", ["owner", "collection", "locale"]]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);
 		expect(STORAGE.journal.indexes).toEqual(["jobId", ["jobId", "seq"]]);
@@ -79,6 +79,7 @@ describe("createPlugin", () => {
 			"content:read",
 			"content:write",
 			"content:publish",
+			"content:restore",
 			"schema:read",
 			"taxonomies:write",
 			"bylines:read",

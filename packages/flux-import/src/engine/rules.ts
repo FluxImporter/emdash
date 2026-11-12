@@ -21,7 +21,10 @@ import type { Job, JournalEntry, LinkRow, RecordError, RecordRow } from "./types
  * is read, before any link, translation source or media lookup (spec M5b "Order of a record").
  */
 export function ruled(t: Template): boolean {
-	return t.rules !== undefined || t.publishAt !== undefined;
+	// M5c: `owner` and `missing` do not change a record's order (plan Ruling 2).
+	const keys = Object.keys(t.rules ?? {});
+	const onlyM5c = keys.length > 0 && keys.every((k) => k === "owner" || k === "missing");
+	return (t.rules !== undefined && !onlyM5c) || t.publishAt !== undefined;
 }
 
 export const EXISTS_MESSAGE =

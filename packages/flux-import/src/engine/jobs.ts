@@ -35,6 +35,7 @@ import {
 	emptyCounters,
 	type Job,
 	type JobStatus,
+	MISSING_MAX_PERCENT_DEFAULT,
 } from "./types.js";
 
 export type JobErrorCode =
@@ -83,7 +84,28 @@ export type CreateJobInput = {
 	sourceId?: string;
 	/** Whether the collection keeps revisions (M5b), for templates that map `publishAt`; default true. */
 	revisions?: boolean;
+	/**
+	 * M5c: `false` skips the missing phase for this run; `{ maxPercent }` replaces the template's
+	 * threshold for this run. Only with `rules.missing`.
+	 */
+	missing?: false | { maxPercent: number };
+	/** M5c, XLSX: rows the converter skipped because their only values were unreadable. */
+	skippedRows?: number;
 };
+
+/**
+ * The job's missing-phase threshold (M5c): absent without `rules.missing`, `false` when the job
+ * option turns the phase off, else the option's `maxPercent` or the template's (default 25).
+ */
+export function missingLimitOf(
+	template: Template,
+	option: CreateJobInput["missing"],
+): Job["missingLimit"] {
+	const rule = template.rules?.missing;
+	if (rule === undefined) return undefined;
+	if (option === false) return false;
+	return { maxPercent: option?.maxPercent ?? rule.maxPercent ?? MISSING_MAX_PERCENT_DEFAULT };
+}
 
 /** Records read at job creation to warn about JSON and XML paths that none of them has. */
 export const WARNING_SAMPLE = 20;
@@ -127,6 +149,30 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const template = parsed.data;
 	if (template.publishAt !== undefined && input.publish === false) {
 		throw new JobError("invalid_options", "publishAt needs publish: true");
+	}
+	// M5c (spec "Template and job"): the refusals of rules.missing and the job option missing.
+	if (template.rules?.missing !== undefined && template.rules.owner === undefined) {
+		throw new JobError("invalid_template", "rules.missing needs rules.owner");
+	}
+	if (input.missing !== undefined && template.rules?.missing === undefined) {
+		throw new JobError(
+			"invalid_options",
+			"The job option missing needs rules.missing in the template",
+		);
+	}
+	const percent =
+		input.missing === undefined || input.missing === false ? 0 : input.missing.maxPercent;
+	if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
+		throw new JobError(
+			"invalid_options",
+			"The job option missing.maxPercent must be an integer from 0 to 100",
+		);
+	}
+	if (template.rules?.missing !== undefined && !input.dryRun && input.journal === false) {
+		throw new JobError(
+			"invalid_options",
+			"rules.missing needs the journal, so its changes can be rolled back",
+		);
 	}
 	const compiled = compileTemplate(template);
 	if (!compiled.ok) {
@@ -180,6 +226,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 
 	const now = new Date(deps.now()).toISOString();
 	const dryRun = input.dryRun ?? false;
+	const missingLimit = missingLimitOf(template, input.missing);
 	const job: Job = {
 		id: deps.newId(),
 		status: "created",
@@ -187,6 +234,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		...(dryRun ? {} : { journal: input.journal ?? true }),
 		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
+		...(missingLimit === undefined ? {} : { missingLimit }),
+		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
 		uploadId: input.uploadId,
 		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,

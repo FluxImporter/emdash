@@ -105,6 +105,8 @@ export interface ConvertedSheet {
 	uploadId: string;
 	columns: string[];
 	warnings: string[];
+	/** M5c: rows skipped with only unreadable cells, which the job counts as unkeyed. */
+	skippedRows: number;
 }
 
 /**
@@ -161,7 +163,12 @@ export async function convertXlsx(
 		},
 	});
 	const staged = await stageUpload(staging.storage, body, limit, size);
-	return { uploadId: staged.uploadId, columns: sheet.columns, warnings: sheet.warnings() };
+	return {
+		uploadId: staged.uploadId,
+		columns: sheet.columns,
+		warnings: sheet.warnings(),
+		skippedRows: sheet.skipped(),
+	};
 }
 
 /**
@@ -191,6 +198,7 @@ export async function startImport(
 				sourceUploadId: input.uploadId,
 				columns: converted.columns,
 				warnings: converted.warnings,
+				...(converted.skippedRows > 0 ? { skippedRows: converted.skippedRows } : {}),
 			},
 			lookupFields,
 			resolveLocale,
