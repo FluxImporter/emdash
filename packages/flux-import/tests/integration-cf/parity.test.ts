@@ -866,12 +866,18 @@ describe("workerd parity (D1, R2)", () => {
 		}
 		expect(job).toMatchObject({ status: "completed", counters: { unchanged: 45, removed: 15 } });
 		// The act stage decides at most WORKERS_MISSING_BATCH_CAP (10) entries a batch.
-		const acts = batches.map((b) => b.missing?.rows ?? 0);
-		for (let i = 1; i < acts.length; i++) {
-			expect((acts[i] ?? 0) - (acts[i - 1] ?? 0)).toBeLessThanOrEqual(10);
+		const inAct = batches.filter((b) => b.missing?.stage === "act");
+		for (const b of inAct) expect(typeof b.missing?.rows).toBe("number");
+		const rows = [0, ...inAct.map((b) => b.missing?.rows as number), job.missing?.rows as number];
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		expect(rows.at(-1)).toBe(15);
+		for (let i = 1; i < rows.length; i++) {
+			expect((rows[i] as number) - (rows[i - 1] as number)).toBeLessThanOrEqual(10);
 		}
 		const entries = await byKey("cf_m5c_unpub");
-		expect([...entries.values()].filter((e) => e.status === "draft")).toHaveLength(15);
+		const gone = [...entries].filter(([, e]) => e.status === "draft").map(([k]) => k);
+		expect(gone.sort()).toEqual(Array.from({ length: 15 }, (_, i) => `SKU-${45 + i}`).sort());
+		expect([...entries.values()].filter((e) => e.status === "published")).toHaveLength(45);
 		const back = await importRules("cf_m5c_unpub", productsCsv(60), rules);
 		expect(back.counters).toMatchObject({ failed: 0, conflict: 0 });
 		expect([...(await byKey("cf_m5c_unpub")).values()].every((e) => e.status === "published")).toBe(
@@ -905,6 +911,9 @@ describe("workerd parity (D1, R2)", () => {
 		await importRules("cf_m5c_limit", productsCsv(8), rules);
 		const job = await importRules("cf_m5c_limit", productsCsv(5), rules);
 		expect(job.missing).toMatchObject({ found: 3, removed: 0, verdict: "refused" });
-		expect((await byKey("cf_m5c_limit")).size).toBe(8);
+		expect(job.status).toBe("completed");
+		const kept = await byKey("cf_m5c_limit");
+		expect(kept.size).toBe(8);
+		expect([...kept.values()].every((e) => e.status === "published")).toBe(true);
 	});
 });
