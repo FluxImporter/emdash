@@ -58,6 +58,11 @@ export interface EntrySnapshot {
 	scheduledAt: string | null;
 	/** The entry has a draft revision (`draftRevisionId`, M5a). */
 	hasDraft: boolean;
+	/**
+	 * EmDash's `publishedAt` (M5b): set at the first publication (the scheduler's sets it to the
+	 * scheduled time), then kept; null when never published, absent when EmDash gives none.
+	 */
+	publishedAt?: string | null;
 	/** The live column values while the entry has a draft (EmDash `liveData`, M5a). */
 	live?: Record<string, unknown>;
 	/** ISO timestamps of the entry's row (M5a); absent when EmDash gives none. */
@@ -96,8 +101,11 @@ export type StepResult =
 	| { ok: true; state: EntryState }
 	| { ok: false; reason: "conflict" | "blocked" | "locked"; message: string };
 
-/** The rollback's writes to a changed entry (spec M5a "Revert sequence"). */
-export type RevertStep = "update" | "publish" | "unpublish" | "discard" | "schedule";
+/**
+ * The rollback's writes to a changed entry (spec M5a "Revert sequence"); M5b adds `unschedule`
+ * (step 7), which no hook can refuse (spec M5b F3).
+ */
+export type RevertStep = "update" | "publish" | "unpublish" | "discard" | "schedule" | "unschedule";
 
 export interface ContentPort {
 	get(
@@ -162,6 +170,20 @@ export interface ContentPort {
 		rev: string;
 	}): Promise<WriteResult>;
 	/**
+	 * Schedules the entry's content for `scheduledAt` (UTC ISO) at the given revision (M5b, spec
+	 * F2): a draft becomes `scheduled`, a published entry stays `published` with its draft due.
+	 * `version` is kept and `updated_at` moves, so the returned revision differs only there. Lock
+	 * checked like `publish`; a hook's refusal (`emdash_schedule_rejected`), a time not in the
+	 * future (`emdash_validation_error`) and other EmDash errors throw `ContentWriteError`.
+	 */
+	schedule(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+		scheduledAt: string;
+	}): Promise<WriteResult>;
+	/**
 	 * Idempotent. Creates `flux_source_id` as `string`, `indexed: true`, `translatable: false`; an
 	 * existing field must be verified to be indexed.
 	 */
@@ -187,7 +209,8 @@ export interface ContentPort {
 	permanentDelete(collection: string, id: string): Promise<boolean>;
 	/**
 	 * One rollback write with the entry's current `rev` (M5a): `update` (data, slug and links as
-	 * in `update`), `publish`, `unpublish`, `discard` (the draft) or `schedule` (at `scheduledAt`).
+	 * in `update`), `publish`, `unpublish`, `discard` (the draft), `schedule` (at `scheduledAt`)
+	 * or `unschedule` (M5b: clears the schedule; a no-op on an entry without one).
 	 */
 	revertStep(
 		input: {

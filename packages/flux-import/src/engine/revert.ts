@@ -23,6 +23,7 @@ import {
 	termOfGroup,
 } from "./resolve.js";
 import { restoredData, sameStored } from "./rollback-values.js";
+import { holdsScheduled, sameInstant, sweptSince } from "./rules.js";
 import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	bump,
@@ -77,6 +78,8 @@ const STEP_COST: Readonly<Record<RevertStep, number>> = {
 	unpublish: 15,
 	discard: 10,
 	schedule: 15,
+	// M5b step 7, costed as a schedule (spec M5b "Caps").
+	unschedule: 15,
 };
 /** Trash and permanent delete, which V7 did not measure: `COST_READ` x 5. */
 const COST_DELETE = COST_READ * 5;
@@ -180,11 +183,12 @@ export async function rollbackRetryPass(
 }
 
 /**
- * What a row may spend at most before its references: `COST_RECORD` (25), a full revert sequence
- * of update, publish, unpublish, discard and schedule (35 + 35 + 15 + 10 + 15), a term read (5) and
- * the trash and delete (none of those with the sequence), rounded up.
+ * What a row may spend at most before its references: `COST_RECORD` (25), the longest revert
+ * sequence, update, publish, unpublish, update and schedule or unschedule (35 + 35 + 15 + 35 +
+ * 15; steps 4 and 5 exclude each other, as steps 6 and 7 do), and a term read (5). The trash and
+ * delete (50) never run with the sequence.
  */
-const ROW_RESERVE = 135;
+const ROW_RESERVE = 165;
 
 /**
  * Whether the batch's budget still covers a row: `ROW_RESERVE` plus a read for each reference ID
@@ -364,11 +368,18 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		existing?.step !== undefined &&
 		existing.entryId === entry.id &&
 		existing.writtenRev === entry.rev;
+	// M5b: also an entry the import scheduled and EmDash's scheduler published since (spec M5b
+	// "Ownership after the scheduler published"),
+	// which still holds the values the job scheduled. An editor's unschedule and discard after the
+	// time leaves the same revision shape with the values from before the job (Task 5 review, P6).
 	const owned =
 		link !== null &&
 		link.jobId === job.rollbackOf &&
 		link.entryId === entry.id &&
-		link.writtenRev === entry.rev;
+		(link.writtenRev === entry.rev ||
+			(!entry.trashed &&
+				sweptSince(link, entry) &&
+				(await holdsScheduled(job, journal.wrote, link.scheduledAt, entry))));
 	// A create made after the write-ahead row and never changed since (spec M5a V3): found by
 	// source ID after a crash, or one whose link was never saved. A link that names the entry and a
 	// revision settles it: EmDash keeps `updated_at` when an edit only stages a draft
@@ -423,7 +434,14 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 	}
 	return journal.kind === "create"
 		? deleteCreated(ctx, entry, adopted, link)
-		: restoreChanged(ctx, entry, link?.entryId === entry.id, pending);
+		: restoreChanged(
+				ctx,
+				entry,
+				link?.entryId === entry.id,
+				pending,
+				// The schedule the job's link records: the only one step 7 may remove (review I2).
+				link?.entryId === entry.id && link.jobId === job.rollbackOf ? link.scheduledAt : undefined,
+			);
 }
 
 /** "Created entries": Trash, then a permanent delete when the import's own create made it. */
@@ -601,8 +619,9 @@ async function plannedChanges(
  * Whether the entry shows what revert steps 1 to `step` would have left it with (spec M5a "Per
  * row", resuming). Cumulative, so an editor's change made after the stop is never adopted: every
  * step needs step 1's result (the restored live values, the slug the read shows, the references,
- * bylines and terms), steps 5 and 6 also the restored draft values, and each step its own
- * result: 2 published without a draft, 3 not published, 4 no draft, 6 the schedule.
+ * bylines and terms), steps 5 to 7 also the restored draft values, and each step its own
+ * result: 2 published without a draft, 3 not published, 4 no draft, 6 the schedule, 7 (M5b) no
+ * schedule.
  */
 async function reached(
 	ctx: RowCtx,
@@ -669,6 +688,8 @@ async function reached(
 				entry.scheduledAt !== null &&
 				Date.parse(entry.scheduledAt) === Date.parse(before.scheduledAt)
 			);
+		case 7:
+			return entry.scheduledAt === null;
 		default:
 			return false;
 	}
@@ -676,15 +697,17 @@ async function reached(
 
 /**
  * "Revert sequence": 1 restore the live values, slug and links; 2 publish; 3 unpublish; 4 discard
- * the draft the entry did not have; 5 restore the draft; 6 schedule. Each step is chosen from the
- * entry's state after the previous one and saved with the revision it returned, so a resumed row
- * skips the steps done and re-derives the rest.
+ * the draft the entry did not have; 5 restore the draft; 6 schedule; 7 unschedule (M5b: a
+ * schedule the entry did not have, or one that has passed). Each step is chosen from the entry's
+ * state after the previous one and saved with the revision it returned, so a resumed row skips
+ * the steps done and re-derives the rest.
  */
 async function restoreChanged(
 	ctx: RowCtx,
 	entry: Found,
 	linked: boolean,
 	pending: number | undefined,
+	jobSchedule: string | undefined,
 ): Promise<RowFields> {
 	const { deps, job, journal } = ctx;
 	const { collection, locale } = journal;
@@ -836,6 +859,19 @@ async function restoreChanged(
 			const same = state.scheduledAt !== null && Date.parse(state.scheduledAt) === Date.parse(at);
 			return same ? null : run(6, { step: "schedule", scheduledAt: at });
 		},
+		// Step 2's publish already cleared a schedule (F4); step 6 excludes this one. Only a
+		// schedule the import set is removed: the job's, or the pre-image's that has passed. Any
+		// other is someone else's, set after a stop (review I2).
+		async (): Promise<StepFailure | null> => {
+			if (state.scheduledAt === null || (before.scheduledAt !== null && passed.length === 0)) {
+				return null;
+			}
+			const ours =
+				(jobSchedule !== undefined && sameInstant(state.scheduledAt, jobSchedule)) ||
+				(passed.length > 0 && sameInstant(state.scheduledAt, before.scheduledAt));
+			if (!ours) return { ok: false, reason: "conflict", message: "not the import's schedule" };
+			return run(7, { step: "unschedule" });
+		},
 	];
 	for (const [i, next] of steps.entries()) {
 		const failed = await next();
@@ -847,7 +883,8 @@ async function restoreChanged(
 		if (failed.reason === "locked") {
 			return rowOf(ctx, "locked", { errors: [issue("locked", LOCKED_MESSAGE)] });
 		}
-		const name = ["update", "publish", "unpublish", "discard", "update", "schedule"][i];
+		const names = ["update", "publish", "unpublish", "discard", "update", "schedule", "unschedule"];
+		const name = names[i];
 		return rowOf(ctx, "failed", {
 			errors: [
 				issue(
@@ -866,21 +903,38 @@ async function restoreChanged(
 	if (before.link === null) {
 		if (linked) await deps.links.delete(id);
 	} else {
+		// Only when the entry was as that job left it: an editor's change in between stays one.
+		const moved =
+			before.link.writtenRev !== undefined &&
+			before.rev !== undefined &&
+			before.rev === before.link.writtenRev;
+		// At the rollback's revision the link records the schedule the entry is left with: the
+		// earlier job's only while the entry is still scheduled for that time (review I1). A
+		// schedule step 7 removed, or one that passed, would let the earlier job's rollback take
+		// an editor's later publish for the scheduler's.
+		const scheduledAt = moved
+			? sameInstant(state.scheduledAt, before.link.scheduledAt ?? null)
+				? before.link.scheduledAt
+				: undefined
+			: before.link.scheduledAt;
+		// M5b: the fingerprints describe the entry at that job's revision, not at the rollback's, so
+		// a link moved to the rollback's revision vouches for none of them (Task 5 review, P5).
+		const unconfirmed = moved
+			? [...new Set([...(before.link.unconfirmed ?? []), ...Object.keys(before.link.fields ?? {})])]
+			: (before.link.unconfirmed ?? []);
 		await deps.links.put(id, {
 			collection,
 			locale,
 			sourceKey: journal.sourceKey,
 			entryId: entry.id,
-			// Only when the entry was as that job left it: an editor's change in between stays one.
 			...(before.link.writtenRev === undefined
 				? {}
-				: {
-						writtenRev:
-							before.rev !== undefined && before.rev === before.link.writtenRev
-								? state.rev
-								: before.link.writtenRev,
-					}),
+				: { writtenRev: moved ? state.rev : before.link.writtenRev }),
 			...(before.link.jobId === undefined ? {} : { jobId: before.link.jobId }),
+			// M5b: the fingerprints and schedule the link had before the job.
+			...(before.link.fields === undefined ? {} : { fields: before.link.fields }),
+			...(unconfirmed.length > 0 ? { unconfirmed } : {}),
+			...(scheduledAt === undefined ? {} : { scheduledAt }),
 		});
 	}
 	return rowOf(ctx, "reverted");

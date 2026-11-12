@@ -16,6 +16,7 @@ type Item = {
 	draftRevisionId: string | null;
 	version: number;
 	scheduledAt?: string | null;
+	publishedAt?: string | null;
 	deletedAt?: string | null;
 	liveData?: Record<string, unknown>;
 	createdAt?: string;
@@ -167,6 +168,17 @@ class FakeRuntime implements ContentRuntime {
 		this.calls.push(["discard", collection, id, options]);
 		return this.step(id, options, (item) => {
 			item.draftRevisionId = null;
+		});
+	}
+	async handleContentUnschedule(
+		collection: string,
+		id: string,
+		options: Record<string, unknown> = {},
+	) {
+		this.calls.push(["unschedule", collection, id, options]);
+		return this.step(id, options, (item) => {
+			item.scheduledAt = null;
+			if (item.status !== "published") item.status = "draft";
 		});
 	}
 }
@@ -554,6 +566,7 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 			status: "published",
 			draftRevisionId: "d1",
 			scheduledAt: "2026-12-01T00:00:00.000Z",
+			publishedAt: "2026-11-01T12:00:00.000Z",
 			liveData: { title: "Live" },
 			createdAt: "2026-11-01T00:00:00.000Z",
 			updatedAt: "2026-11-02T00:00:00.000Z",
@@ -563,6 +576,7 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 			scheduledAt: "2026-12-01T00:00:00.000Z",
 			hasDraft: true,
 			pendingPublish: true,
+			publishedAt: "2026-11-01T12:00:00.000Z",
 			live: { title: "Live" },
 			createdAt: "2026-11-01T00:00:00.000Z",
 			updatedAt: "2026-11-02T00:00:00.000Z",
@@ -572,6 +586,11 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 		expect(plain).toMatchObject({ hasDraft: false, pendingPublish: false });
 		expect(plain).not.toHaveProperty("live");
 		expect(plain).not.toHaveProperty("trashed");
+		// M5b: never published is null; a runtime that gives none leaves it out.
+		item.publishedAt = null;
+		expect(await content.get("products", "en", "e1")).toMatchObject({ publishedAt: null });
+		delete item.publishedAt;
+		expect(await content.get("products", "en", "e1")).not.toHaveProperty("publishedAt");
 	});
 
 	it("reads a trashed entry, moves entries to Trash and deletes trashed ones", async () => {
@@ -704,5 +723,74 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 		await expect(
 			content.revertStep({ ...base, rev: "rev-1", step: "schedule", scheduledAt: "x" }),
 		).rejects.toMatchObject({ code: "emdash_validation_error" });
+	});
+});
+
+describe("EmDashContent schedule and unschedule (M5b)", () => {
+	const base = { collection: "products", locale: "en", id: "e1" };
+	const at = "2026-12-01T07:00:00.000Z";
+
+	it("schedules at the given revision as the importing user and returns the new revision", async () => {
+		const { runtime, content } = setup();
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		expect(await content.schedule({ ...base, rev: "rev-1", scheduledAt: at })).toEqual({
+			ok: true,
+			rev: "rev-2",
+		});
+		expect(runtime.calls.at(-1)).toEqual([
+			"schedule",
+			"products",
+			"e1",
+			at,
+			{ _rev: "rev-1", actor },
+		]);
+		expect(await content.schedule({ ...base, rev: "rev-1", scheduledAt: at })).toEqual({
+			ok: false,
+			reason: "conflict",
+		});
+	});
+
+	it("checks the lock first, and throws a hook's refusal and other errors with EmDash's code", async () => {
+		const locked = new Set(["e1"]);
+		const { runtime, content } = setup((_c, id) => locked.has(id));
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		const before = runtime.calls.length;
+		expect(await content.schedule({ ...base, rev: "rev-1", scheduledAt: at })).toEqual({
+			ok: false,
+			reason: "locked",
+		});
+		expect(runtime.calls).toHaveLength(before);
+		locked.clear();
+		runtime.stepOverride = fail("SCHEDULE_REJECTED", "Not on Fridays");
+		await expect(
+			content.schedule({ ...base, rev: "rev-1", scheduledAt: at }),
+		).rejects.toMatchObject({
+			code: "emdash_schedule_rejected",
+			message: "Scheduling the entry failed: Not on Fridays",
+		});
+		runtime.stepOverride = fail("VALIDATION_ERROR", "Scheduled date must be in the future");
+		await expect(
+			content.schedule({ ...base, rev: "rev-1", scheduledAt: at }),
+		).rejects.toMatchObject({
+			code: "emdash_validation_error",
+		});
+	});
+
+	it("unschedules as revert step 7, lock checked, with the revision only", async () => {
+		const locked = new Set<string>();
+		const { runtime, content } = setup((_c, id) => locked.has(id));
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.revertStep({ ...base, rev: "rev-1", step: "schedule", scheduledAt: at });
+		const unscheduled = await content.revertStep({ ...base, rev: "rev-2", step: "unschedule" });
+		expect(unscheduled).toMatchObject({
+			ok: true,
+			state: { rev: "rev-3", status: "draft", scheduledAt: null },
+		});
+		expect(runtime.calls.at(-1)).toEqual(["unschedule", "products", "e1", { _rev: "rev-2" }]);
+		locked.add("e1");
+		expect(await content.revertStep({ ...base, rev: "rev-3", step: "unschedule" })).toMatchObject({
+			ok: false,
+			reason: "locked",
+		});
 	});
 });

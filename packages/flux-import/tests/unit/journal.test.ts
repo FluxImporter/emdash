@@ -46,13 +46,15 @@ describe("the journal of a real import (M5a)", () => {
 				entryId: null,
 				sourceIdValue: "A1",
 				at: "2026-10-07T10:00:00.000Z",
+				// What the publish makes live, for crash repair of a lost link save (final review).
+				wrote: { fields: expect.any(Object), slug: "desk", publishedAt: null },
 			},
 		]);
 		const [row] = await journalOf(deps, job.id);
 		expect(row).toMatchObject({ kind: "create", entryId: entryOf(deps, "A1").id, confirmed: true });
 		expect(await deps.links.get(linkKey("products", "en", "A1"))).toMatchObject({
 			jobId: job.id,
-			writtenRev: String(entryOf(deps, "A1").rev),
+			writtenRev: deps.content.revOf(entryOf(deps, "A1").id),
 		});
 	});
 
@@ -60,7 +62,19 @@ describe("the journal of a real import (M5a)", () => {
 		const { deps } = setup();
 		const first = await importRows(deps, [desk]);
 		const entry = entryOf(deps, "A1");
-		const rev = String(entry.rev);
+		const rev = deps.content.revOf(entry.id);
+		// The first job's fingerprints (M5b), which the snapshot keeps with the link.
+		const fields = (await deps.links.get("products:en:A1"))?.fields;
+		expect(Object.keys(fields ?? {}).sort()).toEqual([
+			"bylines",
+			"featured",
+			"photo",
+			"price",
+			"related",
+			"slug",
+			"taxonomies.tag",
+			"title",
+		]);
 		const second = await importRows(deps, [
 			{ ...desk, name: "Table", price: 12, tags: "sale", authors: "sam" },
 		]);
@@ -75,7 +89,7 @@ describe("the journal of a real import (M5a)", () => {
 			kind: "update",
 			entryId: entry.id,
 			before: {
-				link: { jobId: first.id, writtenRev: rev },
+				link: { jobId: first.id, writtenRev: rev, fields },
 				// The entry is as the first job left it.
 				rev,
 				status: "published",
@@ -88,8 +102,14 @@ describe("the journal of a real import (M5a)", () => {
 				},
 			},
 			at: "2026-10-07T10:00:00.000Z",
-			// What the job gave the taxonomy, for the rollback's term check.
-			wrote: { taxonomies: { tag: [termGroup(deps, "sale")] } },
+			// What the job gave the taxonomy, for the rollback's term check, and what the publish
+			// makes live, for crash repair of a lost link save (final review A-I2).
+			wrote: {
+				taxonomies: { tag: [termGroup(deps, "sale")] },
+				fields: expect.any(Object),
+				slug: "table",
+				publishedAt: "2026-10-07T10:00:00.000Z",
+			},
 		});
 	});
 
@@ -403,7 +423,7 @@ async function editPrice(deps: Deps, price: number): Promise<void> {
 	const entry = entryOf(deps, "A1");
 	const result = await deps.content.update({
 		id: entry.id,
-		rev: String(entry.rev),
+		rev: deps.content.revOf(entry.id),
 		data: { price },
 	});
 	if (!result.ok) throw new Error(result.reason);

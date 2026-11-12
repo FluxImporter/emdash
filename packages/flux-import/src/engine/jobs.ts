@@ -81,6 +81,8 @@ export type CreateJobInput = {
 	journal?: boolean;
 	/** The URL source the job's file was fetched from (M5a). */
 	sourceId?: string;
+	/** Whether the collection keeps revisions (M5b), for templates that map `publishAt`; default true. */
+	revisions?: boolean;
 };
 
 /** Records read at job creation to warn about JSON and XML paths that none of them has. */
@@ -123,6 +125,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		);
 	}
 	const template = parsed.data;
+	if (template.publishAt !== undefined && input.publish === false) {
+		throw new JobError("invalid_options", "publishAt needs publish: true");
+	}
 	const compiled = compileTemplate(template);
 	if (!compiled.ok) {
 		throw new JobError(
@@ -181,6 +186,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		// A dry run writes nothing, so it keeps no journal.
 		...(dryRun ? {} : { journal: input.journal ?? true }),
 		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
+		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		uploadId: input.uploadId,
 		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,

@@ -59,6 +59,12 @@ export interface Job {
 	purging?: boolean;
 	/** An import job created from a URL source: the source's ID (M5a). */
 	sourceId?: string;
+	/**
+	 * Whether the collection keeps revisions (M5b, read at job creation when the template maps
+	 * `publishAt`): without them an update of a published entry is live at once and cannot be
+	 * scheduled. Absent when the template maps no `publishAt`.
+	 */
+	revisions?: boolean;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -203,12 +209,37 @@ export interface LinkRow {
 	writtenRev?: string;
 	/** The job that produced `writtenRev` (M5a); absent on links saved before M5a. */
 	jobId?: string;
+	/**
+	 * One fingerprint per mapping name, of the value the importer last wrote or found equal to its
+	 * feed (M5b); absent on links saved before M5b.
+	 */
+	fields?: Record<string, string>;
+	/**
+	 * The mappings whose fingerprint is not vouched for by `writtenRev` (M5b): an old one a
+	 * protected mapping kept, or one carried over after the entry's revision had moved. They are
+	 * always compared, as taxonomies are. Absent when none.
+	 */
+	unconfirmed?: string[];
+	/**
+	 * The time the entry was scheduled for at `writtenRev`, as far as the importer knows (M5b):
+	 * the schedule it set, or one an update kept. Absent when none.
+	 */
+	scheduledAt?: string;
 }
 
 /** The pre-image of an entry a job updated (M5a): what the entry held before its first write. */
 export interface JournalBefore {
-	/** The link row before the job; null when there was none. */
-	link: { jobId?: string; writtenRev?: string } | null;
+	/**
+	 * The link row before the job, its fingerprints (unconfirmed ones named) and schedule included
+	 * (M5b); null when none.
+	 */
+	link: {
+		jobId?: string;
+		writtenRev?: string;
+		fields?: Record<string, string>;
+		unconfirmed?: string[];
+		scheduledAt?: string;
+	} | null;
 	/**
 	 * The entry's `_rev` when the pre-image was read. When it is not `link.writtenRev`, someone
 	 * changed the entry after the earlier job, and a rollback hands the link back unchanged.
@@ -266,11 +297,31 @@ export interface JournalEntry {
 	/** ISO time of the write-ahead put. */
 	at: string;
 	/**
-	 * Final review I3, update only: the term translation groups the job wrote, by taxonomy (the
-	 * after state of each taxonomy in `before.links.taxonomies`). Term edits do not move `_rev`,
-	 * so the rollback compares them with the entry's terms before restoring.
+	 * What the job wrote. `taxonomies` (final review I3, update only): the term translation groups
+	 * the job wrote, by taxonomy (the after state of each taxonomy in `before.links.taxonomies`).
+	 * Term edits do not move `_rev`, so the rollback compares them with the entry's terms before
+	 * restoring.
 	 */
-	wrote?: { taxonomies?: Record<string, string[]> };
+	wrote?: {
+		taxonomies?: Record<string, string[]>;
+		/**
+		 * M5b, a write that a publish or a schedule follows (the record publishes now, makes a
+		 * schedule or keeps one, also when its publish then fails): what that publish makes live.
+		 * `fields` holds the fingerprint of every field of the data published (`dataFingerprints`):
+		 * the entry's data, its own pending draft's included, with the values the write sends.
+		 * `slug` is the slug the write sends, when it sends one. `publishedAt` is the entry's when
+		 * the record read it (null: never published), which the scheduler keeps, or, when null,
+		 * sets to the scheduled time. A rollback owns an entry the scheduler published only when it
+		 * shows all three: an editor's unschedule and discard after the time leaves the same `_rev`
+		 * shape with the values from before the job, and an editor's reschedule or publish of a
+		 * never published entry another `publishedAt`. Crash repair adopts the scheduler's publish
+		 * on the same test, and a publish whose link save a stop lost on `fields` and `slug`
+		 * (final review A-I1, A-I2).
+		 */
+		fields?: Record<string, string>;
+		slug?: string;
+		publishedAt?: string | null;
+	};
 }
 
 /** A media item a job's upload created (plugin storage `journalMedia`, `journalMediaKey`). */

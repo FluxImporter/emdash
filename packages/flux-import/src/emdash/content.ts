@@ -90,6 +90,12 @@ export interface ContentRuntime {
 		id: string,
 		options?: { _rev?: string },
 	): Promise<HandlerResult>;
+	/** M5b: src/emdash-runtime.ts:4733 (no hook can refuse it, spec M5b F3). */
+	handleContentUnschedule(
+		collection: string,
+		id: string,
+		options?: { _rev?: string },
+	): Promise<HandlerResult>;
 }
 
 /** The codes EmDash's policy hooks refuse a publish, unpublish or schedule with (M5a). */
@@ -135,6 +141,8 @@ const itemResult = z.object({
 		liveData: z.record(z.string(), z.unknown()).optional(),
 		draftRevisionId: z.string().nullable().optional(),
 		scheduledAt: z.string().nullable().optional(),
+		/** ContentItem.publishedAt (src/database/repositories/types.ts:311). */
+		publishedAt: z.string().nullable().optional(),
 		createdAt: z.string().optional(),
 		updatedAt: z.string().optional(),
 		deletedAt: z.string().nullable().optional(),
@@ -196,6 +204,7 @@ function snapshotOf(
 		status: item.status,
 		scheduledAt: item.scheduledAt ?? null,
 		hasDraft,
+		...(item.publishedAt === undefined ? {} : { publishedAt: item.publishedAt }),
 		...(hasDraft && item.liveData !== undefined ? { live: item.liveData } : {}),
 		...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
 		...(item.updatedAt === undefined ? {} : { updatedAt: item.updatedAt }),
@@ -367,6 +376,9 @@ export class EmDashContent implements ContentPort {
 					options,
 				);
 				break;
+			case "unschedule":
+				result = await this.runtime.handleContentUnschedule(collection, id, { _rev: rev });
+				break;
 		}
 		const op = `Rolling back the entry (${input.step})`;
 		if (!result.success) {
@@ -492,6 +504,29 @@ export class EmDashContent implements ContentPort {
 			throw writeError("Publishing the entry", result.error);
 		}
 		return { ok: true, rev: snapshotOf(result.data, "Publishing the entry").rev };
+	}
+
+	async schedule(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+		scheduledAt: string;
+	}): Promise<WriteResult> {
+		if (await this.lockReader(input.collection, input.id, this.actor.id)) {
+			return { ok: false, reason: "locked" };
+		}
+		const result = await this.runtime.handleContentSchedule(
+			input.collection,
+			input.id,
+			input.scheduledAt,
+			{ _rev: input.rev, actor: this.actor },
+		);
+		if (!result.success) {
+			if (result.error?.code === "CONFLICT") return { ok: false, reason: "conflict" };
+			throw writeError("Scheduling the entry", result.error);
+		}
+		return { ok: true, rev: snapshotOf(result.data, "Scheduling the entry").rev };
 	}
 
 	ensureSourceIdField(collection: string): Promise<void> {

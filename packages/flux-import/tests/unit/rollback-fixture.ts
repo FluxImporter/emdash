@@ -103,8 +103,27 @@ export type StartOptions = {
 	publish?: boolean;
 	journal?: boolean;
 	batchSize?: number;
+	/** M5b: whether the collection keeps revisions, for templates that map publishAt. */
+	revisions?: boolean;
 	extra?: Record<string, unknown>;
 };
+
+/**
+ * Makes the test clock move 3 ms on every read, so writes get distinct timestamps as they do in
+ * EmDash; the fixed clock suits tests that compare times.
+ */
+export function ticking(clock: { t: number }): void {
+	let t = clock.t;
+	Object.defineProperty(clock, "t", {
+		get: () => {
+			t += 3;
+			return t;
+		},
+		set: (v: number) => {
+			t = v;
+		},
+	});
+}
 
 export async function start(deps: Deps, body: string, opts: StartOptions = {}): Promise<Job> {
 	const upload = `u${deps.source.uploads.size + 1}`;

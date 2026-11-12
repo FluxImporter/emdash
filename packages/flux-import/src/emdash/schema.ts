@@ -1,5 +1,10 @@
 import { ContentWriteError } from "../engine/ports.js";
-import { type FieldRules, type SchemaField, SOURCE_ID_FIELD } from "../engine/template.js";
+import {
+	type FieldRules,
+	type SchemaField,
+	SOURCE_ID_FIELD,
+	templateSchema,
+} from "../engine/template.js";
 import { emdashErrorCode } from "./errors.js";
 
 /**
@@ -21,7 +26,9 @@ export interface SchemaRegistryLike {
 		fieldSlug: string,
 		input: { indexed: boolean },
 	): Promise<unknown>;
-	getCollectionWithFields(slug: string): Promise<{ fields: RegistryField[] } | null>;
+	getCollectionWithFields(
+		slug: string,
+	): Promise<{ fields: RegistryField[]; supports?: readonly string[] } | null>;
 }
 
 /** The parts of EmDash's `Field` (src/schema/types.ts:320-344) the importer reads. */
@@ -127,6 +134,29 @@ function relationOf(
 }
 
 /**
+ * The collection a request's template maps `publishAt` into, read once: its fields and whether
+ * it keeps revisions (M5b). Null when the template maps no `publishAt` or the collection is missing.
+ */
+export async function readPublishAtCollection(
+	registry: SchemaRegistryLike,
+	template: unknown,
+): Promise<(CollectionRead & { collection: string }) | null> {
+	const collection = publishAtCollection(template);
+	if (collection === null) return null;
+	const read = await readCollection(registry, collection);
+	return read === null ? null : { ...read, collection };
+}
+
+/**
+ * The collection of a template from a request that maps `publishAt` (M5b), whose revisions job
+ * creation reads; null otherwise. An invalid template has none: job creation reports it.
+ */
+export function publishAtCollection(template: unknown): string | null {
+	const parsed = templateSchema.safeParse(template);
+	return parsed.success && parsed.data.publishAt !== undefined ? parsed.data.collection : null;
+}
+
+/**
  * The collection's fields for `checkTemplate` and the job's target snapshot, or `null` when the
  * collection does not exist: type, `required`, whether it has a default, the validation keys
  * EmDash enforces, whether EmDash cannot read its type or keeps its values elsewhere (a
@@ -138,9 +168,25 @@ export async function listSchemaFields(
 	registry: SchemaRegistryLike,
 	collection: string,
 ): Promise<SchemaField[] | null> {
+	return (await readCollection(registry, collection))?.fields ?? null;
+}
+
+/** A collection's schema fields and whether it keeps revisions, from one registry read (M5b). */
+export type CollectionRead = { fields: SchemaField[]; revisions: boolean };
+
+/**
+ * A collection's fields (`listSchemaFields`) and whether it keeps revisions (M5b): its `supports`
+ * lists `"revisions"` (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). Null when the
+ * collection does not exist, which job creation then refuses.
+ */
+export async function readCollection(
+	registry: SchemaRegistryLike,
+	collection: string,
+): Promise<CollectionRead | null> {
 	const found = await registry.getCollectionWithFields(collection);
 	if (!found) return null;
-	return found.fields.map((f) => {
+	const revisions = found.supports?.includes("revisions") ?? false;
+	const fields = found.fields.map((f) => {
 		const relation = f.validation?.relation;
 		return {
 			slug: f.slug,
@@ -156,4 +202,5 @@ export async function listSchemaFields(
 			...(f.translatable === false ? { translatable: false as const } : {}),
 		};
 	});
+	return { fields, revisions };
 }

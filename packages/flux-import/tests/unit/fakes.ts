@@ -22,6 +22,7 @@ import {
 	type Where,
 	type WriteResult,
 } from "../../src/engine/ports.js";
+import { encodeRev } from "../../src/engine/revs.js";
 import type {
 	EngineDeps,
 	Job,
@@ -40,6 +41,18 @@ import {
 	type MediaFetchResult,
 } from "../../src/sources/media-fetch.js";
 import { streamOf } from "./helpers.js";
+
+/** EmDash's NOT_FOUND for an entry in Trash, as `writeError` turns it into a record error. */
+function trashedError(op: string, id: string): ContentWriteError {
+	return new ContentWriteError("emdash_not_found", `${op} failed: Content item not found: ${id}`);
+}
+
+/** A copy without null values, as EmDash's mapRow reads an entry's columns. */
+function withoutNulls(data: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(structuredClone(data)).filter(([, value]) => value !== null),
+	);
+}
 
 function matches(data: Record<string, unknown>, where: Where): boolean {
 	return Object.entries(where).every(([k, cond]) => {
@@ -120,6 +133,76 @@ export class MemoryKv<T> implements KvCollection<T> {
 	}
 }
 
+/** SQL's binary text order, which `ORDER BY` uses on SQLite and D1. */
+function compareText(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * EmDash's `normalizeDatetime` for a site in UTC (`datetimes.normalizeValue`,
+ * database/content-datetime.ts:176-186; datetime-normalization.ts:209-250), as `schedule` applies
+ * it (repositories/content.ts:2106): a naive time is read in the site's zone, here UTC; an
+ * explicit offset is converted to UTC with milliseconds; anything else is a validation error. The
+ * explicit form is checked as EmDash's `EXPLICIT_DATETIME_SCHEMA` does (datetime-normalization.ts:
+ * 66-69): `z.iso.datetime({ offset: true })` or with `precision: -1`, whose zod 4.5.4 patterns
+ * (v4/core/regexes.js:69, 77-102) are copied below: case-sensitive, a real calendar day, seconds
+ * required unless the time is `HH:MM`, an offset with a colon.
+ */
+const ZOD_DATE =
+	"(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))";
+const ZOD_HHMM = "(?:[01]\\d|2[0-3]):[0-5]\\d";
+const ZOD_OFFSET = "(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d))";
+const EXPLICIT_DATETIME = new RegExp(
+	`^${ZOD_DATE}T(?:${ZOD_HHMM}:[0-5]\\d(?:\\.\\d+)?${ZOD_OFFSET}|${ZOD_HHMM}${ZOD_OFFSET})$`,
+);
+
+function normalizeScheduledAt(value: string, op: string): string {
+	const naive =
+		/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/.exec(value);
+	let ms = Number.NaN;
+	if (naive) {
+		const [, y, mo, d, h = "0", mi = "0", s = "0", frac = "0"] = naive;
+		const parts = [y, mo, d, h, mi, s].map(Number) as [
+			number,
+			number,
+			number,
+			number,
+			number,
+			number,
+		];
+		const t = Date.UTC(
+			parts[0],
+			parts[1] - 1,
+			parts[2],
+			parts[3],
+			parts[4],
+			parts[5],
+			Number(frac.padEnd(3, "0")),
+		);
+		// As parseNaiveDatetime: a date that rolls over (Feb 30, 24:00) is not valid.
+		const back = new Date(t);
+		if (
+			back.getUTCFullYear() === parts[0] &&
+			back.getUTCMonth() + 1 === parts[1] &&
+			back.getUTCDate() === parts[2] &&
+			back.getUTCHours() === parts[3] &&
+			back.getUTCMinutes() === parts[4] &&
+			back.getUTCSeconds() === parts[5]
+		) {
+			ms = t;
+		}
+	} else if (EXPLICIT_DATETIME.test(value)) {
+		ms = Date.parse(value);
+	}
+	if (Number.isNaN(ms)) {
+		throw new ContentWriteError(
+			"emdash_validation_error",
+			`${op} failed: Datetime ${JSON.stringify(value)} is not a valid ISO 8601 datetime`,
+		);
+	}
+	return new Date(ms).toISOString();
+}
+
 type StoredEntry = {
 	id: string;
 	locale: string;
@@ -128,15 +211,26 @@ type StoredEntry = {
 	data: Record<string, unknown>;
 	/** The translation group: the entry's own ID, or its source's group (EmDash, spec M4e F3). */
 	group: string;
+	/** EmDash's `version`; the entry's `_rev` encodes it with `updatedAt` (`revOf`, spec M5b F1). */
 	rev: number;
 	pendingPublish: boolean;
 	/** Term slugs by taxonomy, entry IDs by reference field, byline credits: as written. */
 	taxonomies: Record<string, string[]>;
+	/**
+	 * Shared by the translation group's entries (one object), as EmDash keys reference edges by
+	 * translation group (`_emdash_content_references`, `writeReferenceSelection` with the entry's
+	 * group, src/api/handlers/relations.ts:782-812; spec M5b F15).
+	 */
 	references: Record<string, string[]>;
 	bylines: { bylineId: string; roleLabel: string | null }[];
 	/** M5a: `draft`, `scheduled` or `published`, and the schedule. */
 	status: string;
 	scheduledAt: string | null;
+	/**
+	 * M5b: EmDash's `published_at`. Set at the first publish (the sweep's first publication sets
+	 * it to the scheduled time), kept by later publishes and by an unpublish (spec M5a F12).
+	 */
+	publishedAt: string | null;
 	/**
 	 * M5a: the live data and slug while a draft revision is pending (on a collection with
 	 * revisions, a write staged after the entry's columns); null without one. `data` and `slug`
@@ -177,6 +271,10 @@ export class FakeContent implements ContentPort {
 	failPublish: (id: string) => "conflict" | "locked" | null = () => null;
 	/** Called at the start of publish; throw from it to simulate a crash before publishing. */
 	beforePublish: (id: string) => void = () => {};
+	/** M5b: called at the start of schedule; throw from it to simulate a crash before it. */
+	beforeSchedule: (id: string) => void = () => {};
+	/** M5b: called after a schedule landed; throw from it to simulate a crash before its save. */
+	afterSchedule: (id: string) => void = () => {};
 	/**
 	 * The non-translatable fields: a create with `translationOf` takes their values from the
 	 * source, as EmDash does (spec M4e F1).
@@ -184,6 +282,13 @@ export class FakeContent implements ContentPort {
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
 	/** M5a: collections without revisions, whose writes go straight to the live columns. */
 	readonly plainCollections = new Set<string>();
+	/**
+	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. A deliberate
+	 * divergence: EmDash makes every collection routable unless `routable` is 0
+	 * (api/handlers/content.ts:257-267), while the fake checks only the collections listed here,
+	 * since most tests import without a slug.
+	 */
+	readonly routableCollections = new Set<string>();
 	/** M5a: return a message to make a `content:beforeDelete` hook refuse the trash. */
 	blockDelete: (id: string) => string | null = () => null;
 	/** M5a: return a message to make a policy hook refuse a publish, unpublish or schedule. */
@@ -200,10 +305,32 @@ export class FakeContent implements ContentPort {
 		return new Date(this.now()).toISOString();
 	}
 
-	/** A write that changes the row: a new revision and `updatedAt`. */
+	/**
+	 * The `updated_at` a schedule or unschedule stamps. EmDash writes the time of the call, which on
+	 * a real server is always after the last write's, so the `_rev` always moves; a test clock may
+	 * stand still, so the fake moves it at least 1 ms past the old value.
+	 */
+	private later(e: StoredEntry): string {
+		const before = Date.parse(e.updatedAt);
+		return new Date(Math.max(this.now(), before + 1)).toISOString();
+	}
+
+	/** A write that changes the row: a new version and `updatedAt`. */
 	private touch(e: StoredEntry): void {
 		e.rev++;
 		e.updatedAt = this.stamp();
+	}
+
+	/** The entry's `_rev`, as EmDash encodes it: `base64("<version>:<updatedAt>")` (M5b F1). */
+	private encoded(e: StoredEntry): string {
+		return encodeRev(e.rev, e.updatedAt);
+	}
+
+	/** The current `_rev` of an entry, for tests that write as an editor would. */
+	revOf(id: string): string {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		return this.encoded(e);
 	}
 
 	/** As EmDash: a slug is unique per collection and locale, and Trash still holds it. */
@@ -225,6 +352,20 @@ export class FakeContent implements ContentPort {
 		}
 	}
 
+	/**
+	 * As EmDash on a routable collection (`routable` is true unless set to 0, api/handlers/
+	 * content.ts:257-276): publish (with the staged slug, repositories/content.ts:2603-2607) and
+	 * schedule refuse an entry without a slug.
+	 */
+	private requireSlug(e: StoredEntry, slug: string | null, op: string): void {
+		if (this.routableCollections.has(e.collection) && !slug?.trim()) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				`${op} failed: Cannot publish routable content without a slug`,
+			);
+		}
+	}
+
 	private hasDraft(e: StoredEntry): boolean {
 		return e.live !== null || e.stale !== null;
 	}
@@ -232,19 +373,27 @@ export class FakeContent implements ContentPort {
 	private snap(e: StoredEntry, options: GetOptions = {}): EntrySnapshot {
 		return {
 			id: e.id,
-			rev: String(e.rev),
+			rev: this.encoded(e),
 			// As hydrateDraftData: a pending draft changes the data, never the live slug.
 			slug: e.live?.slug ?? e.slug,
-			data: structuredClone(e.stale ? { ...e.data, ...e.stale.data } : e.data),
+			// The columns are read as mapRow reads them, without nulls
+			// (repositories/content.ts:2926-2934); a pending draft revision's data keeps its nulls.
+			data: e.live
+				? structuredClone(e.data)
+				: e.stale
+					? // As hydrateDraftData: the revision's data, nulls included, over the row's.
+						{ ...withoutNulls(e.data), ...structuredClone(e.stale.data) }
+					: withoutNulls(e.data),
 			group: e.group,
 			pendingPublish: e.pendingPublish,
 			status: e.status,
 			scheduledAt: e.scheduledAt,
 			hasDraft: this.hasDraft(e),
+			publishedAt: e.publishedAt,
 			...(e.live
-				? { live: structuredClone(e.live.data) }
+				? { live: withoutNulls(e.live.data) }
 				: e.stale
-					? { live: structuredClone(e.data) }
+					? { live: withoutNulls(e.data) }
 					: {}),
 			createdAt: e.createdAt,
 			updatedAt: e.updatedAt,
@@ -316,15 +465,24 @@ export class FakeContent implements ContentPort {
 		this.beforeStep(input.step, input.id);
 		const e = this.entries.get(input.id);
 		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			// As EmDash: unschedule has no policy read, so the repository's `findById`, which skips
+			// Trash, answers (repositories/content.ts:2163-2166).
+			if (input.step === "unschedule") {
+				throw new ContentWriteError(
+					"emdash_validation_error",
+					"Rolling back the entry (unschedule) failed: Content item not found",
+				);
+			}
 			throw new ContentWriteError("emdash_not_found", "Entry not found");
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked", message: "locked" };
-		if (String(e.rev) !== input.rev) {
+		if (this.encoded(e) !== input.rev) {
 			return { ok: false, reason: "conflict", message: "Revision precondition did not match" };
 		}
-		// Only publish, unpublish and schedule run policy hooks; a discard cannot be refused.
-		const blocked =
-			input.step === "update" || input.step === "discard" ? null : this.blockStep(input.step, e.id);
+		// Only publish, unpublish and schedule run policy hooks; a discard, an update and an
+		// unschedule (no beforeUnschedule hook, spec M5b F3) cannot be refused.
+		const unhooked = ["update", "discard", "unschedule"];
+		const blocked = unhooked.includes(input.step) ? null : this.blockStep(input.step, e.id);
 		if (blocked !== null) return { ok: false, reason: "blocked", message: blocked };
 		switch (input.step) {
 			case "update": {
@@ -366,19 +524,18 @@ export class FakeContent implements ContentPort {
 					e.rev++;
 				}
 				break;
-			case "schedule": {
-				const at = input.scheduledAt ?? "";
-				if (!(Date.parse(at) > this.now())) {
-					throw new ContentWriteError(
-						"emdash_validation_error",
-						"Rolling back the entry (schedule) failed: Scheduled date must be in the future",
-					);
-				}
-				e.scheduledAt = at;
-				if (e.status !== "published") e.status = "scheduled";
-				this.touch(e);
+			case "schedule":
+				this.setSchedule(e, input.scheduledAt ?? "", "Rolling back the entry (schedule)");
 				break;
-			}
+			case "unschedule":
+				// As EmDash: a no-op without a schedule; else the status goes back to draft unless
+				// published, and only `updated_at` moves (repositories/content.ts:2155-2198).
+				if (e.scheduledAt !== null) {
+					e.scheduledAt = null;
+					if (e.status !== "published") e.status = "draft";
+					e.updatedAt = this.later(e);
+				}
+				break;
 		}
 		if (input.step !== "update" && input.step !== "publish") {
 			this.calls.push(`${input.step}:${e.id}`);
@@ -387,7 +544,7 @@ export class FakeContent implements ContentPort {
 		return {
 			ok: true,
 			state: {
-				rev: String(e.rev),
+				rev: this.encoded(e),
 				status: e.status,
 				scheduledAt: e.scheduledAt,
 				hasDraft: this.hasDraft(e),
@@ -481,10 +638,11 @@ export class FakeContent implements ContentPort {
 			pendingPublish: true,
 			// As EmDash: terms and references are the group's; credits are copied unless given.
 			taxonomies: structuredClone(source?.taxonomies ?? {}),
-			references: structuredClone(source?.references ?? {}),
+			references: source?.references ?? {},
 			bylines: input.bylines === undefined ? structuredClone(source?.bylines ?? []) : [],
 			status: "draft",
 			scheduledAt: null,
+			publishedAt: null,
 			live: null,
 			published: null,
 			stale: null,
@@ -496,7 +654,7 @@ export class FakeContent implements ContentPort {
 		this.entries.set(id, entry);
 		this.calls.push(`create:${id}`);
 		this.afterWrite(id);
-		return { id, rev: "1" };
+		return { id, rev: this.encoded(entry) };
 	}
 	async update(
 		input: {
@@ -508,8 +666,10 @@ export class FakeContent implements ContentPort {
 	): Promise<WriteResult> {
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
+		// As EmDash: the update's lookup skips Trash (`findByIdOrSlug`, emdash-runtime.ts:3685-3698).
+		if (e.trashed) throw trashedError("Updating the entry", e.id);
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
-		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
 		const failure = this.failWrite(input.data ?? {});
 		if (failure) throw failure;
 		this.checkSlug(e.collection, e.locale, input.slug, e.id);
@@ -528,22 +688,43 @@ export class FakeContent implements ContentPort {
 		const columns = plain
 			? input.data !== undefined || input.slug !== undefined
 			: input.slug === null;
-		e.rev++;
+		// As EmDash on a revisioned collection (spec M5b V3): staging the draft is one version
+		// (`replaceDraftRevision`, repositories/content.ts:2840-2841); terms or bylines with it make
+		// the runtime also run the row update (emdash-runtime.ts:299-308, 4026-4037), another
+		// version that writes no column (repositories/content.ts:1071-1075; bylines set
+		// `primary_byline_id` by their own statement, byline.ts:1404-1409).
+		const liveMeta = input.taxonomies !== undefined || input.bylines !== undefined;
+		e.rev += staged && !plain && liveMeta ? 2 : 1;
 		if (columns) e.updatedAt = this.stamp();
 		// As EmDash on revisioned collections: terms and bylines are live metadata (no draft).
 		if (staged && !plain) e.pendingPublish = true;
 		this.calls.push(`update:${e.id}`);
 		this.afterWrite(e.id);
-		return { ok: true, rev: String(e.rev) };
+		return { ok: true, rev: this.encoded(e) };
 	}
 	async publish(input: { id: string; rev: string }): Promise<WriteResult> {
 		this.beforePublish(input.id);
 		const e = this.entries.get(input.id);
 		if (!e) throw new ContentWriteError("not_found", "Entry not found");
+		// As EmDash: the policy check's `handleContentGet` skips Trash (emdash-runtime.ts:4448-4455).
+		if (e.trashed) throw trashedError("Publishing the entry", e.id);
 		const forced = this.failPublish(e.id);
 		if (forced) return { ok: false, reason: forced };
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
-		if (String(e.rev) !== input.rev) return { ok: false, reason: "conflict" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		this.requireSlug(e, e.slug, "Publishing the entry");
+		this.makeLive(e);
+		this.calls.push(`publish:${e.id}`);
+		return { ok: true, rev: this.encoded(e) };
+	}
+
+	/**
+	 * EmDash's publish (F4): status, draft and schedule cleared, a new version and `updated_at`.
+	 * `published_at` is the requested time, else the current one, else now
+	 * (repositories/content.ts:2608).
+	 */
+	private makeLive(e: StoredEntry, publishedAt?: string): void {
+		e.publishedAt = publishedAt ?? e.publishedAt ?? this.stamp();
 		e.pendingPublish = false;
 		e.status = "published";
 		e.scheduledAt = null;
@@ -552,11 +733,115 @@ export class FakeContent implements ContentPort {
 		// As EmDash without revisions: the live revision is created at the first publish after an
 		// unpublish and then kept (repositories/content.ts:2489-2499); with revisions each publish
 		// makes the draft the live revision.
-		if (this.plainCollections.has(e.collection)) e.published ??= { data: structuredClone(e.data) };
+		// Without revisions the live revision is made from the row as mapRow reads it, without its
+		// null columns (`revisionRepo.create({ data: existing.data })`, :2489-2499, :2928-2934).
+		if (this.plainCollections.has(e.collection)) e.published ??= { data: withoutNulls(e.data) };
 		else e.published = { data: structuredClone(e.data) };
 		this.touch(e);
-		this.calls.push(`publish:${e.id}`);
-		return { ok: true, rev: String(e.rev) };
+	}
+
+	/**
+	 * EmDash's schedule (spec M5b F2): a time not after now is refused; a draft becomes
+	 * `scheduled` and a published entry stays published; `version` is kept and only `updated_at`
+	 * moves, so at a clock that has not moved the `_rev` stays the same, as in EmDash.
+	 */
+	private setSchedule(e: StoredEntry, value: string, op: string): void {
+		const at = normalizeScheduledAt(value, op);
+		if (!(Date.parse(at) > this.now())) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				`${op} failed: Scheduled date must be in the future`,
+			);
+		}
+		e.scheduledAt = at;
+		if (e.status !== "published") e.status = "scheduled";
+		e.updatedAt = this.later(e);
+	}
+
+	async schedule(input: {
+		collection: string;
+		locale: string;
+		id: string;
+		rev: string;
+		scheduledAt: string;
+	}): Promise<WriteResult> {
+		this.beforeSchedule(input.id);
+		const e = this.entries.get(input.id);
+		if (!e || e.trashed || e.collection !== input.collection || e.locale !== input.locale) {
+			throw new ContentWriteError("emdash_not_found", "Entry not found");
+		}
+		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
+		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		// The live slug: a slug staged in a draft is not the row's (api/handlers/content.ts:2177-2181).
+		this.requireSlug(e, e.live?.slug ?? e.slug, "Scheduling the entry");
+		const blocked = this.blockStep("schedule", e.id);
+		if (blocked !== null) {
+			throw new ContentWriteError(
+				"emdash_schedule_rejected",
+				`Scheduling the entry failed: ${blocked}`,
+			);
+		}
+		this.setSchedule(e, input.scheduledAt, "Scheduling the entry");
+		this.calls.push(`schedule:${e.id}`);
+		this.afterSchedule(e.id);
+		return { ok: true, rev: this.encoded(e) };
+	}
+
+	/**
+	 * An editor's term change through the admin terms route (spec M5b F8): only the entry's term
+	 * assignments change, so its `_rev` stays as it was.
+	 */
+	setTerms(id: string, taxonomy: string, slugs: string[]): void {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		e.taxonomies[taxonomy] = [...slugs];
+	}
+
+	/**
+	 * An edit of the entry's reference edges made from elsewhere (spec M5b F15): from the other
+	 * entry of the relation (`setChildren` or `setParents` on its side,
+	 * src/database/repositories/relation.ts:612-658, :679-736), or through a translation. Only the
+	 * edge table changes, so no entry's `_rev` moves; the group's entries all see it.
+	 */
+	setEdges(id: string, field: string, ids: string[]): void {
+		const e = this.entries.get(id);
+		if (!e) throw new Error(`No entry ${id}`);
+		e.references[field] = [...ids];
+	}
+
+	/**
+	 * One pass of EmDash's scheduler (`publishDueContent`, spec M5b F5): every active entry due by
+	 * now is published without a revision check; a publish hook's refusal unschedules it instead.
+	 * As EmDash, collection by collection in slug order (`listCollections`, schema/registry.ts:366,
+	 * which puts its own collection order first; the fake has none), and within one by
+	 * `scheduled_at`, then `id` (`findReadyToPublish`, repositories/content.ts:2212). A first
+	 * publication gets the scheduled time as `published_at` (scheduled-publish.ts). Returns the
+	 * IDs published, in that order.
+	 */
+	runScheduled(): string[] {
+		const published: string[] = [];
+		const now = this.now();
+		const due = [...this.entries.values()]
+			.filter((e) => !e.trashed && e.scheduledAt !== null && Date.parse(e.scheduledAt) <= now)
+			.sort(
+				(a, b) =>
+					compareText(a.collection, b.collection) ||
+					compareText(a.scheduledAt ?? "", b.scheduledAt ?? "") ||
+					compareText(a.id, b.id),
+			);
+		for (const e of due) {
+			const firstAt = e.publishedAt === null ? (e.scheduledAt ?? undefined) : undefined;
+			if (this.blockStep("publish", e.id) !== null) {
+				e.scheduledAt = null;
+				if (e.status !== "published") e.status = "draft";
+				e.updatedAt = this.later(e);
+				continue;
+			}
+			this.makeLive(e, firstAt);
+			this.calls.push(`scheduled:${e.id}`);
+			published.push(e.id);
+		}
+		return published;
 	}
 	async ensureSourceIdField() {
 		this.sourceFieldEnsured = true;
