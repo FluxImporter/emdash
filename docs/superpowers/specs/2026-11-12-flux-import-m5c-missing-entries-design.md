@@ -130,8 +130,10 @@ without, through a temporary probe route as in M5a and M5b.
   link's job and a job read (one per distinct `jobId`, cached per batch), and this spec is amended.
 - **V7. Trash of a translation.** Trashing a non-root translation leaves its source's data, terms,
   references and status unchanged, and `translations()` of the source no longer lists it.
-- **V8. D1 query counts.** A count batch at `WORKERS_MISSING_SCAN_CAP` (40 reads, measured in
-  Task 9), an act batch at `WORKERS_MISSING_BATCH_CAP` (10, measured in Task 9) of trashes and one of unpublishes, each
+- **V8. D1 query counts.** A count batch at `WORKERS_MISSING_SCAN_CAP` (40 reads; measured in
+  the M5c review: 131 queries, 165 after 19 all-seen pages), an act batch at
+  `WORKERS_MISSING_BATCH_CAP` (10; measured: 298-308 for trashes, 398-408 for unpublishes, 436 after
+  19 all-seen pages) of trashes and one of unpublishes, each
   with the journal and the `removed` recount, and a rollback batch at `WORKERS_ROLLBACK_BATCH_CAP`
   (3) of trash rows (steps 8 and 9) and of unpublish rows. Each must stay under 900 queries (the
   margin M5b kept). A cap that does not fit is lowered to what does.
@@ -584,16 +586,17 @@ so its own "creates" are never candidates.
 
 - **Count stage cost.** One links query per page, one records query per 50 keys, and one
   `content.get` (about 12 D1 queries, 14 with references) per unseen candidate; nothing else
-  (Ruling 37). On Workers a batch makes at most `WORKERS_MISSING_SCAN_CAP` reads (40, measured in
-  Task 9), every read counted. The lookup budget is charged `COST_CALL` per storage query and
+  (Ruling 37). On Workers a batch makes at most `WORKERS_MISSING_SCAN_CAP` reads (40; measured in
+  the M5c review at 131 D1 queries a batch, about 2.4 a read, so the charge of 12 is
+  conservative), every read counted. The lookup budget is charged `COST_CALL` per storage query and
   `COST_MISSING_READ` (12) per content read (Ruling 32). Seen candidates cost no read. A batch takes
   at most `MISSING_PAGES_PER_BATCH` (20) link pages.
 - **Act stage cost.** The count of rows past `fromSeq + rows` (one query per 100 rows), the same
   reads again (`COST_MISSING_READ`), `translations()` for a trashed root and one journal read for a
   swept entry, then per acted entry a lock check, the journal put-if-absent, two row saves, the
   call (trash: `COST_READ` × 5 as in M5a; unpublish 15), a link put, and a journal delete when the
-  call did not land. On Workers a batch decides at most `WORKERS_MISSING_BATCH_CAP` entries (10,
-  measured in Task 9), on at most `MISSING_PAGES_PER_BATCH` (20) link pages.
+  call did not land. On Workers a batch decides at most `WORKERS_MISSING_BATCH_CAP` entries (10;
+  measured in the M5c review at about 30 D1 queries a trash and 40 an unpublish), on at most `MISSING_PAGES_PER_BATCH` (20) link pages.
 - **Rollback.** Steps 8 and 9 cost about a restore and a publish (76 queries, M5a Results); the
   3-row cap holds (V8).
 - **Import cost.** One link put per link whose owner stamp a record of another owner drops (once
@@ -611,8 +614,8 @@ so its own "creates" are never candidates.
 | `maxPercent` | 0-100 | A share |
 | `MISSING_PAGE` | 50 keys per seen query | D1's 100 bound parameters (F13), with room for the plugin, collection and job parameters |
 | Links per query | 100 | Plugin storage maximum (F10) |
-| `WORKERS_MISSING_SCAN_CAP` | 40 reads per call (measured in Task 9) | About 560 queries for reads, V8 |
-| `WORKERS_MISSING_BATCH_CAP` | 10 entries per call (measured in Task 9) | Up to about 70 queries per unpublish, V8 |
+| `WORKERS_MISSING_SCAN_CAP` | 40 reads per call (measured: 131 queries, 165 after 19 all-seen pages) | About 560 queries for reads projected, V8 |
+| `WORKERS_MISSING_BATCH_CAP` | 10 entries per call (measured: 308 for trashes, 408 for unpublishes, 436 after 19 all-seen pages) | Up to about 70 queries per unpublish projected, V8 |
 | `MISSING_PAGES_PER_BATCH` | 20 link pages per batch, both stages | Worst count batch about 660 D1 queries, worst act batch about 800 (Ruling 32) |
 | `COST_MISSING_READ` | 12 per content read | A D1 `content.get` runs about 12 queries (Ruling 32) |
 | Acts per job | at most `found` | Ruling 20 |
@@ -831,7 +834,8 @@ amends the text above, which now reads as the code does.
     stage. With an all-seen page at about 2 D1 queries and about 60 for the batch's own job, lease
     and row bookkeeping, the worst count batch is 20 × 2 + 40 × 14 + 60 = 660 queries and the worst
     act batch 20 × 2 + 10 × 70 + 60 = 800, both under 900 (F13). On Workers the lookup budget binds
-    first on the act stage (an act page fits only at 48 spent or less of 600). Task 9 measures it.
+    first on the act stage (an act page fits only at 48 spent or less of 600). Measured in the M5c review: the worst count
+    batch ran 165 queries and the worst act batch 436.
     The act stage also takes no page in a batch whose crash repair settled the whole limit, so a
     batch never decides one entry past its cap.
 33. **(Final review B) `settleUnread` keeps its link read for every owner.** The review asked to
@@ -872,7 +876,8 @@ amends the text above, which now reads as the code does.
       `entry.rev === before.rev`, stricter than the first draft and fail-safe.
     - `reachedTrash` measures a sent step against the revision the row saved when the step was
       sent.
-    - The Workers caps are marked "measured in Task 9"; Ruling 30 stands as written.
+    - The Workers caps were measured in the M5c review (`docs/superpowers/notes/2026-11-12-m5c-review.md`,
+      V8): at most 436 D1 queries a batch, so no cap changed; Ruling 30 stands as written.
     - `FLUX_IMPORT_VERSION` is 0.2.0: the storage docs ask for a version bump whenever a storage
       index is added (https://docs.emdashcms.com/plugins/creating-plugins/storage/, "Adding
       indexes"), and M5c adds `["owner", "collection", "locale"]` to `links`.
