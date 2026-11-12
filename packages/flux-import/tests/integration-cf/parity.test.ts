@@ -846,4 +846,65 @@ describe("workerd parity (D1, R2)", () => {
 		expect([...after.keys()]).toEqual(["SKU-0"]);
 		expect(after.get("SKU-0")).toMatchObject({ status: "published", data: before?.data });
 	});
+
+	it("unpublishes M5c missing entries on D1 within the Workers caps, and republishes them", async () => {
+		await client.createProducts("cf_m5c_unpub");
+		const rules = { rules: { owner: "shop", missing: { action: "unpublish", maxPercent: 50 } } };
+		await importRules("cf_m5c_unpub", productsCsv(60), rules);
+		const { uploadId } = await client.upload(productsCsv(45));
+		const created = await client.plugin("jobs/create", {
+			uploadId,
+			template: { ...template("cf_m5c_unpub"), ...rules },
+			dryRun: false,
+			budgetMs: 20_000,
+		});
+		const batches: Job[] = [];
+		let job = await client.plugin("jobs/next", { id: created.id });
+		while (job.status === "running") {
+			batches.push(job);
+			job = await client.plugin("jobs/next", { id: created.id });
+		}
+		expect(job).toMatchObject({ status: "completed", counters: { unchanged: 45, removed: 15 } });
+		// The act stage decides at most WORKERS_MISSING_BATCH_CAP (10) entries a batch.
+		const acts = batches.map((b) => b.missing?.rows ?? 0);
+		for (let i = 1; i < acts.length; i++) {
+			expect((acts[i] ?? 0) - (acts[i - 1] ?? 0)).toBeLessThanOrEqual(10);
+		}
+		const entries = await byKey("cf_m5c_unpub");
+		expect([...entries.values()].filter((e) => e.status === "draft")).toHaveLength(15);
+		const back = await importRules("cf_m5c_unpub", productsCsv(60), rules);
+		expect(back.counters).toMatchObject({ failed: 0, conflict: 0 });
+		expect([...(await byKey("cf_m5c_unpub")).values()].every((e) => e.status === "published")).toBe(
+			true,
+		);
+	});
+
+	it("trashes an M5c missing entry on D1 and restores it by rollback", async () => {
+		await client.createProducts("cf_m5c_trash");
+		const rules = { rules: { owner: "shop", missing: { action: "trash" } } };
+		await importRules("cf_m5c_trash", productsCsv(8), rules);
+		const before = (await byKey("cf_m5c_trash")).get("SKU-7");
+		const job = await importRules("cf_m5c_trash", productsCsv(7), rules);
+		expect(job.counters.removed).toBe(1);
+		expect((await byKey("cf_m5c_trash")).has("SKU-7")).toBe(false);
+		const rollback = await client.plugin("jobs/rollback", { id: job.id, budgetMs: 20_000 });
+		const done = await client.runToEnd(rollback.id);
+		expect(done.counters).toMatchObject({ reverted: 1, conflict: 0, failed: 0 });
+		expect((await byKey("cf_m5c_trash")).get("SKU-7")).toMatchObject({
+			status: "published",
+			slug: before?.slug,
+			data: before?.data,
+		});
+		const again = await importRules("cf_m5c_trash", productsCsv(8), rules);
+		expect(again.counters).toMatchObject({ unchanged: 8, failed: 0, conflict: 0 });
+	});
+
+	it("refuses an M5c feed that lost too many entries on D1", async () => {
+		await client.createProducts("cf_m5c_limit");
+		const rules = { rules: { owner: "shop", missing: { action: "trash" } } };
+		await importRules("cf_m5c_limit", productsCsv(8), rules);
+		const job = await importRules("cf_m5c_limit", productsCsv(5), rules);
+		expect(job.missing).toMatchObject({ found: 3, removed: 0, verdict: "refused" });
+		expect((await byKey("cf_m5c_limit")).size).toBe(8);
+	});
 });
