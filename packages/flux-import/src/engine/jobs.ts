@@ -151,10 +151,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	if (template.publishAt !== undefined && input.publish === false) {
 		throw new JobError("invalid_options", "publishAt needs publish: true");
 	}
-	// M5c (spec "Template and job"): the refusals of rules.missing and the job option missing.
-	if (template.rules?.missing !== undefined && template.rules.owner === undefined) {
-		throw new JobError("invalid_template", "rules.missing needs rules.owner");
-	}
+	// M5c (spec "Template and job"): the refusals of the job option missing. The template schema
+	// refuses rules.missing without rules.owner (spec Ruling 34).
 	if (input.missing !== undefined && template.rules?.missing === undefined) {
 		throw new JobError(
 			"invalid_options",
@@ -169,7 +167,13 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			"The job option missing.maxPercent must be an integer from 0 to 100",
 		);
 	}
-	if (template.rules?.missing !== undefined && !input.dryRun && input.journal === false) {
+	// The job option missing: false turns the phase off, so nothing needs undoing (spec Ruling 35).
+	if (
+		template.rules?.missing !== undefined &&
+		input.missing !== false &&
+		!input.dryRun &&
+		input.journal === false
+	) {
 		throw new JobError(
 			"invalid_options",
 			"rules.missing needs the journal, so its changes can be rolled back",

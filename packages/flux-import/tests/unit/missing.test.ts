@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { transitionJob } from "../../src/engine/jobs.js";
-import { laterJob, MISSING_MESSAGES } from "../../src/engine/missing.js";
+import { laterJob, MISSING_MESSAGES, MISSING_PAGES_PER_BATCH } from "../../src/engine/missing.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
 import { type Job, journalKey, type LinkRow, type RecordRow } from "../../src/engine/types.js";
+import { jobLogCsv } from "../../src/plugin/service.js";
 import {
 	csv,
 	type Deps,
@@ -417,6 +418,17 @@ describe("the threshold (M5c, Rulings 6, 22, 23)", () => {
 	});
 });
 
+describe("the log of a missing phase (M5c, Ruling 36)", () => {
+	it("leaves the record cell of the missing rows empty", async () => {
+		const { deps } = await eight("trash");
+		const job = await importRows(deps, items(range(0, 7)), opts("trash"));
+		const lines = (await jobLogCsv(deps, job.id)).trimEnd().split("\r\n");
+		expect(lines).toHaveLength(9);
+		expect(lines[7]?.startsWith("7,unchanged,K6,")).toBe(true);
+		expect(lines[8]).toBe(`,removed,K7,${entryOf(deps, "K7").id},trash,,,,`);
+	});
+});
+
 describe("candidates (M5c)", () => {
 	it("leaves out marked links, later jobs' links and other owners' entries", async () => {
 		const { deps } = await eight("trash");
@@ -467,12 +479,12 @@ describe("candidates (M5c)", () => {
 			if (q.where?.owner !== undefined) limits.push(q.limit ?? 0);
 			return query(q);
 		};
-		// A Workers-like batch: 4 entries and a lookup budget of 30 (6 reads).
+		// A Workers-like batch: 4 entries and a lookup budget of 70.
 		const perBatch: number[] = [];
 		let stored = job;
 		for (let i = 0; i < 500 && (stored.status === "running" || stored.status === "created"); i++) {
 			const before = limits.length;
-			stored = await runBatch(deps, job.id, "h", 4, 30);
+			stored = await runBatch(deps, job.id, "h", 4, 70);
 			perBatch.push(limits.length - before);
 		}
 		expect(stored.status).toBe("completed");
@@ -480,11 +492,89 @@ describe("candidates (M5c)", () => {
 		expect(entryOf(deps, "K59").trashed).toBe(true);
 		// The budget never cuts a page: it holds the batch's 4, or 3 after the one read or act.
 		expect(limits.every((l) => l >= 3)).toBe(true);
-		// A batch stops paging on the budget: a count page costs 2 calls and up to 4 reads of 5,
-		// so after the first one a page starts only at 8 spent or less (5 pages); an act page
-		// (4 × 41 and 2) never fits after the first.
-		expect(Math.max(...perBatch)).toBeLessThanOrEqual(5);
-		expect(perBatch.filter((n) => n > 1).length).toBeGreaterThan(0);
+		// A batch stops paging on the budget: a count page costs 2 calls and up to 4 reads of 12
+		// (Ruling 32), so after the first one a page starts only at 20 spent or less (11 pages);
+		// an act page (4 × 55 and 2) never fits after the first. At a read cost of 5 a count batch
+		// would take 24 pages.
+		expect(Math.max(...perBatch)).toBe(11);
+	});
+
+	it("charges each count-stage read at 12 in the spend as well as in fits (Ruling 32)", async () => {
+		const { deps } = setup();
+		await importRows(deps, items(range(0, 60)), { ...opts("trash"), batchSize: 500 });
+		// K0 is missing: the count's first page reads it, every later page is seen.
+		const job = await start(deps, csv(items(range(1, 60))), opts("trash"));
+		let pages = 0;
+		const query = deps.links.query.bind(deps.links);
+		deps.links.query = async (q) => {
+			if (q.where?.owner !== undefined) pages++;
+			return query(q);
+		};
+		let stored = job;
+		for (let i = 0; i < 50 && stored.missing?.stage !== "count"; i++) {
+			stored = await runBatch(deps, job.id, "h", 4, 70);
+		}
+		pages = 0;
+		await runBatch(deps, job.id, "h", 4, 70);
+		// The first page spends 2 calls and one read of 12; a later page of 3 fits at 32 spent or
+		// less, so the batch takes 10 more (13 more if the read spent only 5).
+		expect(pages).toBe(11);
+	});
+
+	it("charges each act-stage read at 12 in the spend (Ruling 32)", async () => {
+		const { deps } = setup();
+		await importRows(deps, items(range(0, 60)), { ...opts("trash"), batchSize: 500 });
+		// K0 is missing: the act stage's first page decides it, every later page is seen.
+		const job = await start(deps, csv(items(range(1, 60))), opts("trash"));
+		let pages = 0;
+		const query = deps.links.query.bind(deps.links);
+		deps.links.query = async (q) => {
+			if (q.where?.owner !== undefined) pages++;
+			return query(q);
+		};
+		let stored = job;
+		const perBatch: { act: boolean; pages: number }[] = [];
+		for (let i = 0; i < 100 && (stored.status === "running" || stored.status === "created"); i++) {
+			const act = stored.missing?.stage === "act";
+			pages = 0;
+			stored = await runBatch(deps, job.id, "h", 4, 220);
+			perBatch.push({ act, pages });
+		}
+		expect(entryOf(deps, "K0").trashed).toBe(true);
+		// The act page that decides K0 spends 2 calls, a read of 12 and the act's calls and trash;
+		// a later page of 3 needs 167 of the 220 left (3 × 55 and 2), so the batch takes 5 more
+		// (8 more if the read spent only 5).
+		expect(perBatch.filter((b) => b.act)[0]?.pages).toBe(6);
+	});
+
+	it("takes at most MISSING_PAGES_PER_BATCH link pages a batch, whatever the budget left", async () => {
+		const { deps } = setup();
+		await importRows(deps, items(range(0, 400)), { ...opts("trash"), batchSize: 500 });
+		const job = await start(deps, csv(items(range(0, 399))), opts("trash"));
+		let pages = 0;
+		const query = deps.links.query.bind(deps.links);
+		deps.links.query = async (q) => {
+			if (q.where?.owner !== undefined) pages++;
+			return query(q);
+		};
+		// The Workers lookup budget, with 4 entries a batch: the budget alone would allow a count
+		// batch about 138 pages of 4 seen links, and an act batch about 189.
+		const perBatch: { stage: string | undefined; pages: number }[] = [];
+		let stored = job;
+		for (let i = 0; i < 500 && (stored.status === "running" || stored.status === "created"); i++) {
+			const stage = stored.missing?.stage;
+			const before = pages;
+			stored = await runBatch(deps, job.id, "h", 4, 600);
+			perBatch.push({ stage, pages: pages - before });
+		}
+		expect(stored.status).toBe("completed");
+		expect(stored.missing).toMatchObject({ stage: "done", owned: 400, found: 1, removed: 1 });
+		expect(entryOf(deps, "K399").trashed).toBe(true);
+		const most = (stage: string) =>
+			Math.max(...perBatch.filter((b) => b.stage === stage).map((b) => b.pages));
+		expect(MISSING_PAGES_PER_BATCH).toBe(20);
+		expect(most("count")).toBe(MISSING_PAGES_PER_BATCH);
+		expect(most("act")).toBe(MISSING_PAGES_PER_BATCH);
 	});
 
 	it("takes one whole page a batch when the budget is below what a page may cost", async () => {

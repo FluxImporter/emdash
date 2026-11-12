@@ -40,7 +40,7 @@ import {
 	obtainRecordMedia,
 	type ResolvedMedia,
 } from "./media.js";
-import { enterMissing, missingPass, settleFailedWarning, settleStopped } from "./missing.js";
+import { enterMissing, missingPass, settleStopped, withSettleFailed } from "./missing.js";
 import { foreignStamp, ownerOf, ownership, withoutStamp } from "./owner.js";
 import {
 	lookupPortableTextImages,
@@ -112,6 +112,7 @@ import {
 	capWarnings,
 	type EngineDeps,
 	emptyCounters,
+	iso,
 	type Job,
 	type JournalEntry,
 	journalKey,
@@ -119,6 +120,7 @@ import {
 	linkKey,
 	type RecordError,
 	type RecordRow,
+	type RowFields,
 	recordKey,
 } from "./types.js";
 
@@ -131,9 +133,6 @@ export const MEDIA_GRACE_MS = 20_000;
 const CAS_ATTEMPTS = 5;
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
-type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
 async function claim(
 	deps: EngineDeps,
@@ -544,7 +543,10 @@ async function settleOwner(ctx: RecordCtx): Promise<void> {
 /**
  * M5c (spec Ruling 30): a record that failed after its key was read but before it read its
  * link (a mapping, link or media error) is still in the feed, so it drops a foreign stamp as
- * `settleOwner` does, at the cost of one link read. A dry run reads and drops nothing.
+ * `settleOwner` does, at the cost of one link read. A dry run reads and drops nothing. The read
+ * is needed whatever the job's owner: a stamp is foreign when it differs from the job's owner,
+ * so a job with owner "a" cannot tell a link stamped "b" (to drop) from one stamped "a" (to keep)
+ * without reading it (spec Ruling 33).
  */
 async function settleUnread(deps: EngineDeps, job: Job, sourceKey: string): Promise<void> {
 	if (job.dryRun) return;
@@ -2162,8 +2164,7 @@ export async function runBatch(
 	// repair"). The error stays the job's; one the settling meets becomes a job warning.
 	if (outcome.error) {
 		await settleStopped(deps, job).catch((e: unknown) => {
-			const warning = settleFailedWarning(e instanceof Error ? e.message : String(e));
-			job.warnings = [...(job.warnings ?? []), warning];
+			job.warnings = withSettleFailed(job.warnings, e);
 		});
 	}
 	return release(deps, job, holder, outcome);
@@ -2199,6 +2200,14 @@ async function noteFailure(deps: EngineDeps, jobId: string, holder: string, e: u
 		if (failures < MAX_FAILURES) return next;
 		return { ...next, status: stored.status === "running" ? "failed" : stored.status, lease: null };
 	});
-	// M5c: the job failed, so a landed trash gets its marked link (spec "Crash repair").
-	if (noted.status === "failed" && noted.lease === null) await settleStoppedJob(deps, jobId);
+	// M5c: the job failed, so a landed trash gets its marked link (spec "Crash repair"). An error
+	// the settling meets is the job's warning, as in `runBatch`, not lost in the caller's catch.
+	if (noted.status === "failed" && noted.lease === null) {
+		await settleStoppedJob(deps, jobId).catch((settling: unknown) =>
+			updateJob(deps, jobId, (stored) => ({
+				...stored,
+				warnings: withSettleFailed(stored.warnings, settling),
+			})),
+		);
+	}
 }

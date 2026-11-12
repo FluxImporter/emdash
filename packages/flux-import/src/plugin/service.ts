@@ -61,15 +61,21 @@ export const WORKERS_ROLLBACK_BATCH_CAP = 3;
 
 /**
  * Entries one jobs/next call reads in the missing phase's count stage on Workers (M5c). Every
- * read counts, misses included (spec Ruling 29 M8). Plan Fact V8 projects about 260 D1 queries
- * for 40; Task 9 measures it.
+ * read counts, misses included (spec Ruling 29 M8). The engine charges each read at
+ * `COST_MISSING_READ` (12, a D1 get's queries) and takes at most `MISSING_PAGES_PER_BATCH` (20)
+ * link pages a batch, so the worst count batch is 20 all-seen pages and 40 reads: about
+ * 20 × 2 + 40 × 14 + 60 = 660 D1 queries (spec Ruling 32, arithmetic in `src/engine/missing.ts`).
+ * Measured in Task 9.
  */
 export const WORKERS_MISSING_SCAN_CAP = 40;
 
 /**
  * Entries one jobs/next call decides in the missing phase's act stage on Workers (M5c): a read,
  * a lock check, the journal row, two row saves, the trash or unpublish (19 or 33 D1 queries) and
- * the link. Plan Fact V8 projects about 470 queries for 10 unpublishes; Task 9 measures it.
+ * the link. With at most `MISSING_PAGES_PER_BATCH` (20) link pages a batch, the worst act batch
+ * is about 20 × 2 + 10 × 70 + 60 = 800 D1 queries (spec Ruling 32). On D1 the lookup budget
+ * (`WORKERS_LOOKUP_BUDGET`, each read charged `COST_MISSING_READ`) binds before this cap for
+ * unpublish. Plan Fact V8 projects about 470 queries for 10 unpublishes; measured in Task 9.
  */
 export const WORKERS_MISSING_BATCH_CAP = 10;
 
@@ -461,10 +467,13 @@ export async function jobLogCsv(
 	id: string,
 	status?: RecordStatus,
 ): Promise<string> {
-	await getJob(deps, id);
+	const job = await getJob(deps, id);
+	// M5c: the missing phase's rows read no record, so their record cell is left empty.
+	const missingFrom = job.kind === "rollback" ? undefined : job.missing?.fromSeq;
 	try {
 		return await buildLogCsv(deps, id, {
 			...(status ? { status } : {}),
+			...(missingFrom === undefined ? {} : { missingFrom }),
 			maxBytes: LOG_MAX_BYTES,
 		});
 	} catch (e) {

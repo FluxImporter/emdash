@@ -4,6 +4,7 @@ import { sameStored } from "./rollback-values.js";
 import { SOURCE_ID_FIELD } from "./template.js";
 import {
 	type EngineDeps,
+	iso,
 	type Job,
 	type JournalBefore,
 	type JournalEntry,
@@ -38,8 +39,6 @@ export type JournalTarget = {
 	/** The link row read before this write; a resumed write it names at the entry's `_rev` is known. */
 	link?: LinkRow | null;
 };
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
 function base(t: JournalTarget): Omit<JournalEntry, "kind" | "entryId"> {
 	const { collection, locale } = t.job.template;

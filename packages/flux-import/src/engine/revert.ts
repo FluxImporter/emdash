@@ -34,6 +34,7 @@ import {
 	capWarnings,
 	type EngineDeps,
 	emptyCounters,
+	iso,
 	type Job,
 	type JournalBefore,
 	type JournalEntry,
@@ -43,12 +44,12 @@ import {
 	type RecordError,
 	type RecordRow,
 	type RollbackAction,
+	type RowFields,
 	recordKey,
 } from "./types.js";
 
 type Outcome = { done: boolean };
 type StepFailure = Extract<StepResult, { ok: false }>;
-type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
 
 /** Plugin storage query limit. */
 const PAGE = 100;
@@ -117,8 +118,6 @@ function counterOf(row: RowFields): keyof Counters | null {
 			return row.status;
 	}
 }
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
 /** The rollback job's original import; job creation always sets it. */
 function originalOf(job: Job): string {
@@ -447,7 +446,7 @@ async function decideRow(ctx: RowCtx): Promise<RowFields> {
 		: restoreChanged(
 				ctx,
 				entry,
-				link?.entryId === entry.id,
+				link,
 				pending,
 				// The schedule the job's link records: the only one step 7 may remove (review I2).
 				link?.entryId === entry.id && link.jobId === job.rollbackOf ? link.scheduledAt : undefined,
@@ -706,6 +705,36 @@ async function reached(
 }
 
 /**
+ * The row of a revert step EmDash refused: a conflict is `rollback_changed` with `changed` (or the
+ * translation-slot message), a lock `locked`, anything else `rollback_blocked` naming the step.
+ */
+function stepFailure(ctx: RowCtx, failed: StepFailure, name: string, changed: string): RowFields {
+	switch (failed.reason) {
+		case "conflict":
+			return rowOf(ctx, "conflict", {
+				errors: [
+					issue(
+						"rollback_changed",
+						failed.message === TRANSLATION_SLOT_TAKEN ? SLOT_TAKEN_MESSAGE : changed,
+					),
+				],
+			});
+		// An editor opened the entry between two steps: left, with the step reached, for a retry.
+		case "locked":
+			return rowOf(ctx, "locked", { errors: [issue("locked", LOCKED_MESSAGE)] });
+		default:
+			return rowOf(ctx, "failed", {
+				errors: [
+					issue(
+						"rollback_blocked",
+						`Not rolled back: a plugin refused the ${name}: ${failed.message}`,
+					),
+				],
+			});
+	}
+}
+
+/**
  * "Revert sequence": 1 restore the live values, slug and links; 2 publish; 3 unpublish; 4 discard
  * the draft the entry did not have; 5 restore the draft; 6 schedule; 7 unschedule (M5b: a
  * schedule the entry did not have, or one that has passed). Each step is chosen from the entry's
@@ -715,7 +744,7 @@ async function reached(
 async function restoreChanged(
 	ctx: RowCtx,
 	entry: Found,
-	linked: boolean,
+	link: LinkRow | null,
 	pending: number | undefined,
 	jobSchedule: string | undefined,
 ): Promise<RowFields> {
@@ -883,49 +912,38 @@ async function restoreChanged(
 			return run(7, { step: "unschedule" });
 		},
 	];
+	const names = ["update", "publish", "unpublish", "discard", "update", "schedule", "unschedule"];
 	for (const [i, next] of steps.entries()) {
 		const failed = await next();
 		if (failed === null) continue;
-		if (failed.reason === "conflict") {
-			return rowOf(ctx, "conflict", { errors: [issue("rollback_changed", CHANGED_MESSAGE)] });
-		}
-		// An editor opened the entry between two steps: left, with the step reached, for a retry.
-		if (failed.reason === "locked") {
-			return rowOf(ctx, "locked", { errors: [issue("locked", LOCKED_MESSAGE)] });
-		}
-		const names = ["update", "publish", "unpublish", "discard", "update", "schedule", "unschedule"];
-		const name = names[i];
-		return rowOf(ctx, "failed", {
-			errors: [
-				issue(
-					"rollback_blocked",
-					`Not rolled back: a plugin refused the ${name}: ${failed.message}`,
-				),
-			],
-		});
+		// Steps 1-7 never restore from Trash, so their conflicts are never the translation slot.
+		return stepFailure(ctx, failed, names[i] ?? "step", CHANGED_MESSAGE);
 	}
 	// Saved before the link moves, so a stop after the link put still resumes this row: its entry
 	// is at `writtenRev`, which the link no longer names for the original job.
 	await writing();
-	await handBack(ctx, entry.id, before, state, linked);
+	await handBack(ctx, entry.id, before, state, link);
 	return rowOf(ctx, "reverted");
 }
 
 /**
  * The link goes back to the job before, at the rollback's revision, so that job's rollback and
- * the next import see the entry as that job left it. M5c: with the owner stamp and the mark it
- * had (none, for a link the missing phase acted on).
+ * the next import see the entry as that job left it. M5c: with the mark it had (none, for a link
+ * the missing phase acted on), and with its owner stamp only while `current`, the link it
+ * replaces, still carries that owner (spec Ruling 31): a stamp another owner's record dropped
+ * since stays dropped, so the owner's next run never removes an entry that feed holds.
  */
 async function handBack(
 	ctx: RowCtx,
 	entryId: string,
 	before: JournalBefore,
 	state: EntryState,
-	linked: boolean,
+	current: LinkRow | null,
 ): Promise<void> {
 	const { deps, journal } = ctx;
 	const { collection, locale } = journal;
 	const id = linkKey(collection, locale, journal.sourceKey);
+	const linked = current?.entryId === entryId;
 	if (before.link === null) {
 		if (linked) await deps.links.delete(id);
 		return;
@@ -949,6 +967,7 @@ async function handBack(
 	const unconfirmed = moved
 		? [...new Set([...(before.link.unconfirmed ?? []), ...Object.keys(before.link.fields ?? {})])]
 		: (before.link.unconfirmed ?? []);
+	const kept = linked && current?.owner === before.link.owner;
 	await deps.links.put(id, {
 		collection,
 		locale,
@@ -962,9 +981,11 @@ async function handBack(
 		...(before.link.fields === undefined ? {} : { fields: before.link.fields }),
 		...(unconfirmed.length > 0 ? { unconfirmed } : {}),
 		...(scheduledAt === undefined ? {} : { scheduledAt }),
-		// M5c: the owner the link had, and its mark.
-		...(before.link.owner === undefined ? {} : { owner: before.link.owner }),
-		...(before.link.ownerSource === undefined ? {} : { ownerSource: before.link.ownerSource }),
+		// M5c: the owner the link had, while the link still carries it, and its mark.
+		...(kept && before.link.owner !== undefined ? { owner: before.link.owner } : {}),
+		...(kept && before.link.ownerSource !== undefined
+			? { ownerSource: before.link.ownerSource }
+			: {}),
 		...(before.link.missing === undefined ? {} : { missing: before.link.missing }),
 	});
 }
@@ -1081,30 +1102,7 @@ async function restoreTrashed(ctx: RowCtx, entry: Found | null): Promise<RowFiel
 			ctx.written = { rev: state.rev, step };
 			return null;
 		}
-		switch (result.reason) {
-			case "conflict":
-				return rowOf(ctx, "conflict", {
-					errors: [
-						issue(
-							"rollback_changed",
-							result.message === TRANSLATION_SLOT_TAKEN
-								? SLOT_TAKEN_MESSAGE
-								: TRASH_CHANGED_MESSAGE,
-						),
-					],
-				});
-			case "locked":
-				return rowOf(ctx, "locked", { errors: [issue("locked", LOCKED_MESSAGE)] });
-			default:
-				return rowOf(ctx, "failed", {
-					errors: [
-						issue(
-							"rollback_blocked",
-							`Not rolled back: a plugin refused the ${revert}: ${result.message}`,
-						),
-					],
-				});
-		}
+		return stepFailure(ctx, result, revert, TRASH_CHANGED_MESSAGE);
 	};
 	const restored = await run(8, "restore");
 	if (restored) return restored;
@@ -1114,6 +1112,6 @@ async function restoreTrashed(ctx: RowCtx, entry: Found | null): Promise<RowFiel
 	}
 	// Saved before the link moves, as `restoreChanged` does.
 	await ctx.save(rowOf(ctx, "writing"));
-	await handBack(ctx, entry.id, before, state, link?.entryId === entry.id);
+	await handBack(ctx, entry.id, before, state, link);
 	return rowOf(ctx, "reverted");
 }

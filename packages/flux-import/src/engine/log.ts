@@ -1,5 +1,10 @@
 import type { EngineDeps, RecordRow, RecordStatus } from "./types.js";
 
+/**
+ * The log's columns. `record` is the source record's number (seq + 1): on a rollback job's rows
+ * the number of the import record it reverts. M5c: a row of the missing phase reads no record,
+ * so its `record` cell is empty (spec Ruling 36).
+ */
 export const LOG_COLUMNS = [
 	"record",
 	"status",
@@ -21,12 +26,13 @@ export function csvCell(value: unknown): string {
 	return s;
 }
 
-export function recordsToCsvLines(rows: RecordRow[]): string {
+/** `missingFrom`: the job's `missing.fromSeq`; rows from it on are the missing phase's. */
+export function recordsToCsvLines(rows: RecordRow[], missingFrom?: number): string {
 	return rows
 		.map((r) => {
 			const first = r.errors?.[0];
 			return [
-				r.seq + 1,
+				missingFrom !== undefined && r.seq >= missingFrom ? null : r.seq + 1,
 				r.status,
 				r.sourceKey,
 				r.entryId,
@@ -59,7 +65,7 @@ export class LogTooLargeError extends Error {
 export async function buildLogCsv(
 	deps: EngineDeps,
 	jobId: string,
-	opts: { status?: RecordStatus; maxBytes?: number } = {},
+	opts: { status?: RecordStatus; maxBytes?: number; missingFrom?: number } = {},
 ): Promise<string> {
 	const encoder = new TextEncoder();
 	const max = opts.maxBytes ?? Number.POSITIVE_INFINITY;
@@ -74,7 +80,10 @@ export async function buildLogCsv(
 			limit: PAGE,
 			...(cursor ? { cursor } : {}),
 		});
-		const lines = recordsToCsvLines(page.items.map((i) => i.data));
+		const lines = recordsToCsvLines(
+			page.items.map((i) => i.data),
+			opts.missingFrom,
+		);
 		bytes += encoder.encode(lines).byteLength;
 		if (bytes > max) throw new LogTooLargeError(max);
 		out += lines;

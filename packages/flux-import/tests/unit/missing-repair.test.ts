@@ -161,6 +161,39 @@ describe("a stop during an act (M5c crash repair)", () => {
 		await expectRestored(deps, done, first);
 	});
 
+	it("decides nothing more in a batch whose limit the repair settled (final review B)", async () => {
+		const { deps } = setup();
+		await importRows(deps, items(range(0, 8)), opts("trash"));
+		// K0, K1 and K2 are missing (3 of 8, under the 50% these tests allow).
+		const job = await start(deps, csv(items(range(3, 8))), opts("trash"));
+		let at = await stored(deps, job.id);
+		for (let i = 0; i < 50 && !(at.missing?.stage === "act" && at.missing.rows === 1); i++) {
+			at = await runBatch(deps, job.id, "w1", 1);
+		}
+		expect(entryOf(deps, "K0").trashed).toBe(true);
+		// A batch of two links (K1, K2) stops right after K1's trash landed.
+		const trash = deps.content.trash.bind(deps.content);
+		deps.content.trash = async (collection, id) => {
+			await trash(collection, id);
+			deps.content.trash = trash;
+			throw new Error("stop");
+		};
+		await expect(runBatch(deps, job.id, "w1", 2)).rejects.toThrow("stop");
+		await unlease(deps, job.id);
+		expect(entryOf(deps, "K1").trashed).toBe(true);
+		// K1's link is gone, so the next page of one link would hold K2.
+		await deps.links.delete("products:en:K1");
+		const resumed = await runBatch(deps, job.id, "w2", 1);
+		expect((await rowsFrom(deps, resumed)).map((r) => [r.sourceKey, r.status])).toEqual([
+			["K0", "removed"],
+			["K1", "conflict"],
+		]);
+		expect(entryOf(deps, "K2").trashed).toBe(false);
+		const done = await runToEnd(deps, job.id);
+		expect(entryOf(deps, "K2").trashed).toBe(true);
+		expect(done.missing).toMatchObject({ rows: 3, removed: 2 });
+	});
+
 	it("starts a call that never went out over, journalling the entry as it now is", async () => {
 		const { deps, clock, job } = await second("trash");
 		stopAt(deps, "beforeStep", "trash");
@@ -626,6 +659,21 @@ describe("a lost batch (M5c)", () => {
 });
 
 describe("cancel, failure and rollback (M5c)", () => {
+	it("refuses a rollback before settling anything (final review A)", async () => {
+		const { deps, job } = await second("trash");
+		stopAfterTrash(deps);
+		await runUntilStop(deps, job.id);
+		// Still running: the rollback is refused, and the stopped row is left for the job itself.
+		await expect(createRollback(deps, { id: job.id })).rejects.toMatchObject({
+			code: "invalid_transition",
+			message: "Cannot roll back a running job: cancel it first",
+		});
+		expect((await rowsFrom(deps, await stored(deps, job.id))).map((r) => r.status)).toEqual([
+			"writing",
+		]);
+		expect(await linkOf(deps, "K6")).not.toHaveProperty("missing");
+	});
+
 	it("stops on a cancel mid-stage, and resumes from the cursor after a pause", async () => {
 		const made = setup();
 		await importRows(made.deps, items(range(0, 8)), opts("unpublish"));
@@ -690,6 +738,62 @@ describe("cancel, failure and rollback (M5c)", () => {
 		};
 		const failed = await runToEnd(deps, job.id);
 		expect(failed).toMatchObject({ status: "failed", error: { code: "collection_missing" } });
+		expect(failed.warnings).toContain(
+			"Missing entries: the changes a stopped batch made could not be finished before the job failed (D1 went away); resume the job or roll it back",
+		);
+	});
+
+	it("keeps one settle-failed warning, the latest, when a resumed job fails again", async () => {
+		const { deps, job } = await second("trash");
+		let broken = false;
+		stopAfterTrash(deps, () => {
+			broken = true;
+			return new ContentWriteError("collection_missing", "Collection is gone");
+		});
+		// Every link read fails the job (a job-level error), its settling included.
+		let reads = 0;
+		const get = deps.links.get.bind(deps.links);
+		deps.links.get = async (k) => {
+			if (broken) throw new ContentWriteError("collection_missing", `D1 went away ${++reads}`);
+			return get(k);
+		};
+		const failed = await runToEnd(deps, job.id);
+		expect(failed.status).toBe("failed");
+		expect(failed.warnings?.filter((w) => w.includes("could not be finished"))).toHaveLength(1);
+		await transitionJob(deps, job.id, "resume");
+		const again = await runToEnd(deps, job.id);
+		expect(again.status).toBe("failed");
+		const settleWarnings = (again.warnings ?? []).filter((w) =>
+			w.includes("could not be finished"),
+		);
+		expect(settleWarnings).toEqual([
+			`Missing entries: the changes a stopped batch made could not be finished before the job failed (D1 went away ${reads}); resume the job or roll it back`,
+		]);
+		expect(reads).toBeGreaterThan(1);
+	});
+
+	it("records the settling's error as a warning when the third unexpected error fails the job", async () => {
+		const { deps, job } = await second("trash");
+		let at = await stored(deps, job.id);
+		for (let i = 0; i < 20 && at.missing?.stage !== "act"; i++) {
+			at = await runBatch(deps, job.id, "w1");
+		}
+		expect(at.missing?.stage).toBe("act");
+		// Two unexpected errors already: the next one fails the job (noteFailure).
+		await deps.jobs.put(job.id, { ...at, failures: 2 });
+		let broken = false;
+		stopAfterTrash(deps, () => {
+			broken = true;
+			return new Error("stop");
+		});
+		const get = deps.links.get.bind(deps.links);
+		deps.links.get = async (k) => {
+			if (broken) throw new Error("D1 went away");
+			return get(k);
+		};
+		await expect(runBatch(deps, job.id, "w1")).rejects.toThrow("stop");
+		const failed = await stored(deps, job.id);
+		expect(failed).toMatchObject({ status: "failed", lease: null, error: { code: "internal" } });
 		expect(failed.warnings).toContain(
 			"Missing entries: the changes a stopped batch made could not be finished before the job failed (D1 went away); resume the job or roll it back",
 		);

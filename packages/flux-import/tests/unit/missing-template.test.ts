@@ -68,11 +68,19 @@ describe("jobs with rules.missing (M5c)", () => {
 		return createJob(deps, { uploadId: "u1", template: withRules(rules), schemaFields, ...opts });
 	}
 
-	it("refuses rules.missing without rules.owner", async () => {
+	it("refuses rules.missing without rules.owner, with its path, in the template schema", async () => {
 		await expect(create({ missing: { action: "trash" } })).rejects.toMatchObject({
 			code: "invalid_template",
-			message: "rules.missing needs rules.owner",
+			details: ["rules.missing: rules.missing needs rules.owner"],
 		});
+		const parsed = parse({ missing: { action: "trash" } });
+		expect(parsed.success).toBe(false);
+		expect(parsed.error?.issues).toEqual([
+			expect.objectContaining({
+				path: ["rules", "missing"],
+				message: "rules.missing needs rules.owner",
+			}),
+		]);
 	});
 
 	it("refuses the job option without rules.missing, and rules.missing without the journal", async () => {
@@ -89,6 +97,18 @@ describe("jobs with rules.missing (M5c)", () => {
 			code: "invalid_options",
 			message: "rules.missing needs the journal, so its changes can be rolled back",
 		});
+		// The job option missing: false turns the phase off, so the journal is not needed.
+		const off = await create(
+			{ owner: "o", missing: { action: "trash" } },
+			{ journal: false, missing: false },
+		);
+		expect(off).toMatchObject({ missingLimit: false, journal: false });
+		await expect(
+			create(
+				{ owner: "o", missing: { action: "trash" } },
+				{ journal: false, missing: { maxPercent: 5 } },
+			),
+		).rejects.toMatchObject({ code: "invalid_options" });
 		// A dry run keeps no journal, so journal: false does not matter to it.
 		const dry = await create(
 			{ owner: "o", missing: { action: "trash" } },

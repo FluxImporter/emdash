@@ -428,6 +428,12 @@ export interface EngineDeps {
 	newId: () => string;
 }
 
+/** A record row's own fields: what a decision fills in, the key fields and `updatedAt` left out. */
+export type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
+
+/** The engine's clock as an ISO timestamp, for `updatedAt` and `at` fields. */
+export const iso = (deps: Pick<EngineDeps, "now">): string => new Date(deps.now()).toISOString();
+
 export function recordKey(jobId: string, seq: number): string {
 	return `${jobId}:${String(seq).padStart(10, "0")}`;
 }

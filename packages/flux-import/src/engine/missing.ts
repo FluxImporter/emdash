@@ -14,6 +14,7 @@ import { holdsScheduled, sweptSince } from "./rules.js";
 import {
 	bump,
 	type EngineDeps,
+	iso,
 	type Job,
 	type JournalEntry,
 	journalKey,
@@ -23,21 +24,41 @@ import {
 	type MissingState,
 	type RecordError,
 	type RecordRow,
+	type RowFields,
 	recordKey,
 } from "./types.js";
 
 type Outcome = { done: boolean };
-type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
 
 /** Keys per seen query: D1 binds at most 100 parameters a query (spec F13). */
 export const MISSING_PAGE = 50;
 /** Links per query: the plugin storage maximum (spec F10). */
 const LINK_PAGE = 100;
+/**
+ * What the phase charges for one content read (`content.get`, `getIncludingTrashed`), in place of
+ * `COST_READ`: on D1 a get runs about 12 queries, 14 with references (spec Ruling 32), and the
+ * phase's budget must stay faithful to D1, since a batch that finds every link seen pages on
+ * until the budget stops it.
+ */
+export const COST_MISSING_READ = 12;
 /** A trash and an unpublish cost what a rollback's do (`COST_DELETE`, `STEP_COST.unpublish`). */
 const COST_TRASH = COST_READ * 5;
 const COST_UNPUBLISH = 15;
 /** What one decided entry may cost the act stage: two reads, six storage calls and a trash. */
-const ACT_RESERVE = COST_READ * 2 + COST_CALL * 6 + COST_TRASH;
+const ACT_RESERVE = COST_MISSING_READ * 2 + COST_CALL * 6 + COST_TRASH;
+/**
+ * Link pages one batch takes, in either stage (spec Ruling 32). On Workers a page holds at most
+ * the batch's cap of links (40 counted, 10 decided), and a page whose links are all seen costs
+ * about two D1 queries (the links query and one seen query). Worst cases on D1, with about 60
+ * queries for the batch's own job, lease and row bookkeeping:
+ * - count: 20 pages × 2 + 40 reads × 14 (a get with references) + 60 = 660 queries;
+ * - act: 20 pages × 2 + 10 entries × 70 (the spec's upper figure for an unpublish with its read,
+ *   lock check, journal row, row saves and link put) + 60 = 800 queries;
+ * both under the 900 the caps keep (spec F13). The lookup budget binds earlier on the act stage
+ * (an act page fits only at 48 spent or less of `WORKERS_LOOKUP_BUDGET`'s 600, so about 24 all-seen
+ * pages), the page cap on the count stage and wherever the budget is unlimited (Node).
+ */
+export const MISSING_PAGES_PER_BATCH = 20;
 
 /** The messages of the `unchanged` missing rows (spec "Verdicts", "Act stage"), by code. */
 export const MISSING_MESSAGES = {
@@ -57,8 +78,6 @@ const CHANGED_MESSAGE = "Not changed: the entry changed since it was read";
 export const UNVERIFIED_MESSAGE =
 	"Maybe changed: the import stopped while changing this entry and cannot tell whether someone changed it since";
 const blockedMessage = (message: string) => `Not changed: a plugin refused: ${message}`;
-
-const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
 
 /** The ULID form (`ulidx`): 10 characters of milliseconds, then 16 of randomness. */
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -155,14 +174,14 @@ function linkPage(
 }
 
 /**
- * Whether the batch takes another page of `size` links after its first (spec "Bounded work"):
- * the batch's limit leaves room for one, and the budget covers the page's links query and seen
- * queries plus `each` for every link on it. A batch always takes its first page, whatever it
- * finds, so the phase moves on; a seen candidate costs no read, so without the queries' cost a
- * spent budget would not stop the paging.
+ * Whether the batch takes another page of `size` links after its first `pages` (spec "Bounded
+ * work"): fewer than `MISSING_PAGES_PER_BATCH` were taken, the batch's limit leaves room for one,
+ * and the budget covers the page's links query and seen queries plus `each` for every link on
+ * it. A batch always takes its first page, whatever it finds, so the phase moves on; a seen
+ * candidate costs no read, so without the queries' cost a spent budget would not stop the paging.
  */
-function fits(cache: LookupCache, size: number, each: number): boolean {
-	if (size <= 0) return false;
+function fits(cache: LookupCache, pages: number, size: number, each: number): boolean {
+	if (pages >= MISSING_PAGES_PER_BATCH || size <= 0) return false;
 	const queries = COST_CALL * (1 + Math.ceil(size / MISSING_PAGE));
 	return cache.budget - cache.spent >= queries + each * size;
 }
@@ -222,12 +241,12 @@ async function countStage(
 ): Promise<Outcome> {
 	const { collection, locale } = job.template;
 	let reads = 0;
-	let paged = false;
+	let pages = 0;
 	for (;;) {
 		const size = Math.min(LINK_PAGE, limit - reads);
-		if (paged && !fits(cache, size, COST_READ)) return { done: false };
+		if (pages > 0 && !fits(cache, pages, size, COST_MISSING_READ)) return { done: false };
 		const page = await linkPage(deps, job, m.cursor, Math.max(1, size), cache);
-		paged = true;
+		pages++;
 		const candidates = page.items.map((i) => i.data).filter((link) => isCandidate(link, job));
 		const foreign = candidates.find(
 			(link) => link.ownerSource !== undefined && link.ownerSource !== job.sourceId,
@@ -254,7 +273,7 @@ async function countStage(
 		let found = 0;
 		for (const link of candidates) {
 			if (seen.get(link.sourceKey)?.imported) continue;
-			cache.spend(COST_READ);
+			cache.spend(COST_MISSING_READ);
 			reads++;
 			if ((await deps.content.get(collection, locale, link.entryId)) !== null) found++;
 		}
@@ -330,12 +349,14 @@ async function actStage(
 	const action = actionOf(job);
 	let decided = await repair(deps, job, m, cache, true);
 	let seq = m.fromSeq + m.rows;
-	let paged = false;
+	let pages = 0;
 	for (;;) {
 		const size = Math.min(LINK_PAGE, limit - decided);
-		if (paged && !fits(cache, size, ACT_RESERVE)) return { done: false };
-		const page = await linkPage(deps, job, m.cursor, Math.max(1, size), cache);
-		paged = true;
+		// `repair` may have settled the batch's whole limit: no page then, so no entry past it.
+		if (size <= 0) return { done: false };
+		if (pages > 0 && !fits(cache, pages, size, ACT_RESERVE)) return { done: false };
+		const page = await linkPage(deps, job, m.cursor, size, cache);
+		pages++;
 		const candidates = page.items.map((i) => i.data).filter((link) => isCandidate(link, job));
 		const seen = await seenOf(
 			deps,
@@ -472,7 +493,7 @@ async function settleWriting(
 	}
 	if (fields !== null) {
 		await save(fields);
-		count(ctx, fields);
+		tally(ctx.job, ctx.m, fields);
 		return true;
 	}
 	if (!restart) return false;
@@ -491,12 +512,12 @@ async function settleWriting(
 async function landed(ctx: ActCtx, id: string, rev: string): Promise<RowFields | null> {
 	const { deps, job, action, cache } = ctx;
 	const { collection, locale } = job.template;
-	cache.spend(COST_READ);
+	cache.spend(COST_MISSING_READ);
 	const active = await deps.content.get(collection, locale, id);
 	if (action === "trash") {
 		if (active !== null) return active.rev === rev ? null : unverified(ctx, id);
 		// Plan Ruling 3: only here does the act stage look in Trash. Trash keeps `_rev` (spec F1).
-		cache.spend(COST_READ);
+		cache.spend(COST_MISSING_READ);
 		const trashed = await deps.content.getIncludingTrashed(collection, locale, id);
 		return trashed?.trashed === true && trashed.rev === rev
 			? finish(ctx, id, rev)
@@ -553,9 +574,24 @@ export function settles(job: Job): boolean {
 export const CANCEL_LIVE_WARNING =
 	"Missing entries: the job was cancelled while one of its batches was running, so an entry that batch moved to Trash may not be marked; roll the job back, or restore such entries from Trash, before a feed that holds their keys is imported again, which would create them anew";
 
+const SETTLE_FAILED_PREFIX =
+	"Missing entries: the changes a stopped batch made could not be finished before the job failed";
+
 /** The job warning of a failed job whose stopped changes could not be finished. */
-export const settleFailedWarning = (message: string) =>
-	`Missing entries: the changes a stopped batch made could not be finished before the job failed (${message}); resume the job or roll it back`;
+const settleFailedWarning = (message: string) =>
+	`${SETTLE_FAILED_PREFIX} (${message}); resume the job or roll it back`;
+
+/**
+ * The job's warnings with the settle-failed warning for `e`, in place of an earlier one: a job
+ * that fails, is resumed and fails again keeps one, the latest.
+ */
+export function withSettleFailed(warnings: readonly string[] | undefined, e: unknown): string[] {
+	const message = e instanceof Error ? e.message : String(e);
+	return [
+		...(warnings ?? []).filter((w) => !w.startsWith(`${SETTLE_FAILED_PREFIX} (`)),
+		settleFailedWarning(message),
+	];
+}
 
 /** Saves a missing row at `seq` (start and end 0: it reads no record). */
 function saver(ctx: Pick<ActCtx, "deps" | "job">, seq: number) {
@@ -587,14 +623,9 @@ function unchanged(ctx: ActCtx, entryId: string | null, code: MissingCode): RowF
 
 const issue = (code: string, message: string): RecordError => ({ code, message });
 
-/** Counts a decided row on the job, and `removed` on the phase. */
-function count(ctx: ActCtx, row: RowFields): void {
-	tally(ctx.job, ctx.m, row);
-}
-
 /**
- * A `missing_unverified` row is a `conflict`, so it never counts toward `removed`: Ruling 20's
- * bound (`removed` never past `found`) holds for the removals the phase can prove. A call that
+ * Counts a decided row on the job, and `removed` on the phase. A `missing_unverified` row is a
+ * `conflict`, so it never counts toward `removed`: Ruling 20's bound (`removed` never past `found`) holds for the removals the phase can prove. A call that
  * threw or a stop it cannot tell apart from an editor's change may still have removed its entry.
  */
 function tally(job: Job, m: MissingState, row: Pick<RecordRow, "status" | "action">): void {
@@ -649,7 +680,7 @@ async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 	const save = saver(ctx, seq);
 	let row: RowFields;
 	try {
-		cache.spend(COST_READ);
+		cache.spend(COST_MISSING_READ);
 		const entry = await deps.content.get(collection, locale, link.entryId);
 		const code = await verdictOf(ctx, entry);
 		let left: RowFields | null = null;
@@ -678,7 +709,7 @@ async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 		row = rowOf(ctx, "failed", link.entryId, { errors: [issue(e.code, e.message)] });
 	}
 	await save(row);
-	count(ctx, row);
+	tally(ctx.job, ctx.m, row);
 }
 
 /**

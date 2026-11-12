@@ -307,7 +307,12 @@ const rulesSchema = z
 			.strict()
 			.optional(),
 	})
-	.strict();
+	.strict()
+	// M5c: refused in every template check, with its path (spec Ruling 34).
+	.refine((rules) => rules.missing === undefined || rules.owner !== undefined, {
+		message: "rules.missing needs rules.owner",
+		path: ["missing"],
+	});
 
 /**
  * The template's `source` block. Which formats take `records`, `sheet` and `headerRow` is checked
