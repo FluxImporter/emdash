@@ -335,6 +335,13 @@ export interface SourcePort {
 	open(uploadId: string, offset: number): Promise<ReadableStream<Uint8Array>>;
 }
 
+/** Content errors that fail the job rather than the record or entry being written. */
+export const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
+	"collection_missing",
+	"source_id_field_invalid",
+	"media_config",
+]);
+
 export class ContentWriteError extends Error {
 	constructor(
 		readonly code: string,

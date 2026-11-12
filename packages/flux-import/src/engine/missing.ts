@@ -4,10 +4,10 @@
  * Trash or unpublished. Each change is journalled before it is made, so `jobs/rollback` undoes
  * it. A dry run plans the same rows and changes nothing.
  */
-import { counterFor } from "./batch.js";
+import { counterFor } from "./counters.js";
 import { linkBefore } from "./journal.js";
 import { ownerOf } from "./owner.js";
-import { ContentWriteError, type EntrySnapshot } from "./ports.js";
+import { ContentWriteError, type EntrySnapshot, JOB_LEVEL_WRITE_ERRORS } from "./ports.js";
 import { COST_CALL, COST_READ, type LookupCache } from "./resolve.js";
 import { holdsScheduled, sweptSince } from "./rules.js";
 import {
@@ -153,6 +153,19 @@ function linkPage(
 	});
 }
 
+/**
+ * Whether the batch takes another page of `size` links after its first (spec "Bounded work"):
+ * the batch's limit leaves room for one, and the budget covers the page's links query and seen
+ * queries plus `each` for every link on it. A batch always takes its first page, whatever it
+ * finds, so the phase moves on; a seen candidate costs no read, so without the queries' cost a
+ * spent budget would not stop the paging.
+ */
+function fits(cache: LookupCache, size: number, each: number): boolean {
+	if (size <= 0) return false;
+	const queries = COST_CALL * (1 + Math.ceil(size / MISSING_PAGE));
+	return cache.budget - cache.spent >= queries + each * size;
+}
+
 type Seen = {
 	/** A first-pass row of the job has the key: the entry is in the feed. */
 	imported: boolean;
@@ -208,11 +221,12 @@ async function countStage(
 ): Promise<Outcome> {
 	const { collection, locale } = job.template;
 	let reads = 0;
+	let paged = false;
 	for (;;) {
-		const affordable = Math.floor((cache.budget - cache.spent) / COST_READ);
-		const left = Math.min(limit - reads, affordable);
-		if (left <= 0 && reads > 0) return { done: false };
-		const page = await linkPage(deps, job, m.cursor, Math.min(LINK_PAGE, Math.max(1, left)), cache);
+		const size = Math.min(LINK_PAGE, limit - reads);
+		if (paged && !fits(cache, size, COST_READ)) return { done: false };
+		const page = await linkPage(deps, job, m.cursor, Math.max(1, size), cache);
+		paged = true;
 		const candidates = page.items.map((i) => i.data).filter((link) => isCandidate(link, job));
 		const foreign = candidates.find(
 			(link) => link.ownerSource !== undefined && link.ownerSource !== job.sourceId,
@@ -312,11 +326,12 @@ async function actStage(
 	if (action === undefined) throw new Error(`Job ${job.id} has no rules.missing`);
 	let seq = m.fromSeq + m.rows;
 	let decided = 0;
+	let paged = false;
 	for (;;) {
-		const affordable = Math.floor((cache.budget - cache.spent) / ACT_RESERVE);
-		const left = Math.min(limit - decided, affordable);
-		if (left <= 0 && decided > 0) return { done: false };
-		const page = await linkPage(deps, job, m.cursor, Math.min(LINK_PAGE, Math.max(1, left)), cache);
+		const size = Math.min(LINK_PAGE, limit - decided);
+		if (paged && !fits(cache, size, ACT_RESERVE)) return { done: false };
+		const page = await linkPage(deps, job, m.cursor, Math.max(1, size), cache);
+		paged = true;
 		const candidates = page.items.map((i) => i.data).filter((link) => isCandidate(link, job));
 		const seen = await seenOf(
 			deps,
@@ -442,7 +457,7 @@ async function decideNew(ctx: ActCtx, seq: number): Promise<void> {
 		} else row = await act(ctx, entry, seq, save);
 	} catch (e) {
 		// Plan Ruling 10: the write-ahead row stays, since the call may have landed.
-		if (!(e instanceof ContentWriteError)) throw e;
+		if (!(e instanceof ContentWriteError) || JOB_LEVEL_WRITE_ERRORS.has(e.code)) throw e;
 		row = rowOf(ctx, "failed", link.entryId, { errors: [issue(e.code, e.message)] });
 	}
 	await save(row);

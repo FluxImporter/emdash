@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { transitionJob } from "../../src/engine/jobs.js";
 import { laterJob, MISSING_MESSAGES } from "../../src/engine/missing.js";
+import { ContentWriteError } from "../../src/engine/ports.js";
 import { type Job, journalKey, type LinkRow, type RecordRow } from "../../src/engine/types.js";
 import {
 	csv,
@@ -233,6 +234,20 @@ describe("unpublish and trash (M5c)", () => {
 		}
 	});
 
+	it("fails the job on a job-level content error, as the import does", async () => {
+		const { deps } = await eight("trash");
+		deps.content.trash = async () => {
+			throw new ContentWriteError("collection_missing", "Collection products is gone");
+		};
+		const job = await importRows(deps, items(range(0, 7)), opts("trash"));
+		expect(job).toMatchObject({
+			status: "failed",
+			error: { code: "collection_missing", message: "Collection products is gone" },
+		});
+		// Not saved as a failed row: the `writing` row stays for a resume to finish.
+		expect((await missingRows(deps, job)).get("K7")).toMatchObject({ status: "writing" });
+	});
+
 	it("checks the lock before a trash, which does not check it", async () => {
 		const { deps } = await eight("trash");
 		deps.content.locked.add(entryOf(deps, "K7").id);
@@ -360,6 +375,9 @@ describe("the threshold (M5c, Rulings 6, 22, 23)", () => {
 		// K5 and K6 are left alone, yet 2 of 8 count: the feed lost them (Ruling 22).
 		const job = await importRows(deps, items(range(0, 4).concat([4])), opts("trash"));
 		expect(job.missing).toMatchObject({ found: 2, verdict: "act", removed: 0 });
+		// The 5 records in the feed and the 3 left-alone missing rows (2 edited, 1 gone).
+		expect(job.counters.unchanged).toBe(8);
+		expect(job.counters.removed ?? 0).toBe(0);
 		const rows = await missingRows(deps, job);
 		expect(codes(rows.get("K5"))).toEqual(["missing_edited"]);
 		expect(codes(rows.get("K6"))).toEqual(["missing_edited"]);
@@ -436,6 +454,54 @@ describe("candidates (M5c)", () => {
 		expect(filtered.counters.filtered).toBe(1);
 		expect(entryOf(deps, "K5").trashed).toBe(true);
 		expect(job.missing?.removed).toBe(1);
+	});
+
+	it("bounds the link pages of a batch by the lookup budget when every candidate is seen", async () => {
+		const { deps } = setup();
+		await importRows(deps, items(range(0, 60)), { ...opts("trash"), batchSize: 500 });
+		// 59 of 60 in the feed: the count reads one entry, the act stage decides one.
+		const job = await start(deps, csv(items(range(0, 59))), opts("trash"));
+		const limits: number[] = [];
+		const query = deps.links.query.bind(deps.links);
+		deps.links.query = async (q) => {
+			if (q.where?.owner !== undefined) limits.push(q.limit ?? 0);
+			return query(q);
+		};
+		// A Workers-like batch: 4 entries and a lookup budget of 30 (6 reads).
+		const perBatch: number[] = [];
+		let stored = job;
+		for (let i = 0; i < 500 && (stored.status === "running" || stored.status === "created"); i++) {
+			const before = limits.length;
+			stored = await runBatch(deps, job.id, "h", 4, 30);
+			perBatch.push(limits.length - before);
+		}
+		expect(stored.status).toBe("completed");
+		expect(stored.missing).toMatchObject({ stage: "done", owned: 60, found: 1, removed: 1 });
+		expect(entryOf(deps, "K59").trashed).toBe(true);
+		// The budget never cuts a page: it holds the batch's 4, or 3 after the one read or act.
+		expect(limits.every((l) => l >= 3)).toBe(true);
+		// A batch stops paging on the budget: a count page costs 2 calls and up to 4 reads of 5,
+		// so after the first one a page starts only at 8 spent or less (5 pages); an act page
+		// (4 × 41 and 2) never fits after the first.
+		expect(Math.max(...perBatch)).toBeLessThanOrEqual(5);
+		expect(perBatch.filter((n) => n > 1).length).toBeGreaterThan(0);
+	});
+
+	it("takes one whole page a batch when the budget is below what a page may cost", async () => {
+		const { deps } = await eight("trash");
+		const job = await start(deps, csv(items(range(0, 7))), opts("trash"));
+		const limits: number[] = [];
+		const query = deps.links.query.bind(deps.links);
+		deps.links.query = async (q) => {
+			if (q.where?.owner !== undefined) limits.push(q.limit ?? 0);
+			return query(q);
+		};
+		let stored = job;
+		for (let i = 0; i < 200 && (stored.status === "running" || stored.status === "created"); i++) {
+			stored = await runBatch(deps, job.id, "h", 4, 10);
+		}
+		expect(stored.missing).toMatchObject({ stage: "done", owned: 8, found: 1, removed: 1 });
+		expect(limits.every((l) => l >= 3)).toBe(true);
 	});
 
 	it("pages 101 owned links and their keys in seen queries of 50", async () => {

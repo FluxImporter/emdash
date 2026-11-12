@@ -1,4 +1,5 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
+import { counterFor } from "./counters.js";
 import {
 	type Change,
 	type CurrentLinks,
@@ -50,6 +51,7 @@ import {
 	ContentWriteError,
 	type EntrySnapshot,
 	type GetOptions,
+	JOB_LEVEL_WRITE_ERRORS,
 	type LinkWrites,
 	type MediaInfo,
 	SourceMissingError,
@@ -126,36 +128,11 @@ export const LEASE_GRACE_MS = 30_000;
  */
 export const MEDIA_GRACE_MS = 20_000;
 const CAS_ATTEMPTS = 5;
-/** Content errors that fail the job rather than the record being written. */
-const JOB_LEVEL_WRITE_ERRORS: ReadonlySet<string> = new Set([
-	"collection_missing",
-	"source_id_field_invalid",
-	"media_config",
-]);
 
 type Outcome = { done: boolean; error?: { code: string; message: string } };
 type RowFields = Omit<RecordRow, "jobId" | "seq" | "start" | "end" | "updatedAt">;
 
 const iso = (deps: EngineDeps) => new Date(deps.now()).toISOString();
-
-/** The counter a row counts toward; null for a `writing` row. */
-export function counterFor(row: RowFields): keyof Counters | null {
-	switch (row.status) {
-		case "planned":
-			// M5c: a dry run's planned trash or unpublish counts as removed (Ruling 29 M10).
-			return row.action === "create"
-				? "created"
-				: row.action === "update"
-					? "updated"
-					: row.action === "trash" || row.action === "unpublish"
-						? "removed"
-						: "unchanged";
-		case "writing":
-			return null;
-		default:
-			return row.status;
-	}
-}
 
 async function claim(
 	deps: EngineDeps,
