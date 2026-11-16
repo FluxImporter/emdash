@@ -107,6 +107,11 @@ describe("MemoryKv", () => {
 			InvalidCursorError,
 		);
 		await expect(kv.query({ cursor: "c0" })).resolves.toMatchObject({ hasMore: false });
+		// An empty cursor is no cursor, as EmDash's `if (cursor)` reads it.
+		await expect(kv.query({ cursor: "" })).resolves.toMatchObject({ items: [{ id: "a" }] });
+		await expect(kv.query({ orderBy: { n: "asc" }, cursor: "" })).resolves.toMatchObject({
+			items: [{ id: "a" }],
+		});
 		await expect(kv.query({ orderBy: { n: "asc" }, cursor: "0" })).resolves.toBeDefined();
 	});
 });

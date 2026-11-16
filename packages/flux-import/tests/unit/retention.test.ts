@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
-import { createJob } from "../../src/engine/jobs.js";
+import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import type { Job } from "../../src/engine/types.js";
 import { purgeExpired } from "../../src/plugin/retention.js";
 import { makeDeps } from "./fakes.js";
@@ -120,20 +120,95 @@ describe("purgeExpired", () => {
 	it("never purges an unfinished job, and purges finished ones (spec Ruling 41)", async () => {
 		const { deps, clock } = makeDeps();
 		deps.source.add("u1", "sku,Name\nA,1\n");
-		const ids = new Map<string, string>();
-		for (const status of ["created", "running", "paused", "completed", "cancelled", "failed"]) {
+		const statuses = [
+			"created",
+			"running",
+			"paused",
+			"completed",
+			"cancelled",
+			"failed",
+		] as const satisfies readonly Job["status"][];
+		const jobs: { status: Job["status"]; id: string }[] = [];
+		for (const status of statuses) {
 			const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
-			await deps.jobs.put(job.id, { ...job, status: status as Job["status"] });
-			ids.set(status, job.id);
+			await deps.jobs.put(job.id, { ...job, status });
+			jobs.push({ status, id: job.id });
 		}
 		clock.t += DAY;
 		const result = await purgeExpired(deps, new Purger(), 0);
 		expect(result.jobs).toBe(3);
-		expect(await deps.jobs.get(ids.get("running") as string)).not.toBeNull();
-		expect(await deps.jobs.get(ids.get("paused") as string)).not.toBeNull();
-		expect(await deps.jobs.get(ids.get("created") as string)).not.toBeNull();
-		expect(await deps.jobs.get(ids.get("completed") as string)).toBeNull();
-		expect(await deps.jobs.get(ids.get("cancelled") as string)).toBeNull();
-		expect(await deps.jobs.get(ids.get("failed") as string)).toBeNull();
+		const kept: Record<string, boolean> = {};
+		for (const { status, id } of jobs) kept[status] = (await deps.jobs.get(id)) !== null;
+		expect(kept).toEqual({
+			created: true,
+			running: true,
+			paused: true,
+			completed: false,
+			cancelled: false,
+			failed: false,
+		});
+	});
+
+	it("keeps a job resumed or retried between the scan and the mark (M6c)", async () => {
+		const { deps, clock } = makeDeps();
+		deps.source.add("u1", "sku,Name\nA,1\n");
+		const completed = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		await runBatch(deps, completed.id, "driver");
+		const failed = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		await deps.jobs.put(failed.id, { ...failed, status: "failed" });
+		clock.t += DAY;
+		// The scan sees both jobs finished; an Admin retries one and resumes the other before the
+		// purge re-reads it to mark it.
+		const pending = new Map([
+			[completed.id, "retry" as const],
+			[failed.id, "resume" as const],
+		]);
+		const getVersioned = deps.jobs.getVersioned.bind(deps.jobs);
+		deps.jobs.getVersioned = async (id) => {
+			const action = pending.get(id);
+			if (action !== undefined) {
+				pending.delete(id);
+				await transitionJob(deps, id, action);
+			}
+			return getVersioned(id);
+		};
+		const result = await purgeExpired(deps, new Purger(), 0);
+		expect(pending.size).toBe(0);
+		expect(result).toMatchObject({ jobs: 0, records: 0, journal: 0 });
+		for (const id of [completed.id, failed.id]) {
+			const job = await deps.jobs.get(id);
+			expect(job).toMatchObject({ status: "running" });
+			expect(job?.purging).toBeUndefined();
+		}
+		expect((await deps.records.query({ where: { jobId: completed.id } })).items).toHaveLength(1);
+	});
+
+	it("finishes a purge that stopped half way, whatever the job's status (M6c)", async () => {
+		const { deps, clock } = makeDeps();
+		deps.source.add("u1", "sku,Name\nA,1\nB,2\n");
+		// Runs from before spec Ruling 41 marked these running jobs and stopped with rows left.
+		const marked: Job[] = [];
+		for (let i = 0; i < 2; i++) {
+			const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
+			await runBatch(deps, job.id, "driver");
+			const done = await deps.jobs.get(job.id);
+			marked.push({ ...done!, status: "running", purging: true });
+		}
+		const [stalled, leased] = marked as [Job, Job];
+		for (const job of marked) await deps.jobs.put(job.id, job);
+		clock.t += DAY;
+		// A batch takes the second job's lease after the scan: its rows stay for the next run.
+		const getVersioned = deps.jobs.getVersioned.bind(deps.jobs);
+		deps.jobs.getVersioned = async (id) => {
+			if (id === leased.id && !(await deps.jobs.get(id))?.lease) {
+				await deps.jobs.put(id, { ...leased, lease: { holder: "h", expiresAt: clock.t + 60_000 } });
+			}
+			return getVersioned(id);
+		};
+		const result = await purgeExpired(deps, new Purger(), 0);
+		expect(result).toMatchObject({ jobs: 1, records: 2 });
+		expect(await deps.jobs.get(stalled.id)).toBeNull();
+		expect(await deps.jobs.get(leased.id)).toMatchObject({ purging: true });
+		expect((await deps.records.query({ where: { jobId: leased.id } })).items).toHaveLength(2);
 	});
 });
