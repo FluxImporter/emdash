@@ -121,6 +121,18 @@ describe("templates/create and templates/get", () => {
 		]);
 	});
 
+	it("reports an unknown locale with translationOf once, as jobs/create does (final review)", async () => {
+		const { deps } = templateSetup();
+		for (const translationOf of [{ from: "en_id" }, { from: "en_id", locale: "zz" }]) {
+			const { check } = await createTemplate(deps, "u1", {
+				name: `A ${translationOf.locale ?? "default"}`,
+				template: productTemplate({ locale: "xx", translationOf }),
+			});
+			expect(check.problems).toHaveLength(1);
+			expect(check.problems[0]).toMatch(/^locale: /);
+		}
+	});
+
 	it("stores names as NFC, and a decomposed name takes the precomposed one", async () => {
 		const { deps } = templateSetup();
 		const a = await createTemplate(deps, "u1", { name: "Café", template: productTemplate() });

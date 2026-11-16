@@ -221,7 +221,10 @@ export async function siteCheck(
 	// The checks read the site's casing of the locale, as jobs/create does (`withSiteLocale`).
 	let effective: Template = { ...t, locale };
 	let translationFailed = false;
-	if (t.translationOf !== undefined) {
+	if (t.translationOf !== undefined && !resolved.ok) {
+		// An unknown locale is the one problem, as jobs/create reports it (`withSiteLocale`).
+		translationFailed = true;
+	} else if (t.translationOf !== undefined) {
 		const translation = deps.resolveTranslation(t.translationOf.locale, locale);
 		if (translation.ok) {
 			effective = {

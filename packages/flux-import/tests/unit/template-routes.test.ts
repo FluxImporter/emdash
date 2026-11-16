@@ -4,6 +4,7 @@ import { fingerprint } from "../../src/engine/fingerprints.js";
 import { templateSchema } from "../../src/engine/template.js";
 import type { Job } from "../../src/engine/types.js";
 import { createPlugin } from "../../src/plugin/definition.js";
+import { JOB_PAGE } from "../../src/plugin/service.js";
 import type { SavedResult, SavedTemplate } from "../../src/plugin/templates.js";
 import { MemoryKv, makeDeps } from "./fakes.js";
 
@@ -203,7 +204,8 @@ describe("template routes (M6a)", () => {
 	it("pages a template's jobs through jobs/list, with the filter and the cursor together", async () => {
 		const deps = state.deps as ReturnType<typeof makeDeps>["deps"];
 		const mine: string[] = [];
-		for (let i = 0; i < 80; i++) {
+		// 12 jobs, 9 of them TPL1: one full page of JOB_PAGE, then the last one.
+		for (let i = 0; i < 12; i++) {
 			const id = `J${String(i).padStart(3, "0")}`;
 			const templateId = i % 4 === 0 ? "TPL2" : "TPL1";
 			if (templateId === "TPL1") mine.push(id);
@@ -220,7 +222,8 @@ describe("template routes (M6a)", () => {
 		const second = await call<Listed>("jobs/list", { templateId: "TPL1", cursor: first.cursor });
 		expect(second.cursor).toBeUndefined();
 		const seen = [...first.items, ...second.items].map((j) => j.id);
-		expect(first.items).toHaveLength(50);
+		expect(first.items).toHaveLength(JOB_PAGE);
+		expect(second.items).toHaveLength(1);
 		expect(seen).toEqual([...mine].reverse());
 	});
 

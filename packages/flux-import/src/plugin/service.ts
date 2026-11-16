@@ -25,6 +25,14 @@ import {
 import { checkSource, readerFor } from "../sources/readers.js";
 
 export const PAGE_SIZE = 50;
+/**
+ * Jobs per `jobs/list` page, filtered or not (M6a final review). A storage query returns whole
+ * documents, and every job holds its template: up to 256 KiB from a saved template
+ * (`TEMPLATE_MAX_BYTES`), so a page of `PAGE_SIZE` could read about 13 MB. Eight keep a page of
+ * saved-template jobs at about 2 MiB, as `TEMPLATE_PAGE` does for `templates/list`; clients page
+ * with the cursor.
+ */
+export const JOB_PAGE = 8;
 export const SAMPLE_MAX = 20;
 /** Pasted text is staged like an upload, up to this many UTF-8 bytes. */
 export const PASTE_MAX_BYTES = 1024 * 1024;
@@ -448,7 +456,7 @@ export async function listJobs(
 		await deps.jobs.query({
 			...(Object.keys(where).length > 0 ? { where } : {}),
 			orderBy: { createdAt: "desc" },
-			limit: PAGE_SIZE,
+			limit: JOB_PAGE,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),
 		}),
 	);

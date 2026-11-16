@@ -6,7 +6,7 @@ import { type SchemaField, templateSchema } from "../../src/engine/template.js";
 import type { Job } from "../../src/engine/types.js";
 import { STORAGE } from "../../src/plugin/definition.js";
 import { jobTemplateRef, resolveJobTemplate } from "../../src/plugin/job-templates.js";
-import { listJobs, ServiceError } from "../../src/plugin/service.js";
+import { JOB_PAGE, listJobs, ServiceError } from "../../src/plugin/service.js";
 import type { SavedTemplate } from "../../src/plugin/templates.js";
 import { paddedTemplate } from "../fixtures/templates.js";
 import { MemoryKv, makeDeps } from "./fakes.js";
@@ -265,7 +265,7 @@ describe("jobs/list by template (spec Ruling 41)", () => {
 			cursor = page.cursor;
 			pages++;
 		} while (cursor);
-		expect(pages).toBeGreaterThan(1);
+		expect(pages).toBe(Math.ceil(ids.length / JOB_PAGE));
 		expect(seen.map((j) => j.id)).toEqual([...ids].reverse());
 		expect(new Set(seen.map((j) => j.id)).size).toBe(ids.length);
 		expect(seen.every((j) => j.templateId === "TPL1")).toBe(true);

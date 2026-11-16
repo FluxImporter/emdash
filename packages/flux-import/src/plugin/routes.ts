@@ -281,8 +281,10 @@ async function withServices<T>(
  * Without a `request` declaration EmDash reads a JSON body with no limit of its own (emdash
  * src/plugins/routes.ts:132-143), and Node's adapter allows 1 GiB. 2 MiB covers any
  * serialisation of a template under the 256 KiB `TEMPLATE_MAX_BYTES`, pretty-printed or with
- * `\uXXXX` escapes (about 3x); an inline template a job stores is already held to the 1 MiB
- * conditional-write cap, so nothing that could be imported before is refused.
+ * `\uXXXX` escapes (about 3x). An inline template a job stores is already held to the 1 MiB
+ * conditional-write cap, so no import that worked before is refused. `schema/apply` writes no
+ * job, so a body over 2 MiB that it accepted before (a long `fields` list or an inline template)
+ * is now 413 `INVALID_PLUGIN_REQUEST`, an accepted change (M6a spec, Amendments).
  */
 export const TEMPLATE_BODY_MAX_BYTES = 2 * 1024 * 1024;
 
