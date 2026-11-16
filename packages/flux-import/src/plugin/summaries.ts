@@ -17,6 +17,8 @@ export const TEXT_PREVIEW = 300;
 export const RETRY_AFTER_ERROR_MS = 5_000;
 const LEASE_WAIT_MIN_MS = 1_000;
 const LEASE_WAIT_MAX_MS = 30_000;
+/** A `StepReply`'s JSON, in UTF-8 bytes (spec Ruling 37). */
+export const STEP_REPLY_MAX_BYTES = 400;
 
 export const STAGED_FILE = "[staged file]";
 export const INTERNAL_JOB_MESSAGE =
@@ -31,7 +33,8 @@ const UPLOAD_KEY_RE = new RegExp(
 	"gi",
 );
 
-export type Next = "next_batch" | "wait" | "done" | "stopped";
+/** `not_agent`: the job was not made by the agent tools, which therefore cannot advance it. */
+export type Next = "next_batch" | "wait" | "done" | "stopped" | "not_agent";
 
 export interface JobSummary {
 	id: string;
@@ -87,7 +90,8 @@ export interface RecordSummary {
 	action?: string;
 	sourceKey: string | null;
 	entryId: string | null;
-	changes: { field: string; value: string }[];
+	/** No `value` on a rollback: its `after` is the entry's former value, drafts included. */
+	changes: { field: string; value?: string }[];
 	changeCount: number;
 	errors: { field?: string; code: string; message: string }[];
 	errorCount: number;
@@ -134,15 +138,15 @@ const shown = (text: string) => cut(redact(text), TEXT_PREVIEW);
 
 function jobError(error: { code: string; message: string }) {
 	return {
-		code: error.code,
+		code: shown(error.code),
 		message: error.code === "internal" ? INTERNAL_JOB_MESSAGE : shown(error.message),
 	};
 }
 
 function recordError(error: RecordError) {
 	return {
-		...(error.field === undefined ? {} : { field: error.field }),
-		code: error.code,
+		...(error.field === undefined ? {} : { field: shown(error.field) }),
+		code: shown(error.code),
 		message: error.code === "internal" ? INTERNAL_RECORD_MESSAGE : shown(error.message),
 	};
 }
@@ -163,6 +167,7 @@ function totalOf(job: Job, processed: number): number | undefined {
 function advice(job: Job, now: number): Pick<StepReply, "next" | "busyUntil" | "retryAfterMs"> {
 	if (job.status === "completed") return { next: "done" };
 	if (job.status !== "created" && job.status !== "running") return { next: "stopped" };
+	if (job.origin !== "agent") return { next: "not_agent" };
 	const { lease } = job;
 	if (lease !== null && lease.expiresAt > now) {
 		const left = lease.expiresAt - now;
@@ -225,12 +230,38 @@ export function summarize(stored: Job, now: number): JobSummary {
 	};
 }
 
+const utf8 = new TextEncoder();
+const bytes = (text: string) => utf8.encode(text).length;
+
+/**
+ * The longest prefix of `message`, by code point, whose JSON string fits `budget` bytes with `…`
+ * after it; the whole message when it fits. Each code point is escaped on its own, as
+ * `JSON.stringify` escapes a string character by character, so one pass suffices.
+ */
+function fitMessage(message: string, budget: number): string {
+	if (bytes(JSON.stringify(message)) - 2 <= budget) return message;
+	const room = budget - bytes("…");
+	let used = 0;
+	let end = 0;
+	for (const point of message) {
+		used += bytes(JSON.stringify(point)) - 2;
+		if (used > room) break;
+		end += point.length;
+	}
+	return `${message.slice(0, end)}…`;
+}
+
+/**
+ * The reply's JSON is at most `STEP_REPLY_MAX_BYTES`: the error message is cut further, by code
+ * point, to what the rest leaves. Holds while the job ID and the error code are server-made (a
+ * ULID, a code constant), as every stored job's are.
+ */
 export function step(stored: Job, now: number): StepReply {
 	const job = upgradeJob(stored);
 	const processed = processedOf(job);
 	const total = totalOf(job, processed);
 	const { next, busyUntil, retryAfterMs } = advice(job, now);
-	return {
+	const reply: StepReply = {
 		id: job.id,
 		status: job.status,
 		next,
@@ -238,8 +269,12 @@ export function step(stored: Job, now: number): StepReply {
 		...(total === undefined ? {} : { total }),
 		...(busyUntil === undefined ? {} : { busyUntil }),
 		...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-		...(job.error === null ? {} : { error: jobError(job.error) }),
 	};
+	if (job.error === null) return reply;
+	const error = jobError(job.error);
+	const rest = bytes(JSON.stringify({ ...reply, error: { ...error, message: "" } }));
+	const message = fitMessage(error.message, STEP_REPLY_MAX_BYTES - rest);
+	return { ...reply, error: { ...error, message } };
 }
 
 /** The mapped value only (`after`), never the entry's current value (spec Ruling 34). */
@@ -248,7 +283,11 @@ function preview(value: unknown): string {
 	return cut(redact(JSON.stringify(value)), VALUE_PREVIEW);
 }
 
-export function summarizeRecord(row: RecordRow): RecordSummary {
+/**
+ * A record row as an agent sees it. `kind` is the job's: a rollback's `after` is the value the
+ * entry held before the import, drafts included, so its changes show field names only.
+ */
+export function summarizeRecord(row: RecordRow, kind: Job["kind"]): RecordSummary {
 	const changes = row.changes ?? [];
 	const errors = row.errors ?? [];
 	return {
@@ -259,7 +298,11 @@ export function summarizeRecord(row: RecordRow): RecordSummary {
 		entryId: row.entryId,
 		changes: changes
 			.slice(0, CHANGES_SHOWN)
-			.map((change) => ({ field: change.field, value: preview(change.after) })),
+			.map((change) =>
+				kind === "rollback"
+					? { field: shown(change.field) }
+					: { field: shown(change.field), value: preview(change.after) },
+			),
 		changeCount: changes.length,
 		errors: errors.slice(0, ERRORS_SHOWN).map(recordError),
 		errorCount: errors.length,

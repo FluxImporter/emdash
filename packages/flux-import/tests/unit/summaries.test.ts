@@ -7,6 +7,7 @@ import {
 	RETRY_AFTER_ERROR_MS,
 	redact,
 	STAGED_FILE,
+	STEP_REPLY_MAX_BYTES,
 	step,
 	summarize,
 	summarizeRecord,
@@ -20,6 +21,7 @@ function job(extra: Partial<Job> = {}): Job {
 	return {
 		id: "J1",
 		status: "running",
+		origin: "agent",
 		uploadId: UPLOAD,
 		sourceUploadId: UPLOAD,
 		sourceId: "S1",
@@ -164,6 +166,12 @@ describe("summarize (M6c)", () => {
 		expect(step(missing, NOW).total).toBe(20);
 	});
 
+	/** A job the agent routes did not create: REST's `jobs/create`, or any rollback. */
+	function restJob(extra: Partial<Job> = {}): Job {
+		const { origin: _origin, ...rest } = job(extra);
+		return rest;
+	}
+
 	it.each([
 		["a created job", job({ status: "created" }), { next: "next_batch" }],
 		[
@@ -195,6 +203,19 @@ describe("summarize (M6c)", () => {
 		["a paused job", job({ status: "paused" }), { next: "stopped" }],
 		["a failed job", job({ status: "failed" }), { next: "stopped" }],
 		["a cancelled job", job({ status: "cancelled" }), { next: "stopped" }],
+		["a REST job", restJob(), { next: "not_agent" }],
+		[
+			"a REST job holding a lease",
+			restJob({ lease: { holder: "u:1", expiresAt: NOW + 10_000 } }),
+			{ next: "not_agent" },
+		],
+		[
+			"a rollback job after an error",
+			restJob({ kind: "rollback", error: { code: "internal", message: "boom" } }),
+			{ next: "not_agent" },
+		],
+		["a completed REST job", restJob({ status: "completed" }), { next: "done" }],
+		["a paused REST job", restJob({ status: "paused" }), { next: "stopped" }],
 	])("advises on %s", (_name, input, advice) => {
 		const summary = summarize(input, NOW);
 		expect(summary).toMatchObject(advice);
@@ -238,6 +259,67 @@ describe("step (M6c)", () => {
 			"retryAfterMs",
 		]);
 	});
+
+	/** Every optional key at its longest: a live lease, a total and an error. */
+	const worst = (message: string, extra: Partial<Job> = {}) =>
+		step(
+			job({
+				status: "cancelled",
+				phase: "missing",
+				missing: { stage: "act", fromSeq: 1, owned: 0, found: 0, rows: 0, removed: 0 },
+				lease: { holder: "u:1", expiresAt: NOW + 60_000 },
+				error: { code: "source_missing", message },
+				...extra,
+			}),
+			NOW,
+		);
+	const size = (reply: unknown) => new TextEncoder().encode(JSON.stringify(reply)).length;
+
+	it.each([
+		["ASCII", "x".repeat(400)],
+		["emoji", "😀".repeat(400)],
+		["control characters", "\u0001".repeat(400)],
+		["lone surrogates", "\ud800".repeat(400)],
+		["quotes and backslashes", '"\\'.repeat(200)],
+	])("keeps a reply with a long %s message within 400 bytes, ending in …", (_name, message) => {
+		for (const extra of [
+			{},
+			{
+				id: "01JZ5V6Q8X0000000000000000",
+				status: "running" as const,
+				missing: {
+					stage: "act" as const,
+					fromSeq: Number.MAX_SAFE_INTEGER,
+					owned: 0,
+					found: 0,
+					rows: 0,
+					removed: 0,
+				},
+				cursor: { offset: 0, seq: Number.MAX_SAFE_INTEGER },
+			},
+		]) {
+			const reply = worst(message, extra);
+			expect(size(reply)).toBeLessThanOrEqual(STEP_REPLY_MAX_BYTES);
+			expect(reply.error?.message.endsWith("…")).toBe(true);
+			// The longest prefix that fits: one code point more would not.
+			const longer = Array.from(message)
+				.slice(0, Array.from(reply.error?.message ?? "").length)
+				.join("");
+			const grown = { ...reply, error: { code: "source_missing", message: `${longer}…` } };
+			expect(size(grown)).toBeGreaterThan(STEP_REPLY_MAX_BYTES);
+		}
+	});
+
+	it("keeps a message that fits whole, and the 300-point cut of one that fits after it", () => {
+		expect(worst("Upload missing").error?.message).toBe("Upload missing");
+		const fits = "x".repeat(150);
+		expect(worst(fits).error?.message).toBe(fits);
+		// A message that fills the reply to exactly 400 bytes is kept whole; one byte more is cut.
+		const exact = "x".repeat(STEP_REPLY_MAX_BYTES - size(worst("")));
+		expect(worst(exact).error?.message).toBe(exact);
+		expect(size(worst(exact))).toBe(STEP_REPLY_MAX_BYTES);
+		expect(worst(`${exact}x`).error?.message).toMatch(/x…$/);
+	});
 });
 
 describe("redaction (spec Ruling 33)", () => {
@@ -264,6 +346,7 @@ describe("redaction (spec Ruling 33)", () => {
 		expect(summary.warnings).toEqual([`Converted from ${STAGED_FILE}`]);
 		const record = summarizeRecord(
 			row({ errors: [{ code: "media_failed", message: `bad ${UPLOAD}` }] }),
+			"import",
 		);
 		expect(record.errors).toEqual([{ code: "media_failed", message: `bad ${STAGED_FILE}` }]);
 		const texts = JSON.stringify([summary, record, step(job(), NOW)]);
@@ -280,6 +363,7 @@ describe("redaction (spec Ruling 33)", () => {
 				newTerms: [`tags: ${UPLOAD}`],
 				newMedia: [`image: https://x.test/_emdash/api/media/file/flux-import-upload-${UPLOAD}.csv`],
 			}),
+			"import",
 		);
 		expect(record).toMatchObject({
 			sourceKey: `K-${STAGED_FILE}`,
@@ -289,6 +373,28 @@ describe("redaction (spec Ruling 33)", () => {
 		});
 	});
 
+	it("redacts change fields, error fields and error codes", () => {
+		const record = summarizeRecord(
+			row({
+				changes: [{ field: `f-${UPLOAD}`, before: null, after: 1 }],
+				errors: [{ field: `f-${UPLOAD}`, code: `c-${UPLOAD}`, message: "m" }],
+			}),
+			"import",
+		);
+		expect(record.changes).toEqual([{ field: `f-${STAGED_FILE}`, value: "1" }]);
+		expect(record.errors).toEqual([
+			{ field: `f-${STAGED_FILE}`, code: `c-${STAGED_FILE}`, message: "m" },
+		]);
+		const error = { code: `c-${UPLOAD}`, message: "m" };
+		expect(summarize(job({ error }), NOW).error?.code).toBe(`c-${STAGED_FILE}`);
+		expect(step(job({ error }), NOW).error?.code).toBe(`c-${STAGED_FILE}`);
+	});
+
+	it("leaves text without an upload ID as it is, even a literal placeholder key", () => {
+		const text = `flux-import-upload-${STAGED_FILE}.csv`;
+		expect(redact(text)).toBe(text);
+	});
+
 	it("replaces an unexpected error's raw message", () => {
 		const error = { code: "internal", message: "SQLITE_ERROR near ec_products at /srv/x.js:1" };
 		expect(summarize(job({ error }), NOW).error).toEqual({
@@ -296,7 +402,7 @@ describe("redaction (spec Ruling 33)", () => {
 			message: INTERNAL_JOB_MESSAGE,
 		});
 		expect(step(job({ error }), NOW).error?.message).toBe(INTERNAL_JOB_MESSAGE);
-		const record = summarizeRecord(row({ errors: [{ field: "title", ...error }] }));
+		const record = summarizeRecord(row({ errors: [{ field: "title", ...error }] }), "import");
 		expect(record.errors).toEqual([
 			{ field: "title", code: "internal", message: INTERNAL_RECORD_MESSAGE },
 		]);
@@ -385,7 +491,7 @@ describe("summarizeRecord (M6c)", () => {
 			before: `DRAFT-SECRET-${i}`,
 			after: i,
 		}));
-		const summary = summarizeRecord(row({ changes }));
+		const summary = summarizeRecord(row({ changes }), "import");
 		expect(summary.changes).toHaveLength(20);
 		expect(summary.changes[0]).toEqual({ field: "f0", value: "0" });
 		expect(summary.changeCount).toBe(21);
@@ -405,8 +511,8 @@ describe("summarizeRecord (M6c)", () => {
 
 	it("previews a value to 200 characters, by code point, and marks a missing one", () => {
 		const preview = (after: unknown) =>
-			summarizeRecord(row({ changes: [{ field: "f", before: null, after } as never] })).changes[0]
-				?.value;
+			summarizeRecord(row({ changes: [{ field: "f", before: null, after } as never] }), undefined)
+				.changes[0]?.value;
 		// JSON.stringify adds the two quotes: 198 letters are 200 characters.
 		expect(preview("a".repeat(198))).toBe(`"${"a".repeat(198)}"`);
 		expect(preview("a".repeat(199))).toBe(`"${"a".repeat(199)}…`);
@@ -414,6 +520,29 @@ describe("summarizeRecord (M6c)", () => {
 		expect(preview(`${"a".repeat(198)}😀b`)).toBe(`"${"a".repeat(198)}😀…`);
 		expect(preview(undefined)).toBe("(none)");
 		expect(preview(null)).toBe("null");
+	});
+
+	it("shows a rollback's changed fields without values, its after being the entry's old draft", () => {
+		const changes = [
+			{ field: "title", before: "Imported", after: "DRAFT-SECRET title" },
+			{ field: "body", before: null, after: { text: "DRAFT-SECRET body" } },
+			{ field: `f-${UPLOAD}`, before: null, after: "DRAFT-SECRET f" },
+		];
+		const summary = summarizeRecord(
+			row({ status: "reverted", action: "revert", changes }),
+			"rollback",
+		);
+		expect(summary.changes).toEqual([
+			{ field: "title" },
+			{ field: "body" },
+			{ field: `f-${STAGED_FILE}` },
+		]);
+		expect(summary.changeCount).toBe(3);
+		expect(JSON.stringify(summary)).not.toContain("DRAFT-SECRET");
+		expect(summarizeRecord(row({ changes }), "import").changes[0]).toEqual({
+			field: "title",
+			value: '"DRAFT-SECRET title"',
+		});
 	});
 
 	it("shows 5 errors, terms and media and counts the rest", () => {
@@ -427,6 +556,7 @@ describe("summarizeRecord (M6c)", () => {
 				newTerms: names(6),
 				newMedia: names(5),
 			}),
+			"import",
 		);
 		expect(summary.errors).toHaveLength(5);
 		expect(summary).toMatchObject({ errorCount: 6, warningCount: 1 });
