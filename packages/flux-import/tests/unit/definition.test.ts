@@ -1,5 +1,6 @@
 import { z } from "astro/zod";
 import type { RouteContext } from "emdash";
+import { definePlugin } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
@@ -33,6 +34,13 @@ const ROUTES = [
 	"jobs/records",
 	"jobs/log.csv",
 	"schema/apply",
+	"templates/list",
+	"templates/get",
+	"templates/create",
+	"templates/update",
+	"templates/delete",
+	"templates/export",
+	"templates/import",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -310,6 +318,90 @@ describe("createPlugin", () => {
 			new ServiceError("INVALID_SOURCE", "bad", 400, { code: "csv_syntax" }),
 		);
 		expect(fromService).toMatchObject({ code: "INVALID_SOURCE", details: { code: "csv_syntax" } });
+	});
+
+	it("declares the M6a routes as JSON POST routes that pass definePlugin's MCP route checks (spec F10)", () => {
+		const names = ROUTES.filter((r) => r.startsWith("templates/"));
+		expect(names).toHaveLength(7);
+		for (const name of names) {
+			expect(plugin.routes[name], name).toMatchObject({
+				methods: ["POST"],
+				permission: "import:execute",
+			});
+			expect(plugin.routes[name]).not.toHaveProperty("response");
+		}
+		const tools = (routes: string[]) =>
+			Object.fromEntries(
+				routes.map((route) => [
+					route.replace(/\W/g, "_"),
+					{ description: route, route, input: z.object({}) },
+				]),
+			);
+		const define = (routes: string[]) =>
+			definePlugin({
+				id: "probe-m6a",
+				version: "0.0.1",
+				routes: plugin.routes,
+				mcp: { tools: tools(routes) },
+			});
+		expect(() => define([...names, "jobs/create", "jobs/list", "schema/apply"])).not.toThrow();
+		// The check bites: the raw log route can never be a tool.
+		expect(() => define(["jobs/log.csv"])).toThrow("cannot reference a raw response route");
+	});
+
+	it("validates the template route inputs", () => {
+		const input = (name: string) => plugin.routes[name]!.input!;
+		const t = { version: 1 };
+		const create = input("templates/create");
+		expect(create.safeParse({ name: "Feed", template: t }).success).toBe(true);
+		expect(
+			create.safeParse({ name: "Feed", description: "x".repeat(2000), template: t }).success,
+		).toBe(true);
+		expect(
+			create.safeParse({ name: "Feed", description: "x".repeat(2001), template: t }).success,
+		).toBe(false);
+		for (const name of ["", "x".repeat(101), " Feed", "Feed\u200d"]) {
+			expect(create.safeParse({ name, template: t }).success, JSON.stringify(name)).toBe(false);
+		}
+		// The caller cannot set the author: unknown keys are stripped.
+		expect(create.parse({ name: "Feed", template: t, createdBy: "mallory" })).not.toHaveProperty(
+			"createdBy",
+		);
+		const update = input("templates/update");
+		expect(update.safeParse({ id: "T1", revision: 1, description: null }).success).toBe(true);
+		expect(update.safeParse({ id: "T1", revision: 1 }).success).toBe(false);
+		expect(update.safeParse({ id: "T1", name: "x" }).success).toBe(false);
+		expect(update.safeParse({ id: "T1", revision: 0, name: "x" }).success).toBe(false);
+		expect(input("templates/delete").safeParse({ id: "T1" }).success).toBe(false);
+		expect(input("templates/delete").safeParse({ id: "T1", revision: 2 }).success).toBe(true);
+		expect(input("templates/get").safeParse({ id: "a/b" }).success).toBe(false);
+		const imp = input("templates/import");
+		expect(imp.safeParse({ file: {}, owner: "shop-2" }).success).toBe(true);
+		expect(imp.safeParse({ file: {}, owner: "shop feed" }).success).toBe(false);
+		expect(imp.safeParse({ file: {}, name: "Feed " }).success).toBe(false);
+		expect(input("templates/list").safeParse({ collection: "products" }).success).toBe(true);
+	});
+
+	it("takes exactly one of template and templateId in jobs/create, and of fields, template and templateId in schema/apply", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const base = { uploadId: UPLOAD_ID, dryRun: false };
+		expect(create.safeParse({ ...base, templateId: "01JZTPL" }).success).toBe(true);
+		expect(create.safeParse({ ...base, templateId: "01JZTPL", templateRevision: 3 }).success).toBe(
+			true,
+		);
+		expect(create.safeParse({ ...base }).success).toBe(false);
+		expect(create.safeParse({ ...base, template: {}, templateId: "01JZTPL" }).success).toBe(false);
+		expect(create.safeParse({ ...base, template: {}, templateRevision: 3 }).success).toBe(false);
+		const apply = plugin.routes["schema/apply"]!.input!;
+		expect(apply.safeParse({ templateId: "01JZTPL", collection: "products" }).success).toBe(true);
+		expect(apply.safeParse({ templateId: "01JZTPL", template: {} }).success).toBe(false);
+		expect(apply.safeParse({}).success).toBe(false);
+		const list = plugin.routes["jobs/list"]!.input!;
+		expect(list.parse({ templateId: "01JZTPL", status: "completed" })).toEqual({
+			templateId: "01JZTPL",
+			status: "completed",
+		});
+		expect(list.safeParse({ templateId: "a/b" }).success).toBe(false);
 	});
 
 	it("refuses to stage pasted XLSX before touching the runtime", async () => {

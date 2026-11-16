@@ -105,14 +105,22 @@ describe("templates/import", () => {
 		const { deps } = templateSetup();
 		const { template: row } = await createTemplate(deps, "u1", {
 			name: "Shop feed",
+			description: "Nightly product feed",
 			template: productTemplate(),
 		});
 		const { file: exported } = await exportTemplate(deps, row.id);
+		expect(exported.description).toBe("Nightly product feed");
 		const { template: copy, check } = await importTemplate(deps, "u2", {
 			file: exported,
 			name: "Copy",
 		});
-		expect(copy).toMatchObject({ name: "Copy", revision: 1, createdBy: "u2", updatedBy: "u2" });
+		expect(copy).toMatchObject({
+			name: "Copy",
+			description: "Nightly product feed",
+			revision: 1,
+			createdBy: "u2",
+			updatedBy: "u2",
+		});
 		expect(copy.id).not.toBe(row.id);
 		expect(copy.template).toEqual(row.template);
 		expect(check).toEqual({ problems: [], warnings: [] });
