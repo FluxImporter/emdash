@@ -9,6 +9,7 @@ import {
 	CLAIM_ATTEMPTS,
 	hasMissingRule,
 	isSourceMissing,
+	PLAN_SOURCE_MISSING_MESSAGE,
 	planJob,
 	readJobStatus,
 	SOURCE_FILE_MISSING_MESSAGE,
@@ -287,14 +288,19 @@ describe("startFromDryRun (M6c)", () => {
 	it("refuses jobs that dry_run did not create (spec Ruling 32)", async () => {
 		const { deps, jobs, requests } = await setup();
 		// A real agent import, a rollback, a dry run through jobs/create.
-		await jobs.put("A", jobRow("A", { status: "completed", origin: "agent", templateId: "T1" }));
-		await jobs.put("B", jobRow("B", { status: "completed", dryRun: true, kind: "rollback" }));
-		await jobs.put("C", jobRow("C", { status: "completed", dryRun: true, templateId: "T1" }));
-		// Each conjunct on its own: an agent-marked rollback, and an agent dry run without a template.
-		const marked = { status: "completed", dryRun: true, origin: "agent" } as const;
-		await jobs.put("E", jobRow("E", { ...marked, kind: "rollback", templateId: "T1" }));
-		await jobs.put("F", jobRow("F", marked));
-		for (const id of ["A", "B", "C", "E", "F"]) {
+		// Every case but the one under test has a template at a revision, so each conjunct is proven.
+		const pinned = { templateId: "T1", templateRevision: 1 };
+		const done = { status: "completed" } as const;
+		await jobs.put("A", jobRow("A", { ...done, ...pinned, origin: "agent" }));
+		await jobs.put("B", jobRow("B", { ...done, dryRun: true, kind: "rollback" }));
+		await jobs.put("C", jobRow("C", { ...done, ...pinned, dryRun: true }));
+		// An agent-marked rollback, an agent dry run without a template, one without a revision.
+		const marked = { ...done, dryRun: true, origin: "agent" } as const;
+		await jobs.put("E", jobRow("E", { ...marked, ...pinned, kind: "rollback" }));
+		await jobs.put("F", jobRow("F", { ...marked, templateRevision: 1 }));
+		// resolveJobTemplate would not pin a revision it is not given.
+		await jobs.put("G", jobRow("G", { ...marked, templateId: "T1" }));
+		for (const id of ["A", "B", "C", "E", "F", "G"]) {
 			const refused = await failure(startFromDryRun(deps, { dryRunId: id }));
 			expect(refused, id).toMatchObject({ code: "NOT_A_DRY_RUN", status: 400 });
 			expect(refused.message).toBe(`Job ${id} is not a dry run made with dry_run`);
@@ -708,6 +714,25 @@ describe("agentError (spec Ruling 33)", () => {
 		expect(agentError(other)).toBe(other);
 	});
 
+	it("tells jobs/plan to send the data again, with no dry run to name", () => {
+		for (const e of [
+			new SourceMissingError(UPLOAD),
+			new JobError("invalid_source", "x", [], undefined, { cause: new SourceMissingError(UPLOAD) }),
+		]) {
+			const mapped = agentError(e, PLAN_SOURCE_MISSING_MESSAGE);
+			expect(mapped).toMatchObject({ code: "SOURCE_FILE_MISSING", status: 404 });
+			expect((mapped as ServiceError).message).toBe(
+				"The data to plan from is no longer stored; send it again",
+			);
+			expect((agentError(e) as ServiceError).message).toBe(
+				"The dry run's data is no longer stored; run dry_run again",
+			);
+		}
+		// Only the missing-file message changes; every other error maps as before.
+		const other = agentError(new ServiceError("FETCH_FAILED", `got ${UPLOAD}`, 502), "x");
+		expect(other).toMatchObject({ code: "FETCH_FAILED", message: `got ${STAGED_FILE}` });
+	});
+
 	it("keeps a JobError's sourceCode", () => {
 		const mapped = agentError(new JobError("invalid_source", "bad", [], "csv_syntax"));
 		expect(mapped).toMatchObject({ code: "invalid_source", sourceCode: "csv_syntax" });
@@ -732,7 +757,6 @@ describe("agentError (spec Ruling 33)", () => {
 			},
 		});
 		expect(JSON.stringify((mapped as ServiceError).details)).not.toContain(UPLOAD.slice(0, 26));
-		expect(agentError(new ServiceError("X", "m", 400))).not.toHaveProperty("details", {});
 		expect((agentError(new ServiceError("X", "m", 400)) as ServiceError).details).toBeUndefined();
 	});
 });

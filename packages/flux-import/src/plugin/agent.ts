@@ -24,6 +24,9 @@ import type { SavedTemplate } from "./templates.js";
 export const CLAIM_ATTEMPTS = 5;
 export const SOURCE_FILE_MISSING_MESSAGE =
 	"The dry run's data is no longer stored; run dry_run again";
+/** `SOURCE_FILE_MISSING` on `jobs/plan`, where there is no dry run yet to run again. */
+export const PLAN_SOURCE_MISSING_MESSAGE =
+	"The data to plan from is no longer stored; send it again";
 export const XLSX_TEXT_MESSAGE =
 	"An XLSX workbook is a binary file and cannot be sent as text; use a URL source instead";
 
@@ -125,15 +128,23 @@ export async function planJob(deps: AgentDeps, input: PlanInput): Promise<Job> {
 	}
 }
 
-function isAgentDryRun(job: Job): job is Job & { templateId: string } {
+/** A dry run that `jobs/plan` made: one that `jobs/start` may run for real. */
+type AgentDryRun = Job & { templateId: string; templateRevision: number };
+
+function isAgentDryRun(job: Job): job is AgentDryRun {
 	return (
-		job.dryRun && job.origin === "agent" && job.kind !== "rollback" && job.templateId !== undefined
+		job.dryRun &&
+		job.origin === "agent" &&
+		job.kind !== "rollback" &&
+		job.templateId !== undefined &&
+		// Without it, resolveJobTemplate would accept any revision of the template.
+		job.templateRevision !== undefined
 	);
 }
 
 /** The real run of a dry run (spec "jobs/start" step 5): nothing that changes the outcome. */
 function realRequest(
-	dryRun: Job & { templateId: string },
+	dryRun: AgentDryRun,
 	id: string,
 	input: StartInput,
 	resolved: ResolvedTemplate,
@@ -193,7 +204,9 @@ export async function startFromDryRun(deps: AgentDeps, input: StartInput): Promi
 		}
 		// Before the claim or the repair (plan P5): a dry run that retention is deleting may have lost
 		// its real job already, and the repair would re-create it under `startedAs`. A job that still
-		// exists was returned above.
+		// exists was returned above. This holds because retention reads jobs by `created_at`
+		// ascending and marks a job purging before deleting any of its rows, so it reaches the dry
+		// run before its real job: a purged real job's dry run is purging or gone, never resurrected.
 		if (isPurging(dryRun)) {
 			throw new ServiceError(
 				"DRY_RUN_INCOMPLETE",
@@ -296,11 +309,12 @@ function redactDetail(value: unknown): unknown {
 	return value;
 }
 
-/** Every error an agent route throws: no upload ID and no raw message (spec Ruling 33). */
-export function agentError(e: unknown): unknown {
-	if (isSourceMissing(e)) {
-		return new ServiceError("SOURCE_FILE_MISSING", SOURCE_FILE_MISSING_MESSAGE, 404);
-	}
+/**
+ * Every error an agent route throws: no upload ID and no raw message (spec Ruling 33). `missing`
+ * is the `SOURCE_FILE_MISSING` message: `PLAN_SOURCE_MISSING_MESSAGE` on `jobs/plan`.
+ */
+export function agentError(e: unknown, missing: string = SOURCE_FILE_MISSING_MESSAGE): unknown {
+	if (isSourceMissing(e)) return new ServiceError("SOURCE_FILE_MISSING", missing, 404);
 	if (e instanceof ServiceError) {
 		const details =
 			e.details === undefined
