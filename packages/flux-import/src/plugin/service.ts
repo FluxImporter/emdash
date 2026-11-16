@@ -11,7 +11,7 @@ import {
 } from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "../engine/media.js";
-import type { KvCollection } from "../engine/ports.js";
+import type { KvCollection, LookupPort } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
 import { type LinkSchema, type SchemaField, usesLinks, usesMedia } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
@@ -275,8 +275,8 @@ function prop(value: unknown, key: string): unknown {
  * reference field links to, and the taxonomy definitions when the template maps taxonomies.
  * The template is not parsed yet, so shapes are checked loosely; createJob reports bad ones.
  */
-async function linkSchemaFor(
-	deps: EngineDeps,
+export async function linkSchemaFor(
+	deps: { lookups: Pick<LookupPort, "taxonomyDefs"> },
 	template: unknown,
 	fields: SchemaField[],
 	lookupFields: FieldLookup,
