@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createJob, JobError } from "../../src/engine/jobs.js";
-import { protoKeyProblems, templateShapeProblems } from "../../src/engine/shape.js";
+import {
+	MAX_PROTO_PROBLEMS,
+	protoKeyProblems,
+	templateShapeProblems,
+} from "../../src/engine/shape.js";
 import { checkTemplate, type SchemaField, templateSchema } from "../../src/engine/template.js";
 import { ServiceError } from "../../src/plugin/service.js";
 import { templateForSave } from "../../src/plugin/templates.js";
@@ -98,6 +102,17 @@ const FIT: {
 		},
 		fields: title,
 		body: '[{"sku":"A1","name":{"first":"x"}}]',
+		problem: '"name..first" has an empty key',
+	},
+	{
+		name: "a JSON Lines path with an empty key",
+		template: {
+			...base,
+			source: { format: "jsonl" },
+			fields: { title: { from: "name..first", type: "text" } },
+		},
+		fields: title,
+		body: '{"sku":"A1","name":{"first":"x"}}\n',
 		problem: '"name..first" has an empty key',
 	},
 	{
@@ -199,13 +214,45 @@ describe("templateShapeProblems (spec Validation, Ruling 27)", () => {
 		);
 		const shape = templateShapeProblems(nested);
 		expect(shape.ok).toBe(false);
-		expect(!shape.ok && shape.problems).toContain('rules: "__proto__" is not allowed as a key');
+		// The walk's problem replaces the schema's own "Unrecognized key" for the same key.
+		expect(shape).toEqual({
+			ok: false,
+			problems: ['rules: "__proto__" is not allowed as a key'],
+		});
 		expect(protoKeyProblems(JSON.parse('{"__proto__":1}'))).toEqual([
 			'template: "__proto__" is not allowed as a key',
 		]);
 		expect(protoKeyProblems(JSON.parse('[{"a":[{"__proto__":1}]}]'))).toEqual([
 			'0.a.0: "__proto__" is not allowed as a key',
 		]);
+	});
+
+	it("never walks into a __proto__ key's value", () => {
+		expect(protoKeyProblems(JSON.parse('{"__proto__":{"__proto__":{"__proto__":1}}}'))).toEqual([
+			'template: "__proto__" is not allowed as a key',
+		]);
+		expect(protoKeyProblems(JSON.parse('{"a":{"__proto__":[{"__proto__":1}]}}'))).toEqual([
+			'a: "__proto__" is not allowed as a key',
+		]);
+	});
+
+	it("reports at most MAX_PROTO_PROBLEMS keys of a deep chain, quickly (Review Focus 1)", () => {
+		// {"a":{"__proto__":0,"a":{"__proto__":0,…}}}: a key at every level, so every problem's path
+		// is longer than the last; uncapped, the problems alone grow as depth².
+		const depth = 50_000;
+		const chain = JSON.parse(`${'{"__proto__":0,"a":'.repeat(depth)}0${"}".repeat(depth)}`);
+		const started = performance.now();
+		const shape = templateShapeProblems({ ...base, extra: chain });
+		expect(performance.now() - started).toBeLessThan(1000);
+		expect(MAX_PROTO_PROBLEMS).toBe(20);
+		expect(shape.ok).toBe(false);
+		const problems = shape.ok ? [] : shape.problems;
+		expect(problems.filter((p) => p.endsWith('"__proto__" is not allowed as a key'))).toHaveLength(
+			20,
+		);
+		expect(problems[0]).toBe('template: Unrecognized key: "extra"');
+		expect(problems[1]).toBe('extra: "__proto__" is not allowed as a key');
+		expect(problems).toHaveLength(21);
 	});
 
 	it("does not overflow the stack on a deeply nested input (Review Focus 1)", () => {

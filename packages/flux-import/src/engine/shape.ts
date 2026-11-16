@@ -25,11 +25,16 @@ export type TemplateShape =
  */
 export function templateShapeProblems(input: unknown): TemplateShape {
 	const parsed = templateSchema.safeParse(input);
+	// The schema drops a select map's `__proto__` key (Fact E1), so the raw input is walked.
+	const protoPaths = protoKeyPaths(input);
+	// A strict object also refuses the key as unrecognized: the walk's problem replaces that one.
+	const duplicates = new Set(protoPaths.map((path) => `${path}: Unrecognized key: "__proto__"`));
 	const schema = parsed.success
 		? []
-		: parsed.error.issues.map((i) => `${i.path.join(".") || "template"}: ${i.message}`);
-	// The schema drops a select map's `__proto__` key (Fact E1), so the raw input is walked.
-	const proto = protoKeyProblems(input);
+		: parsed.error.issues
+				.map((i) => `${i.path.join(".") || "template"}: ${i.message}`)
+				.filter((problem) => !duplicates.has(problem));
+	const proto = protoPaths.map(protoProblem);
 	if (!parsed.success || proto.length > 0) return { ok: false, problems: [...schema, ...proto] };
 	const t = parsed.data;
 
@@ -79,12 +84,24 @@ function pathOf(node: PathNode): string {
 	return keys.reverse().join(".");
 }
 
+/** The most `__proto__` keys reported: each problem spells out its path, which can be long. */
+export const MAX_PROTO_PROBLEMS = 20;
+
+const protoProblem = (path: string) => `${path}: "__proto__" is not allowed as a key`;
+
 /**
- * Every object key `__proto__` in `input`, at any depth, depth-first with keys in order. It walks
- * with an explicit stack, since route input can nest tens of thousands of levels (Review Focus 1).
+ * The first `MAX_PROTO_PROBLEMS` object keys `__proto__` in `input`, at any depth, depth-first
+ * with keys in order. It walks with an explicit stack, since route input can nest tens of
+ * thousands of levels (Review Focus 1), and never into a `__proto__` key's value, which is
+ * refused anyway.
  */
 export function protoKeyProblems(input: unknown): string[] {
-	const problems: string[] = [];
+	return protoKeyPaths(input).map(protoProblem);
+}
+
+/** The paths of `protoKeyProblems`, `template` for the root. */
+function protoKeyPaths(input: unknown): string[] {
+	const paths: string[] = [];
 	const stack: [unknown, PathNode][] = [[input, null]];
 	for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
 		const [value, path] = top;
@@ -98,7 +115,9 @@ export function protoKeyProblems(input: unknown): string[] {
 			const record = value as Record<string, unknown>;
 			for (const key of Object.keys(record)) {
 				if (key === "__proto__") {
-					problems.push(`${pathOf(path) || "template"}: "__proto__" is not allowed as a key`);
+					paths.push(pathOf(path) || "template");
+					if (paths.length >= MAX_PROTO_PROBLEMS) return paths;
+					continue;
 				}
 				children.push([record[key], { parent: path, key }]);
 			}
@@ -106,7 +125,7 @@ export function protoKeyProblems(input: unknown): string[] {
 		// Pushed last first, so the first child is visited next.
 		for (let i = children.length - 1; i >= 0; i--) stack.push(children[i] as [unknown, PathNode]);
 	}
-	return problems;
+	return paths;
 }
 
 /** Every problem of a template that parsed: fit, expressions, source, in that order. */
