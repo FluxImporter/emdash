@@ -739,11 +739,12 @@ the note. A final fix wave follows the whole-branch review.
 45. **A schedule run must handle a template that is gone.** M6b refuses deleting a template a
     schedule names, but the check and the delete race (a schedule can be created between them), so
     a schedule run that finds no template pauses the schedule with a reason instead of failing.
-46. **Plugin MCP tools are blocked during a site export, read tools included.** *Corrected by the
-    M6c spec, Ruling 24*: they are refused during a site import, and restart a running export. EmDash registers
+46. **Plugin MCP tools are fenced like writes, read tools included.** *Corrected by the M6c spec,
+    Ruling 24; this ruling first said they are blocked during a site export.* EmDash registers
     plugin tools with `destructiveHint` only and fences every tool not annotated `readOnlyHint`
     (`src/mcp/server.ts:875-906`, `:908-917`), so M6c documents that `list_templates` and
-    `import_status` also refuse while a site export runs.
+    `import_status` are refused during a site import, and that a successful call restarts a running
+    site export.
 47. **The integration sequence pins the snapshot.** The update after the job starts makes revision 3,
     and the resumed job keeps revision 2's mapping and `templateRevision: 2` (Testing).
 
@@ -883,7 +884,8 @@ inputs use `templateId` rather than an inline template where possible, since the
 schema is `z.unknown()` and gives an agent no guidance. Documented: the administrator's enable
 step, the scopes (F-M2), the re-consent after any tool change (F-M3, including the one M6b will
 cause, Ruling 35), and that every tool, read tools included, refuses during a site export (F-M4,
-Ruling 46). Task 0 records the generated tool names (Ruling 44). Acceptance: an agent completes an
+Ruling 46; *corrected by the M6c spec, Ruling 24*: refused during a site import, and restarting a
+running export). Task 0 records the generated tool names (Ruling 44). Acceptance: an agent completes an
 import over MCP.
 
 ### M6b, scheduled URL imports
