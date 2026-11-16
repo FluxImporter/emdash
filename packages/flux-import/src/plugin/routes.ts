@@ -444,7 +444,12 @@ export const routes: Record<string, PluginRoute> = {
 				);
 			};
 			if (input.sourceId !== undefined) {
-				const options = { force: input.force ?? false, dryRun: input.dryRun };
+				const options = {
+					force: input.force ?? false,
+					dryRun: input.dryRun,
+					// M6a Task 6 passes the job's template reference.
+					template: null,
+				};
 				// A workbook is fetched only up to the XLSX file limit.
 				const limits = fetchLimitsFor(input.template, sources.limits, xlsx.maxXlsxBytes);
 				return jobFromSource({ ...sources, limits }, input.sourceId, options, start);

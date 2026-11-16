@@ -120,6 +120,11 @@ export async function createRollback(
 		status: "created",
 		kind: "rollback",
 		rollbackOf: original.id,
+		// M6a: so jobs/list { templateId } lists a template's imports with their rollbacks.
+		...(original.templateId === undefined ? {} : { templateId: original.templateId }),
+		...(original.templateRevision === undefined
+			? {}
+			: { templateRevision: original.templateRevision }),
 		// Shown for the collection and locale; a rollback never reads the original's file.
 		uploadId: original.uploadId,
 		template: original.template,

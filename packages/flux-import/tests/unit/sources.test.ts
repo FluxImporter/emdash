@@ -9,11 +9,14 @@ import {
 	deleteSource,
 	fetchSource,
 	getSource,
+	type ImportTemplate,
 	jobFromSource,
+	type LastImport,
 	latestSourceUploads,
 	listSources,
 	type SourceDeps,
 	type SourceRow,
+	sameTemplate,
 	updateSource,
 } from "../../src/plugin/sources.js";
 import { FakeStorage, MemoryKv, MemorySettings, WrappingStorage } from "./fakes.js";
@@ -475,8 +478,11 @@ describe("update and delete races", () => {
 		routes.set(FEED, () => new Response(BODY));
 		await setCredential(deps.settings, "supplier", { header: "X-Key", value: "k" });
 		await createSource(deps, { name: "A", url: FEED, credential: "supplier" });
-		await jobFromSource(deps, "S1", { force: false, dryRun: false }, async (uploadId) =>
-			jobUsing(uploadId, "created"),
+		await jobFromSource(
+			deps,
+			"S1",
+			{ force: false, dryRun: false, template: { fingerprint: "inline-T" } },
+			async (uploadId) => jobUsing(uploadId, "created"),
 		);
 		const row = await getSource(deps, "S1");
 		await deps.sources.put("S1", {
@@ -496,8 +502,9 @@ describe("update and delete races", () => {
 });
 
 describe("jobFromSource", () => {
-	const REAL = { force: false, dryRun: false };
-	const DRY = { force: false, dryRun: true };
+	const T = { fingerprint: "inline-T" } as const;
+	const REAL = { force: false, dryRun: false, template: T };
+	const DRY = { force: false, dryRun: true, template: T };
 
 	function creator() {
 		const created: string[] = [];
@@ -544,13 +551,19 @@ describe("jobFromSource", () => {
 			uploadId: created[0],
 			jobId: "J1",
 			at: "2026-10-26T09:00:00.000Z",
+			template: T,
 		});
 		expect(await jobFromSource(deps, "S1", REAL, create)).toEqual({
 			skipped: "unchanged",
 			sourceId: "S1",
 			uploadId: created[0],
 		});
-		const forced = await jobFromSource(deps, "S1", { force: true, dryRun: false }, create);
+		const forced = await jobFromSource(
+			deps,
+			"S1",
+			{ force: true, dryRun: false, template: T },
+			create,
+		);
 		expect(forced).toMatchObject({ id: "J2" });
 		expect(created[1]).not.toBe(created[0]);
 		expect((await getSource(deps, "S1")).lastImport?.jobId).toBe("J2");
@@ -636,6 +649,68 @@ describe("jobFromSource", () => {
 		expect(job).toMatchObject({ status: "created" });
 		broken = false;
 		expect(await getSource(deps, "S1")).not.toHaveProperty("lastImport");
+	});
+
+	it("skips unchanged content only for the same template (spec Ruling 29)", async () => {
+		const { deps, routes } = setup();
+		routes.set(
+			FEED,
+			etagged(() => BODY),
+		);
+		await createSource(deps, { name: "A", url: FEED });
+		const { created, create } = creator();
+		const run = (template: ImportTemplate | null, force = false) =>
+			jobFromSource(deps, "S1", { force, dryRun: false, template }, create);
+		const A = { id: "TA", revision: 1 };
+		const B = { id: "TB", revision: 1 };
+		expect(await run(A)).toMatchObject({ id: "J1" });
+		expect(await run(B)).toMatchObject({ id: "J2" });
+		expect(await run(A)).toMatchObject({ id: "J3" });
+		expect(await run(A)).toMatchObject({ skipped: "unchanged" });
+		expect((await getSource(deps, "S1")).lastImport).toMatchObject({ jobId: "J3", template: A });
+		// The same saved template at revision 2.
+		expect(await run({ id: "TA", revision: 2 })).toMatchObject({ id: "J4" });
+		expect(await run({ id: "TA", revision: 2 })).toMatchObject({ skipped: "unchanged" });
+		// Inline: the same fingerprint skips, another runs, and an unparsed template never skips.
+		expect(await run({ fingerprint: "f1" })).toMatchObject({ id: "J5" });
+		expect(await run({ fingerprint: "f1" })).toMatchObject({ skipped: "unchanged" });
+		expect(await run({ fingerprint: "f2" })).toMatchObject({ id: "J6" });
+		expect(await run(null)).toMatchObject({ id: "J7" });
+		expect(created).toHaveLength(7);
+		// force still runs; a dry run is never skipped nor recorded.
+		expect(await run({ fingerprint: "f2" }, true)).toMatchObject({ id: "J8" });
+		const dry = { force: false, dryRun: true, template: { fingerprint: "f2" } };
+		expect(await jobFromSource(deps, "S1", dry, create)).toMatchObject({ id: "J9" });
+		expect((await getSource(deps, "S1")).lastImport).toMatchObject({
+			jobId: "J8",
+			template: { fingerprint: "f2" },
+		});
+	});
+
+	it("runs once after the upgrade: a lastImport without template never matches", async () => {
+		const { deps, routes } = setup();
+		routes.set(
+			FEED,
+			etagged(() => BODY),
+		);
+		await createSource(deps, { name: "A", url: FEED });
+		const { create } = creator();
+		await jobFromSource(deps, "S1", REAL, create);
+		const row = await getSource(deps, "S1");
+		const { template: _t, ...before } = row.lastImport as LastImport;
+		await deps.sources.put("S1", { ...row, lastImport: before });
+		expect(await jobFromSource(deps, "S1", REAL, create)).toMatchObject({ id: "J2" });
+		expect(await jobFromSource(deps, "S1", REAL, create)).toMatchObject({ skipped: "unchanged" });
+	});
+
+	it("compares templates by kind, ID, revision and fingerprint", () => {
+		expect(sameTemplate({ id: "T", revision: 1 }, { id: "T", revision: 1 })).toBe(true);
+		expect(sameTemplate({ id: "T", revision: 1 }, { id: "T", revision: 2 })).toBe(false);
+		expect(sameTemplate({ id: "T", revision: 1 }, { id: "U", revision: 1 })).toBe(false);
+		expect(sameTemplate({ fingerprint: "f" }, { fingerprint: "f" })).toBe(true);
+		expect(sameTemplate({ fingerprint: "f" }, { id: "f", revision: 1 })).toBe(false);
+		expect(sameTemplate(undefined, { fingerprint: "f" })).toBe(false);
+		expect(sameTemplate({ fingerprint: "f" }, null)).toBe(false);
 	});
 });
 

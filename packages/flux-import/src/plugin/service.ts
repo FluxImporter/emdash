@@ -437,12 +437,16 @@ export async function changeJob(
 }
 
 export async function listJobs(
-	deps: EngineDeps,
-	opts: { status?: JobStatus; cursor?: string },
+	deps: Pick<EngineDeps, "jobs">,
+	opts: { status?: JobStatus; templateId?: string; cursor?: string },
 ): Promise<Page<Job>> {
+	const where = {
+		...(opts.status ? { status: opts.status } : {}),
+		...(opts.templateId ? { templateId: opts.templateId } : {}),
+	};
 	const jobs = page(
 		await deps.jobs.query({
-			...(opts.status ? { where: { status: opts.status } } : {}),
+			...(Object.keys(where).length > 0 ? { where } : {}),
 			orderBy: { createdAt: "desc" },
 			limit: PAGE_SIZE,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),

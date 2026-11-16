@@ -91,6 +91,8 @@ export type CreateJobInput = {
 	missing?: false | { maxPercent: number };
 	/** M5c, XLSX: rows the converter skipped because their only values were unreadable. */
 	skippedRows?: number;
+	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
+	savedTemplate?: { id: string; revision: number };
 };
 
 /**
@@ -235,6 +237,12 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		// A dry run writes nothing, so it keeps no journal.
 		...(dryRun ? {} : { journal: input.journal ?? true }),
 		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
+		...(input.savedTemplate === undefined
+			? {}
+			: {
+					templateId: input.savedTemplate.id,
+					templateRevision: input.savedTemplate.revision,
+				}),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
