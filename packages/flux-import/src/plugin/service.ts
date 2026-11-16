@@ -465,14 +465,29 @@ export async function listJobs(
 
 export async function listRecords(
 	deps: EngineDeps,
-	opts: { id: string; status?: RecordStatus; cursor?: string },
+	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
 ): Promise<Page<RecordRow>> {
 	await getJob(deps, opts.id);
+	return recordPage(deps, opts);
+}
+
+/**
+ * A page of a job's records by `seq`, one status or all, without reading the job (M6c,
+ * `jobs/status` has read it). `limit` is 1-100 (EmDash's page clamp), default `PAGE_SIZE`.
+ */
+export async function recordPage(
+	deps: Pick<EngineDeps, "records">,
+	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
+): Promise<Page<RecordRow>> {
+	const limit = opts.limit ?? PAGE_SIZE;
+	if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+		throw new RangeError(`limit must be an integer from 1 to 100, not ${limit}`);
+	}
 	return page(
 		await deps.records.query({
 			where: opts.status ? { jobId: opts.id, status: opts.status } : { jobId: opts.id },
 			orderBy: { seq: "asc" },
-			limit: PAGE_SIZE,
+			limit,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),
 		}),
 	);
