@@ -20,6 +20,22 @@ function setup(csv = "sku,Name\nA1,Desk\n") {
 }
 
 describe("createJob", () => {
+	it("records an agent job's origin and the dry run it ran (M6c)", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template,
+			schemaFields,
+			origin: "agent",
+			dryRunOf: "D1",
+		});
+		expect(job).toMatchObject({ origin: "agent", dryRunOf: "D1" });
+		expect(await deps.jobs.get(job.id)).toMatchObject({ origin: "agent", dryRunOf: "D1" });
+		const plain = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(plain).not.toHaveProperty("origin");
+		expect(plain).not.toHaveProperty("dryRunOf");
+	});
+
 	it("creates a job positioned after the header with defaults", async () => {
 		const { deps } = setup("﻿sku,Name\r\nA1,Desk\r\n");
 		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });

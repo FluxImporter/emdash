@@ -104,6 +104,10 @@ export type CreateJobInput = {
 	skippedRows?: number;
 	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
 	savedTemplate?: { id: string; revision: number };
+	/** M6c: created by the agent routes (`Job.origin`). */
+	origin?: "agent";
+	/** M6c: a real job from `jobs/start`: the dry run it imports. */
+	dryRunOf?: string;
 };
 
 /**
@@ -254,6 +258,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 					templateId: input.savedTemplate.id,
 					templateRevision: input.savedTemplate.revision,
 				}),
+		...(input.origin === undefined ? {} : { origin: input.origin }),
+		...(input.dryRunOf === undefined ? {} : { dryRunOf: input.dryRunOf }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),

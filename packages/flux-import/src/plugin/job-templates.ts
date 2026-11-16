@@ -18,6 +18,12 @@ export interface ResolvedTemplate {
  * unless the caller passes the resolved template.
  */
 export interface JobRequest {
+	/** M6c, `jobs/start`: the ID the dry run claimed (`createJob`'s `id`). */
+	id?: string | undefined;
+	/** M6c: the agent routes' marker (spec Ruling 31); never set by `jobs/create`. */
+	origin?: "agent" | undefined;
+	/** M6c, `jobs/start`: the dry run the job imports. */
+	dryRunOf?: string | undefined;
 	uploadId?: string | undefined;
 	sourceId?: string | undefined;
 	force?: boolean | undefined;
