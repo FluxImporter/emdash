@@ -251,7 +251,9 @@ export async function siteCheck(
 		limit: OWNER_QUERY_LIMIT,
 	});
 	for (const { id, data } of sameOwner.items) {
-		if (id === selfId) continue;
+		// A row without its copied locale (written elsewhere) cannot be compared: EmDash would
+		// read a missing locale as the default one.
+		if (id === selfId || typeof data.locale !== "string") continue;
 		const other = deps.resolveLocale(data.locale);
 		if ((other.ok ? other.locale : data.locale) !== locale) continue;
 		use.templates.push({ id, name: data.name });
@@ -358,7 +360,8 @@ export async function createTemplate(
  * Changes a template at the revision the caller read (spec Ruling 6): a stale revision, or a
  * write that lands between the read and the compare-and-set, is `TEMPLATE_CHANGED`, with no
  * retry. The site checks run on every update (plan Ruling 12); `null` or `""` removes the
- * description (plan Ruling 13).
+ * description (plan Ruling 13). Without a new template, the stored one must still pass
+ * `templateForSave`.
  */
 export async function updateTemplate(
 	deps: TemplateDeps,
@@ -372,7 +375,9 @@ export async function updateTemplate(
 	assertRevision(input.id, row.revision, input.revision);
 	const name = input.name === undefined ? row.name : input.name.normalize("NFC");
 	if (name !== row.name) await assertNameFree(deps, name, input.id);
-	const template = given ?? row.template;
+	// A stored row is re-checked like a new template, so one that no longer parses is refused
+	// with its code; sending a template in the same update repairs it.
+	const template = given ?? templateForSave(readSavedTemplate(row));
 	const { check } = await siteCheck(deps, template, input.id);
 	const { description: _, ...rest } = withoutCopied(row);
 	const description = input.description === undefined ? row.description : input.description;

@@ -271,9 +271,10 @@ function prop(value: unknown, key: string): unknown {
 }
 
 /**
- * What the link checks read, once per job creation: the fields of every collection a mapped
- * reference field links to, and the taxonomy definitions when the template maps taxonomies.
- * The template is not parsed yet, so shapes are checked loosely; createJob reports bad ones.
+ * What the link checks read, once per job creation or saved-template site check: the fields of
+ * every collection a mapped reference field links to, and the taxonomy definitions when the
+ * template maps taxonomies. The template may not be parsed yet, so shapes are checked loosely;
+ * createJob reports bad ones.
  */
 export async function linkSchemaFor(
 	deps: { lookups: Pick<LookupPort, "taxonomyDefs"> },

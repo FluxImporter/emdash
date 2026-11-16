@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { templateSchema } from "../../src/engine/template.js";
+import type { SavedTemplate } from "../../src/plugin/templates.js";
 import {
 	createTemplate,
 	deleteTemplate,
@@ -473,5 +474,60 @@ describe("site checks and storage edges", () => {
 		expect(() => templatesCollection({})).toThrow(
 			"flux-import: the templates storage collection is missing",
 		);
+	});
+});
+
+describe("a stored row that no longer parses (Review Focus 4)", () => {
+	/** Saves a template, then overwrites its stored body as a newer or broken version would. */
+	async function corrupt(body: unknown, extra: Record<string, unknown> = {}) {
+		const setup = templateSetup();
+		const { template: row } = await createTemplate(setup.deps, "u1", {
+			name: "A",
+			template: owned(),
+		});
+		await setup.templates.put(row.id, { ...row, ...extra, template: body } as SavedTemplate);
+		return { ...setup, row };
+	}
+
+	it("refuses a rename or description-only update with the row's code, and changes nothing", async () => {
+		const broken = await corrupt({ version: 1, collection: "products" });
+		const e = await failure(
+			updateTemplate(broken.deps, "u1", { id: broken.row.id, revision: 1, name: "B" }),
+		);
+		expect(e).toMatchObject({ code: "INVALID_TEMPLATE", status: 400 });
+		expect(e.details?.problems).toEqual(expect.arrayContaining([expect.stringMatching(/^key: /)]));
+		const newer = await corrupt({ ...owned(), version: 2 });
+		expect(
+			await failure(
+				updateTemplate(newer.deps, "u1", { id: newer.row.id, revision: 1, description: "x" }),
+			),
+		).toMatchObject({ code: "UNSUPPORTED_TEMPLATE_VERSION", status: 400 });
+		expect(await getTemplate(newer.deps, newer.row.id)).toMatchObject({ name: "A", revision: 1 });
+	});
+
+	it("is repaired by an update that sends a template", async () => {
+		const { deps, row } = await corrupt({ version: 2 });
+		const { template: next } = await updateTemplate(deps, "u2", {
+			id: row.id,
+			revision: 1,
+			name: "B",
+			template: productTemplate(),
+		});
+		expect(next).toMatchObject({
+			name: "B",
+			revision: 2,
+			template: templateSchema.parse(productTemplate()),
+		});
+	});
+
+	it("stays readable, listable and deletable, and never breaks another template's owner check", async () => {
+		const { deps, row } = await corrupt("not a template", { locale: undefined, name: 42 });
+		expect((await getTemplate(deps, row.id)).template).toBe("not a template");
+		const listed = await listTemplates(deps, {});
+		expect(listed.items).toEqual([expect.objectContaining({ id: row.id, owner: "shop" })]);
+		expect(listed.items[0]).not.toHaveProperty("template");
+		const other = await createTemplate(deps, "u1", { name: "B", template: owned() });
+		expect(other.check).toEqual({ problems: [], warnings: [] });
+		expect(await deleteTemplate(deps, { id: row.id, revision: 1 })).toEqual({ deleted: true });
 	});
 });
