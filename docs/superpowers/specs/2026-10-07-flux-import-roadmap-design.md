@@ -223,18 +223,21 @@ tests, and M5a alone meets the milestone's acceptance for the writes M2-M4e make
 
 ## Milestone 6 split
 
-Added 2026-11-16. Milestone 6 is delivered in four parts, each with its own spec, plan and review.
-Each part depends only on the ones before it: a schedule runs a saved template (M6b on M6a), the
-MCP tools wrap the template, job and schedule routes (M6c on M6a and M6b), and mapping suggestions
-produce a template the earlier parts save and run (M6d). The feasibility of each part was checked
-against `emdash@1.2.0` and the docs on 2026-11-16 (M6a spec, "EmDash facts" and "Outline of
-M6b-M6d"). M6b meets the first half of the milestone's acceptance ("a scheduled import runs
-unattended"), M6c the second ("an agent completes an import over MCP").
+Added 2026-11-16, revised the same day after the M6a spec review. Milestone 6 is delivered in four
+parts, each with its own spec, plan and review, in the order M6a, M6c, M6b, M6d. Each part depends
+only on the ones before it: the MCP tools wrap the template and job routes (M6c on M6a), a schedule
+runs a saved template (M6b on M6a) and adds its own tools to M6c's list, and mapping suggestions
+produce a template that M6a saves (M6d on M6a). M6c comes before M6b because M6b carries the most
+risk (the `scheduled()` handler on a production build, blocked since M2, and the D1 budget of a
+shared cron tick) and the tools do not need it; the cost is a second administrator consent when
+M6b's tools change the list (M6a spec, Ruling 35). The feasibility of each part was checked against
+`emdash@1.2.0` and the docs on 2026-11-16 (M6a spec, "EmDash facts" and "Outline of M6c, M6b and
+M6d"). M6c meets the agent half of the milestone's acceptance ("an agent completes an import over
+MCP"), M6b the other ("a scheduled import runs unattended").
 
 | Part | Scope | Status |
 | --- | --- | --- |
-| **M6a** ([spec](./2026-11-16-flux-import-m6a-templates-design.md)) | Saved templates: a `templates` plugin storage collection with CRUD routes, optimistic concurrency by revision, structural validation on save and site checks reported; JSON export and import in a versioned file envelope; `jobs/create`, `jobs/list` and `schema/apply` by `templateId`, with the job keeping a snapshot. Feasible with the documented plugin storage API | Planned |
-| **M6b** | Scheduled URL imports: a schedule names a saved template, a URL source, a UTC cron expression and the job options; plugin cron (`ctx.cron`, present in 1.2.0 source, signature undocumented) creates the job and advances it batch by batch within the per-tick budget; refused missing-entry verdicts, failures and overlapping runs stop or skip the schedule. Feasible, with an actor and Workers budget to prove first | Planned |
-| **M6c** | MCP tools: `list_templates`, `dry_run`, `start_import`, `import_status` (and the batch step an agent needs) as plugin MCP tools over the M6a-M6b routes. Feasible: EmDash 1.2.0 lets a plugin expose private JSON routes as MCP tools, once an administrator enables them and the token has `mcp:tools` or `mcp:tools:flux-import` | Planned |
-| **M6d** | AI mapping suggestions: a route that proposes a template's field mappings from a source sample and the collection schema, through a provider API whose key sits in an encrypted plugin setting, with a deterministic name-matching fallback. EmDash gives plugins no AI binding or capability, so this uses `network:request` with an allowed host | Planned |
-
+| **M6a** ([spec](./2026-11-16-flux-import-m6a-templates-design.md)) | Saved templates: a `templates` plugin storage collection with CRUD routes, optimistic concurrency by revision, every site-independent check refused on save and site checks reported; owner checks against saved templates and existing links, refused on import for templates with `rules.missing`; JSON export and import in a versioned file envelope; `jobs/create`, `jobs/list` and `schema/apply` by `templateId`, with the job keeping a snapshot; the URL-source "unchanged" skip made template-aware. Feasible with the documented plugin storage API | Planned |
+| **M6c** | MCP tools: `list_templates`, `dry_run`, `start_import`, `import_status` (and the batch step an agent needs) as plugin MCP tools over the M6a and job routes. Feasible: EmDash 1.2.0 lets a plugin expose private JSON routes as MCP tools, once an administrator enables them and the token has `mcp:tools` or `mcp:tools:flux-import`; every plugin tool is blocked during a site export | Planned |
+| **M6b** | Scheduled URL imports: a schedule names a saved template, a URL source, a UTC cron expression and the job options; plugin cron (`ctx.cron`, present in 1.2.0 source, parameters undocumented) creates the job and advances it batch by batch within the per-tick budget; refused missing-entry verdicts, failures, overlapping runs and a template or source that is gone stop or skip the schedule; schedule tools join M6c's list. Feasible, with an actor and the Workers budget to prove first | Planned |
+| **M6d** | AI mapping suggestions: a route that proposes a template's field mappings from a source sample and the collection schema, with a deterministic name-matching fallback. The plugin API has no AI binding or capability; the transport (a provider API through the runtime's fetch behind the SSRF guard, a Workers AI binding from the Worker's env on Cloudflare, or the fallback alone) is left to the M6d spec | Planned |
