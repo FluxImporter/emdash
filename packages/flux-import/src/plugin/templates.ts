@@ -204,25 +204,30 @@ function changedWhileSaving(id: string, current: SavedTemplate | null): ServiceE
 /**
  * The site checks of a template that passed the shape checks (spec "Site checks", plan Ruling 8):
  * the locales as `jobs/create` resolves them, the collection, what remains of `checkTemplate`
- * without source columns, the link and translation warnings, and the owner warnings. `selfId` is
- * the template being updated, which never warns about itself.
+ * without source columns, the link and translation warnings, and the owner warnings. `self` is
+ * the stored row of the template being updated, which never warns about itself, nor about the
+ * entries it already owns (its owner, collection and resolved locale unchanged).
  */
 export async function siteCheck(
 	deps: TemplateDeps,
 	t: Template,
-	selfId?: string,
+	self?: Pick<SavedTemplate, "id" | "owner" | "collection" | "locale" | "template">,
 ): Promise<{ check: TemplateCheck; owner: OwnerUse | null }> {
 	const problems: string[] = [];
 	const warnings: string[] = [];
 	const resolved = deps.resolveLocale(t.locale);
 	if (!resolved.ok) problems.push(`locale: ${resolved.message}`);
 	const locale = resolved.ok ? resolved.locale : t.locale;
-	let effective = t;
+	// The checks read the site's casing of the locale, as jobs/create does (`withSiteLocale`).
+	let effective: Template = { ...t, locale };
 	let translationFailed = false;
 	if (t.translationOf !== undefined) {
 		const translation = deps.resolveTranslation(t.translationOf.locale, locale);
 		if (translation.ok) {
-			effective = { ...t, translationOf: { ...t.translationOf, locale: translation.locale } };
+			effective = {
+				...effective,
+				translationOf: { ...t.translationOf, locale: translation.locale },
+			};
 		} else {
 			problems.push(translation.message);
 			translationFailed = true;
@@ -251,17 +256,19 @@ export async function siteCheck(
 		limit: OWNER_QUERY_LIMIT,
 	});
 	for (const { id, data } of sameOwner.items) {
-		// A row without its copied locale (written elsewhere) cannot be compared: EmDash would
-		// read a missing locale as the default one.
-		if (id === selfId || typeof data.locale !== "string") continue;
-		const other = deps.resolveLocale(data.locale);
-		if ((other.ok ? other.locale : data.locale) !== locale) continue;
-		use.templates.push({ id, name: data.name });
+		if (id === self?.id || rowLocale(deps, data) !== locale) continue;
+		const name = String(data.name);
+		use.templates.push({ id, name });
 		warnings.push(
-			`Saved template ${data.name} (${id}) uses the same owner ${owner} for ${t.collection}/${locale}: the two act as one import, and each one's missing phase treats the other's entries as its own; give each feed its own owner`,
+			`Saved template ${name} (${id}) uses the same owner ${owner} for ${t.collection}/${locale}: the two act as one import, and each one's missing phase treats the other's entries as its own; give each feed its own owner`,
 		);
 	}
-	if (resolved.ok) {
+	const ownEntries =
+		self !== undefined &&
+		self.owner === owner &&
+		self.collection === t.collection &&
+		rowLocale(deps, self) === locale;
+	if (resolved.ok && !ownEntries) {
 		const owned = await deps.links.query({
 			where: { owner, collection: t.collection, locale },
 			limit: 1,
@@ -276,7 +283,31 @@ export async function siteCheck(
 	return { check: { problems, warnings }, owner: use };
 }
 
-/** Refuses `NAME_TAKEN` when a template other than `self` has the (NFC) name (spec "Names"). */
+/**
+ * A stored row's locale, resolved (or as written when it does not resolve): the copied `locale`,
+ * else its template's. Null when neither is a string, since EmDash reads a missing locale as the
+ * default one and the row cannot be compared.
+ */
+function rowLocale(
+	deps: Pick<TemplateDeps, "resolveLocale">,
+	row: Pick<SavedTemplate, "locale" | "template">,
+): string | null {
+	const body: unknown = row.template;
+	const written: unknown =
+		typeof row.locale === "string"
+			? row.locale
+			: typeof body === "object" && body !== null
+				? (body as { locale?: unknown }).locale
+				: undefined;
+	if (typeof written !== "string") return null;
+	const resolved = deps.resolveLocale(written);
+	return resolved.ok ? resolved.locale : written;
+}
+
+/**
+ * Refuses `NAME_TAKEN` when a template other than `self` has the (NFC) name (spec "Names"). The
+ * race between this check and the write is accepted, and no unique index is used (Ruling 5).
+ */
 export async function assertNameFree(
 	deps: Pick<TemplateDeps, "templates">,
 	name: string,
@@ -378,7 +409,7 @@ export async function updateTemplate(
 	// A stored row is re-checked like a new template, so one that no longer parses is refused
 	// with its code; sending a template in the same update repairs it.
 	const template = given ?? templateForSave(readSavedTemplate(row));
-	const { check } = await siteCheck(deps, template, input.id);
+	const { check } = await siteCheck(deps, template, row);
 	const { description: _, ...rest } = withoutCopied(row);
 	const description = input.description === undefined ? row.description : input.description;
 	const next: SavedTemplate = {

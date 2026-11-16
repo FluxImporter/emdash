@@ -6,6 +6,7 @@ import {
 	deleteTemplate,
 	getTemplate,
 	listTemplates,
+	siteCheck,
 	templatesCollection,
 	updateTemplate,
 } from "../../src/plugin/templates.js";
@@ -529,5 +530,119 @@ describe("a stored row that no longer parses (Review Focus 4)", () => {
 		const other = await createTemplate(deps, "u1", { name: "B", template: owned() });
 		expect(other.check).toEqual({ problems: [], warnings: [] });
 		expect(await deleteTemplate(deps, { id: row.id, revision: 1 })).toEqual({ deleted: true });
+	});
+});
+
+describe("review follow-ups", () => {
+	it("checks taxonomies in the site's casing of the locale, as jobs/create does", async () => {
+		const { deps, lookups } = templateSetup();
+		lookups.defs.push(
+			{ name: "color", hierarchical: true, collections: ["products"], locale: "en" },
+			{ name: "color", hierarchical: false, collections: ["products"], locale: "fr" },
+		);
+		const { template, check } = await createTemplate(deps, "u1", {
+			name: "A",
+			template: productTemplate({
+				locale: "FR",
+				taxonomies: { color: { from: "Color", hierarchy: ">" } },
+			}),
+		});
+		expect(check.warnings).toEqual([
+			'Taxonomy "color" is flat; its "hierarchy" separator is ignored',
+		]);
+		expect(template).toMatchObject({ locale: "FR", template: { locale: "FR" } });
+		const translated = await createTemplate(deps, "u1", {
+			name: "B",
+			template: productTemplate({
+				locale: "FR",
+				translationOf: { from: "en_id" },
+				taxonomies: { color: { from: "Color", hierarchy: ">" } },
+			}),
+		});
+		expect(translated.check.warnings).toContain(
+			'Taxonomy "color" is flat; its "hierarchy" separator is ignored',
+		);
+	});
+
+	it("does not warn an update about the entries the template already owns", async () => {
+		const { deps, links } = templateSetup();
+		const queryLinks = links.query.bind(links);
+		let linkQueries = 0;
+		links.query = async (opts) => {
+			linkQueries++;
+			return queryLinks(opts);
+		};
+		await links.put("products:en:K1", ownedLink("shop"));
+		const { template: row, check } = await createTemplate(deps, "u1", {
+			name: "A",
+			template: owned(),
+		});
+		expect(check.warnings).toHaveLength(1);
+		linkQueries = 0;
+		const described = await updateTemplate(deps, "u1", {
+			id: row.id,
+			revision: 1,
+			description: "x",
+		});
+		expect(described.check.warnings).toEqual([]);
+		const recased = await updateTemplate(deps, "u1", {
+			id: row.id,
+			revision: 2,
+			template: owned({ locale: "EN" }),
+		});
+		expect(recased.check.warnings).toEqual([]);
+		expect(linkQueries).toBe(0);
+	});
+
+	it("still warns an update that moves the owner, collection or locale onto owned entries", async () => {
+		const { deps, links } = templateSetup();
+		await links.put("products:fr:K1", ownedLink("shop", "fr"));
+		await links.put("products:en:K2", ownedLink("other"));
+		await links.put("posts:en:K3", ownedLink("shop", "en", "posts"));
+		const { template: row } = await createTemplate(deps, "u1", { name: "A", template: owned() });
+		let revision = 1;
+		// Each step changes one of owner, locale and collection from the stored shop/products/en.
+		const warnings = async (template: object) => {
+			const { check } = await updateTemplate(deps, "u1", { id: row.id, revision, template });
+			const back = await updateTemplate(deps, "u1", {
+				id: row.id,
+				revision: revision + 1,
+				template: owned(),
+			});
+			expect(back.check.warnings).toEqual([]);
+			revision += 2;
+			return check.warnings;
+		};
+		const entries = (owner: string, at: string) =>
+			`Owner ${owner} already owns entries in ${at}: this template will treat them as its own (and with rules.missing may trash or unpublish the ones its feed lacks)`;
+		expect(await warnings(productTemplate({ rules: { owner: "other" } }))).toEqual([
+			entries("other", "products/en"),
+		]);
+		expect(await warnings(owned({ locale: "fr" }))).toEqual([entries("shop", "products/fr")]);
+		const posts = {
+			...owned({ collection: "posts" }),
+			fields: { title: { from: "Name", type: "text" } },
+		};
+		expect(await warnings(posts)).toEqual([entries("shop", "posts/en")]);
+	});
+
+	it("reads a row's locale from its template when the copied one is missing, and names it as text", async () => {
+		const { deps, templates } = templateSetup();
+		const { template: row } = await createTemplate(deps, "u1", { name: "A", template: owned() });
+		await templates.put(row.id, {
+			...row,
+			locale: undefined,
+			name: 42,
+		} as unknown as SavedTemplate);
+		const { check } = await createTemplate(deps, "u1", { name: "B", template: owned() });
+		expect(check.warnings).toEqual([
+			`Saved template 42 (${row.id}) uses the same owner shop for products/en: the two act as one import, and each one's missing phase treats the other's entries as its own; give each feed its own owner`,
+		]);
+		// B is saved by now, so a third check names both.
+		const { owner } = await siteCheck(deps, templateSchema.parse(owned()));
+		expect(owner?.templates).toEqual([
+			{ id: row.id, name: "42" },
+			{ id: "T0002", name: "B" },
+		]);
 	});
 });
