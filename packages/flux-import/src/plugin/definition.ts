@@ -18,9 +18,15 @@ export type FluxImportOptions = Record<string, never>;
  * `jobId` and `mediaId` indexes let a job's own media be listed (M5 rollback, audit).
  * `journal` holds what each real job changed, one row per (job, entry), read newest first by a
  * rollback (`["jobId", "seq"]`); `journalMedia` the media items each job's uploads created (M5a).
+ * `templates` holds saved templates (M6a): `name` serves the uniqueness check, `collection` the
+ * listing filter, `owner` with `collection` the shared-owner warning; `jobs`
+ * `["templateId", "createdAt"]` lists a template's jobs newest first.
  */
 export const STORAGE = {
-	jobs: { indexes: ["status", "createdAt", "uploadId", "sourceUploadId"] },
+	jobs: {
+		indexes: ["status", "createdAt", "uploadId", "sourceUploadId", ["templateId", "createdAt"]],
+	},
+	templates: { indexes: ["name", "collection", "owner"] },
 	records: {
 		indexes: [
 			"jobId",

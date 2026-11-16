@@ -3,6 +3,7 @@ import type { RouteContext } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
+import { FLUX_IMPORT_VERSION } from "../../src/meta.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import { ensureRetentionScheduled, toRouteError } from "../../src/plugin/routes.js";
@@ -58,7 +59,15 @@ describe("createPlugin", () => {
 			["jobId", "status", "seq"],
 			["jobId", "sourceKey"],
 		]);
-		expect(STORAGE.jobs.indexes).toEqual(["status", "createdAt", "uploadId", "sourceUploadId"]);
+		expect(STORAGE.jobs.indexes).toEqual([
+			"status",
+			"createdAt",
+			"uploadId",
+			"sourceUploadId",
+			["templateId", "createdAt"],
+		]);
+		expect(STORAGE.templates.indexes).toEqual(["name", "collection", "owner"]);
+		expect(FLUX_IMPORT_VERSION).toBe("0.3.0");
 		expect(STORAGE.links.indexes).toEqual(["entryId", ["owner", "collection", "locale"]]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);

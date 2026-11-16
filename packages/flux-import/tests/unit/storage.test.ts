@@ -9,6 +9,16 @@ function asStorage(kv: MemoryKv<unknown>): StorageCollection {
 }
 
 describe("kvCollection", () => {
+	it("passes compareAndDelete through with the expected revision", async () => {
+		const kv = kvCollection<{ n: number }>(asStorage(new MemoryKv<unknown>()));
+		await kv.put("c", { n: 9 });
+		const c = await kv.getVersioned("c");
+		expect(await kv.compareAndDelete("c", "0")).toEqual({ applied: false });
+		expect(await kv.get("c")).toEqual({ n: 9 });
+		expect(await kv.compareAndDelete("c", c!.revision)).toEqual({ applied: true });
+		expect(await kv.get("c")).toBeNull();
+	});
+
 	it("passes reads, writes, deletes and queries through", async () => {
 		const raw = new MemoryKv<unknown>();
 		const kv = kvCollection<{ n: number; tag: string }>(asStorage(raw));

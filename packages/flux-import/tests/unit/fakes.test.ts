@@ -4,6 +4,52 @@ import { decodeRev, encodeRev } from "../../src/engine/revs.js";
 import { FakeContent, MemoryKv, makeDeps } from "./fakes.js";
 
 describe("MemoryKv", () => {
+	it("pages without orderBy in creation order, and a cursor survives a delete of a row it returned (plan Ruling 2)", async () => {
+		const kv = new MemoryKv<{ n: number }>();
+		for (const [i, id] of ["a", "b", "c", "d", "e"].entries()) await kv.put(id, { n: i });
+		const first = await kv.query({ limit: 2 });
+		expect(first.items.map((i) => i.id)).toEqual(["a", "b"]);
+		await kv.delete("a");
+		// A rewrite keeps its place, as EmDash's put keeps created_at.
+		await kv.put("d", { n: 30 });
+		const second = await kv.query({ limit: 2, cursor: first.cursor as string });
+		expect(second.items.map((i) => i.id)).toEqual(["c", "d"]);
+		const third = await kv.query({ limit: 2, cursor: second.cursor as string });
+		expect(third).toEqual({ items: [{ id: "e", data: { n: 4 } }], hasMore: false });
+	});
+
+	it("refuses fields no declared index names when built with indexes, as EmDash does", async () => {
+		const kv = new MemoryKv<{ name: string }>(["name", ["templateId", "createdAt"]]);
+		await kv.put("a", { name: "x" });
+		await expect(kv.query({ where: { name: "x" } })).resolves.toMatchObject({ hasMore: false });
+		await expect(
+			kv.query({ where: { templateId: "T" }, orderBy: { createdAt: "desc" } }),
+		).resolves.toBeDefined();
+		await expect(kv.query({ where: { owner: "o" } })).rejects.toThrow(
+			"Cannot query on non-indexed field 'owner'.",
+		);
+		await expect(kv.query({ orderBy: { updatedAt: "asc" } })).rejects.toThrow(
+			"Cannot order by non-indexed field 'updatedAt'.",
+		);
+		// Without indexes the fake accepts any field, as every existing test relies on.
+		await expect(
+			new MemoryKv<{ owner: string }>().query({ where: { owner: "o" } }),
+		).resolves.toBeDefined();
+	});
+
+	it("deletes with compareAndDelete only at the stored revision (spec F3, V4)", async () => {
+		const kv = new MemoryKv<{ n: number }>();
+		await kv.put("a", { n: 1 });
+		const stale = await kv.getVersioned("a");
+		await kv.put("a", { n: 2 });
+		expect(await kv.compareAndDelete("a", stale!.revision)).toEqual({ applied: false });
+		expect(await kv.get("a")).toEqual({ n: 2 });
+		const current = await kv.getVersioned("a");
+		expect(await kv.compareAndDelete("a", current!.revision)).toEqual({ applied: true });
+		expect(await kv.get("a")).toBeNull();
+		expect(await kv.compareAndDelete("a", current!.revision)).toEqual({ applied: false });
+	});
+
 	it("returns the revision actually stored when writers interleave", async () => {
 		const kv = new MemoryKv<{ n: number }>();
 		await kv.put("a", { n: 0 });
