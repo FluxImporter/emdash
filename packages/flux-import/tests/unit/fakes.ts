@@ -74,8 +74,15 @@ function matches(data: Record<string, unknown>, where: Where): boolean {
 }
 
 export class MemoryKv<T> implements KvCollection<T> {
-	readonly rows = new Map<string, { value: T; revision: number }>();
+	readonly rows = new Map<string, { value: T; revision: number; created: number }>();
 	private rev = 0;
+	private createdSeq = 0;
+	private readonly indexed: Set<string> | null;
+
+	/** With `indexes`, a query on any other field throws as EmDash's plugin storage does. */
+	constructor(indexes?: ReadonlyArray<string | ReadonlyArray<string>>) {
+		this.indexed = indexes ? new Set(indexes.flat()) : null;
+	}
 
 	async get(id: string) {
 		const row = this.rows.get(id);
@@ -83,7 +90,9 @@ export class MemoryKv<T> implements KvCollection<T> {
 	}
 	private write(id: string, data: T): number {
 		const revision = ++this.rev;
-		this.rows.set(id, { value: structuredClone(data), revision });
+		// A rewrite keeps its place, as EmDash's put keeps created_at.
+		const created = this.rows.get(id)?.created ?? ++this.createdSeq;
+		this.rows.set(id, { value: structuredClone(data), revision, created });
 		return revision;
 	}
 	async put(id: string, data: T) {
@@ -107,14 +116,37 @@ export class MemoryKv<T> implements KvCollection<T> {
 		if (current !== expected) return { applied: false as const };
 		return { applied: true as const, revision: String(this.write(id, data)) };
 	}
+	async compareAndDelete(id: string, expected: string) {
+		const row = this.rows.get(id);
+		if (!row || String(row.revision) !== expected) return { applied: false };
+		this.rows.delete(id);
+		return { applied: true };
+	}
 	async query(opts: {
 		where?: Where;
 		orderBy?: Record<string, "asc" | "desc">;
 		limit?: number;
 		cursor?: string;
 	}) {
+		if (this.indexed) {
+			for (const field of Object.keys(opts.where ?? {}))
+				if (!this.indexed.has(field))
+					throw new Error(`Cannot query on non-indexed field '${field}'.`);
+			for (const field of Object.keys(opts.orderBy ?? {}))
+				if (!this.indexed.has(field))
+					throw new Error(`Cannot order by non-indexed field '${field}'.`);
+		}
+		// Rows come back in insertion order, stricter than EmDash's (created_at, id): rows written in the same millisecond come back in id order on a real site.
+		const keyset = !opts.orderBy || Object.keys(opts.orderBy).length === 0;
+		const after = keyset && opts.cursor ? Number(opts.cursor.slice(1)) : 0;
+		const created = new Map<string, number>();
 		let items = [...this.rows.entries()]
-			.map(([id, r]) => ({ id, data: structuredClone(r.value) }))
+			.sort((a, b) => a[1].created - b[1].created)
+			.filter(([, r]) => r.created > after)
+			.map(([id, r]) => {
+				created.set(id, r.created);
+				return { id, data: structuredClone(r.value) };
+			})
 			.filter((i) => matches(i.data as Record<string, unknown>, opts.where ?? {}));
 		for (const [field, dir] of Object.entries(opts.orderBy ?? {}).reverse()) {
 			items = items.sort((a, b) => {
@@ -124,8 +156,17 @@ export class MemoryKv<T> implements KvCollection<T> {
 				return dir === "asc" ? order : -order;
 			});
 		}
+		// EmDash clamps the page size to 1..100 (plugin-storage.ts:357).
+		const limit = Math.max(1, Math.min(opts.limit ?? 50, 100));
+		if (keyset) {
+			const page = items.slice(0, limit);
+			const hasMore = items.length > limit;
+			const last = page.at(-1);
+			return hasMore && last
+				? { items: page, cursor: `c${created.get(last.id)}`, hasMore }
+				: { items: page, hasMore: false };
+		}
 		const start = opts.cursor ? Number(opts.cursor) : 0;
-		const limit = opts.limit ?? 50;
 		const page = items.slice(start, start + limit);
 		const hasMore = start + limit < items.length;
 		return hasMore

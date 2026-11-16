@@ -35,11 +35,32 @@ export interface SourceRow {
 	updatedAt: string;
 }
 
+/**
+ * The template a URL-source job ran (spec Ruling 29): a saved template's ID and revision, or the
+ * fingerprint of an inline one.
+ */
+export type ImportTemplate = { id: string; revision: number } | { fingerprint: string };
+
 export interface LastImport {
 	sha256: string;
 	uploadId: string;
 	jobId: string;
 	at: string;
+	/** M6a: absent on rows saved before M6a, and when the job's template did not parse. */
+	template?: ImportTemplate;
+}
+
+/**
+ * Whether `a` and `b` are the same template: both saved with the same ID and revision, or both
+ * inline with the same fingerprint. An absent template (`undefined` or `null`) never matches,
+ * nor does a stored value that is not an object (a malformed row must not fail the request).
+ */
+export function sameTemplate(a: ImportTemplate | undefined, b: ImportTemplate | null): boolean {
+	if (!a || !b || typeof a !== "object") return false;
+	if ("fingerprint" in a || "fingerprint" in b) {
+		return "fingerprint" in a && "fingerprint" in b && a.fingerprint === b.fingerprint;
+	}
+	return a.id === b.id && a.revision === b.revision;
 }
 
 export interface SourceDeps {
@@ -400,18 +421,25 @@ export async function clearLastImport(
 
 /**
  * `jobs/create` with a `sourceId`: fetches first (conditional GET and hash decide whether a new
- * copy is staged), then skips the job only for a real run without `force` whose content equals
- * `lastImport`. Dry runs are never skipped and never recorded; a failed creation records nothing.
+ * copy is staged), then skips the job only for a real run without `force` whose content and
+ * template equal `lastImport` (spec Ruling 29). A `null` template (one that does not parse) is
+ * never skipped and is recorded without a template. Dry runs are never skipped and never
+ * recorded; a failed creation records nothing.
  */
 export async function jobFromSource(
 	deps: SourceDeps,
 	sourceId: string,
-	options: { force: boolean; dryRun: boolean },
+	options: { force: boolean; dryRun: boolean; template: ImportTemplate | null },
 	create: (uploadId: string, sourceId: string) => Promise<Job>,
 ): Promise<Job | SkippedJob> {
 	const fetched = await fetchSource(deps, sourceId, options.force);
 	const source = await getSource(deps, sourceId);
-	if (!options.force && !options.dryRun && source.lastImport?.sha256 === fetched.sha256) {
+	if (
+		!options.force &&
+		!options.dryRun &&
+		source.lastImport?.sha256 === fetched.sha256 &&
+		sameTemplate(source.lastImport.template, options.template)
+	) {
 		return { skipped: "unchanged", sourceId, uploadId: fetched.uploadId };
 	}
 	const job = await create(fetched.uploadId, sourceId);
@@ -423,6 +451,7 @@ export async function jobFromSource(
 			uploadId: fetched.uploadId,
 			jobId: job.id,
 			at: iso(deps.now()),
+			...(options.template === null ? {} : { template: options.template }),
 		}).catch(() => {});
 	}
 	return job;

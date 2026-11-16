@@ -15,6 +15,8 @@ export interface KvCollection<T> {
 		expectedRevision: string | null,
 		data: T,
 	): Promise<{ applied: true; revision: string } | { applied: false }>;
+	/** Deletes the row only when its stored revision is `expectedRevision` (M6a). */
+	compareAndDelete(id: string, expectedRevision: string): Promise<{ applied: boolean }>;
 	query(opts: {
 		where?: Where;
 		orderBy?: Record<string, "asc" | "desc">;

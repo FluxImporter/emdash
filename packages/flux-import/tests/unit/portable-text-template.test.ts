@@ -418,9 +418,7 @@ describe("portableText schema checks", () => {
 		]);
 		const four = Object.fromEntries(["a", "b", "c", "d"].map((f) => [f, html(f)]));
 		const fields = Object.keys(four).map((slug) => ({ slug, type: "portableText" }));
-		expect(checkTemplate(t(four), fields, null)).toEqual([
-			"The template maps 4 portableText fields; at most 3 are allowed",
-		]);
+		expect(checkTemplate(t(four), fields, null)).toEqual([]);
 	});
 
 	it("uses media when a portableText mapping imports its images", () => {

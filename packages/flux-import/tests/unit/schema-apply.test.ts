@@ -155,6 +155,24 @@ describe("requestProblems", () => {
 });
 
 describe("applySchema", () => {
+	it("refuses a template with a shape problem the schema accepts (M6a)", async () => {
+		const files = Object.fromEntries(
+			Array.from({ length: 6 }, (_, i) => [`m${i}`, { from: `U${i}`, type: "file" }]),
+		);
+		const template = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields: files,
+		};
+		await expect(applySchema(new FakeApplyRegistry(), { template })).rejects.toMatchObject({
+			code: "VALIDATION_ERROR",
+			message:
+				"The template is invalid: The template maps 6 image and file fields; at most 5 are allowed",
+		});
+	});
+
 	it("creates missing fields with defaults, in request order, and clears caches once", async () => {
 		const registry = new FakeApplyRegistry([{ slug: "title", type: "string" }]);
 		invalidations.length = 0;

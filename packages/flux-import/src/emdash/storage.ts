@@ -26,6 +26,7 @@ export function kvCollection<T>(collection: StorageCollection): KvCollection<T> 
 			(await collection.getVersioned(id)) as { value: T; revision: string } | null,
 		compareAndSet: (id, expectedRevision, data) =>
 			collection.compareAndSet(id, expectedRevision, data),
+		compareAndDelete: (id, expectedRevision) => collection.compareAndDelete(id, expectedRevision),
 		query: async ({ where, ...rest }) => {
 			const page = await collection.query({
 				...rest,

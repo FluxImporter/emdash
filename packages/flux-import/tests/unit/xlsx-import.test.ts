@@ -345,8 +345,11 @@ describe("a missing column header", () => {
 			const template = missing();
 			const limits = fetchLimitsFor(template, sources.limits, staging.maxXlsxBytes);
 			const error = await failure(
-				jobFromSource({ ...sources, limits }, "S1", { force: true, dryRun }, (uploadId) =>
-					startImport(deps, staging, { uploadId, template, dryRun }, fields),
+				jobFromSource(
+					{ ...sources, limits },
+					"S1",
+					{ force: true, dryRun, template: null },
+					(uploadId) => startImport(deps, staging, { uploadId, template, dryRun }, fields),
 				),
 			);
 			expect(error).toMatchObject({ code: "invalid_template", details });

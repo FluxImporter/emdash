@@ -11,7 +11,7 @@ import {
 } from "../engine/jobs.js";
 import { buildLogCsv, LogTooLargeError } from "../engine/log.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "../engine/media.js";
-import type { KvCollection } from "../engine/ports.js";
+import type { KvCollection, LookupPort } from "../engine/ports.js";
 import { SourceMissingError } from "../engine/ports.js";
 import { type LinkSchema, type SchemaField, usesLinks, usesMedia } from "../engine/template.js";
 import type { EngineDeps, Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
@@ -25,6 +25,14 @@ import {
 import { checkSource, readerFor } from "../sources/readers.js";
 
 export const PAGE_SIZE = 50;
+/**
+ * Jobs per `jobs/list` page, filtered or not (M6a final review). A storage query returns whole
+ * documents, and every job holds its template: up to 256 KiB from a saved template
+ * (`TEMPLATE_MAX_BYTES`), so a page of `PAGE_SIZE` could read about 13 MB. Eight keep a page of
+ * saved-template jobs at about 2 MiB, as `TEMPLATE_PAGE` does for `templates/list`; clients page
+ * with the cursor.
+ */
+export const JOB_PAGE = 8;
 export const SAMPLE_MAX = 20;
 /** Pasted text is staged like an upload, up to this many UTF-8 bytes. */
 export const PASTE_MAX_BYTES = 1024 * 1024;
@@ -125,8 +133,8 @@ export class ServiceError extends Error {
 		readonly code: string,
 		message: string,
 		readonly status: number,
-		/** Machine-readable details, such as the source error `code`. */
-		readonly details?: { code: string },
+		/** Machine-readable details, such as the source error `code` or a template's `problems`. */
+		readonly details?: Readonly<Record<string, unknown>>,
 	) {
 		super(message);
 		this.name = "ServiceError";
@@ -271,12 +279,13 @@ function prop(value: unknown, key: string): unknown {
 }
 
 /**
- * What the link checks read, once per job creation: the fields of every collection a mapped
- * reference field links to, and the taxonomy definitions when the template maps taxonomies.
- * The template is not parsed yet, so shapes are checked loosely; createJob reports bad ones.
+ * What the link checks read, once per job creation or saved-template site check: the fields of
+ * every collection a mapped reference field links to, and the taxonomy definitions when the
+ * template maps taxonomies. The template may not be parsed yet, so shapes are checked loosely;
+ * createJob reports bad ones.
  */
-async function linkSchemaFor(
-	deps: EngineDeps,
+export async function linkSchemaFor(
+	deps: { lookups: Pick<LookupPort, "taxonomyDefs"> },
 	template: unknown,
 	fields: SchemaField[],
 	lookupFields: FieldLookup,
@@ -436,14 +445,18 @@ export async function changeJob(
 }
 
 export async function listJobs(
-	deps: EngineDeps,
-	opts: { status?: JobStatus; cursor?: string },
+	deps: Pick<EngineDeps, "jobs">,
+	opts: { status?: JobStatus; templateId?: string; cursor?: string },
 ): Promise<Page<Job>> {
+	const where = {
+		...(opts.status ? { status: opts.status } : {}),
+		...(opts.templateId ? { templateId: opts.templateId } : {}),
+	};
 	const jobs = page(
 		await deps.jobs.query({
-			...(opts.status ? { where: { status: opts.status } } : {}),
+			...(Object.keys(where).length > 0 ? { where } : {}),
 			orderBy: { createdAt: "desc" },
-			limit: PAGE_SIZE,
+			limit: JOB_PAGE,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),
 		}),
 	);

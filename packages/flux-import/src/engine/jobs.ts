@@ -4,13 +4,13 @@ import {
 	SourceError,
 	type SourceErrorCode,
 } from "../sources/reader.js";
-import { checkSource, readerFor } from "../sources/readers.js";
+import { readerFor } from "../sources/readers.js";
 import { DEFAULT_MAX_UPLOAD_SIZE } from "./media.js";
 import { CANCEL_LIVE_WARNING, settleStopped, settles } from "./missing.js";
 import { SourceMissingError } from "./ports.js";
+import { templateShapeProblems } from "./shape.js";
 import {
 	checkTemplate,
-	compileTemplate,
 	type LinkSchema,
 	linkWarnings,
 	missingPathWarnings,
@@ -22,7 +22,6 @@ import {
 	targetFieldsOf,
 	taxonomiesOf,
 	templatePaths,
-	templateSchema,
 	translationWarnings,
 	unresolvedPaths,
 	usesMedia,
@@ -92,6 +91,8 @@ export type CreateJobInput = {
 	missing?: false | { maxPercent: number };
 	/** M5c, XLSX: rows the converter skipped because their only values were unreadable. */
 	skippedRows?: number;
+	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
+	savedTemplate?: { id: string; revision: number };
 };
 
 /**
@@ -139,15 +140,13 @@ export function batchOptions(input: { batchSize?: number; budgetMs?: number }): 
 export async function createJob(deps: EngineDeps, input: CreateJobInput): Promise<Job> {
 	const { batchSize, budgetMs } = batchOptions(input);
 
-	const parsed = templateSchema.safeParse(input.template);
-	if (!parsed.success) {
-		throw new JobError(
-			"invalid_template",
-			"The template is invalid",
-			parsed.error.issues.map((i) => `${i.path.join(".") || "template"}: ${i.message}`),
-		);
+	// The site-independent checks run first (spec "Validation"), refused in M5c's groups and
+	// messages (plan Ruling 6): the schema, then the options, expressions and the source block.
+	const shape = templateShapeProblems(input.template);
+	if (!shape.ok) {
+		throw new JobError("invalid_template", "The template is invalid", shape.problems);
 	}
-	const template = parsed.data;
+	const template = shape.template;
 	if (template.publishAt !== undefined && input.publish === false) {
 		throw new JobError("invalid_options", "publishAt needs publish: true");
 	}
@@ -179,18 +178,15 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			"rules.missing needs the journal, so its changes can be rolled back",
 		);
 	}
-	const compiled = compileTemplate(template);
-	if (!compiled.ok) {
+	if (shape.expressions.length > 0) {
 		throw new JobError(
 			"invalid_template",
 			"The template has invalid expressions",
-			compiled.problems,
+			shape.expressions,
 		);
 	}
-
-	const sourceProblems = checkSource(template.source);
-	if (sourceProblems.length > 0) {
-		throw new JobError("invalid_source", "The source block is invalid", sourceProblems);
+	if (shape.source.length > 0) {
+		throw new JobError("invalid_source", "The source block is invalid", shape.source);
 	}
 	const reader = readerFor(template.source);
 	const located = await asJobError(async () =>
@@ -205,7 +201,10 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 
 	const siteTimezone = usesSiteTimezone(template) ? (input.siteTimezone ?? "UTC") : undefined;
 	const linkSchema = input.linkSchema ?? {};
-	const problems = checkTemplate(template, input.schemaFields, columns, siteTimezone, linkSchema);
+	const problems = [
+		...shape.fit,
+		...checkTemplate(template, input.schemaFields, columns, siteTimezone, linkSchema),
+	];
 	if (problems.length > 0) {
 		throw new JobError(
 			"invalid_template",
@@ -238,6 +237,12 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		// A dry run writes nothing, so it keeps no journal.
 		...(dryRun ? {} : { journal: input.journal ?? true }),
 		...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
+		...(input.savedTemplate === undefined
+			? {}
+			: {
+					templateId: input.savedTemplate.id,
+					templateRevision: input.savedTemplate.revision,
+				}),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),

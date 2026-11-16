@@ -14,6 +14,7 @@ import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads
 import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import { createRollback } from "../engine/rollback.js";
+import { OWNER_PATTERN, OWNER_RULE } from "../engine/template.js";
 import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { createMediaFetcher } from "../sources/media-fetch.js";
@@ -28,6 +29,7 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
+import { jobTemplateRef, resolveJobTemplate } from "./job-templates.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
@@ -59,6 +61,19 @@ import {
 	sourcesCollection,
 	updateSource,
 } from "./sources.js";
+import { exportTemplate, importTemplate } from "./template-files.js";
+import {
+	createTemplate,
+	deleteTemplate,
+	getTemplate,
+	listTemplates,
+	TEMPLATE_DESCRIPTION_MAX,
+	TEMPLATE_NAME_RULE,
+	type TemplateDeps,
+	templateNameProblem,
+	templatesCollection,
+	updateTemplate,
+} from "./templates.js";
 import {
 	fetchLimitsFor,
 	sampleImport,
@@ -110,6 +125,16 @@ const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
 const format = z.enum(SOURCE_FORMATS);
+const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template ID");
+/** Checked as the service stores it (NFC); the service normalises (spec "Names"). */
+const templateName = z
+	.string()
+	.refine((name) => templateNameProblem(name) === null, TEMPLATE_NAME_RULE);
+const templateDescription = z.string().max(TEMPLATE_DESCRIPTION_MAX);
+/** Required on update and delete (spec Rulings 6, 37): the service accepts none at runtime. */
+const templateRevision = z.number().int().min(1);
+/** The import route's `owner` override: the rule of `rules.owner` (spec "Export file format"). */
+const templateOwner = z.string().regex(OWNER_PATTERN, OWNER_RULE);
 /**
  * The template's `sourceSchema` (engine/template.ts) rebuilt with astro/zod, a different Zod
  * than the engine's; definition.test.ts checks both accept and reject the same blocks.
@@ -143,6 +168,21 @@ interface Services {
 	keep: UploadKeeper;
 	/** Where an XLSX sheet is staged once converted, and its limits. */
 	xlsx: XlsxStaging;
+}
+
+/** The saved-template services' dependencies for one request (M6a). */
+function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): TemplateDeps {
+	return {
+		templates: templatesCollection(ctx.storage),
+		links: deps.links,
+		lookups: deps.lookups,
+		lookupFields: (collection) => listSchemaFields(runtime.schemaRegistry, collection),
+		resolveLocale: (locale) => resolveSiteLocale(locale),
+		resolveTranslation: (sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
+		siteTimezone: () => readSiteTimezone(),
+		now: Date.now,
+		newId: () => ulid(),
+	};
 }
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
@@ -236,6 +276,23 @@ async function withServices<T>(
 	});
 }
 
+/**
+ * The most bytes of JSON a route that takes a template reads (EmDash's `request.maxBytes`).
+ * Without a `request` declaration EmDash reads a JSON body with no limit of its own (emdash
+ * src/plugins/routes.ts:132-143), and Node's adapter allows 1 GiB. 2 MiB covers any
+ * serialisation of a template under the 256 KiB `TEMPLATE_MAX_BYTES`, pretty-printed or with
+ * `\uXXXX` escapes (about 3x). An inline template a job stores is already held to the 1 MiB
+ * conditional-write cap, so no import that worked before is refused. `schema/apply` writes no
+ * job, so a body over 2 MiB that it accepted before (a long `fields` list or an inline template)
+ * is now 413 `INVALID_PLUGIN_REQUEST`, an accepted change (M6a spec, Amendments).
+ */
+export const TEMPLATE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Caps a route's JSON body at `TEMPLATE_BODY_MAX_BYTES`; it stays an MCP-ready JSON POST route. */
+function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
+	return { ...r, request: { body: "json", maxBytes: TEMPLATE_BODY_MAX_BYTES } };
+}
+
 function route<T>(
 	input: z.ZodType<T>,
 	handler: (ctx: RouteContext<T>) => Promise<unknown>,
@@ -249,7 +306,11 @@ const createInput = z
 		sourceId: sourceId.optional(),
 		/** With `sourceId`: fetch without validators and create the job even if nothing changed. */
 		force: z.boolean().optional(),
-		template: z.unknown(),
+		template: z.unknown().optional(),
+		/** M6a: a saved template, read once here; the job keeps a snapshot of it. */
+		templateId: templateId.optional(),
+		/** With `templateId`: refuse `TEMPLATE_CHANGED` unless the template is at this revision. */
+		templateRevision: templateRevision.optional(),
 		dryRun: z.boolean(),
 		publish: z.boolean().optional(),
 		batchSize: z.number().int().optional(),
@@ -266,6 +327,12 @@ const createInput = z
 	})
 	.refine((input) => (input.uploadId === undefined) !== (input.sourceId === undefined), {
 		message: "Set exactly one of uploadId and sourceId",
+	})
+	.refine((input) => (input.template === undefined) !== (input.templateId === undefined), {
+		message: "Set exactly one of template and templateId",
+	})
+	.refine((input) => input.templateRevision === undefined || input.templateId !== undefined, {
+		message: "templateRevision needs templateId",
 	});
 
 /** Slugs, label lengths, options and indexing are checked by `applySchema` (one message each). */
@@ -286,13 +353,32 @@ const applyInput = z
 		collection: z.string().min(1).max(63).optional(),
 		fields: z.array(applyField).min(1).max(MAX_APPLY_FIELDS).optional(),
 		template: z.unknown().optional(),
+		/** M6a: plan from a saved template (spec Ruling 19). */
+		templateId: templateId.optional(),
 		addOptions: z.boolean().optional(),
 		dryRun: z.boolean().optional(),
 	})
 	.strict()
-	.refine((input) => (input.fields === undefined) !== (input.template === undefined), {
-		message: "Set exactly one of fields and template",
-	});
+	.refine(
+		(input) =>
+			[input.fields, input.template, input.templateId].filter((v) => v !== undefined).length === 1,
+		{ message: "Set exactly one of fields, template and templateId" },
+	);
+
+const templateUpdateInput = z
+	.object({
+		id: templateId,
+		revision: templateRevision,
+		name: templateName.optional(),
+		/** `null` (or "") removes the description. */
+		description: templateDescription.nullable().optional(),
+		template: z.unknown().optional(),
+	})
+	.refine(
+		(input) =>
+			input.name !== undefined || input.description !== undefined || input.template !== undefined,
+		{ message: "Change at least one of name, description and template" },
+	);
 
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
@@ -406,59 +492,78 @@ export const routes: Record<string, PluginRoute> = {
 		),
 	),
 
-	"jobs/create": route(createInput, async (ctx) => {
-		await ensureRetentionScheduled(ctx);
-		return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
-			const { input } = ctx;
-			// Read once here and stored on the job, so a resumed or retried job converts the same way.
-			const siteTimezone = needsSiteTimezone(input.template) ? await readSiteTimezone() : undefined;
-			// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-			// serves the job's schema lookup for that collection.
-			const own = await readPublishAtCollection(runtime.schemaRegistry, input.template);
-			const revisions = own === null ? undefined : own.revisions;
-			const start = (upload: string, fromSource?: string) => {
-				const options: StartJobInput = {
-					uploadId: upload,
-					template: input.template,
-					dryRun: input.dryRun,
-					...(fromSource === undefined ? {} : { sourceId: fromSource }),
-					...(input.journal === undefined ? {} : { journal: input.journal }),
-					...(input.missing === undefined ? {} : { missing: input.missing }),
-					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-					...(siteTimezone === undefined ? {} : { siteTimezone }),
-					...(revisions === undefined ? {} : { revisions }),
-					...(input.publish === undefined ? {} : { publish: input.publish }),
-					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
-					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+	"jobs/create": withTemplateBody(
+		route(createInput, async (ctx) => {
+			await ensureRetentionScheduled(ctx);
+			return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
+				const { input } = ctx;
+				// A saved template is read once, here (spec "Jobs from saved templates"); everything
+				// below uses it as an inline template, and the job stores a snapshot of it.
+				const resolved =
+					input.templateId === undefined
+						? { template: input.template }
+						: await resolveJobTemplate(
+								templatesCollection(ctx.storage),
+								input.templateId,
+								input.templateRevision,
+							);
+				const { template } = resolved;
+				// Read once here and stored on the job, so a resumed or retried job converts the same way.
+				const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
+				// Read once here: whether a published entry's update can be scheduled (M5b). The same read
+				// serves the job's schema lookup for that collection.
+				const own = await readPublishAtCollection(runtime.schemaRegistry, template);
+				const revisions = own === null ? undefined : own.revisions;
+				const start = (upload: string, fromSource?: string) => {
+					const options: StartJobInput = {
+						uploadId: upload,
+						template,
+						dryRun: input.dryRun,
+						...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
+						...(fromSource === undefined ? {} : { sourceId: fromSource }),
+						...(input.journal === undefined ? {} : { journal: input.journal }),
+						...(input.missing === undefined ? {} : { missing: input.missing }),
+						mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
+						...(siteTimezone === undefined ? {} : { siteTimezone }),
+						...(revisions === undefined ? {} : { revisions }),
+						...(input.publish === undefined ? {} : { publish: input.publish }),
+						...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
+						...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+					};
+					return startImport(
+						deps,
+						xlsx,
+						options,
+						(collection) =>
+							own !== null && collection === own.collection
+								? Promise.resolve(own.fields)
+								: listSchemaFields(runtime.schemaRegistry, collection),
+						(locale) => resolveSiteLocale(locale),
+						(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
+					);
 				};
-				return startImport(
-					deps,
-					xlsx,
-					options,
-					(collection) =>
-						own !== null && collection === own.collection
-							? Promise.resolve(own.fields)
-							: listSchemaFields(runtime.schemaRegistry, collection),
-					(locale) => resolveSiteLocale(locale),
-					(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-				);
-			};
-			if (input.sourceId !== undefined) {
-				const options = { force: input.force ?? false, dryRun: input.dryRun };
-				// A workbook is fetched only up to the XLSX file limit.
-				const limits = fetchLimitsFor(input.template, sources.limits, xlsx.maxXlsxBytes);
-				return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
-			}
-			if (input.uploadId === undefined) {
-				throw new PluginRouteError(
-					"VALIDATION_ERROR",
-					"Set exactly one of uploadId and sourceId",
-					400,
-				);
-			}
-			return start(input.uploadId);
-		});
-	}),
+				if (input.sourceId !== undefined) {
+					const options = {
+						force: input.force ?? false,
+						dryRun: input.dryRun,
+						// The unchanged-content skip also compares the template (spec Ruling 29).
+						template: await jobTemplateRef(resolved),
+					};
+					// A workbook is fetched only up to the XLSX file limit.
+					const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
+					return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
+				}
+				if (input.uploadId === undefined) {
+					throw new PluginRouteError(
+						"VALIDATION_ERROR",
+						"Set exactly one of uploadId and sourceId",
+						400,
+					);
+				}
+				return start(input.uploadId);
+			});
+		}),
+	),
 
 	"jobs/next": route(byId, (ctx) =>
 		withServices(ctx, ({ deps, uploads, actor, keep }) =>
@@ -473,13 +578,20 @@ export const routes: Record<string, PluginRoute> = {
 		withServices(ctx, ({ deps }) => getJob(deps, ctx.input.id).then(withoutPlannedTerms)),
 	),
 
-	"jobs/list": route(z.object({ status: z.enum(JOB_STATUSES).optional(), cursor }), (ctx) =>
-		withServices(ctx, ({ deps }) =>
-			listJobs(deps, {
-				...(ctx.input.status ? { status: ctx.input.status } : {}),
-				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
-			}).then((jobs) => ({ ...jobs, items: jobs.items.map(withoutPlannedTerms) })),
-		),
+	"jobs/list": route(
+		z.object({
+			status: z.enum(JOB_STATUSES).optional(),
+			templateId: templateId.optional(),
+			cursor,
+		}),
+		(ctx) =>
+			withServices(ctx, ({ deps }) =>
+				listJobs(deps, {
+					...(ctx.input.status ? { status: ctx.input.status } : {}),
+					...(ctx.input.templateId ? { templateId: ctx.input.templateId } : {}),
+					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
+				}).then((jobs) => ({ ...jobs, items: jobs.items.map(withoutPlannedTerms) })),
+			),
 	),
 
 	// A real rollback marks the original rolled back and frees its URL source for a re-import.
@@ -525,8 +637,96 @@ export const routes: Record<string, PluginRoute> = {
 
 	"jobs/log.csv": logCsv,
 
-	// Additive only: creates missing fields and adds missing select options.
-	"schema/apply": route(applyInput, (ctx) =>
-		withServices(ctx, ({ runtime }) => applySchema(runtime.schemaRegistry, ctx.input)),
+	// Additive only: creates missing fields and adds missing select options. With a templateId,
+	// plans from the saved template as from an inline one; a given collection must still match.
+	"schema/apply": withTemplateBody(
+		route(applyInput, (ctx) =>
+			withServices(ctx, async ({ runtime }) => {
+				const { templateId: id, ...rest } = ctx.input;
+				if (id === undefined) return applySchema(runtime.schemaRegistry, rest);
+				const { template } = await resolveJobTemplate(templatesCollection(ctx.storage), id);
+				return applySchema(runtime.schemaRegistry, { ...rest, template });
+			}),
+		),
+	),
+
+	// Saved templates (M6a). Every route is a JSON POST with a permission, so M6c can expose it
+	// as an MCP tool unchanged (spec Ruling 17). The author is always the caller.
+	"templates/list": route(
+		z.object({ collection: z.string().min(1).max(63).optional(), cursor }),
+		(ctx) =>
+			withServices(ctx, (services) =>
+				listTemplates(templateDeps(ctx, services), {
+					...(ctx.input.collection ? { collection: ctx.input.collection } : {}),
+					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
+				}),
+			),
+	),
+
+	"templates/get": route(z.object({ id: templateId }), (ctx) =>
+		withServices(ctx, (services) => getTemplate(templateDeps(ctx, services), ctx.input.id)),
+	),
+
+	"templates/create": withTemplateBody(
+		route(
+			z.object({
+				name: templateName,
+				description: templateDescription.optional(),
+				template: z.unknown(),
+			}),
+			(ctx) =>
+				withServices(ctx, (services) => {
+					const { name, description, template } = ctx.input;
+					return createTemplate(templateDeps(ctx, services), services.actor.id, {
+						name,
+						...(description === undefined ? {} : { description }),
+						template,
+					});
+				}),
+		),
+	),
+
+	"templates/update": withTemplateBody(
+		route(templateUpdateInput, (ctx) =>
+			withServices(ctx, (services) => {
+				const { id, revision, name, description, template } = ctx.input;
+				return updateTemplate(templateDeps(ctx, services), services.actor.id, {
+					id,
+					revision,
+					...(name === undefined ? {} : { name }),
+					...(description === undefined ? {} : { description }),
+					...(template === undefined ? {} : { template }),
+				});
+			}),
+		),
+	),
+
+	"templates/delete": route(z.object({ id: templateId, revision: templateRevision }), (ctx) =>
+		withServices(ctx, (services) => deleteTemplate(templateDeps(ctx, services), ctx.input)),
+	),
+
+	"templates/export": route(z.object({ id: templateId }), (ctx) =>
+		withServices(ctx, (services) => exportTemplate(templateDeps(ctx, services), ctx.input.id)),
+	),
+
+	// The name and owner overrides are validated here only, as the source routes validate their
+	// input (preflight F11); the service trusts them.
+	"templates/import": withTemplateBody(
+		route(
+			z.object({
+				file: z.unknown(),
+				name: templateName.optional(),
+				owner: templateOwner.optional(),
+			}),
+			(ctx) =>
+				withServices(ctx, (services) => {
+					const { file, name, owner } = ctx.input;
+					return importTemplate(templateDeps(ctx, services), services.actor.id, {
+						file,
+						...(name === undefined ? {} : { name }),
+						...(owner === undefined ? {} : { owner }),
+					});
+				}),
+		),
 	),
 };

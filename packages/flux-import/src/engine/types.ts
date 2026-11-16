@@ -92,6 +92,12 @@ export interface Job {
 	/** An import job created from a URL source: the source's ID (M5a). */
 	sourceId?: string;
 	/**
+	 * M6a: the saved template the job was created from, and its revision then; absent for an
+	 * inline template. A rollback job copies both.
+	 */
+	templateId?: string;
+	templateRevision?: number;
+	/**
 	 * Whether the collection keeps revisions (M5b, read at job creation when the template maps
 	 * `publishAt`): without them an update of a published entry is live at once and cannot be
 	 * scheduled. Absent when the template maps no `publishAt`.

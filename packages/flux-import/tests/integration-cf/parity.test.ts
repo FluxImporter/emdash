@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, inject, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
+import { TEMPLATE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
 import type { ApplyResult } from "../../src/plugin/schema-apply.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
+import { type SavedResult, TEMPLATE_MAX_BYTES } from "../../src/plugin/templates.js";
 import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
 import {
@@ -33,6 +35,7 @@ import {
 	portableTextTemplate,
 	postsJson,
 } from "../fixtures/portable-text.js";
+import { paddedTemplate } from "../fixtures/templates.js";
 import {
 	createTranslationSchema,
 	englishCsv,
@@ -915,5 +918,122 @@ describe("workerd parity (D1, R2)", () => {
 		const kept = await byKey("cf_m5c_limit");
 		expect(kept.size).toBe(8);
 		expect([...kept.values()].every((e) => e.status === "published")).toBe(true);
+	});
+
+	it("saves, updates, exports, imports and deletes an M6a template on D1, at revisions (V4)", async () => {
+		await client.createProducts("cf_m6a_crud");
+		const created = await client.plugin<SavedResult>("templates/create", {
+			name: "cf crud",
+			template: template("cf_m6a_crud"),
+		});
+		expect(created.check).toEqual({ problems: [], warnings: [] });
+		const { id } = created.template;
+		await client.plugin("templates/update", { id, revision: 1, description: "x" });
+		await expect(client.plugin("templates/delete", { id, revision: 1 })).rejects.toMatchObject({
+			status: 409,
+			code: "TEMPLATE_CHANGED",
+		});
+		const out = await client.plugin<{ file: unknown }>("templates/export", { id });
+		const copy = await client.plugin<SavedResult>("templates/import", {
+			file: out.file,
+			name: "cf crud copy",
+		});
+		expect(copy.template).toMatchObject({ revision: 1, template: created.template.template });
+		expect(await client.plugin("templates/delete", { id, revision: 2 })).toEqual({ deleted: true });
+		await expect(client.plugin("templates/get", { id })).rejects.toMatchObject({ status: 404 });
+	});
+
+	it("imports an M6a template of 256 KiB on D1 through every job write, and refuses one byte more (V1)", async () => {
+		await client.createCollection("cf_m6a_big");
+		// The 256 KiB template fits the routes' 2 MiB JSON body cap pretty-printed as well as compact.
+		const body = { name: "cf big", template: paddedTemplate("cf_m6a_big", TEMPLATE_MAX_BYTES) };
+		const pretty = JSON.stringify(body, null, "\t");
+		for (const json of [JSON.stringify(body), pretty]) {
+			expect(new TextEncoder().encode(json).byteLength).toBeLessThan(TEMPLATE_BODY_MAX_BYTES);
+		}
+		const res = await client.raw(
+			"POST",
+			"/_emdash/api/plugins/flux-import/templates/create",
+			undefined,
+			{
+				headers: { "Content-Type": "application/json" },
+				body: pretty,
+			},
+		);
+		const saved = (await res.json()) as { success: boolean; data: SavedResult };
+		expect(res.status).toBe(200);
+		const row = saved.data.template;
+		const applied = await client.plugin<ApplyResult>("schema/apply", { templateId: row.id });
+		expect(applied.error).toBeNull();
+		let csv = "sku,Name,Stage\n";
+		for (let i = 0; i < 30; i++) csv += `B${i},Item ${i},live\n`;
+		const { uploadId } = await client.upload(csv);
+		const created = await client.plugin<Job>("jobs/create", {
+			uploadId,
+			templateId: row.id,
+			dryRun: false,
+			batchSize: 10,
+			budgetMs: 20_000,
+		});
+		const done = await client.runToEnd(created.id);
+		expect(done).toMatchObject({
+			status: "completed",
+			templateId: row.id,
+			counters: { created: 30, failed: 0 },
+		});
+		const rollback = await client.plugin<Job>("jobs/rollback", { id: done.id, budgetMs: 20_000 });
+		expect(await client.runToEnd(rollback.id)).toMatchObject({
+			status: "completed",
+			counters: { reverted: 30 },
+		});
+		await expect(
+			client.plugin("templates/create", {
+				name: "cf bigger",
+				template: paddedTemplate("cf_m6a_big", TEMPLATE_MAX_BYTES + 1),
+			}),
+		).rejects.toMatchObject({ status: 413, code: "TEMPLATE_TOO_LARGE" });
+		// A body over the 2 MiB cap is refused before it is parsed.
+		await expect(
+			client.plugin("templates/create", {
+				name: "cf huge",
+				template: { pad: "x".repeat(TEMPLATE_BODY_MAX_BYTES) },
+			}),
+		).rejects.toMatchObject({ status: 413, code: "INVALID_PLUGIN_REQUEST" });
+	});
+
+	it("lists an M6a template's jobs on D1 and skips unchanged URL content only for the same template", async () => {
+		await client.createProducts("cf_m6a_url");
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			feeds.feeds.set("/m6a.csv", { body: productsCsv(4), etag: true });
+			const source = await client.plugin<SourceRow>("sources/create", {
+				name: "cf m6a",
+				url: feeds.url("/m6a.csv"),
+			});
+			const save = (name: string) =>
+				client.plugin<SavedResult>("templates/create", { name, template: template("cf_m6a_url") });
+			const [a, b] = [await save("cf url A"), await save("cf url B")];
+			const run = (templateId: string) =>
+				client.plugin<Job | { skipped: "unchanged" }>("jobs/create", {
+					sourceId: source.id,
+					templateId,
+					dryRun: false,
+					budgetMs: 20_000,
+				});
+			const first = await run(a.template.id);
+			if ("skipped" in first) throw new Error("expected a job");
+			await client.runToEnd(first.id);
+			expect(await run(a.template.id)).toMatchObject({ skipped: "unchanged" });
+			const other = await run(b.template.id);
+			if ("skipped" in other) throw new Error("expected a job for another template");
+			await client.runToEnd(other.id);
+			const listed = await client.plugin<{ items: Job[] }>("jobs/list", {
+				templateId: a.template.id,
+			});
+			expect(listed.items.map((j) => j.id)).toEqual([first.id]);
+		} finally {
+			await feeds.stop();
+		}
 	});
 });

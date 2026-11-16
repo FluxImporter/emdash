@@ -42,7 +42,7 @@ plus a run against the local EmDash site (`sites/dev`), reported with results.
 | 3 | Sources (split into M3a–M3d, see [M3a spec](./2026-10-12-flux-import-m3a-formats-design.md)) | JSON, XML, URL (auth headers, SSRF guard, ETag/Last-Modified), pasted snippets, record selection (XPath, JSONPath, row filters), JSONata transforms, then XLSX | Valid, large and malformed fixtures per format |
 | 4 | Field types and schema (split into M4a–M4e, see [Milestone 4 split](#milestone-4-split)) | Boolean, select, date with timezone, taxonomy paths, media from URL (hash dedupe, `maxUploadSize`, URL rewriting in Portable Text), HTML and Markdown to Portable Text with unknown markup reported, references, bylines (existing only), locales and translation links, additive `schema/apply` route | Each field type has unit and integration tests |
 | 5 | Record rules and safety (split into M5a–M5c, see [Milestone 5 split](#milestone-5-split)) | Create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" via revisions; delete, trash or unpublish missing entries; publish, draft or schedule; rollback as a resumable job | A finished run rolls back to its pre-run state |
-| 6 | Automation | Template CRUD and JSON export/import, cron-scheduled URL imports, MCP tools `list_templates`, `dry_run`, `start_import`, `import_status`, AI mapping suggestion route | A scheduled import runs unattended; an agent completes an import over MCP |
+| 6 | Automation (split into M6a–M6d, see [Milestone 6 split](#milestone-6-split)) | Template CRUD and JSON export/import, cron-scheduled URL imports, MCP tools `list_templates`, `dry_run`, `start_import`, `import_status`, AI mapping suggestion route | A scheduled import runs unattended; an agent completes an import over MCP |
 | 7 | React admin wizard | Source, Target, Map, Options, Preview, Run on the M2 to M6 API; drag-and-drop mapping; schema diff confirmation; AI suggestions; live progress, pause, cancel, log download | Manual end-to-end run in `pnpm dev` |
 | 8 | Ship | README with a justification per capability, `skills/` entry for agents, packaging, npm publish | A fresh site installs from npm and imports a file |
 
@@ -221,3 +221,23 @@ tests, and M5a alone meets the milestone's acceptance for the writes M2-M4e make
 | **M5b** ([spec](./2026-11-04-flux-import-m5b-record-rules-design.md)) | Record rules: create-only, update-only or both; "update only these fields"; "never overwrite fields edited in the admin" through per-field fingerprints on the link row; publish, draft or schedule, with a per-record schedule; all journalled | Done ([review](../notes/2026-11-04-m5b-review.md)) |
 | **M5c** ([spec](./2026-11-12-flux-import-m5c-missing-entries-design.md)) | Missing entries: trash or unpublish entries this import created that a completed run did not see, behind a safety threshold; journalled, and rolled back by restoring from Trash or republishing | Done ([review](../notes/2026-11-12-m5c-review.md)) |
 
+## Milestone 6 split
+
+Added 2026-11-16, revised the same day after the M6a spec review. Milestone 6 is delivered in four
+parts, each with its own spec, plan and review, in the order M6a, M6c, M6b, M6d. Each part depends
+only on the ones before it: the MCP tools wrap the template and job routes (M6c on M6a), a schedule
+runs a saved template (M6b on M6a) and adds its own tools to M6c's list, and mapping suggestions
+produce a template that M6a saves (M6d on M6a). M6c comes before M6b because M6b carries the most
+risk (the `scheduled()` handler on a production build, blocked since M2, and the D1 budget of a
+shared cron tick) and the tools do not need it; the cost is a second administrator consent when
+M6b's tools change the list (M6a spec, Ruling 35). The feasibility of each part was checked against
+`emdash@1.2.0` and the docs on 2026-11-16 (M6a spec, "EmDash facts" and "Outline of M6c, M6b and
+M6d"). M6c meets the agent half of the milestone's acceptance ("an agent completes an import over
+MCP"), M6b the other ("a scheduled import runs unattended").
+
+| Part | Scope | Status |
+| --- | --- | --- |
+| **M6a** ([spec](./2026-11-16-flux-import-m6a-templates-design.md)) | Saved templates: a `templates` plugin storage collection with CRUD routes, optimistic concurrency by revision, every site-independent check refused on save and site checks reported; owner checks against saved templates and existing links, refused on import for templates with `rules.missing`; JSON export and import in a versioned file envelope; `jobs/create`, `jobs/list` and `schema/apply` by `templateId`, with the job keeping a snapshot; the URL-source "unchanged" skip made template-aware. Feasible with the documented plugin storage API | Done ([review](../notes/2026-11-16-m6a-review.md)) |
+| **M6c** | MCP tools: `list_templates`, `dry_run`, `start_import`, `import_status` (and the batch step an agent needs) as plugin MCP tools over the M6a and job routes. Feasible: EmDash 1.2.0 lets a plugin expose private JSON routes as MCP tools, once an administrator enables them and the token has `mcp:tools` or `mcp:tools:flux-import`; every plugin tool is blocked during a site export | Planned |
+| **M6b** | Scheduled URL imports: a schedule names a saved template, a URL source, a UTC cron expression and the job options; plugin cron (`ctx.cron`, present in 1.2.0 source, parameters undocumented) creates the job and advances it batch by batch within the per-tick budget; refused missing-entry verdicts, failures, overlapping runs and a template or source that is gone stop or skip the schedule; schedule tools join M6c's list. Feasible, with an actor and the Workers budget to prove first | Planned |
+| **M6d** | AI mapping suggestions: a route that proposes a template's field mappings from a source sample and the collection schema, with a deterministic name-matching fallback. The plugin API has no AI binding or capability; the transport (a provider API through the runtime's fetch behind the SSRF guard, a Workers AI binding from the Worker's env on Cloudflare, or the fallback alone) is left to the M6d spec | Planned |

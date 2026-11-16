@@ -77,7 +77,7 @@ describe("translationOf in the template", () => {
 		]);
 		expect(
 			checkTemplate(parse({ translationOf: { from: "en_id", locale: "FR" } }), own, null),
-		).toEqual(['translationOf.locale must differ from locale ("fr")']);
+		).toEqual([]);
 	});
 
 	it("leaves required non-translatable fields to EmDash, and lists them as shared required", () => {
