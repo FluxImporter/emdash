@@ -325,22 +325,42 @@ describe("startFromDryRun (M6c)", () => {
 		expect(requests).toEqual([]);
 	});
 
-	it("refuses a dry run that retention is deleting, even one already started (P5)", async () => {
-		const { deps, jobs, requests } = await setup();
+	it("refuses to claim or repair a dry run that retention is deleting (P5)", async () => {
+		const { deps, jobs, templates, requests } = await setup();
 		await jobs.put("D1", agentDryRun({ purging: true }));
 		const refused = await failure(startFromDryRun(deps, { dryRunId: "D1" }));
 		expect(refused).toMatchObject({
 			code: "DRY_RUN_INCOMPLETE",
 			status: 409,
-			details: { status: "completed" },
+			details: { status: "completed", purging: true },
 		});
+		expect(refused.message).toBe("Dry run D1 is being deleted and can't be started");
 		expect(await jobs.get("D1")).not.toHaveProperty("startedAs");
 		// The residual P5 closes: the real job was purged, so startedAs names no job.
 		await jobs.put("D1", agentDryRun({ purging: true, startedAs: "R9" }));
 		const repair = await failure(startFromDryRun(deps, { dryRunId: "D1" }));
-		expect(repair).toMatchObject({ code: "DRY_RUN_INCOMPLETE" });
+		expect(repair).toMatchObject({ code: "DRY_RUN_INCOMPLETE", details: { purging: true } });
 		expect(await jobs.get("R9")).toBeNull();
+		// The deletion is the reason given, ahead of the template's.
+		await templates.delete("T1");
+		const gone = await failure(startFromDryRun(deps, { dryRunId: "D1" }));
+		expect(gone).toMatchObject({ code: "DRY_RUN_INCOMPLETE", details: { purging: true } });
 		expect(requests).toEqual([]);
+	});
+
+	it("still returns the started job of a dry run that retention is deleting", async () => {
+		const { deps, jobs, requests } = await setup();
+		await jobs.put("D1", agentDryRun());
+		const first = await startFromDryRun(deps, { dryRunId: "D1" });
+		const claimed = await jobs.get("D1");
+		await jobs.put("D1", { ...(claimed as Job), purging: true });
+		const again = await startFromDryRun(deps, { dryRunId: "D1" });
+		expect(again).toMatchObject({ id: first.id, origin: "agent", dryRunOf: "D1" });
+		expect(requests).toHaveLength(1);
+		// A rolled-back one is still DRY_RUN_USED, not the deletion.
+		await jobs.put(first.id, { ...first, rolledBackBy: "RB" });
+		const used = await failure(startFromDryRun(deps, { dryRunId: "D1" }));
+		expect(used).toMatchObject({ code: "DRY_RUN_USED" });
 	});
 
 	it("refuses a template edited or deleted since the dry run, before any write", async () => {

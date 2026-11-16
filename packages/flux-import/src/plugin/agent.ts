@@ -170,9 +170,7 @@ export async function startFromDryRun(deps: AgentDeps, input: StartInput): Promi
 				400,
 			);
 		}
-		// A dry run that retention is deleting is refused too (plan P5): its real job may already be
-		// purged, and the repair below would then re-create it under `startedAs`.
-		if (dryRun.status !== "completed" || isPurging(dryRun)) {
+		if (dryRun.status !== "completed") {
 			throw new ServiceError(
 				"DRY_RUN_INCOMPLETE",
 				`Dry run ${dryRunId} is ${dryRun.status}; only a completed dry run can be started`,
@@ -192,6 +190,17 @@ export async function startFromDryRun(deps: AgentDeps, input: StartInput): Promi
 			}
 			// Any other state is still this plan's job (plan Ruling 13).
 			if (started) return started;
+		}
+		// Before the claim or the repair (plan P5): a dry run that retention is deleting may have lost
+		// its real job already, and the repair would re-create it under `startedAs`. A job that still
+		// exists was returned above.
+		if (isPurging(dryRun)) {
+			throw new ServiceError(
+				"DRY_RUN_INCOMPLETE",
+				`Dry run ${dryRunId} is being deleted and can't be started`,
+				409,
+				{ status: dryRun.status, purging: true },
+			);
 		}
 		// Before any write: an edit or delete since the dry run is refused (spec Ruling 7).
 		const resolved = await resolveJobTemplate(
