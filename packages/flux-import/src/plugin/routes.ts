@@ -404,6 +404,24 @@ export const STATUS_INPUT = z
 	})
 	.strict();
 
+/**
+ * `templates/list` and `templates/get`'s inputs, which list_templates and get_template share
+ * (M6c). Not strict: the REST routes have always stripped unknown keys, and so does the SDK.
+ */
+export const TEMPLATE_LIST_INPUT = z.object({
+	collection: z
+		.string()
+		.min(1)
+		.max(63)
+		.optional()
+		.describe("Only the templates that import into this collection (its slug)"),
+	cursor: cursor.describe("From the previous list_templates call"),
+});
+
+export const TEMPLATE_GET_INPUT = z.object({
+	id: templateId.describe("The template's id, from list_templates"),
+});
+
 const createInput = z
 	.object({
 		uploadId: uploadId.optional(),
@@ -841,18 +859,16 @@ export const routes: Record<string, PluginRoute> = {
 
 	// Saved templates (M6a). Every route is a JSON POST with a permission, so M6c can expose it
 	// as an MCP tool unchanged (spec Ruling 17). The author is always the caller.
-	"templates/list": route(
-		z.object({ collection: z.string().min(1).max(63).optional(), cursor }),
-		(ctx) =>
-			withServices(ctx, (services) =>
-				listTemplates(templateDeps(ctx, services), {
-					...(ctx.input.collection ? { collection: ctx.input.collection } : {}),
-					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
-				}),
-			),
+	"templates/list": route(TEMPLATE_LIST_INPUT, (ctx) =>
+		withServices(ctx, (services) =>
+			listTemplates(templateDeps(ctx, services), {
+				...(ctx.input.collection ? { collection: ctx.input.collection } : {}),
+				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
+			}),
+		),
 	),
 
-	"templates/get": route(z.object({ id: templateId }), (ctx) =>
+	"templates/get": route(TEMPLATE_GET_INPUT, (ctx) =>
 		withServices(ctx, (services) => getTemplate(templateDeps(ctx, services), ctx.input.id)),
 	),
 
