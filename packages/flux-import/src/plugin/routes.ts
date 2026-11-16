@@ -21,6 +21,15 @@ import { createMediaFetcher } from "../sources/media-fetch.js";
 import { defaultResolver, type NetOptions } from "../sources/net.js";
 import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
 import {
+	type AgentDeps,
+	agentError,
+	PLAN_SOURCE_MISSING_MESSAGE,
+	planJob,
+	readJobStatus,
+	startFromDryRun,
+	stepAgentJob,
+} from "./agent.js";
+import {
 	CREDENTIAL_NAME,
 	deleteCredential,
 	FORBIDDEN_HEADERS,
@@ -67,6 +76,7 @@ import {
 	sourcesCollection,
 	updateSource,
 } from "./sources.js";
+import { step, summarize } from "./summaries.js";
 import { exportTemplate, importTemplate } from "./template-files.js";
 import {
 	createTemplate,
@@ -308,12 +318,91 @@ function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
 	return { ...r, request: { body: "json", maxBytes: TEMPLATE_BODY_MAX_BYTES } };
 }
 
+/**
+ * `jobs/plan`'s body: text of at most 1 MiB (`PASTE_MAX_BYTES`), JSON-escaped, must fit with the
+ * other arguments (spec Ruling 42). EmDash re-serializes the tool's arguments into this body. The
+ * same 2 MiB as a template body (plan P7).
+ */
+export const PLAN_BODY_MAX_BYTES = TEMPLATE_BODY_MAX_BYTES;
+
 function route<T>(
 	input: z.ZodType<T>,
 	handler: (ctx: RouteContext<T>) => Promise<unknown>,
 ): PluginRoute<T> {
 	return { input, permission: PERMISSION, methods: ["POST"], handler };
 }
+
+/**
+ * The agent routes' pace (spec "Input schemas"), shared by `jobs/plan` and `jobs/start`; each
+ * field adds its own description (plan P7).
+ */
+const pace = {
+	batchSize: z.number().int().min(1).max(500),
+	budgetMs: z.number().int().min(500).max(25_000),
+};
+
+/**
+ * The agent routes' inputs (spec "Input schemas"), which M6c's tools share (Task 5). Strict, so
+ * a misspelt key is refused instead of ignored; described, because the descriptions are all an
+ * agent sees; no transforms or defaults (plan Ruling 14). No `missing` or `journal` input
+ * (spec Rulings 10, 29).
+ */
+export const PLAN_INPUT = z
+	.object({
+		templateId: templateId.describe("A saved template's id, from list_templates"),
+		templateRevision: templateRevision
+			.optional()
+			.describe("Refuse with TEMPLATE_CHANGED unless the template is at this revision"),
+		text: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("The data, in the template's source format, at most 1 MiB"),
+		sourceId: sourceId
+			.optional()
+			.describe("A URL source's id, given by the user or an administrator"),
+		publish: z
+			.boolean()
+			.optional()
+			.describe("Publish written entries (default true); false keeps them as drafts"),
+		batchSize: pace.batchSize
+			.optional()
+			.describe("Records per next_batch call, 1-500 (default 50); Cloudflare Workers does fewer"),
+		budgetMs: pace.budgetMs
+			.optional()
+			.describe("Time per next_batch call in milliseconds, 500-25000 (default 4000)"),
+	})
+	.strict()
+	.refine((input) => (input.text === undefined) !== (input.sourceId === undefined), {
+		message: "Set exactly one of text and sourceId",
+	});
+
+export const START_INPUT = z
+	.object({
+		dryRunId: jobId.describe("The id of a completed dry run, from dry_run"),
+		batchSize: pace.batchSize
+			.optional()
+			.describe("Records per next_batch call, 1-500 (default: the dry run's)"),
+		budgetMs: pace.budgetMs
+			.optional()
+			.describe("Time per next_batch call in milliseconds, 500-25000 (default: the dry run's)"),
+	})
+	.strict();
+
+export const STEP_INPUT = z
+	.object({ id: jobId.describe("The job's id, from dry_run or start_import") })
+	.strict();
+
+export const STATUS_INPUT = z
+	.object({
+		id: jobId.describe("The job's id"),
+		records: z
+			.enum(RECORD_STATUSES)
+			.optional()
+			.describe("Also list up to 10 rows with this outcome"),
+		cursor: cursor.describe("From the previous import_status call with the same records value"),
+	})
+	.strict();
 
 const createInput = z
 	.object({
@@ -503,6 +592,47 @@ async function createJobFrom(
 	return start(request.uploadId);
 }
 
+/** The agent rules' dependencies for one request (plan Ruling 7). */
+function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
+	const { deps, storage, uploads } = services;
+	return {
+		jobs: deps.jobs,
+		templates: templatesCollection(ctx.storage),
+		// The rule's resolved template is passed on, so the job keeps the revision the rule checked
+		// and the template is read once per call (plan Ruling 8).
+		create: async (request, resolved) => {
+			const job = await createJobFrom(ctx, services, request, resolved);
+			// Documented invariant (plan P7): only a real URL-source job can be skipped (spec P2);
+			// an agent URL job is a dry run, and jobs/start passes an upload, never a source.
+			if ("skipped" in job) throw new Error("An agent job was skipped as unchanged");
+			return job;
+		},
+		// stagePaste refuses empty text and text over PASTE_MAX_BYTES; planJob checks no size.
+		stage: async (text) => (await stagePaste(storage, text)).uploadId,
+		unstage: (uploadId) => uploads.delete(uploadId),
+		newId: () => ulid(),
+	};
+}
+
+/**
+ * An agent route: every error the rule throws is redacted, and a missing file is
+ * `SOURCE_FILE_MISSING` with `missing` as its message (spec Ruling 33), before `withServices`
+ * maps it with `toRouteError`.
+ */
+function agentRoute<T>(
+	input: z.ZodType<T>,
+	run: (ctx: RouteContext<T>, services: Services) => Promise<unknown>,
+	missing?: string,
+): PluginRoute<T> {
+	return route(input, (ctx) =>
+		withServices(ctx, (services) =>
+			run(ctx, services).catch((e: unknown) => {
+				throw agentError(e, missing);
+			}),
+		),
+	);
+}
+
 export const routes: Record<string, PluginRoute> = {
 	"sources/sample": route(
 		z.object({
@@ -661,6 +791,37 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/log.csv": logCsv,
+
+	// M6c: the agent routes behind the MCP tools (spec "Routes"). They return summaries, never
+	// job rows, and enforce the agent's limits server-side (spec Ruling 35).
+	"jobs/plan": {
+		...agentRoute(
+			PLAN_INPUT,
+			async (ctx, services) => ({
+				job: summarize(await planJob(agentDeps(ctx, services), ctx.input), services.deps.now()),
+			}),
+			PLAN_SOURCE_MISSING_MESSAGE,
+		),
+		request: { body: "json", maxBytes: PLAN_BODY_MAX_BYTES },
+	},
+
+	"jobs/start": agentRoute(START_INPUT, async (ctx, services) => {
+		const job = await startFromDryRun(agentDeps(ctx, services), ctx.input);
+		return { job: summarize(job, services.deps.now()) };
+	}),
+
+	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep }) => {
+		const { id } = ctx.input;
+		// As jobs/next: a unique holder per call, so two calls never share a lease.
+		const job = await stepAgentJob(deps.jobs, id, () =>
+			nextBatch(deps, uploads, id, `${actor.id}:${ulid()}`, keep),
+		);
+		return step(job, deps.now());
+	}),
+
+	"jobs/status": agentRoute(STATUS_INPUT, (ctx, { deps }) =>
+		readJobStatus(deps, ctx.input, deps.now()),
+	),
 
 	// Additive only: creates missing fields and adds missing select options. With a templateId,
 	// plans from the saved template as from an inline one; a given collection must still match.

@@ -9,6 +9,7 @@ import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import {
 	ensureRetentionScheduled,
+	PLAN_BODY_MAX_BYTES,
 	TEMPLATE_BODY_MAX_BYTES,
 	toRouteError,
 } from "../../src/plugin/routes.js";
@@ -37,6 +38,10 @@ const ROUTES = [
 	"jobs/rollback",
 	"jobs/records",
 	"jobs/log.csv",
+	"jobs/plan",
+	"jobs/start",
+	"jobs/step",
+	"jobs/status",
 	"schema/apply",
 	"templates/list",
 	"templates/get",
@@ -50,6 +55,49 @@ const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
 describe("createPlugin", () => {
 	const plugin = createPlugin();
+
+	it("declares the M6c routes as strict JSON POST routes, with a 2 MiB body for jobs/plan", () => {
+		expect(PLAN_BODY_MAX_BYTES).toBe(2 * 1024 * 1024);
+		expect(plugin.routes["jobs/plan"]?.request).toEqual({
+			body: "json",
+			maxBytes: PLAN_BODY_MAX_BYTES,
+		});
+		for (const name of ["jobs/start", "jobs/step", "jobs/status"]) {
+			expect(plugin.routes[name], name).not.toHaveProperty("request");
+		}
+		const input = (name: string) => plugin.routes[name]!.input!;
+		const plan = { templateId: "T1", text: "sku\nA\n" };
+		expect(input("jobs/plan").safeParse(plan).success).toBe(true);
+		expect(input("jobs/plan").safeParse({ templateId: "T1", sourceId: "S1" }).success).toBe(true);
+		for (const bad of [
+			{ templateId: "T1" },
+			{ ...plan, sourceId: "S1" },
+			{ ...plan, missing: false },
+			{ ...plan, journal: false },
+			{ ...plan, text: "" },
+			{ ...plan, batchSize: 0 },
+			{ ...plan, batchSize: 501 },
+			{ ...plan, batchSize: 1.5 },
+			{ ...plan, budgetMs: 499 },
+			{ ...plan, budgetMs: 25_001 },
+		]) {
+			expect(input("jobs/plan").safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+		}
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", batchSize: 5 }).success).toBe(true);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", publish: true }).success).toBe(false);
+		expect(input("jobs/step").safeParse({ id: "J1", extra: 1 }).success).toBe(false);
+		const status = { id: "J1", records: "planned", cursor: "c1" };
+		expect(input("jobs/status").safeParse(status).success).toBe(true);
+		expect(input("jobs/status").safeParse({ id: "J1", records: "nope" }).success).toBe(false);
+		expect(input("jobs/status").safeParse({ ...status, extra: 1 }).success).toBe(false);
+		const edges = { batchSize: 1, budgetMs: 500 };
+		expect(input("jobs/plan").safeParse({ ...plan, ...edges }).success).toBe(true);
+		expect(
+			input("jobs/plan").safeParse({ ...plan, batchSize: 500, budgetMs: 25_000 }).success,
+		).toBe(true);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", batchSize: 0 }).success).toBe(false);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", budgetMs: 25_001 }).success).toBe(false);
+	});
 
 	it("declares every API route with import:execute", () => {
 		expect(Object.keys(plugin.routes).sort()).toEqual([...ROUTES].sort());
