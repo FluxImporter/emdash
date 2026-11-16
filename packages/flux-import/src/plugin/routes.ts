@@ -15,7 +15,7 @@ import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import { createRollback } from "../engine/rollback.js";
 import { OWNER_PATTERN, OWNER_RULE } from "../engine/template.js";
-import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
+import type { EngineDeps, Job, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { createMediaFetcher } from "../sources/media-fetch.js";
 import { defaultResolver, type NetOptions } from "../sources/net.js";
@@ -29,7 +29,12 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
-import { jobTemplateRef, resolveJobTemplate } from "./job-templates.js";
+import {
+	type JobRequest,
+	jobTemplateRef,
+	type ResolvedTemplate,
+	resolveJobTemplate,
+} from "./job-templates.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
@@ -57,6 +62,7 @@ import {
 	jobFromSource,
 	latestSourceUploads,
 	listSources,
+	type SkippedJob,
 	type SourceDeps,
 	sourcesCollection,
 	updateSource,
@@ -187,6 +193,15 @@ function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): 
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
 export function toRouteError(e: unknown): unknown {
+	// EmDash's plugin storage throws its own InvalidCursorError (Fact V9); matched by name, so a
+	// second copy of emdash in a bundle still matches (plan Ruling 1).
+	if (e instanceof Error && e.name === "InvalidCursorError") {
+		return new PluginRouteError(
+			"INVALID_CURSOR",
+			"The cursor is not valid; start again without it",
+			400,
+		);
+	}
 	if (e instanceof ServiceError) {
 		return new PluginRouteError(e.code, e.message, e.status, e.details);
 	}
@@ -411,6 +426,80 @@ const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
 		}),
 };
 
+/**
+ * Creates a job as `jobs/create` always has (M6c: shared with `jobs/plan` and `jobs/start`,
+ * which pass the template they resolved themselves, plan Ruling 8). A saved template is read
+ * once, here or by the caller; everything below uses it as an inline template, and the job
+ * stores a snapshot of it.
+ */
+async function createJobFrom(
+	ctx: RouteContext<unknown>,
+	{ deps, runtime, sources, xlsx }: Services,
+	request: JobRequest,
+	given?: ResolvedTemplate,
+): Promise<Job | SkippedJob> {
+	await ensureRetentionScheduled(ctx);
+	const resolved =
+		given ??
+		(request.templateId === undefined
+			? { template: request.template }
+			: await resolveJobTemplate(
+					templatesCollection(ctx.storage),
+					request.templateId,
+					request.templateRevision,
+				));
+	const { template } = resolved;
+	// Read once here and stored on the job, so a resumed or retried job converts the same way.
+	const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
+	// Read once here: whether a published entry's update can be scheduled (M5b). The same read
+	// serves the job's schema lookup for that collection.
+	const own = await readPublishAtCollection(runtime.schemaRegistry, template);
+	const revisions = own === null ? undefined : own.revisions;
+	const start = (upload: string, fromSource?: string) => {
+		const options: StartJobInput = {
+			uploadId: upload,
+			template,
+			dryRun: request.dryRun,
+			...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
+			...(fromSource === undefined ? {} : { sourceId: fromSource }),
+			...(request.journal === undefined ? {} : { journal: request.journal }),
+			...(request.missing === undefined ? {} : { missing: request.missing }),
+			mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
+			...(siteTimezone === undefined ? {} : { siteTimezone }),
+			...(revisions === undefined ? {} : { revisions }),
+			...(request.publish === undefined ? {} : { publish: request.publish }),
+			...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
+			...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
+		};
+		return startImport(
+			deps,
+			xlsx,
+			options,
+			(collection) =>
+				own !== null && collection === own.collection
+					? Promise.resolve(own.fields)
+					: listSchemaFields(runtime.schemaRegistry, collection),
+			(locale) => resolveSiteLocale(locale),
+			(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
+		);
+	};
+	if (request.sourceId !== undefined) {
+		const options = {
+			force: request.force ?? false,
+			dryRun: request.dryRun,
+			// The unchanged-content skip also compares the template (spec Ruling 29).
+			template: await jobTemplateRef(resolved),
+		};
+		// A workbook is fetched only up to the XLSX file limit.
+		const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
+		return jobFromSource({ ...sources, limits }, request.sourceId, options, start);
+	}
+	if (request.uploadId === undefined) {
+		throw new PluginRouteError("VALIDATION_ERROR", "Set exactly one of uploadId and sourceId", 400);
+	}
+	return start(request.uploadId);
+}
+
 export const routes: Record<string, PluginRoute> = {
 	"sources/sample": route(
 		z.object({
@@ -493,76 +582,9 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/create": withTemplateBody(
-		route(createInput, async (ctx) => {
-			await ensureRetentionScheduled(ctx);
-			return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
-				const { input } = ctx;
-				// A saved template is read once, here (spec "Jobs from saved templates"); everything
-				// below uses it as an inline template, and the job stores a snapshot of it.
-				const resolved =
-					input.templateId === undefined
-						? { template: input.template }
-						: await resolveJobTemplate(
-								templatesCollection(ctx.storage),
-								input.templateId,
-								input.templateRevision,
-							);
-				const { template } = resolved;
-				// Read once here and stored on the job, so a resumed or retried job converts the same way.
-				const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-				// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-				// serves the job's schema lookup for that collection.
-				const own = await readPublishAtCollection(runtime.schemaRegistry, template);
-				const revisions = own === null ? undefined : own.revisions;
-				const start = (upload: string, fromSource?: string) => {
-					const options: StartJobInput = {
-						uploadId: upload,
-						template,
-						dryRun: input.dryRun,
-						...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
-						...(fromSource === undefined ? {} : { sourceId: fromSource }),
-						...(input.journal === undefined ? {} : { journal: input.journal }),
-						...(input.missing === undefined ? {} : { missing: input.missing }),
-						mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-						...(siteTimezone === undefined ? {} : { siteTimezone }),
-						...(revisions === undefined ? {} : { revisions }),
-						...(input.publish === undefined ? {} : { publish: input.publish }),
-						...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
-						...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
-					};
-					return startImport(
-						deps,
-						xlsx,
-						options,
-						(collection) =>
-							own !== null && collection === own.collection
-								? Promise.resolve(own.fields)
-								: listSchemaFields(runtime.schemaRegistry, collection),
-						(locale) => resolveSiteLocale(locale),
-						(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-					);
-				};
-				if (input.sourceId !== undefined) {
-					const options = {
-						force: input.force ?? false,
-						dryRun: input.dryRun,
-						// The unchanged-content skip also compares the template (spec Ruling 29).
-						template: await jobTemplateRef(resolved),
-					};
-					// A workbook is fetched only up to the XLSX file limit.
-					const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
-					return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
-				}
-				if (input.uploadId === undefined) {
-					throw new PluginRouteError(
-						"VALIDATION_ERROR",
-						"Set exactly one of uploadId and sourceId",
-						400,
-					);
-				}
-				return start(input.uploadId);
-			});
-		}),
+		route(createInput, (ctx) =>
+			withServices(ctx, (services) => createJobFrom(ctx, services, ctx.input)),
+		),
 	),
 
 	"jobs/next": route(byId, (ctx) =>

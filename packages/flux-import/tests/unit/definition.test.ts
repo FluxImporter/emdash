@@ -1,6 +1,6 @@
 import { z } from "astro/zod";
 import type { RouteContext } from "emdash";
-import { definePlugin } from "emdash";
+import { definePlugin, InvalidCursorError, PluginRouteError } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
@@ -468,6 +468,36 @@ describe("createPlugin", () => {
 			name: "PluginRouteError",
 			status: 401,
 		});
+	});
+	it("maps EmDash's cursor error to INVALID_CURSOR, by name (M6c, plan Ruling 1)", () => {
+		const copy = Object.assign(new Error("Invalid pagination cursor: x"), {
+			name: "InvalidCursorError",
+		});
+		for (const e of [new InvalidCursorError("x"), copy]) {
+			const mapped = toRouteError(e);
+			expect(mapped).toBeInstanceOf(PluginRouteError);
+			expect(mapped).toMatchObject({
+				code: "INVALID_CURSOR",
+				message: "The cursor is not valid; start again without it",
+				status: 400,
+			});
+		}
+		const other = new Error("boom");
+		expect(toRouteError(other)).toBe(other);
+	});
+
+	it("strips origin, id and dryRunOf from jobs/create's input (M6c, spec Ruling 31)", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const parsed = create.parse({
+			uploadId: UPLOAD_ID,
+			template: {},
+			dryRun: false,
+			origin: "agent",
+			id: "R1",
+			dryRunOf: "D1",
+		}) as Record<string, unknown>;
+		expect(parsed).toEqual({ uploadId: UPLOAD_ID, template: {}, dryRun: false });
+		for (const key of ["origin", "id", "dryRunOf"]) expect(key in parsed).toBe(false);
 	});
 });
 

@@ -326,4 +326,12 @@ describe("template routes (M6a)", () => {
 		expect(state.fromSource.map((o) => o.maxBytes)).toEqual([maxXlsxBytes(), maxSourceBytes()]);
 		expect(maxXlsxBytes()).toBeLessThan(maxSourceBytes());
 	});
+
+	it("answers a malformed cursor with INVALID_CURSOR, not a 500 (M6c, Fact V9)", async () => {
+		await call("templates/create", { name: "Feed", template });
+		await expect(call("templates/list", { cursor: "x" })).rejects.toMatchObject({
+			code: "INVALID_CURSOR",
+			status: 400,
+		});
+	});
 });

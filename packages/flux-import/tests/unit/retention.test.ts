@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { createJob } from "../../src/engine/jobs.js";
+import type { Job } from "../../src/engine/types.js";
 import { purgeExpired } from "../../src/plugin/retention.js";
 import { makeDeps } from "./fakes.js";
 
@@ -74,7 +75,7 @@ describe("purgeExpired", () => {
 		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
 		await deps.jobs.put(job.id, {
 			...job,
-			status: "running",
+			status: "completed",
 			lease: { holder: "h", expiresAt: clock.t + 60_000 },
 		});
 		clock.t += 1;
@@ -114,5 +115,25 @@ describe("purgeExpired", () => {
 		clock.t += 1;
 		expect(await purgeExpired(deps, new Purger(), 0)).toMatchObject({ jobs: 1, records: 250 });
 		expect(deps.records.rows.size).toBe(0);
+	});
+
+	it("never purges an unfinished job, and purges finished ones (spec Ruling 41)", async () => {
+		const { deps, clock } = makeDeps();
+		deps.source.add("u1", "sku,Name\nA,1\n");
+		const ids = new Map<string, string>();
+		for (const status of ["created", "running", "paused", "completed", "cancelled", "failed"]) {
+			const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
+			await deps.jobs.put(job.id, { ...job, status: status as Job["status"] });
+			ids.set(status, job.id);
+		}
+		clock.t += DAY;
+		const result = await purgeExpired(deps, new Purger(), 0);
+		expect(result.jobs).toBe(3);
+		expect(await deps.jobs.get(ids.get("running") as string)).not.toBeNull();
+		expect(await deps.jobs.get(ids.get("paused") as string)).not.toBeNull();
+		expect(await deps.jobs.get(ids.get("created") as string)).not.toBeNull();
+		expect(await deps.jobs.get(ids.get("completed") as string)).toBeNull();
+		expect(await deps.jobs.get(ids.get("cancelled") as string)).toBeNull();
+		expect(await deps.jobs.get(ids.get("failed") as string)).toBeNull();
 	});
 });

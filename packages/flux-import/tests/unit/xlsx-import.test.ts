@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { XLSX_MAX_BYTES } from "../../src/astro/config.js";
-import { EmDashUploads, stageUpload } from "../../src/emdash/uploads.js";
+import { EmDashUploads, newUploadId, stageUpload } from "../../src/emdash/uploads.js";
 import { JobError } from "../../src/engine/jobs.js";
+import { SourceMissingError } from "../../src/engine/ports.js";
 import { nextBatch, ServiceError, startJob } from "../../src/plugin/service.js";
 import { createSource, jobFromSource, type SourceRow } from "../../src/plugin/sources.js";
 import {
@@ -299,6 +300,14 @@ describe("startImport", () => {
 		expect(job.warnings).toContain(
 			"1 row had only unreadable cells and was skipped (first at row 3)",
 		);
+	});
+	it("keeps a missing workbook's SourceMissingError as the cause (M6c)", async () => {
+		const { deps, staging } = setup();
+		const input = { uploadId: newUploadId(), template: xlsxTemplate("products"), dryRun: false };
+		const error = await failure(startImport(deps, staging, input, fields));
+		expect(error).toBeInstanceOf(JobError);
+		expect(error).toMatchObject({ code: "invalid_source" });
+		expect((error as JobError).cause).toBeInstanceOf(SourceMissingError);
 	});
 });
 

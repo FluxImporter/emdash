@@ -1,3 +1,4 @@
+import { InvalidCursorError } from "emdash";
 import { describe, expect, it } from "vitest";
 import { TRANSLATION_SLOT_TAKEN } from "../../src/engine/ports.js";
 import { decodeRev, encodeRev } from "../../src/engine/revs.js";
@@ -96,6 +97,17 @@ describe("MemoryKv", () => {
 		expect(await kv.delete("a")).toBe(false);
 		expect(await kv.deleteMany(["b", "c", "x"])).toBe(2);
 		expect(kv.rows.size).toBe(0);
+	});
+
+	it("throws EmDash's InvalidCursorError for a cursor it never issued (M6c, Fact V9)", async () => {
+		const kv = new MemoryKv<{ n: number }>();
+		await kv.put("a", { n: 1 });
+		await expect(kv.query({ cursor: "x" })).rejects.toBeInstanceOf(InvalidCursorError);
+		await expect(kv.query({ orderBy: { n: "asc" }, cursor: "x" })).rejects.toBeInstanceOf(
+			InvalidCursorError,
+		);
+		await expect(kv.query({ cursor: "c0" })).resolves.toMatchObject({ hasMore: false });
+		await expect(kv.query({ orderBy: { n: "asc" }, cursor: "0" })).resolves.toBeDefined();
 	});
 });
 

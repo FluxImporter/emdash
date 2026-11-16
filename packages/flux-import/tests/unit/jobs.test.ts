@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
-import { createJob, JobError, transitionJob } from "../../src/engine/jobs.js";
+import { createJob, JobError, JobExistsError, transitionJob } from "../../src/engine/jobs.js";
+import { SourceMissingError } from "../../src/engine/ports.js";
 import { makeDeps } from "./fakes.js";
 
 const template = {
@@ -196,6 +197,28 @@ describe("createJob", () => {
 		await expect(createJob(deps, { uploadId: "u1", template, schemaFields })).rejects.toMatchObject(
 			{ code: "invalid_source" },
 		);
+	});
+	it("takes a given ID, and refuses a second job under it with JobExistsError (M6c)", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, { id: "R1", uploadId: "u1", template, schemaFields });
+		expect(job.id).toBe("R1");
+		expect(await deps.jobs.get("R1")).toMatchObject({ id: "R1", status: "created" });
+		const again = createJob(deps, { id: "R1", uploadId: "u1", template, schemaFields });
+		await expect(again).rejects.toBeInstanceOf(JobExistsError);
+		await expect(again).rejects.toThrow("Job id R1 already exists");
+		expect((await createJob(deps, { uploadId: "u1", template, schemaFields })).id).toBe(
+			"id00000001",
+		);
+	});
+
+	it("keeps a missing upload's SourceMissingError as the cause (M6c)", async () => {
+		const { deps } = setup();
+		const error = await createJob(deps, { uploadId: "gone", template, schemaFields }).catch(
+			(e: unknown) => e,
+		);
+		expect(error).toBeInstanceOf(JobError);
+		expect(error).toMatchObject({ code: "invalid_source", message: "Upload gone not found" });
+		expect((error as JobError).cause).toBeInstanceOf(SourceMissingError);
 	});
 });
 

@@ -1,6 +1,6 @@
 import type { KvCollection } from "../engine/ports.js";
 import { isPurging } from "../engine/rollback.js";
-import type { EngineDeps, Job } from "../engine/types.js";
+import type { EngineDeps, Job, JobStatus } from "../engine/types.js";
 
 export const RETENTION_TASK = "retention";
 /** Daily at 03:00 UTC; EmDash evaluates cron expressions in UTC on every host. */
@@ -37,7 +37,13 @@ async function deleteRows(rows: JobRows, jobId: string, count: { n: number }): P
 }
 
 /**
- * Deletes jobs created before the cutoff with their record and journal rows, and staged files
+ * Spec Ruling 41: only these jobs are ever purged. A created, running or paused job is kept
+ * however old it is: an agent drives it across many calls, and its journal must stay whole.
+ */
+const FINISHED: ReadonlySet<JobStatus> = new Set(["completed", "cancelled", "failed"]);
+
+/**
+ * Deletes finished jobs created before the cutoff with their record and journal rows, and staged files
  * last modified before it, except files in `keepUploads`. A job with a live lease is left for the
  * next run. An original job stays while a rollback job (real or dry run, in any status) names it
  * in `rollbackOf`, and goes in the same run as that rollback job once both have expired. A job
@@ -61,7 +67,10 @@ export async function purgeExpired(
 		cursor = page.hasMore ? page.cursor : undefined;
 	} while (cursor);
 
-	const due = (data: Job) => data.createdAt < cutoff && !(data.lease && data.lease.expiresAt > now);
+	const due = (data: Job) =>
+		FINISHED.has(data.status) &&
+		data.createdAt < cutoff &&
+		!(data.lease && data.lease.expiresAt > now);
 	// Rollback jobs go first (when due), so an original they held can go in the same run.
 	const rollbacks = all.filter(({ data }) => data.kind === "rollback");
 	const originals = all.filter(({ data }) => data.kind !== "rollback");
