@@ -125,8 +125,8 @@ export class ServiceError extends Error {
 		readonly code: string,
 		message: string,
 		readonly status: number,
-		/** Machine-readable details, such as the source error `code`. */
-		readonly details?: { code: string },
+		/** Machine-readable details, such as the source error `code` or a template's `problems`. */
+		readonly details?: Readonly<Record<string, unknown>>,
 	) {
 		super(message);
 		this.name = "ServiceError";

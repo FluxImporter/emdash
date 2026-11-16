@@ -1,7 +1,7 @@
 import { DateTime, IANAZone } from "luxon";
 import { z } from "zod";
 import { parseSourceUrl } from "../sources/net.js";
-import { pathProblem, resolvePath } from "../sources/paths.js";
+import { resolvePath } from "../sources/paths.js";
 import {
 	CSV_SOURCE,
 	SOURCE_FORMATS,
@@ -26,7 +26,6 @@ import {
 import {
 	acceptsUploadable,
 	altConverter,
-	MAX_MEDIA_MAPPINGS,
 	type MediaConversionCode,
 	type MediaKind,
 	type MediaRequest,
@@ -35,7 +34,6 @@ import {
 import {
 	convertPortableText,
 	MAX_PORTABLE_TEXT_IMAGES,
-	MAX_PORTABLE_TEXT_MAPPINGS,
 	MAX_PORTABLE_TEXT_RECORD_BYTES,
 	MAX_PORTABLE_TEXT_RECORD_SOURCE_BYTES,
 	type PortableTextCode,
@@ -275,6 +273,8 @@ export const MAX_UPDATE_FIELDS = 200;
 
 /** A `rules.owner` name (M5c): it is stored on every owned link row and used as a query value. */
 export const OWNER_PATTERN = /^[A-Za-z0-9._:-]{1,100}$/;
+/** What `OWNER_PATTERN` allows, as its refusals say. */
+export const OWNER_RULE = "An owner is 1-100 characters of A-Z, a-z, 0-9, '.', '_', ':' and '-'";
 
 /**
  * How each record treats the entry it matches (M5b), and the entries a later feed no longer
@@ -295,10 +295,7 @@ const rulesSchema = z
 		mode: z.enum(["upsert", "create", "update"]).optional(),
 		updateFields: z.array(z.string().min(1).max(200)).min(1).max(MAX_UPDATE_FIELDS).optional(),
 		protectEdited: z.boolean().optional(),
-		owner: z
-			.string()
-			.regex(OWNER_PATTERN, "An owner is 1-100 characters of A-Z, a-z, 0-9, '.', '_', ':' and '-'")
-			.optional(),
+		owner: z.string().regex(OWNER_PATTERN, OWNER_RULE).optional(),
 		missing: z
 			.object({
 				action: z.enum(["trash", "unpublish"]),
@@ -1326,18 +1323,24 @@ function fieldProblems(
 	return problems;
 }
 
+/** The `checkTemplate` problem of a translation whose source locale was never filled in. */
+export const TRANSLATION_LOCALE_NOT_SET = "translationOf.locale is not set";
+
 /**
- * Problems that stop a job: CSV and XLSX columns missing from the header (`columns`; an XLSX
- * template may also read `_row`), field paths that are not valid for the source format, fields
- * the collection lacks or types it cannot take, `output` into a datetime field, `map` values
- * that are not options, `tz: "site"` without a valid site timezone, required fields with no
- * default that the template does not map (every create would fail), reference fields that are
- * unbound or link to a missing collection, and taxonomies that do not exist or are not attached
- * to the collection, more than five image and file mappings, more than three `portableText`
- * mappings, and image or file fields whose `allowedMimeTypes` EmDash's upload can never
- * satisfy. A template that maps `translationOf` needs its source locale set and different from
- * `locale`, and leaves required non-translatable fields to EmDash (`sharedRequiredOf`). The link
- * checks run only on what `links` carries.
+ * The problems of a template against the site and the source, which stop a job: CSV and XLSX
+ * columns missing from the header (`columns`; an XLSX template may also read `_row`), fields the
+ * collection lacks or types it cannot take, `output` into a datetime field, `map` values that are
+ * not options, `tz: "site"` without a valid site timezone, required fields with no default that
+ * the template does not map (every create would fail), reference fields that are unbound or link
+ * to a missing collection, taxonomies that do not exist or are not attached to the collection,
+ * and image or file fields whose `allowedMimeTypes` EmDash's upload can never satisfy. A template
+ * that maps `translationOf` needs its source locale set (job creation fills it in), and leaves
+ * required non-translatable fields to EmDash (`sharedRequiredOf`). The link checks run only on
+ * what `links` carries.
+ *
+ * Everything that depends on the template alone (JSON and XML path syntax, the image, file and
+ * portableText caps, a source locale equal to `locale`, `rulesProblems`, expressions and the
+ * source block) is checked by `templateShapeProblems` (engine/shape.ts) instead, which runs first.
  */
 export function checkTemplate(
 	t: Template,
@@ -1348,28 +1351,13 @@ export function checkTemplate(
 ): string[] {
 	const errors: string[] = [];
 	const format: SourceFormat = t.source.format;
-	for (const path of templatePaths(t)) {
-		if (format === "csv" || format === "xlsx") {
+	if (format === "csv" || format === "xlsx") {
+		for (const path of templatePaths(t)) {
 			const implicit = format === "xlsx" && path === XLSX_ROW_FIELD;
 			if (columns !== null && !columns.includes(path) && !implicit) {
 				errors.push(`Column "${path}" not found in the source`);
 			}
-			continue;
 		}
-		const problem = pathProblem(path, format);
-		if (problem !== null) errors.push(problem);
-	}
-	const media = Object.values(t.fields).filter((m) => m.type === "image" || m.type === "file");
-	if (media.length > MAX_MEDIA_MAPPINGS) {
-		errors.push(
-			`The template maps ${media.length} image and file fields; at most ${MAX_MEDIA_MAPPINGS} are allowed`,
-		);
-	}
-	const rich = Object.values(t.fields).filter((m) => m.type === "portableText");
-	if (rich.length > MAX_PORTABLE_TEXT_MAPPINGS) {
-		errors.push(
-			`The template maps ${rich.length} portableText fields; at most ${MAX_PORTABLE_TEXT_MAPPINGS} are allowed`,
-		);
 	}
 	if (t.publishAt?.tz === SITE_TIMEZONE && !IANAZone.isValidZone(siteTimezone)) {
 		errors.push(
@@ -1413,14 +1401,9 @@ export function checkTemplate(
 			);
 		}
 	}
-	const source = t.translationOf;
-	if (source !== undefined) {
-		if (source.locale === undefined) errors.push("translationOf.locale is not set");
-		else if (source.locale.toLowerCase() === t.locale.toLowerCase()) {
-			errors.push(`translationOf.locale must differ from locale ("${t.locale}")`);
-		}
+	if (t.translationOf !== undefined && t.translationOf.locale === undefined) {
+		errors.push(TRANSLATION_LOCALE_NOT_SET);
 	}
-	errors.push(...rulesProblems(t));
 	return errors;
 }
 

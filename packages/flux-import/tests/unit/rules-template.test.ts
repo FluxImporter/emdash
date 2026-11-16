@@ -105,7 +105,7 @@ describe("the rules and publishAt schemas (M5b)", () => {
 		expect(rulesProblems(t)).toEqual([]);
 		expect(
 			checkTemplate(parse({ rules: { updateFields: ["stock"] } }), schemaFields, null),
-		).toEqual(['rules.updateFields lists "stock", which the template does not map']);
+		).toEqual([]);
 	});
 
 	it("checks the site timezone for publishAt with tz site, as for date fields", () => {

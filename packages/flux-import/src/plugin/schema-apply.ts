@@ -4,13 +4,13 @@ import {
 	RESERVED_FIELD_SLUGS,
 } from "emdash";
 import { emdashErrorCode } from "../emdash/errors.js";
+import { shapeProblems, templateShapeProblems } from "../engine/shape.js";
 import {
 	COMPATIBLE,
 	type FieldMapping,
 	matchesOption,
 	SOURCE_ID_FIELD,
 	type Template,
-	templateSchema,
 } from "../engine/template.js";
 import { ServiceError } from "./service.js";
 
@@ -412,18 +412,17 @@ function resolveRequests(input: ApplyInput): {
 		}
 		return { collection: input.collection, requests: input.fields, fromTemplate: false };
 	}
-	const parsed = templateSchema.safeParse(input.template);
-	if (!parsed.success) {
-		const problems = parsed.error.issues.map(
-			(i) => `${i.path.join(".") || "template"}: ${i.message}`,
-		);
+	// Every site-independent problem refuses, as on the template routes (plan Ruling 7).
+	const shape = templateShapeProblems(input.template);
+	const problems = shape.ok ? shapeProblems(shape) : shape.problems;
+	if (!shape.ok || problems.length > 0) {
 		throw new ServiceError(
 			"VALIDATION_ERROR",
 			`The template is invalid: ${problems.join("; ")}`,
 			400,
 		);
 	}
-	const t = parsed.data;
+	const t = shape.template;
 	if (input.collection !== undefined && input.collection !== t.collection) {
 		throw new ServiceError(
 			"VALIDATION_ERROR",
