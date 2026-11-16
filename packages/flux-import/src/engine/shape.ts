@@ -78,10 +78,44 @@ export function templateShapeProblems(input: unknown): TemplateShape {
 /** A path as a chain of parent links, so a deep walk never copies the path above it. */
 type PathNode = { parent: PathNode | null; key: string } | null;
 
+/** A reported path keeps this many characters at each end when it is over twice as long. */
+export const PATH_KEEP = 100;
+
+/**
+ * The dotted path of `node`, or for one over `2 * PATH_KEEP` characters its first and last
+ * `PATH_KEEP` characters around "…". A long path is never built whole: one pass measures it, a
+ * second keeps only the segments nearest each end.
+ */
 function pathOf(node: PathNode): string {
-	const keys: string[] = [];
-	for (let n = node; n !== null; n = n.parent) keys.push(n.key);
-	return keys.reverse().join(".");
+	let length = -1;
+	for (let n = node; n !== null; n = n.parent) length += n.key.length + 1;
+	if (length <= 2 * PATH_KEEP) {
+		const keys: string[] = [];
+		for (let n = node; n !== null; n = n.parent) keys.push(n.key);
+		return keys.reverse().join(".");
+	}
+	// The leaf end: segments until they hold PATH_KEEP characters.
+	const tail: string[] = [];
+	let tailLength = -1;
+	let n = node;
+	for (; n !== null && tailLength < PATH_KEEP; n = n.parent) {
+		tail.push(n.key);
+		tailLength += n.key.length + 1;
+	}
+	// The root end: a window of the segments seen last that still holds PATH_KEEP characters.
+	const head: string[] = [];
+	let headLength = -1;
+	for (; n !== null; n = n.parent) {
+		head.push(n.key);
+		headLength += n.key.length + 1;
+		while (head.length > 1 && headLength - ((head[0] as string).length + 1) >= PATH_KEEP) {
+			headLength -= (head.shift() as string).length + 1;
+		}
+	}
+	const tailText = tail.reverse().join(".");
+	const start =
+		head.length === 0 ? tailText : `${head.reverse().join(".")}.${tailText.slice(0, PATH_KEEP)}`;
+	return `${start.slice(0, PATH_KEEP)}…${tailText.slice(-PATH_KEEP)}`;
 }
 
 /** The most `__proto__` keys reported: each problem spells out its path, which can be long. */
@@ -93,7 +127,8 @@ const protoProblem = (path: string) => `${path}: "__proto__" is not allowed as a
  * The first `MAX_PROTO_PROBLEMS` object keys `__proto__` in `input`, at any depth, depth-first
  * with keys in order. It walks with an explicit stack, since route input can nest tens of
  * thousands of levels (Review Focus 1), and never into a `__proto__` key's value, which is
- * refused anyway.
+ * refused anyway. A path over `2 * PATH_KEEP` characters is shortened around "…", so 20 problems
+ * stay small however deep the input nests.
  */
 export function protoKeyProblems(input: unknown): string[] {
 	return protoKeyPaths(input).map(protoProblem);

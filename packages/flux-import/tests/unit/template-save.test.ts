@@ -115,8 +115,15 @@ describe("templateNameProblem (spec Names, Ruling 38)", () => {
 
 	it("refuses leading or trailing whitespace, control and format characters", () => {
 		// A zero-width joiner, a right-to-left override and a leading no-break space.
-		// biome-ignore format: the formatter would write the escapes as invisible characters.
-		const names = [" Feed", "Feed ", "Feed\t", "Fe\u0007ed", "Fe\u200ded", "Fe\u202eed", "\u00a0Feed"];
+		const names = [
+			" Feed",
+			"Feed ",
+			"Feed\t",
+			"Fe\u0007ed",
+			"Fe\u200ded",
+			"Fe\u202eed",
+			"\u00a0Feed",
+		];
 		for (const name of names) {
 			expect(templateNameProblem(name), JSON.stringify(name)).toBe(TEMPLATE_NAME_RULE);
 		}
@@ -125,7 +132,6 @@ describe("templateNameProblem (spec Names, Ruling 38)", () => {
 
 	it("checks the NFC form", () => {
 		// 100 precomposed characters written with combining marks are 200 code units before NFC.
-		// biome-ignore format: the formatter would write the escape as an invisible combining mark.
 		const decomposed = "e\u0301";
 		expect(templateNameProblem(decomposed.repeat(100))).toBeNull();
 	});

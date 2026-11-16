@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createJob, JobError } from "../../src/engine/jobs.js";
 import {
 	MAX_PROTO_PROBLEMS,
+	PATH_KEEP,
 	protoKeyProblems,
 	templateShapeProblems,
 } from "../../src/engine/shape.js";
@@ -253,6 +254,42 @@ describe("templateShapeProblems (spec Validation, Ruling 27)", () => {
 		expect(problems[0]).toBe('template: Unrecognized key: "extra"');
 		expect(problems[1]).toBe('extra: "__proto__" is not allowed as a key');
 		expect(problems).toHaveLength(21);
+	});
+
+	it("shortens a long path to its first and last PATH_KEEP characters", () => {
+		const suffix = ': "__proto__" is not allowed as a key';
+		// 300 levels of {"a<i>":[…]}, every key distinct: the path is "a0.0.a1.0.…".
+		const levels = 300;
+		const keys = Array.from({ length: levels }, (_, i) => `a${i}`);
+		const open = keys.map((k) => `{"${k}":[`).join("");
+		const input = JSON.parse(`${open}{"__proto__":1}${"]}".repeat(levels)}`);
+		const full = keys.map((k) => `${k}.0`).join(".");
+		expect(protoKeyProblems(input)).toEqual([
+			`${full.slice(0, PATH_KEEP)}\u2026${full.slice(-PATH_KEEP)}${suffix}`,
+		]);
+		// A short root end is completed from the leaf end: "a." and the first 98 of the long key.
+		const long = "k".repeat(2 * PATH_KEEP - 1);
+		const mixed = JSON.parse(`{"a":{"${long}":{"__proto__":1}}}`);
+		const mixedPath = `a.${long}`;
+		expect(protoKeyProblems(mixed)).toEqual([
+			`${mixedPath.slice(0, PATH_KEEP)}\u2026${mixedPath.slice(-PATH_KEEP)}${suffix}`,
+		]);
+		// A path of exactly 2 * PATH_KEEP characters is kept whole; one more is shortened.
+		const at = JSON.parse(`{"${"k".repeat(2 * PATH_KEEP)}":{"__proto__":1}}`);
+		expect(protoKeyProblems(at)).toEqual([`${"k".repeat(2 * PATH_KEEP)}${suffix}`]);
+		const over = JSON.parse(`{"${"k".repeat(2 * PATH_KEEP + 1)}":{"__proto__":1}}`);
+		expect(protoKeyProblems(over)).toEqual([
+			`${"k".repeat(PATH_KEEP)}\u2026${"k".repeat(PATH_KEEP)}${suffix}`,
+		]);
+	});
+
+	it("keeps every problem short on a deep chain ending in __proto__ keys (Review Focus 1)", () => {
+		const depth = 100_000;
+		const ends = Array.from({ length: MAX_PROTO_PROBLEMS }, () => '{"__proto__":1}').join(",");
+		const input = JSON.parse(`${"[".repeat(depth)}${ends}${"]".repeat(depth)}`);
+		const problems = protoKeyProblems(input);
+		expect(problems).toHaveLength(MAX_PROTO_PROBLEMS);
+		for (const problem of problems) expect(problem.length).toBeLessThan(300);
 	});
 
 	it("does not overflow the stack on a deeply nested input (Review Focus 1)", () => {
