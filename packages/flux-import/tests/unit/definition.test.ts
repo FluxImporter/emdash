@@ -7,7 +7,11 @@ import { sourceSchema } from "../../src/engine/template.js";
 import { FLUX_IMPORT_VERSION } from "../../src/meta.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
-import { ensureRetentionScheduled, toRouteError } from "../../src/plugin/routes.js";
+import {
+	ensureRetentionScheduled,
+	TEMPLATE_BODY_MAX_BYTES,
+	toRouteError,
+} from "../../src/plugin/routes.js";
 import { ServiceError } from "../../src/plugin/service.js";
 
 const ROUTES = [
@@ -344,9 +348,50 @@ describe("createPlugin", () => {
 				routes: plugin.routes,
 				mcp: { tools: tools(routes) },
 			});
-		expect(() => define([...names, "jobs/create", "jobs/list", "schema/apply"])).not.toThrow();
-		// The check bites: the raw log route can never be a tool.
+		// jobs/create and schema/apply declare request: { body: "json" } (their body cap), as do
+		// templates/create, update and import: still JSON POST routes.
+		expect(() =>
+			define([...names, "jobs/create", "jobs/list", "schema/apply", "sources/paste"]),
+		).not.toThrow();
+		// The check bites: the raw log route can never be a tool, nor a route whose body is not JSON.
 		expect(() => define(["jobs/log.csv"])).toThrow("cannot reference a raw response route");
+		const textBody = {
+			...plugin.routes["templates/create"]!,
+			request: { body: "text" as const },
+		};
+		expect(() =>
+			definePlugin({
+				id: "probe-m6a",
+				version: "0.0.1",
+				routes: { ...plugin.routes, "templates/create": textBody },
+				mcp: { tools: tools(["templates/create"]) },
+			}),
+		).toThrow("must reference a POST-compatible JSON route");
+	});
+
+	it("caps the JSON body of every route that takes a template at 2 MiB, and no other template route", () => {
+		expect(TEMPLATE_BODY_MAX_BYTES).toBe(2 * 1024 * 1024);
+		const capped = [
+			"jobs/create",
+			"schema/apply",
+			"templates/create",
+			"templates/update",
+			"templates/import",
+		];
+		for (const name of capped) {
+			expect(plugin.routes[name]?.request, name).toEqual({
+				body: "json",
+				maxBytes: TEMPLATE_BODY_MAX_BYTES,
+			});
+		}
+		for (const name of [
+			"templates/list",
+			"templates/get",
+			"templates/delete",
+			"templates/export",
+		]) {
+			expect(plugin.routes[name], name).not.toHaveProperty("request");
+		}
 	});
 
 	it("validates the template route inputs", () => {

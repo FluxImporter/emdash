@@ -276,6 +276,21 @@ async function withServices<T>(
 	});
 }
 
+/**
+ * The most bytes of JSON a route that takes a template reads (EmDash's `request.maxBytes`).
+ * Without a `request` declaration EmDash reads a JSON body with no limit of its own (emdash
+ * src/plugins/routes.ts:132-143), and Node's adapter allows 1 GiB. 2 MiB covers any
+ * serialisation of a template under the 256 KiB `TEMPLATE_MAX_BYTES`, pretty-printed or with
+ * `\uXXXX` escapes (about 3x); an inline template a job stores is already held to the 1 MiB
+ * conditional-write cap, so nothing that could be imported before is refused.
+ */
+export const TEMPLATE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Caps a route's JSON body at `TEMPLATE_BODY_MAX_BYTES`; it stays an MCP-ready JSON POST route. */
+function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
+	return { ...r, request: { body: "json", maxBytes: TEMPLATE_BODY_MAX_BYTES } };
+}
+
 function route<T>(
 	input: z.ZodType<T>,
 	handler: (ctx: RouteContext<T>) => Promise<unknown>,
@@ -475,76 +490,78 @@ export const routes: Record<string, PluginRoute> = {
 		),
 	),
 
-	"jobs/create": route(createInput, async (ctx) => {
-		await ensureRetentionScheduled(ctx);
-		return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
-			const { input } = ctx;
-			// A saved template is read once, here (spec "Jobs from saved templates"); everything
-			// below uses it as an inline template, and the job stores a snapshot of it.
-			const resolved =
-				input.templateId === undefined
-					? { template: input.template }
-					: await resolveJobTemplate(
-							templatesCollection(ctx.storage),
-							input.templateId,
-							input.templateRevision,
-						);
-			const { template } = resolved;
-			// Read once here and stored on the job, so a resumed or retried job converts the same way.
-			const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-			// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-			// serves the job's schema lookup for that collection.
-			const own = await readPublishAtCollection(runtime.schemaRegistry, template);
-			const revisions = own === null ? undefined : own.revisions;
-			const start = (upload: string, fromSource?: string) => {
-				const options: StartJobInput = {
-					uploadId: upload,
-					template,
-					dryRun: input.dryRun,
-					...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
-					...(fromSource === undefined ? {} : { sourceId: fromSource }),
-					...(input.journal === undefined ? {} : { journal: input.journal }),
-					...(input.missing === undefined ? {} : { missing: input.missing }),
-					mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-					...(siteTimezone === undefined ? {} : { siteTimezone }),
-					...(revisions === undefined ? {} : { revisions }),
-					...(input.publish === undefined ? {} : { publish: input.publish }),
-					...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
-					...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+	"jobs/create": withTemplateBody(
+		route(createInput, async (ctx) => {
+			await ensureRetentionScheduled(ctx);
+			return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
+				const { input } = ctx;
+				// A saved template is read once, here (spec "Jobs from saved templates"); everything
+				// below uses it as an inline template, and the job stores a snapshot of it.
+				const resolved =
+					input.templateId === undefined
+						? { template: input.template }
+						: await resolveJobTemplate(
+								templatesCollection(ctx.storage),
+								input.templateId,
+								input.templateRevision,
+							);
+				const { template } = resolved;
+				// Read once here and stored on the job, so a resumed or retried job converts the same way.
+				const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
+				// Read once here: whether a published entry's update can be scheduled (M5b). The same read
+				// serves the job's schema lookup for that collection.
+				const own = await readPublishAtCollection(runtime.schemaRegistry, template);
+				const revisions = own === null ? undefined : own.revisions;
+				const start = (upload: string, fromSource?: string) => {
+					const options: StartJobInput = {
+						uploadId: upload,
+						template,
+						dryRun: input.dryRun,
+						...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
+						...(fromSource === undefined ? {} : { sourceId: fromSource }),
+						...(input.journal === undefined ? {} : { journal: input.journal }),
+						...(input.missing === undefined ? {} : { missing: input.missing }),
+						mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
+						...(siteTimezone === undefined ? {} : { siteTimezone }),
+						...(revisions === undefined ? {} : { revisions }),
+						...(input.publish === undefined ? {} : { publish: input.publish }),
+						...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
+						...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
+					};
+					return startImport(
+						deps,
+						xlsx,
+						options,
+						(collection) =>
+							own !== null && collection === own.collection
+								? Promise.resolve(own.fields)
+								: listSchemaFields(runtime.schemaRegistry, collection),
+						(locale) => resolveSiteLocale(locale),
+						(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
+					);
 				};
-				return startImport(
-					deps,
-					xlsx,
-					options,
-					(collection) =>
-						own !== null && collection === own.collection
-							? Promise.resolve(own.fields)
-							: listSchemaFields(runtime.schemaRegistry, collection),
-					(locale) => resolveSiteLocale(locale),
-					(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-				);
-			};
-			if (input.sourceId !== undefined) {
-				const options = {
-					force: input.force ?? false,
-					dryRun: input.dryRun,
-					// The unchanged-content skip also compares the template (spec Ruling 29).
-					template: await jobTemplateRef(resolved),
-				};
-				// A workbook is fetched only up to the XLSX file limit.
-				const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
-				return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
-			}
-			if (input.uploadId === undefined) {
-				throw new PluginRouteError(
-					"VALIDATION_ERROR",
-					"Set exactly one of uploadId and sourceId",
-					400,
-				);
-			}
-			return start(input.uploadId);
-		});
-	}),
+				if (input.sourceId !== undefined) {
+					const options = {
+						force: input.force ?? false,
+						dryRun: input.dryRun,
+						// The unchanged-content skip also compares the template (spec Ruling 29).
+						template: await jobTemplateRef(resolved),
+					};
+					// A workbook is fetched only up to the XLSX file limit.
+					const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
+					return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
+				}
+				if (input.uploadId === undefined) {
+					throw new PluginRouteError(
+						"VALIDATION_ERROR",
+						"Set exactly one of uploadId and sourceId",
+						400,
+					);
+				}
+				return start(input.uploadId);
+			});
+		}),
+	),
 
 	"jobs/next": route(byId, (ctx) =>
 		withServices(ctx, ({ deps, uploads, actor, keep }) =>
@@ -620,13 +637,15 @@ export const routes: Record<string, PluginRoute> = {
 
 	// Additive only: creates missing fields and adds missing select options. With a templateId,
 	// plans from the saved template as from an inline one; a given collection must still match.
-	"schema/apply": route(applyInput, (ctx) =>
-		withServices(ctx, async ({ runtime }) => {
-			const { templateId: id, ...rest } = ctx.input;
-			if (id === undefined) return applySchema(runtime.schemaRegistry, rest);
-			const { template } = await resolveJobTemplate(templatesCollection(ctx.storage), id);
-			return applySchema(runtime.schemaRegistry, { ...rest, template });
-		}),
+	"schema/apply": withTemplateBody(
+		route(applyInput, (ctx) =>
+			withServices(ctx, async ({ runtime }) => {
+				const { templateId: id, ...rest } = ctx.input;
+				if (id === undefined) return applySchema(runtime.schemaRegistry, rest);
+				const { template } = await resolveJobTemplate(templatesCollection(ctx.storage), id);
+				return applySchema(runtime.schemaRegistry, { ...rest, template });
+			}),
+		),
 	),
 
 	// Saved templates (M6a). Every route is a JSON POST with a permission, so M6c can expose it
@@ -646,34 +665,38 @@ export const routes: Record<string, PluginRoute> = {
 		withServices(ctx, (services) => getTemplate(templateDeps(ctx, services), ctx.input.id)),
 	),
 
-	"templates/create": route(
-		z.object({
-			name: templateName,
-			description: templateDescription.optional(),
-			template: z.unknown(),
-		}),
-		(ctx) =>
-			withServices(ctx, (services) => {
-				const { name, description, template } = ctx.input;
-				return createTemplate(templateDeps(ctx, services), services.actor.id, {
-					name,
-					...(description === undefined ? {} : { description }),
-					template,
-				});
+	"templates/create": withTemplateBody(
+		route(
+			z.object({
+				name: templateName,
+				description: templateDescription.optional(),
+				template: z.unknown(),
 			}),
+			(ctx) =>
+				withServices(ctx, (services) => {
+					const { name, description, template } = ctx.input;
+					return createTemplate(templateDeps(ctx, services), services.actor.id, {
+						name,
+						...(description === undefined ? {} : { description }),
+						template,
+					});
+				}),
+		),
 	),
 
-	"templates/update": route(templateUpdateInput, (ctx) =>
-		withServices(ctx, (services) => {
-			const { id, revision, name, description, template } = ctx.input;
-			return updateTemplate(templateDeps(ctx, services), services.actor.id, {
-				id,
-				revision,
-				...(name === undefined ? {} : { name }),
-				...(description === undefined ? {} : { description }),
-				...(template === undefined ? {} : { template }),
-			});
-		}),
+	"templates/update": withTemplateBody(
+		route(templateUpdateInput, (ctx) =>
+			withServices(ctx, (services) => {
+				const { id, revision, name, description, template } = ctx.input;
+				return updateTemplate(templateDeps(ctx, services), services.actor.id, {
+					id,
+					revision,
+					...(name === undefined ? {} : { name }),
+					...(description === undefined ? {} : { description }),
+					...(template === undefined ? {} : { template }),
+				});
+			}),
+		),
 	),
 
 	"templates/delete": route(z.object({ id: templateId, revision: templateRevision }), (ctx) =>
@@ -686,16 +709,22 @@ export const routes: Record<string, PluginRoute> = {
 
 	// The name and owner overrides are validated here only, as the source routes validate their
 	// input (preflight F11); the service trusts them.
-	"templates/import": route(
-		z.object({ file: z.unknown(), name: templateName.optional(), owner: templateOwner.optional() }),
-		(ctx) =>
-			withServices(ctx, (services) => {
-				const { file, name, owner } = ctx.input;
-				return importTemplate(templateDeps(ctx, services), services.actor.id, {
-					file,
-					...(name === undefined ? {} : { name }),
-					...(owner === undefined ? {} : { owner }),
-				});
+	"templates/import": withTemplateBody(
+		route(
+			z.object({
+				file: z.unknown(),
+				name: templateName.optional(),
+				owner: templateOwner.optional(),
 			}),
+			(ctx) =>
+				withServices(ctx, (services) => {
+					const { file, name, owner } = ctx.input;
+					return importTemplate(templateDeps(ctx, services), services.actor.id, {
+						file,
+						...(name === undefined ? {} : { name }),
+						...(owner === undefined ? {} : { owner }),
+					});
+				}),
+		),
 	),
 };

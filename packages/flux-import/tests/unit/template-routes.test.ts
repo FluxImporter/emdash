@@ -128,17 +128,12 @@ describe("template routes (M6a)", () => {
 		});
 	});
 
-	it("refuses a delete without a revision at the route's input, before the handler (spec Ruling 37)", async () => {
-		const { template: row } = await call<SavedResult>("templates/create", {
-			name: "Feed",
-			template,
-		});
+	it("refuses a delete without a revision at the route's input, before the handler (spec Ruling 37)", () => {
 		// EmDash answers a failed input parse with 400 VALIDATION_ERROR and never calls the handler
 		// (emdash src/plugins/routes.ts:246-258).
-		const parsed = plugin.routes["templates/delete"]!.input!.safeParse({ id: row.id });
+		const parsed = plugin.routes["templates/delete"]!.input!.safeParse({ id: "T1" });
 		expect(parsed.success).toBe(false);
 		expect(parsed.error?.issues.map((i) => i.path)).toEqual([["revision"]]);
-		expect(await templates.get(row.id)).not.toBeNull();
 	});
 
 	it("exports, imports and lists", async () => {
@@ -186,6 +181,47 @@ describe("template routes (M6a)", () => {
 			code: "TEMPLATE_NOT_FOUND",
 			status: 404,
 		});
+	});
+
+	it("refuses schema/apply from a stored row that no longer parses with M5c's code (Review Focus 4)", async () => {
+		const { template: row } = await call<SavedResult>("templates/create", {
+			name: "Feed",
+			template,
+		});
+		await templates.put(row.id, {
+			...row,
+			template: { ...row.template, futureRule: true } as SavedTemplate["template"],
+		});
+		await expect(call("schema/apply", { templateId: row.id, dryRun: true })).rejects.toMatchObject({
+			name: "PluginRouteError",
+			code: "VALIDATION_ERROR",
+			status: 400,
+			message: expect.stringMatching(/^The template is invalid: .*Unrecognized key: "futureRule"/),
+		});
+	});
+
+	it("pages a template's jobs through jobs/list, with the filter and the cursor together", async () => {
+		const deps = state.deps as ReturnType<typeof makeDeps>["deps"];
+		const mine: string[] = [];
+		for (let i = 0; i < 80; i++) {
+			const id = `J${String(i).padStart(3, "0")}`;
+			const templateId = i % 4 === 0 ? "TPL2" : "TPL1";
+			if (templateId === "TPL1") mine.push(id);
+			await deps.jobs.put(id, {
+				id,
+				status: "completed",
+				createdAt: new Date(Date.UTC(2026, 10, 16, 10, 0, i)).toISOString(),
+				templateId,
+			} as Job);
+		}
+		type Listed = { items: Job[]; cursor?: string };
+		const first = await call<Listed>("jobs/list", { templateId: "TPL1" });
+		expect(first.cursor).toBeDefined();
+		const second = await call<Listed>("jobs/list", { templateId: "TPL1", cursor: first.cursor });
+		expect(second.cursor).toBeUndefined();
+		const seen = [...first.items, ...second.items].map((j) => j.id);
+		expect(first.items).toHaveLength(50);
+		expect(seen).toEqual([...mine].reverse());
 	});
 
 	it("lists jobs by template", async () => {
