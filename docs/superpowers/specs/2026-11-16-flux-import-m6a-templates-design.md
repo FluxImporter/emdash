@@ -2,7 +2,8 @@
 
 Status: drafted 2026-11-16 (the user approved all remaining milestones up front on 2026-10-27;
 design decisions are the implementer's rulings). Revised the same day after the spec review
-(Rulings 27-47; amended rulings are marked). First of four parts of Milestone 6 (Automation) of
+(Rulings 27-47; amended rulings are marked), and amended after implementation to match the code
+(Rulings 48-57, "Amendments after implementation"). First of four parts of Milestone 6 (Automation) of
 [the roadmap](./2026-10-07-flux-import-roadmap-design.md#milestone-6-split), in the order M6a, M6c,
 M6b, M6d (Ruling 35). Builds on M5c
 ([spec](./2026-11-12-flux-import-m5c-missing-entries-design.md),
@@ -83,7 +84,7 @@ or docs unless marked otherwise; the unconfirmed ones are listed under "To verif
 | F4 | **Unique indexes.** `uniqueIndexes` exist and in 1.2.0 create `CREATE UNIQUE INDEX … ON _plugin_storage(plugin_id, collection, …)`, non-partial. The error a duplicate `put` raises is **not documented**. The docs describe a later release whose migration `095_plugin_storage_unique_scope` makes unique indexes "enforce uniqueness only in the plugin and collection that declares them", warn that an older instance "can recreate the non-partial indexes and restore the cross-collection constraint", and require a maintenance window (no rolling deploy) on every site with a plugin unique index. The docs' account of the old indexes as cross-collection is not visible in the 1.2.0 source, whose leading `(plugin_id, collection)` columns scope them; either way the upgrade cost stands. 1.2.0's migrations end at `091` | `@emdash-cms/plugin-types@0.6.0` `dist/index.d.ts:803-818`; `src/plugins/storage-indexes.ts:72-81`; `src/database/migrations/` (last `091_redirect_artifacts.ts`); [updating](https://docs.emdashcms.com/deployment/updating/) "Fixed: plugin storage uniqueness" |
 | F5 | **Adding a collection or index.** EmDash creates declared indexes when the plugin loads (once per process, from the scheduler path); a missing physical index slows a query but never fails it. The docs ask for a version bump whenever an index is added, removed or changed | M5c F11; [storage](https://docs.emdashcms.com/plugins/creating-plugins/storage/) "Adding indexes" |
 | F6 | **D1 limits.** Row, string or BLOB at most 2,000,000 bytes; 100 bound parameters per query; 1,000 queries per Worker invocation on the paid plan and 50 on the free plan; an SQL statement of at most 100,000 bytes. Whether a bound value counts toward the statement length is **not stated** (V1) | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
-| F7 | **Route bodies.** A plugin route's JSON body defaults to at most 1 MiB, and a route may raise it to 8 MiB with `request: { body: "json", maxBytes }` | `@emdash-cms/plugin-types@0.6.0` `dist/index.js:4-5`; `packages/flux-import/src/plugin/routes.ts:343-355` (`sources/paste`) |
+| F7 | **Route bodies.** A plugin route's JSON body defaults to at most 1 MiB, and a route may raise it to 8 MiB with `request: { body: "json", maxBytes }` | `@emdash-cms/plugin-types@0.6.0` `dist/index.js:4-5`; `packages/flux-import/src/plugin/routes.ts:343-355` (`sources/paste`). *Amended by Ruling 51*: the default applies only to a route that declares `request` |
 | F8 | **Private routes.** They require their declared `permission`; cookie-authenticated calls need `X-EmDash-Request: 1` (all methods); token calls are exempt from the header but need the `admin` scope and the permission. `routeCtx.user` is the authenticated caller | [API routes](https://docs.emdashcms.com/plugins/creating-plugins/api-routes/) "Authentication and CSRF", "The authenticated caller"; roadmap "Permissions" |
 | F9 | **Settings and KV.** `ctx.settings` and `ctx.kv` offer `get`, `getVersioned`, `compareAndSet`, `compareAndDelete`, `set`, `delete` and `list(prefix?)`; no index or paged query. Settings are for user-configurable values (secret ones encrypted with `EMDASH_ENCRYPTION_KEY`), KV for internal state and caches; queryable records belong in storage | `src/plugins/types.ts:335-363`; [settings](https://docs.emdashcms.com/plugins/creating-plugins/settings/) "Read and write settings", "Secret values"; [storage](https://docs.emdashcms.com/plugins/creating-plugins/storage/) "Storage vs content vs KV" |
 | F10 | **Routes that can become MCP tools.** `definePlugin` accepts `mcp.tools`, each `{ description, route, input, output?, destructive? }`, and refuses a tool whose route is unknown, public, `response: "raw"`, not a POST-compatible JSON route, or without `permission`. So a raw route (such as `jobs/log.csv`) can never be a tool, and every M6a route must stay a JSON POST with a permission | `src/plugins/types.ts:1949-1959`; `src/plugins/define-plugin.ts:160-176`; [API routes](https://docs.emdashcms.com/plugins/creating-plugins/api-routes/) "Exposing a route as an MCP tool"; `packages/flux-import/src/plugin/routes.ts:310-326` |
@@ -244,7 +245,8 @@ problems, and contains exactly:
    `path: message` (P1, P3).
 2. A walk of the parsed template refusing any object key `__proto__`, at any depth
    (`<path>: "__proto__" is not allowed as a key`); only select and multiSelect `map` keys can
-   reach it, since the other records have slug patterns (P11, Ruling 36).
+   reach it, since the other records have slug patterns (P11, Ruling 36). *Amended by Ruling 48*
+   (the walk reads the raw input).
 3. `pathProblem` for every path of a JSON, JSON Lines or XML template (`templatePaths`); CSV and
    XLSX column names are checked against the source's columns, which is a site check.
 4. At most `MAX_MEDIA_MAPPINGS` (5) image and file fields and `MAX_PORTABLE_TEXT_MAPPINGS` (3)
@@ -272,7 +274,8 @@ On the template routes only (Ruling 28), two checks come around it:
 `INVALID_TEMPLATE` from the schema, and the only size bound is the 1 MiB route body (F7). Its
 shape and site problems are reported together in one `invalid_template` error, "The template does
 not fit the source or schema", as today; the set of problems is the same as in M5c, only their
-order may differ.
+order may differ. *Amended by Rulings 50 and 51* (M5c's separate refusals are kept; the body
+limit is a declared 2 MiB).
 
 ### Site checks (reported)
 
@@ -401,7 +404,8 @@ template edited to map a new field, was skipped while the feed was unchanged. No
 
 - `lastImport` gains `template`: `{ id, revision }` for a job from a saved template, or
   `{ fingerprint }` for an inline one, where `fingerprint` is `fingerprint(stableJson(parsed))`
-  of the parsed template (P12), computed in the route before the fetch.
+  of the parsed template (P12), computed in the route before the fetch. *Amended by Ruling 49*
+  (`fingerprint(parsed)`).
 - The skip needs `sha256` equal **and** `template` equal (same `id` and `revision`, or the same
   `fingerprint`). Anything else creates the job. A `lastImport` saved before M6a has no `template`
   and never matches, so the first run of each source after the upgrade creates its job once.
@@ -742,6 +746,110 @@ the note. A final fix wave follows the whole-branch review.
 47. **The integration sequence pins the snapshot.** The update after the job starts makes revision 3,
     and the resumed job keeps revision 2's mapping and `templateRevision: 2` (Testing).
 
+## Amendments after implementation
+
+Added by the M6a review run (plan Task 9). They come from the plan's rulings, which the coordinator
+accepted as amendments before Task 1, and from the Task 6 review. Each is binding and amends the
+text above where it says otherwise; the code reads as these rulings say.
+
+48. **(Plan Ruling 1) The `__proto__` walk reads the raw input, not the parsed template.** Zod
+    4.5.4's `z.record` drops a `__proto__` key without a word (plan Fact E1), so a walk of the parsed
+    template (Validation, step 2) can never find one. `protoKeyProblems(input)` walks the raw route
+    input with an explicit stack, so a deeply nested body cannot overflow the call stack
+    (Review Focus 1). It never walks into a `__proto__` key's value, and it stops after
+    `MAX_PROTO_PROBLEMS` (20) keys, so its work stays linear in the input (Task 2 review). A path
+    over 200 characters is shortened to its first and last `PATH_KEEP` (100) characters. The
+    problems join step 1's, and Zod's `Unrecognized key: "__proto__"` at the same path is dropped
+    so the key is reported once. Amends Validation step 2.
+49. **(Plan Ruling 4) The inline fingerprint is `fingerprint(parsed)`.** `fingerprint` already
+    hashes `stableJson` of its argument (P12, `src/engine/fingerprints.ts:42-46`). The literal
+    `fingerprint(stableJson(parsed))` would hash the JSON string of that string. The result is
+    just as deterministic and ignores key order (Review Focus 3), with one canonicalisation instead
+    of two. Amends "The unchanged-content skip".
+50. **(Plan Ruling 6) Inline `jobs/create` keeps M5c's separate refusals.** The Shape section says
+    that inline shape and site problems are "reported together in one `invalid_template` error".
+    That contradicts Ruling 28, which keeps M5c's codes and messages, and Ruling 28 binds.
+    `templateShapeProblems` returns its results in groups, and `createJob` refuses in M5c's order:
+    1. a schema or `__proto__` failure: "The template is invalid";
+    2. the option checks;
+    3. expressions: "The template has invalid expressions";
+    4. `invalid_source`: "The source block is invalid";
+    5. `[...fit, ...checkTemplate(…)]`: "The template does not fit the source or schema".
+
+    Only the order inside the last list changed: the moved fit checks come first. The template
+    routes and `schema/apply` refuse on any group; `schema/apply` keeps `VALIDATION_ERROR`
+    "The template is invalid: …" (plan Ruling 7). Amends Validation, "Shape".
+51. **(Task 6 review) F7 is corrected: EmDash's 1 MiB body default applies only to a route that
+    declares `request`.** A route without `request` reads its body with `request.json()` and no
+    limit (`node_modules/emdash/src/plugins/routes.ts:136-143`). The default
+    `PLUGIN_ROUTE_DEFAULT_BODY_BYTES` applies only to a declared body
+    (`src/plugins/route-wire.ts:185-186`). M6a therefore declares
+    `request: { body: "json", maxBytes: 2 MiB }` (`TEMPLATE_BODY_MAX_BYTES`) on the five routes that
+    take a template:
+    - `jobs/create`;
+    - `schema/apply`;
+    - `templates/create`;
+    - `templates/update`;
+    - `templates/import`.
+
+    2 MiB holds any serialisation of a 256 KiB template; pretty-printed, Task 8 measured 282,039
+    bytes. An inline `jobs/create` template was already bounded by the 1 MiB conditional-write cap
+    on its job row (F3), so no job that could be created before is refused. That reason does not
+    hold for `schema/apply`, which writes no job (Ruling 53). The other template routes declare
+    nothing. A declared JSON body is still an MCP-ready
+    route (`isJsonPostRouteContract`, M6c), and an MCP tool call goes through the same cap. Amends
+    F7, and "the only size bound is the 1 MiB route body" under Shape, which now reads 2 MiB.
+52. **(Task 6) The five capped routes answer `INVALID_PLUGIN_REQUEST` for a body that is not JSON
+    or is too large.** An empty or malformed JSON body to `jobs/create`, `schema/apply` or
+    `templates/create`, `update` or `import` now gets 400 `INVALID_PLUGIN_REQUEST` "Plugin route
+    request body is not valid JSON" (`route-wire.ts:193-198`). It used to get `VALIDATION_ERROR`
+    "Invalid request body". A body over 2 MiB gets 413 `INVALID_PLUGIN_REQUEST` "Plugin route request
+    body exceeds 2097152 bytes", and the handler is never called. `sources/paste` already behaved
+    this way. Only bodies that aren't JSON are affected; every valid JSON body is validated by the
+    route's Zod input as before. Proven over HTTP on Node (`tests/integration/templates.test.ts`,
+    "HTTP checks") and the 413 also on workerd (`parity.test.ts`, the 256 KiB test). Amends Errors.
+53. **(Final review) `schema/apply` bodies over 2 MiB are refused, an accepted change.** The cap of
+    Ruling 51 also applies to `schema/apply`, which writes no job, so the 1 MiB job-row bound never
+    held it. An M5c `fields` or inline `template` body over 2 MiB, which it accepted before, now gets
+    413 `INVALID_PLUGIN_REQUEST`. That is a schema of thousands of fields, far beyond any
+    collection the admin builds. The comment on `TEMPLATE_BODY_MAX_BYTES` says so. Amends F7 with
+    Ruling 51.
+54. **(Final review) `jobs/create` without a template is `VALIDATION_ERROR`.** With `template` now
+    optional and `templateId` beside it, a body with neither fails the route input's refinement:
+    400 `VALIDATION_ERROR` "Invalid request body", whose issue reads "Set exactly one of template
+    and templateId" (`node_modules/emdash/src/plugins/routes.ts:246-258`). In M5c it reached
+    `createJob` and was 400 `INVALID_TEMPLATE` "The template is invalid". A body with both is
+    refused the same way. Amends Errors and Ruling 28, which kept the inline codes only for a
+    template that is sent.
+55. **(Plan Ruling 7, final review) Inline `schema/apply` refuses every shape problem.**
+    `schema/apply` runs `templateShapeProblems` and refuses on any group. A template with
+    fit, expression or source problems, such as a JSON path with an empty key, too many media
+    fields, an expression that does not compile, or `source.sheet` on CSV, used to be planned
+    from. It is now 400 `VALIDATION_ERROR` "The template is invalid: <problems joined by "; ">"",
+    the code M5c used for the schema's own problems. Such a template could never run a job, so a
+    schema planned from it was of no use. Amends Validation, "Shape".
+56. **(Final review) `jobs/list` returns 8 jobs a page, filtered or not.** A storage query returns
+    whole documents (F2), and every job holds its template. One from a saved template holds up to
+    256 KiB. A page of `PAGE_SIZE` (50) of `jobs/list { templateId }` could read about 13 MB,
+    against V5's "about 2 MiB". `JOB_PAGE` = 8 (`src/plugin/service.ts`) pages every
+    `jobs/list` call, as `TEMPLATE_PAGE` does for `templates/list` (Ruling 32). Clients already
+    page with the cursor. Inline-template jobs can still hold up to 1 MiB each (Open issues).
+    Amends API (`jobs/list`) and "Workers and Node".
+57. **V5 is measured** (M6a review, `docs/superpowers/notes/2026-11-16-m6a-review.md`). On local
+    workerd and D1, the site had a collection with two reference fields and two taxonomies, eight
+    saved templates of 256 KiB, and one other template sharing the owner. Every M6a route ran 1-9
+    D1 queries inside its handler:
+    - `templates/create` and `templates/import`: 9;
+    - `templates/update`: 8;
+    - `jobs/create { templateId }`: one more than the same template inline;
+    - `templates/delete`: 2;
+    - the reads: 1.
+
+    The largest reads are the two full pages: `templates/list` reads 2,099,488 bytes and
+    `jobs/list { templateId }` 2,103,912 (at `JOB_PAGE`, Ruling 56). Both are within 0.4 % of
+    2 MiB, so the bound stays "about 2 MiB" (Ruling 32) and is not loosened. Production D1 is
+    unverified. Settles V5 and "Workers and Node".
+
 ## Outline of M6c, M6b and M6d
 
 Recorded so that the split rests on evidence; each part's own spec settles its design against the
@@ -835,6 +943,13 @@ with M5c's owner text and the `baseUrl` warning (M8).
 - **Dangling `templateId`.** Jobs of a deleted template keep its ID; `templates/get` on it is 404.
 - **Downgrades.** A row saved by a newer plugin version with keys this version does not know can be
   listed, read and exported, but `jobs/create` and `schema/apply` refuse it until it is updated.
+- **Inline-template jobs in `jobs/list`** (final review). A job with an inline template can hold up
+  to 1 MiB (the conditional-write cap), so a plain `jobs/list` page of 8 can still read about
+  8 MiB. The fix is summary rows or a trimmed response, in M6c or M7 (Ruling 56).
+- **The `__proto__` duplicate filter** (final review, cosmetic). The walk drops Zod's singular
+  `Unrecognized key: "__proto__"` at the same path (Ruling 48), but not the plural
+  `Unrecognized keys: "x", "__proto__"`, which also names other keys, so such a key is reported
+  twice.
 - **From M5c** (`2026-11-12-m5c-review.md`), unchanged: the open issues of the M5c spec and review,
   the version mismatch between `package.json` and `FLUX_IMPORT_VERSION` until M8, the known flakes
   (F1, F2, F3 on port 4397), and the production Cloudflare build blocker from M2.
