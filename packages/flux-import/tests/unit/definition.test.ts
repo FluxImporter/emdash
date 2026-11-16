@@ -50,6 +50,10 @@ describe("createPlugin", () => {
 		});
 	});
 
+	it("sets FLUX_IMPORT_VERSION to 0.3.0", () => {
+		expect(FLUX_IMPORT_VERSION).toBe("0.3.0");
+	});
+
 	it("declares the storage indexes the queries use", () => {
 		expect(plugin.storage).toEqual(STORAGE);
 		expect(STORAGE.records.indexes).toEqual([
@@ -67,7 +71,6 @@ describe("createPlugin", () => {
 			["templateId", "createdAt"],
 		]);
 		expect(STORAGE.templates.indexes).toEqual(["name", "collection", "owner"]);
-		expect(FLUX_IMPORT_VERSION).toBe("0.3.0");
 		expect(STORAGE.links.indexes).toEqual(["entryId", ["owner", "collection", "locale"]]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
 		expect(STORAGE.media.indexes).toEqual(["jobId", "mediaId"]);

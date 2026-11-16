@@ -136,6 +136,7 @@ export class MemoryKv<T> implements KvCollection<T> {
 				if (!this.indexed.has(field))
 					throw new Error(`Cannot order by non-indexed field '${field}'.`);
 		}
+		// Rows come back in insertion order, stricter than EmDash's (created_at, id): rows written in the same millisecond come back in id order on a real site.
 		const keyset = !opts.orderBy || Object.keys(opts.orderBy).length === 0;
 		const after = keyset && opts.cursor ? Number(opts.cursor.slice(1)) : 0;
 		const created = new Map<string, number>();
@@ -155,7 +156,8 @@ export class MemoryKv<T> implements KvCollection<T> {
 				return dir === "asc" ? order : -order;
 			});
 		}
-		const limit = opts.limit ?? 50;
+		// EmDash clamps the page size to 1..100 (plugin-storage.ts:357).
+		const limit = Math.max(1, Math.min(opts.limit ?? 50, 100));
 		if (keyset) {
 			const page = items.slice(0, limit);
 			const hasMore = items.length > limit;

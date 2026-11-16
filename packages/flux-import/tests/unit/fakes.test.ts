@@ -37,6 +37,14 @@ describe("MemoryKv", () => {
 		).resolves.toBeDefined();
 	});
 
+	it("clamps a page to 100 rows, as EmDash does", async () => {
+		const kv = new MemoryKv<{ n: number }>();
+		for (let i = 0; i < 150; i++) await kv.put(`r${i}`, { n: i });
+		const page = await kv.query({ limit: 500 });
+		expect(page.items).toHaveLength(100);
+		expect(page.hasMore).toBe(true);
+	});
+
 	it("deletes with compareAndDelete only at the stored revision (spec F3, V4)", async () => {
 		const kv = new MemoryKv<{ n: number }>();
 		await kv.put("a", { n: 1 });
