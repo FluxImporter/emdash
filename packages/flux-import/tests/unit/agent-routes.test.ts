@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Job } from "../../src/engine/types.js";
 import type { StatusReply } from "../../src/plugin/agent.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
-import { PASTE_MAX_BYTES, stagePaste } from "../../src/plugin/service.js";
+import { PASTE_MAX_BYTES, ServiceError, stagePaste } from "../../src/plugin/service.js";
 import type { JobSummary, StepReply } from "../../src/plugin/summaries.js";
 import type { SavedResult } from "../../src/plugin/templates.js";
 import { FakeStorage, MemoryKv, makeDeps } from "./fakes.js";
@@ -14,6 +14,8 @@ const state = vi.hoisted(() => ({
 	storage: undefined as unknown,
 	feedUpload: "",
 	fromSource: [] as { sourceId: string; dryRun: boolean }[],
+	/** When set, jobs/status's rule throws it synchronously, before returning a promise. */
+	statusThrows: undefined as unknown,
 }));
 
 vi.mock("../../src/plugin/runtime.js", () => ({
@@ -52,6 +54,16 @@ vi.mock("../../src/emdash/media.js", () => ({
 		return (state.deps as Record<string, unknown>).media;
 	},
 }));
+vi.mock("../../src/plugin/agent.js", async (importOriginal) => {
+	const agent = await importOriginal<typeof import("../../src/plugin/agent.js")>();
+	return {
+		...agent,
+		readJobStatus: (...args: Parameters<typeof agent.readJobStatus>) => {
+			if (state.statusThrows !== undefined) throw state.statusThrows;
+			return agent.readJobStatus(...args);
+		},
+	};
+});
 // A URL source is never fetched here: its dry run is made from a staged copy.
 vi.mock("../../src/plugin/sources.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../src/plugin/sources.js")>()),
@@ -136,6 +148,7 @@ describe("the M6c agent routes", () => {
 		storage = new FakeStorage();
 		state.storage = storage;
 		state.fromSource = [];
+		state.statusThrows = undefined;
 		templates = new MemoryKv(STORAGE.templates.indexes);
 	});
 
@@ -164,7 +177,7 @@ describe("the M6c agent routes", () => {
 	});
 
 	it("plans pasted text with a BOM and CRLF like an uploaded file (Review Focus 5)", async () => {
-		const job = await planned("﻿sku,Name\r\nA,One\r\nB,Two\r\n");
+		const job = await planned("\uFEFFsku,Name\r\nA,One\r\nB,Two\r\n");
 		const status = await call<StatusReply>("jobs/status", { id: job.id });
 		expect(status.job.counters).toMatchObject({ created: 2, failed: 0 });
 		expect(status.job.processed).toBe(2);
@@ -309,6 +322,22 @@ describe("the M6c agent routes", () => {
 			expect((error as Error).message, name).toContain("[staged file]");
 			expect((error as Error).message, name).not.toMatch(UPLOAD_ID);
 		}
+	});
+
+	it("redacts an error thrown synchronously by a rule that returns no promise", async () => {
+		// jobs/status's run is not async, so a synchronous throw never becomes a rejection there.
+		const upload = `01JZ0000000000000000000000${"0".repeat(32)}`;
+		state.statusThrows = new ServiceError("BROKEN", `Upload ${upload} is unreadable`, 500, {
+			upload,
+		});
+		const error = await call("jobs/status", { id: "J1" }).catch((e: unknown) => e);
+		expect(error).toMatchObject({
+			name: "PluginRouteError",
+			code: "BROKEN",
+			status: 500,
+			message: "Upload [staged file] is unreadable",
+			details: { upload: "[staged file]" },
+		});
 	});
 
 	it("refuses XLSX text, empty or oversized text and a stale revision, keeping no file", async () => {

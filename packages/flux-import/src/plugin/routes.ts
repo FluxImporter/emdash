@@ -624,12 +624,15 @@ function agentRoute<T>(
 	run: (ctx: RouteContext<T>, services: Services) => Promise<unknown>,
 	missing?: string,
 ): PluginRoute<T> {
+	// try/await rather than .catch, so a run that throws before returning a promise is redacted too.
 	return route(input, (ctx) =>
-		withServices(ctx, (services) =>
-			run(ctx, services).catch((e: unknown) => {
+		withServices(ctx, async (services) => {
+			try {
+				return await run(ctx, services);
+			} catch (e) {
 				throw agentError(e, missing);
-			}),
-		),
+			}
+		}),
 	);
 }
 

@@ -65,6 +65,14 @@ describe("createPlugin", () => {
 		for (const name of ["jobs/start", "jobs/step", "jobs/status"]) {
 			expect(plugin.routes[name], name).not.toHaveProperty("request");
 		}
+		// isJsonPostRouteContract (@emdash-cms/plugin-types dist/index.js:94-96, not a dependency
+		// of this package): no raw response, POST allowed, a JSON body if one is declared.
+		for (const name of ["jobs/plan", "jobs/start", "jobs/step", "jobs/status"]) {
+			const route = plugin.routes[name]!;
+			expect(route.methods, name).toEqual(["POST"]);
+			expect(route, name).not.toHaveProperty("response");
+			expect(route.request?.body ?? "json", name).toBe("json");
+		}
 		const input = (name: string) => plugin.routes[name]!.input!;
 		const plan = { templateId: "T1", text: "sku\nA\n" };
 		expect(input("jobs/plan").safeParse(plan).success).toBe(true);
