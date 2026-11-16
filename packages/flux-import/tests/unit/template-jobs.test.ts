@@ -239,4 +239,35 @@ describe("jobs/list by template (spec Ruling 41)", () => {
 		).toEqual(["J1"]);
 		expect((await listJobs({ jobs }, {})).items.map((j) => j.id)).toEqual(["J4", "J3", "J2", "J1"]);
 	});
+
+	it("pages a template's jobs to the end, each once", async () => {
+		const jobs = new MemoryKv<Job>(STORAGE.jobs.indexes);
+		const ids: string[] = [];
+		for (let i = 0; i < 130; i++) {
+			const id = `J${String(i).padStart(3, "0")}`;
+			const at = new Date(Date.UTC(2026, 10, 16, 10, 0, i)).toISOString();
+			const templateId = i % 3 === 0 ? "TPL2" : "TPL1";
+			if (templateId === "TPL1") ids.push(id);
+			await jobs.put(id, {
+				id,
+				status: "completed",
+				createdAt: at,
+				templateId,
+				templateRevision: 1,
+			} as Job);
+		}
+		const seen: Job[] = [];
+		let cursor: string | undefined;
+		let pages = 0;
+		do {
+			const page = await listJobs({ jobs }, { templateId: "TPL1", ...(cursor ? { cursor } : {}) });
+			seen.push(...page.items);
+			cursor = page.cursor;
+			pages++;
+		} while (cursor);
+		expect(pages).toBeGreaterThan(1);
+		expect(seen.map((j) => j.id)).toEqual([...ids].reverse());
+		expect(new Set(seen.map((j) => j.id)).size).toBe(ids.length);
+		expect(seen.every((j) => j.templateId === "TPL1")).toBe(true);
+	});
 });

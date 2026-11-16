@@ -52,10 +52,11 @@ export interface LastImport {
 
 /**
  * Whether `a` and `b` are the same template: both saved with the same ID and revision, or both
- * inline with the same fingerprint. An absent template (`undefined` or `null`) never matches.
+ * inline with the same fingerprint. An absent template (`undefined` or `null`) never matches,
+ * nor does a stored value that is not an object (a malformed row must not fail the request).
  */
 export function sameTemplate(a: ImportTemplate | undefined, b: ImportTemplate | null): boolean {
-	if (a === undefined || b === null) return false;
+	if (!a || !b || typeof a !== "object") return false;
 	if ("fingerprint" in a || "fingerprint" in b) {
 		return "fingerprint" in a && "fingerprint" in b && a.fingerprint === b.fingerprint;
 	}

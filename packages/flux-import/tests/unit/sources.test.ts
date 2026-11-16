@@ -676,13 +676,14 @@ describe("jobFromSource", () => {
 		expect(await run({ fingerprint: "f1" })).toMatchObject({ skipped: "unchanged" });
 		expect(await run({ fingerprint: "f2" })).toMatchObject({ id: "J6" });
 		expect(await run(null)).toMatchObject({ id: "J7" });
-		expect(created).toHaveLength(7);
+		expect(await run(null)).toMatchObject({ id: "J8" });
+		expect(created).toHaveLength(8);
 		// force still runs; a dry run is never skipped nor recorded.
-		expect(await run({ fingerprint: "f2" }, true)).toMatchObject({ id: "J8" });
+		expect(await run({ fingerprint: "f2" }, true)).toMatchObject({ id: "J9" });
 		const dry = { force: false, dryRun: true, template: { fingerprint: "f2" } };
-		expect(await jobFromSource(deps, "S1", dry, create)).toMatchObject({ id: "J9" });
+		expect(await jobFromSource(deps, "S1", dry, create)).toMatchObject({ id: "J10" });
 		expect((await getSource(deps, "S1")).lastImport).toMatchObject({
-			jobId: "J8",
+			jobId: "J9",
 			template: { fingerprint: "f2" },
 		});
 	});
@@ -703,6 +704,25 @@ describe("jobFromSource", () => {
 		expect(await jobFromSource(deps, "S1", REAL, create)).toMatchObject({ skipped: "unchanged" });
 	});
 
+	it("runs, without throwing, when the stored lastImport template is malformed", async () => {
+		const { deps, routes } = setup();
+		routes.set(
+			FEED,
+			etagged(() => BODY),
+		);
+		await createSource(deps, { name: "A", url: FEED });
+		const { create } = creator();
+		await jobFromSource(deps, "S1", REAL, create);
+		let n = 1;
+		for (const bad of [null, "inline-T", 7]) {
+			const row = await getSource(deps, "S1");
+			const lastImport = { ...row.lastImport, template: bad } as unknown as LastImport;
+			await deps.sources.put("S1", { ...row, lastImport });
+			n++;
+			expect(await jobFromSource(deps, "S1", REAL, create)).toMatchObject({ id: `J${n}` });
+		}
+	});
+
 	it("compares templates by kind, ID, revision and fingerprint", () => {
 		expect(sameTemplate({ id: "T", revision: 1 }, { id: "T", revision: 1 })).toBe(true);
 		expect(sameTemplate({ id: "T", revision: 1 }, { id: "T", revision: 2 })).toBe(false);
@@ -711,6 +731,7 @@ describe("jobFromSource", () => {
 		expect(sameTemplate({ fingerprint: "f" }, { id: "f", revision: 1 })).toBe(false);
 		expect(sameTemplate(undefined, { fingerprint: "f" })).toBe(false);
 		expect(sameTemplate({ fingerprint: "f" }, null)).toBe(false);
+		expect(sameTemplate(undefined, null)).toBe(false);
 	});
 });
 
