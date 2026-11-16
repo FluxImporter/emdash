@@ -28,12 +28,21 @@ let server: DevServer;
 let client: Client;
 
 type Skipped = { skipped: "unchanged"; sourceId: string; uploadId: string };
-type Envelope = { success: boolean; error?: { code: string; message: string } };
+type Envelope = {
+	success: boolean;
+	error?: { code: string; message: string; details?: Record<string, unknown> };
+};
 const failure = (promise: Promise<unknown>) => promise.catch((e: unknown) => e);
 const owned = (collection: string, missing?: object, owner = "shop") => ({
 	...template(collection),
 	rules: { owner, ...(missing ? { missing } : {}) },
 });
+
+/** A plugin route's status and envelope, for what `Client.plugin`'s ApiError drops. */
+async function send(route: string, body: unknown, init: RequestInit = {}) {
+	const res = await client.raw("POST", `${PLUGIN}/${route}`, body, init);
+	return { status: res.status, body: (await res.json()) as Envelope };
+}
 
 async function save(name: string, body: object): Promise<SavedResult> {
 	return client.plugin<SavedResult>("templates/create", { name, template: body });
@@ -196,9 +205,11 @@ describe("M6a saved templates on Node", () => {
 		});
 		expect(out.filename).toBe("flux-import-template-flow-feed.json");
 		expect(JSON.stringify(out.file)).not.toContain(id);
-		expect(
-			await failure(client.plugin("templates/import", { file: out.file, name: "Flow copy" })),
-		).toMatchObject({ status: 409, code: "OWNER_IN_USE" });
+		// The saved-template case: the original still uses owner "flow".
+		expect(await send("templates/import", { file: out.file, name: "Flow copy" })).toMatchObject({
+			status: 409,
+			body: { error: { code: "OWNER_IN_USE", details: { owner: "flow", templates: [id] } } },
+		});
 		const copy = await client.plugin<SavedResult>("templates/import", {
 			file: out.file,
 			name: "Flow copy",
@@ -222,6 +233,18 @@ describe("M6a saved templates on Node", () => {
 			status: 404,
 			code: "TEMPLATE_NOT_FOUND",
 		});
+		// The links case on its own: no saved template uses "flow" now, but the job's entries do.
+		const linksOnly = await send("templates/import", { file: out.file, name: "Flow again" });
+		expect(linksOnly).toMatchObject({
+			status: 409,
+			body: {
+				error: {
+					code: "OWNER_IN_USE",
+					details: { owner: "flow", templates: [], links: true },
+				},
+			},
+		});
+		expect(linksOnly.body.error?.message).toContain(`${C}/en (existing entries)`);
 		expireLock(server.dbPath, C, held.id);
 		await client.plugin("jobs/retry", { id: job.id });
 		const retried = await client.runToEnd(job.id);
@@ -280,11 +303,18 @@ describe("M6a saved templates on Node", () => {
 			expect(job).not.toHaveProperty("skipped");
 			if (!("skipped" in job)) await client.runToEnd(job.id);
 		};
+		const skipped = async (body: object) =>
+			expect(await run(body)).toMatchObject({ skipped: "unchanged" });
 		await ran({ templateId: a.template.id });
-		expect(await run({ templateId: a.template.id })).toMatchObject({ skipped: "unchanged" });
+		await skipped({ templateId: a.template.id });
+		// A dry run is never skipped, and does not move lastImport: the real run is still skipped.
+		await ran({ templateId: a.template.id, dryRun: true });
+		await skipped({ templateId: a.template.id });
 		// Another template on the same unchanged content is not skipped; then it is.
 		await ran({ templateId: b.template.id });
-		expect(await run({ templateId: b.template.id })).toMatchObject({ skipped: "unchanged" });
+		await skipped({ templateId: b.template.id });
+		// A again is not skipped, since lastImport now names B.
+		await ran({ templateId: a.template.id });
 		// The same template, edited (revision 2): not skipped once, then skipped again.
 		await client.plugin("templates/update", {
 			id: b.template.id,
@@ -292,17 +322,15 @@ describe("M6a saved templates on Node", () => {
 			description: "edited",
 		});
 		await ran({ templateId: b.template.id });
-		expect(await run({ templateId: b.template.id })).toMatchObject({ skipped: "unchanged" });
-		// An inline template's fingerprint is not a saved template's reference.
+		await skipped({ templateId: b.template.id });
+		// An inline template's fingerprint is not a saved template's reference; the same object
+		// again is skipped.
 		await ran({ template: template("it_m6a_url") });
+		await skipped({ template: template("it_m6a_url") });
 	});
 
 	it("answers 400 to templates/delete without a revision, 413 over 2 MiB and 400 to bad JSON, over HTTP", async () => {
 		const { template: row } = await save("Http", template("it_m6a_http"));
-		const send = async (route: string, body: unknown, init: RequestInit = {}) => {
-			const res = await client.raw("POST", `${PLUGIN}/${route}`, body, init);
-			return { status: res.status, body: (await res.json()) as Envelope };
-		};
 		expect(await send("templates/delete", { id: row.id })).toMatchObject({
 			status: 400,
 			body: { success: false, error: { code: "VALIDATION_ERROR" } },
