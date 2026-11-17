@@ -98,16 +98,25 @@ export async function cronHook(event: CronEvent, ctx: PluginContext): Promise<vo
  * runtime: on a fresh database this hook runs inside the runtime's own creation, whose init lock
  * a second caller would wait on (preflight F5). A schedule whose task could not be set is logged
  * by ID; the hourly reconciliation tries it again.
+ *
+ * Never throws: EmDash disables a plugin, and its cron tasks, whose activation fails
+ * (`emdash-runtime-C4oFeVpN.mjs:1359-1366`). An error is logged redacted, and the hourly
+ * `retention` task and the `schedules/*` routes reconcile again.
  */
 export async function activate(ctx: PluginContext): Promise<void> {
-	const result = await reconcile({
-		schedules: schedulesCollection(ctx.storage),
-		jobs: pluginCollections(ctx.storage).jobs,
-		cron: cronOf(ctx),
-	});
-	if (result.failed.length > 0) {
-		ctx.log.warn(`flux-import: ${result.failed.length} schedule task(s) could not be scheduled`, {
-			failed: result.failed,
+	try {
+		const result = await reconcile({
+			schedules: schedulesCollection(ctx.storage),
+			jobs: pluginCollections(ctx.storage).jobs,
+			cron: cronOf(ctx),
 		});
+		if (result.failed.length > 0) {
+			ctx.log.warn(`flux-import: ${result.failed.length} schedule task(s) could not be scheduled`, {
+				failed: result.failed,
+			});
+		}
+	} catch (e) {
+		const message = redact(e instanceof Error ? e.message : String(e));
+		ctx.log.error(`flux-import: activation could not repair the schedule tasks: ${message}`);
 	}
 }

@@ -376,6 +376,36 @@ describe("activate", () => {
 		await activate(context());
 		expect(logs).toEqual([]);
 	});
+
+	it("never throws when cron.list fails: one redacted error is logged", async () => {
+		cron.list = async () => {
+			throw new Error(`list failed near flux-import-upload-${UPLOAD}.csv`);
+		};
+		await expect(activate(context())).resolves.toBeUndefined();
+		expect(logs).toEqual([
+			"error: flux-import: activation could not repair the schedule tasks: list failed near [staged file]",
+		]);
+		expect(JSON.stringify(logData)).not.toContain(UPLOAD);
+	});
+
+	it("never throws when the schedules query fails: one redacted error is logged", async () => {
+		schedules.query = async () => {
+			throw new Error(`query failed on ${UPLOAD}`);
+		};
+		await expect(activate(context())).resolves.toBeUndefined();
+		expect(logs).toEqual([
+			"error: flux-import: activation could not repair the schedule tasks: query failed on [staged file]",
+		]);
+		expect(logData[0]?.data).toBeUndefined();
+	});
+
+	it("never throws when the schedules collection is missing", async () => {
+		const ctx = { ...(context() as object), storage: {} } as never;
+		await expect(activate(ctx)).resolves.toBeUndefined();
+		expect(logs).toEqual([
+			"error: flux-import: activation could not repair the schedule tasks: flux-import: the schedules storage collection is missing",
+		]);
+	});
 });
 
 describe("the plugin's hooks", () => {
