@@ -2,7 +2,8 @@
 
 Status: drafted 2026-11-16 (the user approved all remaining milestones up front on 2026-10-27;
 design decisions are the implementer's rulings), and revised the same day after the spec review
-(Rulings 29-44; amended rulings and sections are marked). Second of four parts of Milestone 6 (Automation)
+(Rulings 29-44; amended rulings and sections are marked), and amended after the plan and the
+review (Rulings 45-65, "Amendments (plan and review)"). Second of four parts of Milestone 6 (Automation)
 of [the roadmap](./2026-10-07-flux-import-roadmap-design.md#milestone-6-split), in the order M6a,
 M6c, M6b, M6d (M6a spec, Ruling 35). Builds on M6a
 ([spec](./2026-11-16-flux-import-m6a-templates-design.md),
@@ -87,7 +88,7 @@ under "To verify in Task 0".
 | F3 | **Consent.** Enabled tools are listed only when the plugin's state has `mcpToolsEnabled`, status `active`, the plugin is enabled, and the stored `mcpToolsConsent` equals a fresh serialization. That serialization is every tool's name, description, route, permission, destructive flag and the draft-7 JSON Schema of `input` (and `output`), sorted by name. The plugin version is not part of it. An administrator with `plugins:manage` stores the snapshot with `PUT /_emdash/api/admin/plugins/<id>/mcp { enabled: true }`, which the Plugins page's "Agent access" switch calls. That `PUT` computes and stores a fresh
 snapshot whatever is stored, so over the API one call re-consents. The plugin list reports `mcpToolsEnabled` from the state alone, without comparing the snapshot, so **after a tool change the switch still shows "on" while the tools are gone** | `src/emdash-runtime.ts:5802-5842`; `src/astro/routes/api/admin/plugins/[id]/mcp.ts:13-41` (`:33-37`); `src/api/handlers/plugins.ts:98`; `@emdash-cms/admin` `dist/index.js:52878-52904`; `@emdash-cms/auth` `src/rbac.ts:84` |
 | F4 | **Authentication and scopes.** The MCP endpoint accepts bearer tokens (PAT or OAuth) only: any other request gets the OAuth discovery 401, so there is no cookie and no CSRF path. The middleware's per-path scope rules skip the endpoint, so each tool checks its own. A plugin tool requires `mcp:tools` or `mcp:tools:<pluginId>`, and `hasScope` answers that check without consulting `admin` (the `admin` scope does **not** grant plugin tools). Then the route's permission is checked against the user's role. A failure is `INSUFFICIENT_SCOPE` or `INSUFFICIENT_PERMISSIONS`, and is audited as `denied`. `mcp:tools:<id>` is a valid PAT scope (`^mcp:tools:[a-z][a-z0-9_-]*$`); the OAuth metadata's `scopes_supported` lists the fixed scopes only (with `mcp:tools`, without per-plugin ones) | `src/astro/middleware/auth.ts:286-292`, `:841-844`; `src/mcp/server.ts:918-953`; `@emdash-cms/auth` `src/tokens.ts:46-70`, `:106-117`; `src/astro/routes/api/well-known/oauth-authorization-server.ts:31`; [MCP server, Scopes](https://docs.emdashcms.com/reference/mcp-server/) |
-| F5 | **Dispatch.** A call becomes an internal `POST` to the route with `JSON.stringify(input)` as its body, through `handlePluginApiRoute`. So the route's `request` declaration (its `maxBytes`) and its `input` validation apply as for an HTTP call, but the plugin catch-all route's own token-scope check (`admin`) does not. The MCP caller is passed as `routeCtx.user`. Every call writes an audit row (`plugin_tool_invoke`, resource `flux-import__<name>`, `success` or `failure`) | `src/emdash-runtime.ts:5844-5882`, `:5597-5668` (`:5625`, `:5628`); `src/plugins/routes.ts:132-143`, `:240-262` |
+| F5 | **Dispatch.** A call becomes an internal `POST` to the route with `JSON.stringify(input)` as its body, through `handlePluginApiRoute`. So the route's `request` declaration (its `maxBytes`) and its `input` validation apply as for an HTTP call, but the plugin catch-all route's own token-scope check (`admin`) does not. The MCP caller is passed as `routeCtx.user`. Every call writes an audit row (`plugin_tool_invoke`, resource `flux-import__<name>`, `success` or `failure`). *Amended by Ruling 46*: an SDK input refusal writes none | `src/emdash-runtime.ts:5844-5882`, `:5597-5668` (`:5625`, `:5628`); `src/plugins/routes.ts:132-143`, `:240-262` |
 | F6 | **Input.** The SDK validates `arguments` with the tool's schema and passes the **parsed** value to the callback, which EmDash forwards. A z.object strips unknown keys unless it is strict. A failure is answered as a tool error whose text is `Input validation error: …`, **without** `_meta.code`. The route then validates the same value again and answers its own failure as `VALIDATION_ERROR` with `z.formatError` details. The SDK applies no element limit to tool input by default | `sdk` `server/mcp.js:206-225`, `:161-170`, `:174-196`, `:41-48`; `src/plugins/routes.ts:244-258` |
 | F7 | **Output.** Without `output`, a route's result is returned as one text block of `JSON.stringify(data, null, 2)`. With `output`, the result must be an object and is sent both as that text and as `structuredContent`. The SDK checks `structuredContent` against the schema **after** the handler has run, and a mismatch becomes an error result. So a write that succeeded is then reported as failed | `src/mcp/server.ts:388-393`, `:965-978`; `sdk` `server/mcp.js:165-170`, `:229-251` |
 | F8 | **Errors.** A route failure (a `PluginRouteError` from the handler, an input failure, an `INVALID_PLUGIN_REQUEST` body error) arrives as `isError: true` with text `[CODE] message` and `_meta: { code, details? }`. An unknown error thrown by a route handler is caught by EmDash's route registry, logged, and sent as `INTERNAL_ERROR` "An internal error occurred". Only an error thrown in the MCP layer itself reaches the wrapper, as `INTERNAL_ERROR` with its own message. The docs describe the same envelope | `src/mcp/server.ts:401-416`, `:501-519`, `:899-903`; `src/plugins/routes.ts:280-317` (`:307-317`); `src/emdash-runtime.ts:5626-5638`; [MCP server, Errors](https://docs.emdashcms.com/reference/mcp-server/#errors) |
@@ -154,7 +155,8 @@ M5a-M6a.
   - A `PUT …/mcp { enabled: true }` stores a fresh snapshot directly and restores them; in the
     admin, where the switch still shows "on", that takes switching off and on.
 - **V5. Scopes and permissions (F4).**
-  - A PAT with only `admin` gets `INSUFFICIENT_SCOPE`.
+  - A PAT with only `admin` gets `INSUFFICIENT_SCOPE`. *Amended by Ruling 47*: it still sees the
+    tools in `tools/list`.
   - A PAT with only `mcp:tools:flux-import` calls every flux-import tool, and gets
     `INSUFFICIENT_SCOPE` from `content_list`.
   - A PAT with `mcp:tools` works too.
@@ -188,7 +190,7 @@ M5a-M6a.
   If the read passes about 2 MiB, `RECORD_PAGE` is lowered.
 - **V9. A malformed cursor.** Measure what `list_templates` and `import_status` answer for
   `cursor: "x"`. If it is `INTERNAL_ERROR`, the two routes catch the storage cursor error and
-  answer `400 INVALID_CURSOR`, and this spec is amended.
+  answer `400 INVALID_CURSOR`, and this spec is amended. *Amended by Ruling 45* (every route).
 
 If V2 or V7 fail, the plan stops and this spec is amended before Task 1.
 
@@ -216,6 +218,7 @@ anyway (Ruling 40).
 ### Descriptions
 
 These texts are part of the consent snapshot (F3). They are drafted here and settled in the plan.
+*Amended by Ruling 65* (the settled texts are in `src/plugin/mcp.ts`).
 After M8's npm release, every change to one costs each site a re-consent (Rulings 20, 39).
 
 - **`list_templates`:** "List the import templates an administrator saved on this site, 8 per
@@ -331,7 +334,7 @@ interface JobSummary {
 	publish: boolean;
 	missing: { maxPercent: number } | false | null;  // job.missingLimit; null: no rules.missing.
 	                                                  // Always false or null on agent jobs (Ruling 29)
-	processed: number;              // records read so far (cursor.seq)
+	processed: number;              // records read so far (cursor.seq); a rollback's counter sum (Ruling 54)
 	counters: {                     // every counter, 0 when absent (P6)
 		created: number; updated: number; unchanged: number; locked: number; conflict: number;
 		failed: number; filtered: number; reverted: number; removed: number;
@@ -343,7 +346,7 @@ interface JobSummary {
 	warningCount: number;
 	busyUntil?: string;             // ISO: a live lease's expiry (never its holder)
 	retryAfterMs?: number;          // see `next`
-	next: "next_batch" | "wait" | "done" | "stopped";
+	next: "next_batch" | "wait" | "done" | "stopped" | "not_agent";  // not_agent: Ruling 61
 	createdAt: string;
 	updatedAt: string;
 }
@@ -354,7 +357,8 @@ interface JobSummary {
 | Job | `next` | `retryAfterMs` |
 | --- | --- | --- |
 | `created`, or `running` without a live lease and without `error` | `next_batch` | absent |
-| `running` without a live lease, after an unexpected batch error (`error.code === "internal"`; the job fails at three, P3) | `next_batch` | `RETRY_AFTER_ERROR_MS` (5,000) |
+| `running` without a live lease, after an unexpected batch error (`error.code === "internal"`; the job fails at three, P3). *Amended by Ruling 52*: within the failed batch's lease the row above applies | `next_batch` | `RETRY_AFTER_ERROR_MS` (5,000) |
+| `created` or `running` without `origin: "agent"`. *Added by Ruling 61* | `not_agent` | absent |
 | `running` with a live lease | `wait` | the lease's remaining time, clamped to 1,000-30,000 ms |
 | `completed` | `done` | absent |
 | `paused`, `failed` or `cancelled` | `stopped` | absent |
@@ -397,7 +401,7 @@ interface RecordSummary {
 	action?: string;                // create | update | unchanged | delete | trash | revert | restore | unpublish
 	sourceKey: string | null;
 	entryId: string | null;
-	changes: { field: string; value: string }[];  // first CHANGES_SHOWN (20): the mapped value (`after`) only
+	changes: { field: string; value?: string }[];  // first CHANGES_SHOWN (20): the mapped value (`after`) only; no value on a rollback (Ruling 60)
 	changeCount: number;
 	errors: { field?: string; code: string; message: string }[];   // first ERRORS_SHOWN (5), redacted
 	errorCount: number;
@@ -432,7 +436,8 @@ new routes throw. It applies these rules:
 
 The new routes map `UPLOAD_NOT_FOUND` and `SourceMissingError`, whose messages hold the upload ID
 (P15), to `SOURCE_FILE_MISSING` "The dry run's data is no longer stored; run dry_run again". Other
-codes keep their messages, redacted.
+codes keep their messages, redacted. *Amended by Rulings 59 and 62* (every overlapping match,
+`details` included; `jobs/plan`'s own message).
 
 ### Errors
 
@@ -446,7 +451,7 @@ them, `_meta.details` (F8). The one exception is the SDK's input validation (F6)
 | `INSUFFICIENT_SCOPE`, `INSUFFICIENT_PERMISSIONS` | all | F4 |
 | `TRANSFER_IMPORT_IN_PROGRESS`, `MEDIA_USAGE_ACTIVATION_IN_PROGRESS`, `MEDIA_USAGE_ACTIVATION_CHECK_FAILED`, `TRANSFER_FENCE_CHECK_FAILED` | all | The site write fence (F9) |
 | `INVALID_PLUGIN_REQUEST` | `dry_run` | 413: the re-serialized arguments are over `PLAN_BODY_MAX_BYTES` (2 MiB). Text under 1 MiB can still exceed it once JSON-escaped (Ruling 42) |
-| `INVALID_CURSOR` | `list_templates`, `import_status` | Only if V9 shows a 500 today |
+| `INVALID_CURSOR` | `list_templates`, `import_status` | Only if V9 shows a 500 today. *Amended by Ruling 45*: 400 on every route that takes a cursor |
 | `NOT_FOUND` | `get_template`, `start_import`, `next_batch`, `import_status` | No template or job with that ID; for `start_import`, no dry run with that ID |
 | `JOB_NOT_AGENT` | `next_batch` | 403: the job was not created by `dry_run` or `start_import` (no `origin: "agent"`), a rollback included (Ruling 30) |
 | `TEMPLATE_NOT_FOUND`, `TEMPLATE_CHANGED` | `dry_run`, `start_import` | P9. On `start_import`: the dry run's template was deleted, or is no longer at the dry run's revision (Ruling 7) |
@@ -454,10 +459,11 @@ them, `_meta.details` (F8). The one exception is the SDK's input validation (F6)
 | `INVALID_FORMAT` | `dry_run` | `text` with a template whose source format is `xlsx` (Ruling 6) |
 | `EMPTY_BODY`, `TOO_LARGE` | `dry_run` | `text` is whitespace, or is over 1 MiB of UTF-8 (413) (P4) |
 | the M3c fetch codes, `CREDENTIAL_MISSING`, `CONFLICT` | `dry_run` | With `sourceId`, as `jobs/create` with a source |
+| `CONFLICT` | `start_import` | 409: the claim lost `CLAIM_ATTEMPTS` (5) times in a row. *Added by Ruling 53* |
 | `NOT_A_DRY_RUN` | `start_import` | 400: the job is not a dry run that `dry_run` created. A real import, a rollback, or a dry run made through `jobs/create` (Ruling 32) |
 | `DRY_RUN_INCOMPLETE` | `start_import` | 409: the dry run's status is not `completed`; `details.status` names it |
 | `DRY_RUN_USED` | `start_import` | 409: the job started from this dry run was rolled back; `details.jobId` names it (Ruling 38) |
-| `SOURCE_FILE_MISSING` | `start_import`, and in a job's `error` | The dry run's staged file is gone (P7, Ruling 33) |
+| `SOURCE_FILE_MISSING` | `start_import`, and in a job's `error` | The dry run's staged file is gone (P7, Ruling 33). *Amended by Ruling 51*: a job's own error keeps the engine's `source_missing`, redacted; `jobs/plan` has its own message (Ruling 62) |
 | `INTERNAL_ERROR` | all | A handler's unknown error, sent by EmDash as "An internal error occurred" (F8). The agent retries after 5 s, at most 3 times (Ruling 37) |
 
 ## Routes
@@ -486,7 +492,8 @@ the whole re-serialized input, text included, must fit (Ruling 42).
    - `publish`, `batchSize` and `budgetMs` passed through.
 
    The `jobs/create` handler body moves into a shared `createJobFrom(ctx, services, request)`, which
-   both routes call, so they cannot drift.
+   both routes call, so they cannot drift. *Amended by Ruling 55* (it also takes the resolved
+   template).
 4. With `text`, start the job from the staged upload. With `sourceId`, go through `jobFromSource`.
    A dry run fetches the source, which updates its `lastFetch` and, when the content changed,
    replaces its latest staged copy. A dry run is never skipped (P2, P17).
@@ -498,7 +505,8 @@ the whole re-serialized input, text included, must fit (Ruling 42).
 
 1. `getVersioned(dryRunId)`. A missing job is `NOT_FOUND`. Unless the job is a dry run with
    `origin: "agent"`, `kind !== "rollback"` and a `templateId`, the call is `NOT_A_DRY_RUN`
-   (Ruling 32). A status other than `completed` is `DRY_RUN_INCOMPLETE`.
+   (Ruling 32). A status other than `completed` is `DRY_RUN_INCOMPLETE`. *Amended by Rulings 58
+   and 63* (a purging dry run is refused after step 2; a revision is required).
 2. **When `startedAs` is set** (Ruling 38), read that job:
    - If it exists with `rolledBackBy`, the call is `DRY_RUN_USED`.
    - If it exists otherwise, return its summary; the call is idempotent.
@@ -544,7 +552,8 @@ points to (an orphan that a repeated call would duplicate). The worst a crash le
 1. Read the job. A missing job is `NOT_FOUND`.
 2. Unless `job.origin === "agent"`, refuse with `JOB_NOT_AGENT` (403, Ruling 30). Rollback jobs
    never carry `origin`.
-3. `nextBatch(deps, uploads, id, holder, keep)` exactly as `jobs/next` does.
+3. `nextBatch(deps, uploads, id, holder, keep)` exactly as `jobs/next` does. *Amended by Ruling
+   50*: only for a `created` or `running` job; any other is returned as stored.
 4. Return `step(job)`.
 
 There is no waiting on the server. A held lease returns at once with `wait` and `retryAfterMs`
@@ -556,7 +565,7 @@ There is no waiting on the server. A held lease returns at once with `wait` and 
 `listRecords(deps, { id, status: records, cursor, limit: RECORD_PAGE })`. Returns
 `{ job: summarize(job), records?: { items: rows.map(summarizeRecord), cursor?, hasMore } }`. It
 reads any job, including jobs an agent did not create, since reading changes nothing and the
-caller is an Admin.
+caller is an Admin. *Amended by Ruling 49* (the job is read once, through `recordPage`).
 
 ### Engine, type and retention changes
 
@@ -577,7 +586,8 @@ caller is an Admin.
 - **Retention** (P14, Ruling 41): `due()` in `purgeExpired` also requires the job's status to be
   `completed`, `cancelled` or `failed`. Jobs that are `created`, `running` or `paused` are never
   purged, whatever `retentionDays`. This is a pre-existing bug: with `retentionDays: 0` a job could
-  be purged between two `next_batch` calls.
+  be purged between two `next_batch` calls. *Amended by Ruling 64* (a job already marked purging
+  is finished whatever its status; the mark re-checks `due()`).
 
 ## The agent's flow
 
@@ -671,8 +681,9 @@ removes it while it is unfinished (Ruling 41).
   and the summary omits `sourceId`.
 - **Network.** `dry_run { sourceId }` makes the server fetch an Administrator's URL through the M3c
   fetcher and SSRF guard, with its stored credential. The agent cannot set or see the URL, the
-  header or the value. No tool makes the server fetch a URL the agent chose, except the media URLs
-  in the agent's own data. A template's image and file mappings download those behind the same
+  header or the value. *Amended by Ruling 57*: it sees at most the host and the fetch error
+  text. No tool makes the server fetch a URL the agent chose, except the media URLs in the agent's
+  own data. A template's image and file mappings download those behind the same
   guard (M4c), as they would for an Admin today.
 - **The fence.** Every tool is refused during a site import and during media-usage activation, and
   every successful call restarts a running export (F9, Ruling 24). An agent polling
@@ -819,8 +830,8 @@ call (F12), which V7 measures.
   - no tool schema has a `missing` or `journal` key;
   - every field of every tool schema has a description;
   - **the consent snapshot test:** `serializePluginMcpConsent`'s algorithm (F3) is applied to the
-    six tools and compared with a committed fixture, `tests/unit/fixtures/mcp-consent.json`. A
-    change to a name, description, route, permission, flag or schema fails the test until the
+    six tools and compared with a committed fixture, `tests/unit/fixtures/mcp-consent.json`
+    (*amended by Ruling 48*: `.txt`). A change to a name, description, route, permission, flag or schema fails the test until the
     fixture is updated in the same commit (Ruling 20). The fixture cannot catch a change that an
     EmDash or Zod upgrade makes to the serialization itself (Open issues);
   - every new route queries only indexed fields.
@@ -1077,7 +1088,7 @@ Tasks 1 and 2 can run in parallel.
     which also guarantees a `templateId`; anything else is `NOT_A_DRY_RUN`. An Admin's REST dry run
     may carry a `missing` threshold, an inline template or `journal: false`, none of which an agent
     could set. Letting the agent start one would bypass Rulings 4, 10 and 29. Amends Ruling 7.
-33. **No raw internal messages and no upload IDs in any M6c response.** These pass through
+33. **No raw internal messages and no upload IDs in any M6c response.** *Amended by Rulings 59 and 62.* These pass through
     `redact`:
     - a job's `error`, its warnings, record errors and `newMedia`;
     - every error the new routes throw.
@@ -1089,7 +1100,7 @@ Tasks 1 and 2 can run in parallel.
     Ruling 5 kept upload IDs out of the structured fields, but `source_missing` messages still
     carried them. Raw exception text can also hold storage keys, SQL fragments or stack details. A
     test injects an upload-ID error and asserts that it is redacted.
-34. **Previews show the record's mapped value only, never the entry's current value.** A change's
+34. **Previews show the record's mapped value only, never the entry's current value.** *Amended by Ruling 60* (rollback rows show no values). A change's
     `before` is whatever the entry holds now, drafts included. That can be a Contributor's
     unpublished text, which the agent did not write and its user did not ask to send to a model
     provider.
@@ -1173,7 +1184,7 @@ Tasks 1 and 2 can run in parallel.
     `list_templates` and `get_template` return `createdBy` and `updatedBy`, as the REST routes do.
     The token's user is an Admin, who can list users anyway. Ruling 3's reason for leaving out the
     lease holder is that it means nothing to an agent, not that a user ID leaks. Amends Ruling 3.
-41. **Retention never deletes an unfinished job.** `due()` in `purgeExpired` takes only `completed`,
+41. **Retention never deletes an unfinished job.** *Amended by Ruling 64.* `due()` in `purgeExpired` takes only `completed`,
     `cancelled` and `failed` jobs (P14). With `retentionDays: 0`, a job could otherwise be deleted
     between two `next_batch` calls, and a paused job at any time, which would lose its journal mid
     run.
@@ -1206,6 +1217,134 @@ Tasks 1 and 2 can run in parallel.
     - the `dry_run` description's account of a URL-source fetch (P17).
 
     The M6a markers are fixed in that spec.
+
+## Amendments (plan and review)
+
+Added by the M6c review run (plan Task 8). They come from the plan's rulings and facts, which the
+coordinator accepted before Task 1, from the pre-flight scan (P3, P5, P6, P10) and from the task
+reviews. Each is binding and amends the text above where it says otherwise; the code reads as these
+rulings say. Evidence is cited by plan Fact, plan Ruling or task.
+
+45. **(Fact V9, plan Ruling 1) `INVALID_CURSOR` is mapped for every route, by error name.** Task 0
+    measured `cursor: "x"` on `list_templates` and on `jobs/records` as `INTERNAL_ERROR` (REST 500)
+    on both runtimes: EmDash's plugin storage throws its own `InvalidCursorError`
+    (`src/database/repositories/types.ts:266-299`). `toRouteError` turns any error whose `name` is
+    `InvalidCursorError` into `PluginRouteError("INVALID_CURSOR", "The cursor is not valid; start
+    again without it", 400)`, for every route, not only the two V9 named. Matching by name holds
+    across a second bundled copy of `emdash` and across the workerd boundary (Task 7: 400 over REST
+    and `INVALID_CURSOR` over MCP on D1). Amends V9 and the Errors row "Only if V9 shows a 500
+    today".
+46. **(Fact E1) An SDK input refusal writes no audit row.** The SDK refuses a schema failure before
+    EmDash's handler runs (F6), so the `plugin_tool_invoke` row of F5's "every call" is written only
+    for calls that reach the route or are denied by scope or permission. Amends F5.
+47. **(Fact V5) `tools/list` is not filtered by scope.** A token without `mcp:tools` or
+    `mcp:tools:flux-import` (the dev-bypass PAT, `admin` only) still sees the six tools listed, and
+    is refused with `INSUFFICIENT_SCOPE` when it calls one. The listing is not a permission
+    boundary; the call is. Amends F4 and V5.
+48. **(Plan Ruling 10) The consent fixture is `tests/unit/fixtures/mcp-consent.txt`.** Biome formats
+    `.json` files and would re-indent the one-line snapshot, which must stay byte-identical to
+    EmDash's `JSON.stringify` output; it is written with Vitest's `toMatchFileSnapshot`. Task 6
+    proved that the consent EmDash 1.2.0 stores on a running site equals the fixture byte for byte.
+    Amends Testing ("`mcp-consent.json`").
+49. **(Plan Ruling 5) `jobs/status` reads the job once.** It reads the job with `getJob`, then calls
+    the new `recordPage(deps, { id, status, cursor, limit: RECORD_PAGE })`, which is `listRecords`
+    without its own job read; `listRecords` became `getJob` plus `recordPage`, so `jobs/records` is
+    unchanged. Amends "`jobs/status`".
+50. **(Plan Ruling 6) `next_batch` on a job that is neither `created` nor `running` runs no batch.**
+    `stepAgentJob` returns the stored job, which `step` turns into `done` or `stopped`, so an agent
+    polling after `done` claims no lease, writes no row and releases no staged file (Review Focus
+    4; Task 3 "answers a finished job without running a batch"). Amends "`jobs/step`" step 3.
+51. **(Plan Ruling 2) A job's own `source_missing` error keeps its code, redacted.** A job's error
+    codes are the engine's, and renaming one in summaries would make `import_status` disagree with
+    `jobs/get`; the agent sees `{ code: "source_missing", message: "Upload [staged file] not found" }`
+    (Task 6, end to end). `SOURCE_FILE_MISSING` is what the new routes throw. Amends the Errors row
+    "`SOURCE_FILE_MISSING` … and in a job's `error`".
+52. **(Fact E2) After `INTERNAL_ERROR`, a `next_batch` within the failed batch's lease answers
+    `wait`.** `noteFailure` keeps the lease (`src/engine/batch.ts:2187-2201`), so the next call
+    within it gets `wait` with the lease's remaining time (at most 30 s). `RETRY_AFTER_ERROR_MS`
+    applies once the lease is gone. Amends the `next` table.
+53. **(Plan Ruling 11, P10) `start_import` answers `CONFLICT` 409 when its claim keeps losing.** The
+    claim loop tries `CLAIM_ATTEMPTS` (5) times; when every compare-and-set loses, the call is
+    `` `Dry run ${id} kept changing; try again` ``. Amends the Errors table, which listed `CONFLICT`
+    for `dry_run` only.
+54. **(Plan Ruling 4, P10) A rollback job's `processed` is the sum of its counters.** A rollback's
+    cursor walks the journal, so `cursor.seq` is not a count of records. An import's `processed`
+    stays `cursor.seq`. Amends `JobSummary.processed`.
+55. **(Plan Ruling 8, P10) `createJobFrom(ctx, services, request, resolved?)` takes the resolved
+    template.** `jobs/plan` must read the template's format before staging text, and `jobs/start`
+    must re-read it before its claim, so both resolve it themselves and pass it on; the template is
+    read once per call (Task 4 "reads the saved template once per plan and once per start").
+    `jobs/create` resolves it as before. Amends "`jobs/plan`" step 3.
+56. **(P6, P10) Existing routes keep their behaviour, with two exceptions.** The plan's constraint
+    reads: every existing route keeps its input, output and behaviour, except `INVALID_CURSOR`
+    (Ruling 45) and the `.describe()` texts added to the `templates/list` and `templates/get` inputs
+    (their parse is unchanged).
+57. **(P3d) The agent cannot set a URL source's URL, and sees at most its host and the fetch error
+    text.** `dry_run { sourceId }` fetch errors carry the host (`Could not resolve <host>`, `The host
+    <host> is not allowed`) and the fetcher's error text, and `CREDENTIAL_MISSING` names the
+    credential. A host is not a capability; the URL's path and query, the header and the
+    credential's value never appear. Amends Security, "Network".
+58. **(P5, Task 3) A dry run that retention is deleting cannot be started.** `start_import` refuses
+    it with `DRY_RUN_INCOMPLETE` 409 `` `Dry run ${id} is being deleted and can't be started` ``
+    and `details: { status, purging: true }`. The check runs after the `startedAs` lookup and
+    before the template read, the claim and the repair, so a repeated `start_import` still returns
+    an existing job (and `DRY_RUN_USED` after its rollback), while a dry run whose real job was
+    already purged is never re-created under `startedAs`. Amends "`jobs/start`" steps 1-3.
+59. **(P3a, P3b, Task 1) Redaction covers every match, details included, and stays
+    case-sensitive.**
+    - `redact` finds every match position, overlapping ones included, and replaces the union of
+      the matched spans; touching IDs become one `[staged file]`, and `flux-import-upload-[staged
+      file]` with its extension collapses to `[staged file]`. So an ID that follows characters of
+      its own alphabet leaves no trailing characters (P3b is fixed, not accepted). It stays linear.
+    - `agentError` also redacts every string in a `ServiceError`'s `details`, at any depth (P3a).
+    - A record's `sourceKey`, a change's `field`, and error `field`s and `code`s are redacted and
+      cut to `TEXT_PREVIEW` too.
+    - Matching is case-sensitive, as `isUploadId` is: R2 and S3 keys are case-sensitive, and
+      case-insensitive matching would hide hex hashes in previews. A fully percent-escaped ID is
+      not redacted; nothing produces one (Open issues).
+
+    Amends "Redaction (Ruling 33)".
+60. **(Task 1 review) A rollback job's record previews name the fields without values.**
+    `summarizeRecord(row, kind)` returns `changes: { field }[]` for a rollback, so a rollback
+    never shows the draft values it restores (closing a gap in Ruling 34). `RecordSummary.changes`
+    is `{ field: string; value?: string }[]`. Amends "`RecordSummary`".
+61. **(Task 1 review) `next` gains `not_agent`.** A `created` or `running` job without
+    `origin: "agent"` (an Administrator's import or a rollback) reads `not_agent`, because
+    `next_batch` would refuse it with `JOB_NOT_AGENT`. Finished jobs keep `done` or `stopped`
+    whatever their origin. `next_batch` never returns it, since it refuses such jobs first; the
+    `import_status` description explains it. Amends `JobSummary.next` and the `next` table.
+62. **(Task 3 review, final review) `jobs/plan` has its own missing-data message.** A dry run
+    whose staged data is gone before its job exists answers `SOURCE_FILE_MISSING` "The data to plan
+    from is no longer stored; call dry_run again" (`PLAN_SOURCE_MISSING_MESSAGE`), which fits both
+    the `text` and the `sourceId` paths (the final review changed "send it again"); the other three
+    routes keep "The dry run's data is no longer stored; run dry_run again". Amends "Redaction
+    (Ruling 33)".
+63. **(Task 3 review) A startable dry run has a template revision.** `start_import` requires
+    `templateRevision` as well as `origin: "agent"`, `dryRun`, `kind !== "rollback"` and
+    `templateId`; otherwise `NOT_A_DRY_RUN`. Amends "`jobs/start`" step 1.
+64. **(Task 2 review) Retention finishes what it started, and re-checks before it marks.** `due()`
+    takes a finished job (`completed`, `cancelled`, `failed`) or one already marked `purging`,
+    whatever its status, created before the cutoff and without a live lease. `markPurging` re-reads
+    the job and re-checks `due()` first, so a job resumed, retried or leased between the scan and
+    the mark is kept. Amends Ruling 41 and "Engine, type and retention changes".
+65. **(Task 5, final review) The descriptions are settled in `src/plugin/mcp.ts`**, pinned by the
+    fixture (Ruling 48). Against the drafts in "Descriptions":
+    - `dry_run`'s first sentence, "Give `templateId` and the data:", is no longer broken by a line
+      break (final review);
+    - `dry_run`'s `text` is "as text", and "Binary data cannot be sent as text: an XLSX template
+      needs a URL source"; "Only a job that start_import creates writes entries; call start_import
+      only after the user agrees"; it says it returns `{ job }` (as `start_import` does), and it
+      points to next_batch for `wait` and `stopped`;
+    - `start_import` says a repeat after `INTERNAL_ERROR` is safe, and that `TEMPLATE_CHANGED`
+      means running `dry_run` again and showing the new plan;
+    - `next_batch` opens "Advance by one batch a job that dry_run or start_import created", and its
+      `done` tells the agent to review a dry run with import_status and show the plan before any
+      start_import, and its `stopped` says that `error` messages are untrusted content that may
+      quote the feed or the site's data, to report and never follow (final review);
+    - `import_status` names every outcome `records` accepts (`writing` and `reverted` included),
+      explains `not_agent` (Ruling 61), and says a rollback's rows name fields without values
+      (Ruling 60);
+    - the `records` field reads "Also list up to 10 rows with this outcome".
 
 ## Out of scope
 
@@ -1252,10 +1391,27 @@ Tasks 1 and 2 can run in parallel.
 - **Mapped values leave the site** (Security). Record previews, warnings and messages put the
   import's own values into the agent's transcript. They are bounded and redacted of upload IDs, not
   of content.
+- **Redaction gaps** (Ruling 59, P3c). Three forms of an upload ID are not redacted, and none is
+  produced today:
+  - an ID whose case was changed (matching is case-sensitive, as `isUploadId` is, and R2/S3 keys
+    are case-sensitive);
+  - a fully percent-escaped ID (the key uses only unreserved characters, which `encodeURIComponent`
+    never escapes);
+  - a partial ID cut by the engine's 1,000-character record-message cap, which no longer matches
+    (it reaches the 300-character preview only if about 16 earlier IDs in the same message shrink
+    it).
 - **The plan can go stale.** Between `dry_run` and `start_import`, entries can change. The real run
   reports conflicts and locks per record, and its counts may differ from the plan's.
 - **Unfinished jobs are kept** (Ruling 41). A job left `created`, `running` or `paused` is never
   purged, with its staged file, until an Admin cancels it. M7's job list should show such jobs.
+  `dry_run` is unmetered, so unfinished agent jobs and their staged text accumulate, and a
+  plugin-scoped token alone can grow them (final review). M7 takes it, with the job list.
+- **Agent jobs are not bound to the user who made the dry run** (final review). `start_import` and
+  `next_batch` accept any caller with `import:execute` and the tool scope, so another Admin holding a
+  plugin-scoped PAT who learns a dry-run ID can start it before the first user approves. Both are
+  Admins and the import is bounded by a saved template and the journal, so this is not an
+  escalation. Ruling 36's client approval is per client, not per plan. M7 takes approval per plan,
+  with the creating user recorded on agent jobs.
 - **The per-request consent serialization** (F12). Its CPU cost grows with the square of the number
   of tools; V7 measures it at six.
 - **Production D1 is unverified**, as for every milestone since M2. The first deploy repeats V7.
