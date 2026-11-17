@@ -410,6 +410,22 @@ describe("startFromDryRun (M6c)", () => {
 		expect(requests).toHaveLength(1);
 	});
 
+	it("returns the started job before re-reading the template: edited, then deleted", async () => {
+		// spec Ruling 38: a repeated start_import returns its job. TEMPLATE_CHANGED and
+		// TEMPLATE_NOT_FOUND guard only a fresh claim and the repair path.
+		const { deps, jobs, templates, requests } = await setup();
+		await jobs.put("D1", agentDryRun());
+		const first = await startFromDryRun(deps, { dryRunId: "D1" });
+		await templates.put("T1", saved("T1", plain, 2));
+		const afterEdit = await startFromDryRun(deps, { dryRunId: "D1" });
+		expect(afterEdit).toMatchObject({ id: first.id, origin: "agent", dryRunOf: "D1" });
+		await templates.delete("T1");
+		const afterDelete = await startFromDryRun(deps, { dryRunId: "D1" });
+		expect(afterDelete).toMatchObject({ id: first.id, origin: "agent", dryRunOf: "D1" });
+		expect(requests).toHaveLength(1);
+		expect(await jobs.get("D1")).toMatchObject({ startedAs: first.id });
+	});
+
 	it("returns the cancelled job, never a second one (Review Focus 3)", async () => {
 		const { deps, jobs, requests } = await setup();
 		await jobs.put("D1", agentDryRun());
