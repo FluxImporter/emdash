@@ -3,7 +3,7 @@ import { maxSourceBytes, maxXlsxBytes } from "../../src/astro/config.js";
 import { fingerprint } from "../../src/engine/fingerprints.js";
 import { templateSchema } from "../../src/engine/template.js";
 import type { Job } from "../../src/engine/types.js";
-import { createPlugin } from "../../src/plugin/definition.js";
+import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import { JOB_PAGE } from "../../src/plugin/service.js";
 import type { SavedResult, SavedTemplate } from "../../src/plugin/templates.js";
@@ -60,7 +60,11 @@ function context(input: unknown) {
 	return {
 		input,
 		user: { id: "admin", role: 50 },
-		storage: { templates, sources: new MemoryKv() },
+		storage: {
+			templates,
+			sources: new MemoryKv(),
+			schedules: new MemoryKv(STORAGE.schedules.indexes),
+		},
 		settings: { get: async () => undefined },
 		taxonomies: { getAll: async () => [] },
 		bylines: {},
@@ -339,7 +343,12 @@ describe("template routes (M6a)", () => {
 	it("schedules the retention task once when it creates jobs (M6c, createJobFrom)", async () => {
 		const scheduled: { name: string; options: unknown }[] = [];
 		const cron = {
-			list: async () => scheduled.map(({ name }) => ({ name })),
+			// As EmDash lists a task: its name and expression (M6b).
+			list: async () =>
+				scheduled.map(({ name, options }) => ({
+					name,
+					schedule: (options as { schedule: string }).schedule,
+				})),
 			schedule: async (name: string, options: unknown) => {
 				scheduled.push({ name, options });
 			},

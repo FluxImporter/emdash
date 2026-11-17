@@ -48,6 +48,11 @@ const ROUTES = [
 	"templates/delete",
 	"templates/export",
 	"templates/import",
+	"schedules/create",
+	"schedules/list",
+	"schedules/update",
+	"schedules/delete",
+	"schedules/run",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 

@@ -336,23 +336,24 @@ export async function pauseSchedule(
 
 /**
  * Reopens a finalized scheduled job that an Admin resumed or retried, and arms the pump, so the
- * pump drives it again (spec Ruling 38, plan Ruling 11). No-op for any other job.
+ * pump drives it again (spec Ruling 38, plan Ruling 11). Returns the reopened row (preflight F19);
+ * null, changing nothing, for any other job or when every attempt lost.
  */
 export async function reopenScheduled(
 	jobs: KvCollection<Job>,
 	cron: CronPort,
 	id: string,
-): Promise<void> {
+): Promise<Job | null> {
 	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
 		const read = await jobs.getVersioned(id);
-		if (read?.value.origin !== "schedule" || read.value.scheduled !== "closed") return;
-		if (
-			(await jobs.compareAndSet(id, read.revision, { ...read.value, scheduled: "open" })).applied
-		) {
+		if (read?.value.origin !== "schedule" || read.value.scheduled !== "closed") return null;
+		const reopened: Job = { ...read.value, scheduled: "open" };
+		if ((await jobs.compareAndSet(id, read.revision, reopened)).applied) {
 			await armPump(cron);
-			return;
+			return reopened;
 		}
 	}
+	return null;
 }
 
 /** The view of a row: its known fields only, so nothing stored beside them is returned (spec Ruling 47). */
@@ -564,9 +565,12 @@ export async function updateSchedule(
 	const sourceId = input.sourceId ?? first.sourceId;
 	const templateChanged =
 		templateId !== first.templateId || templateRevision !== first.templateRevision;
-	const moving = templateChanged || sourceId !== first.sourceId;
-	if (moving) await assertNotBusy(deps, first);
 	const missing = input.missing === undefined ? first.missing : (input.missing ?? undefined);
+	const missingChanged = JSON.stringify(missing) !== JSON.stringify(first.missing);
+	// What the schedule runs changes: never under an open job, and the caller arms it (preflight
+	// F9: an open job keeps the `missingLimit` it was created with).
+	const moving = templateChanged || sourceId !== first.sourceId || missingChanged;
+	if (moving) await assertNotBusy(deps, first);
 	if (templateChanged || input.missing !== undefined) {
 		checkMissing(await checkedTemplate(deps, templateId, templateRevision), missing);
 	}
@@ -604,6 +608,8 @@ export async function updateSchedule(
 				enabled,
 				// Enabling clears the pause and the failures and takes the caller as creator.
 				...(enabling ? { launchFailures: 0, armedBy: user } : pause ? { pause } : {}),
+				// Preflight F9: so does a change to what an enabled schedule runs.
+				...(enabled && moving ? { armedBy: user } : {}),
 				// A disabled schedule is never due (plan Ruling 6).
 				...(enabled && due ? { due } : {}),
 				revision: row.revision + 1,

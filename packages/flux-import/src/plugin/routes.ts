@@ -30,6 +30,27 @@ import {
 } from "./credentials.js";
 import { resolveJobTemplate } from "./job-templates.js";
 import { withRuntime } from "./runtime.js";
+import {
+	createSchedule,
+	cronOf,
+	deleteSchedule,
+	inUse,
+	listSchedules,
+	MAX_SCHEDULES,
+	pauseSchedule,
+	reconcile,
+	reopenScheduled,
+	runSchedule,
+	type ScheduleDeps,
+	type ScheduleRow,
+	schedulesCollection,
+	schedulesUsing,
+	sourcePinOf,
+	sourceWarnings,
+	templateWarnings,
+	updateSchedule,
+	withRollback,
+} from "./schedules.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
 import {
 	changeJob,
@@ -60,6 +81,7 @@ import {
 	deleteTemplate,
 	getTemplate,
 	listTemplates,
+	siteCheck,
 	TEMPLATE_DESCRIPTION_MAX,
 	TEMPLATE_NAME_RULE,
 	type TemplateDeps,
@@ -152,6 +174,38 @@ function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: RouteServic
 		now: Date.now,
 		newId: () => ulid(),
 	};
+}
+
+/** The schedule service's dependencies for one request (M6b). */
+function scheduleDeps(ctx: RouteContext<unknown>, services: RouteServices): ScheduleDeps {
+	const templates = templateDeps(ctx, services);
+	return {
+		schedules: schedulesCollection(ctx.storage),
+		jobs: services.deps.jobs,
+		templates: templates.templates,
+		sources: services.sources.sources,
+		cron: cronOf(ctx),
+		templateProblems: async (template) => (await siteCheck(templates, template)).check.problems,
+		now: Date.now,
+		newId: () => ulid(),
+	};
+}
+
+/** What a route needs to pause a schedule (spec Ruling 32). */
+function scheduleWrites(ctx: RouteContext<unknown>) {
+	return { schedules: schedulesCollection(ctx.storage), cron: cronOf(ctx), now: Date.now };
+}
+
+/**
+ * Runs a side effect that follows a write that already succeeded: whatever it throws, before or
+ * after it returns a promise, is dropped (preflight F11). `fallback` is the answer then.
+ */
+async function bestEffort<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+	try {
+		return await run();
+	} catch {
+		return fallback;
+	}
 }
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
@@ -403,15 +457,103 @@ const templateUpdateInput = z
 		{ message: "Change at least one of name, description and template" },
 	);
 
+const scheduleId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid schedule ID");
+const scheduleRevision = z.number().int().min(1);
+/** Spec Ruling 12: `false`, `"template"` or a lower threshold; the service checks it against the template. */
+const scheduleMissing = z.union([
+	z.literal(false),
+	z.literal("template"),
+	z.object({ maxPercent: z.number().int().min(0).max(100) }).strict(),
+]);
+/** The schedule options and their bounds (spec "Bounded work"). */
+const scheduleOptions = {
+	publish: z.boolean().optional(),
+	batchSize: z.number().int().min(1).max(500).optional(),
+	budgetMs: z.number().int().min(500).max(20_000).optional(),
+	enabled: z.boolean().optional(),
+};
+
+/**
+ * `schedules/create` (spec "Routes"). Strict (plan Ruling 15). The name follows M6a "Names"; the
+ * expression is checked by the service, so its refusal is `INVALID_CRON`, not a schema error.
+ */
+export const SCHEDULE_CREATE_INPUT = z
+	.object({
+		name: templateName,
+		templateId,
+		templateRevision,
+		sourceId,
+		cron: z.string(),
+		...scheduleOptions,
+		missing: scheduleMissing.optional(),
+	})
+	.strict();
+
+/** `schedules/update`: at least one change; a new `templateId` names its revision. */
+export const SCHEDULE_UPDATE_INPUT = z
+	.object({
+		id: scheduleId,
+		revision: scheduleRevision,
+		name: templateName.optional(),
+		templateId: templateId.optional(),
+		templateRevision: templateRevision.optional(),
+		sourceId: sourceId.optional(),
+		cron: z.string().optional(),
+		...scheduleOptions,
+		missing: scheduleMissing.nullable().optional(),
+	})
+	.strict()
+	.refine((input) => Object.keys(input).some((key) => key !== "id" && key !== "revision"), {
+		message: "Change at least one field",
+	})
+	.refine((input) => input.templateId === undefined || input.templateRevision !== undefined, {
+		message: "templateId needs templateRevision",
+	});
+
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
 		withServices(ctx, async ({ deps, uploads, keep, sources }) => {
-			const job = await changeJob(deps, uploads, ctx.input.id, action, keep);
+			let job = await changeJob(deps, uploads, ctx.input.id, action, keep);
 			// A cancelled job no longer makes its source skip the next import of the same content.
 			if (action === "cancel" && job.sourceId !== undefined) {
 				await clearLastImport(sources, job.sourceId, job.id).catch(() => {});
 			}
+			// M6b (spec Ruling 32): cancelling a scheduled job pauses its schedule; best effort, as
+			// the pump's finalization repeats it.
+			const scheduleId = job.scheduleId;
+			if (action === "cancel" && scheduleId !== undefined) {
+				await bestEffort(
+					() => pauseSchedule(scheduleWrites(ctx), scheduleId, "cancelled", job.id),
+					false,
+				);
+			}
+			// Plan Ruling 11: a finalized scheduled job that runs again is the pump's again; the
+			// answer is the reopened row (preflight F19).
+			if (action === "resume" || action === "retry") {
+				const id = job.id;
+				job = (await bestEffort(() => reopenScheduled(deps.jobs, cronOf(ctx), id), null)) ?? job;
+			}
 			return withoutPlannedTerms(job);
+		}),
+	);
+}
+
+/**
+ * A `schedules/*` route: the call, then a reconciliation of the cron tasks, whatever the call
+ * answered (spec "Reconciliation"). A reconciliation that fails is left to the next one.
+ */
+function scheduleRoute<T>(
+	input: z.ZodType<T>,
+	run: (ctx: RouteContext<T>, deps: ScheduleDeps, actor: ActorInfo) => Promise<unknown>,
+): PluginRoute<T> {
+	return route(input, (ctx) =>
+		withServices(ctx, async (services) => {
+			const deps = scheduleDeps(ctx, services);
+			try {
+				return await run(ctx, deps, services.actor);
+			} finally {
+				await bestEffort(() => reconcile(deps), null);
+			}
 		}),
 	);
 }
@@ -538,11 +680,33 @@ export const routes: Record<string, PluginRoute> = {
 			url: sourceUrl.optional(),
 			credential: credentialName.nullable().optional(),
 		}),
-		(ctx) => withServices(ctx, ({ sources }) => updateSource(sources, ctx.input)),
+		(ctx) =>
+			withServices(ctx, async ({ sources }) => {
+				const row = await updateSource(sources, ctx.input);
+				// M6b (spec Ruling 40, plan Ruling 14): `warnings` only when a schedule pins another
+				// URL or credential, so the response is unchanged otherwise. Best effort: the source is
+				// already saved (preflight F11).
+				const warnings = await bestEffort(async () => {
+					const using = await schedulesUsing(
+						schedulesCollection(ctx.storage),
+						{ sourceId: row.id },
+						MAX_SCHEDULES,
+					);
+					return sourceWarnings(using, await sourcePinOf(row));
+				}, []);
+				return warnings.length === 0 ? row : { ...row, warnings };
+			}),
 	),
 
 	"sources/delete": route(z.object({ id: sourceId }), (ctx) =>
-		withServices(ctx, ({ sources }) => deleteSource(sources, ctx.input.id)),
+		withServices(ctx, async ({ sources }) => {
+			// M6b (spec Ruling 10): never delete a source a schedule reads.
+			const using = await schedulesUsing(schedulesCollection(ctx.storage), {
+				sourceId: ctx.input.id,
+			});
+			if (using.length > 0) throw inUse("Source", ctx.input.id, using);
+			return deleteSource(sources, ctx.input.id);
+		}),
 	),
 
 	"sources/get": route(z.object({ id: sourceId }), (ctx) =>
@@ -616,6 +780,18 @@ export const routes: Record<string, PluginRoute> = {
 				});
 				if (!rollback.dryRun && original.sourceId !== undefined) {
 					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
+				}
+				// M6b (spec Ruling 32, plan Ruling 12): a real rollback of a scheduled job pauses its
+				// schedule and marks its run; the pump's finalization repeats both. Best effort, as
+				// the rollback is already created (preflight F11).
+				const scheduleId = original.scheduleId;
+				if (!rollback.dryRun && scheduleId !== undefined) {
+					const mark = (row: ScheduleRow) =>
+						withRollback(row, original.id, rollback.id, rollback.createdAt);
+					await bestEffort(
+						() => pauseSchedule(scheduleWrites(ctx), scheduleId, "rolled_back", original.id, mark),
+						false,
+					);
 				}
 				return rollback;
 			}),
@@ -720,21 +896,43 @@ export const routes: Record<string, PluginRoute> = {
 
 	"templates/update": withTemplateBody(
 		route(templateUpdateInput, (ctx) =>
-			withServices(ctx, (services) => {
+			withServices(ctx, async (services) => {
 				const { id, revision, name, description, template } = ctx.input;
-				return updateTemplate(templateDeps(ctx, services), services.actor.id, {
+				const saved = await updateTemplate(templateDeps(ctx, services), services.actor.id, {
 					id,
 					revision,
 					...(name === undefined ? {} : { name }),
 					...(description === undefined ? {} : { description }),
 					...(template === undefined ? {} : { template }),
 				});
+				// M6b (spec Ruling 11): the schedules still pinned to another revision. Best effort:
+				// the template is already saved (preflight F11).
+				const pinned = await bestEffort(async () => {
+					const using = await schedulesUsing(
+						schedulesCollection(ctx.storage),
+						{ templateId: id },
+						MAX_SCHEDULES,
+					);
+					return templateWarnings(using, saved.template.revision);
+				}, []);
+				if (pinned.length === 0) return saved;
+				return {
+					...saved,
+					check: { ...saved.check, warnings: [...saved.check.warnings, ...pinned] },
+				};
 			}),
 		),
 	),
 
 	"templates/delete": route(z.object({ id: templateId, revision: templateRevision }), (ctx) =>
-		withServices(ctx, (services) => deleteTemplate(templateDeps(ctx, services), ctx.input)),
+		withServices(ctx, async (services) => {
+			// M6b (spec Ruling 10): never delete a template a schedule runs.
+			const using = await schedulesUsing(schedulesCollection(ctx.storage), {
+				templateId: ctx.input.id,
+			});
+			if (using.length > 0) throw inUse("Template", ctx.input.id, using);
+			return deleteTemplate(templateDeps(ctx, services), ctx.input);
+		}),
 	),
 
 	"templates/export": route(z.object({ id: templateId }), (ctx) =>
@@ -760,5 +958,29 @@ export const routes: Record<string, PluginRoute> = {
 					});
 				}),
 		),
+	),
+
+	// Schedules (M6b). Admin routes only: no schedule route is an MCP tool (spec Ruling 50).
+	"schedules/create": scheduleRoute(SCHEDULE_CREATE_INPUT, async (ctx, deps, actor) => ({
+		schedule: await createSchedule(deps, actor.id, ctx.input),
+	})),
+
+	"schedules/list": scheduleRoute(z.object({ cursor }).strict(), (ctx, deps) =>
+		listSchedules(deps, ctx.input.cursor),
+	),
+
+	"schedules/update": scheduleRoute(SCHEDULE_UPDATE_INPUT, async (ctx, deps, actor) => ({
+		schedule: await updateSchedule(deps, actor.id, ctx.input),
+	})),
+
+	"schedules/delete": scheduleRoute(
+		z.object({ id: scheduleId, revision: scheduleRevision }).strict(),
+		(ctx, deps) => deleteSchedule(deps, ctx.input),
+	),
+
+	// Spec Ruling 51: queues a due mark; the pump launches at its next tick.
+	"schedules/run": scheduleRoute(
+		z.object({ id: scheduleId, force: z.boolean().optional() }).strict(),
+		async (ctx, deps) => ({ queued: true, schedule: await runSchedule(deps, ctx.input) }),
 	),
 };
