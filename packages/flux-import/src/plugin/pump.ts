@@ -6,7 +6,6 @@ import type { KvCollection } from "../engine/ports.js";
 import type { Job, JobStatus } from "../engine/types.js";
 import { type LaunchDeps, type LaunchOutcome, launch, launchDeps } from "./launch.js";
 import {
-	anyOpenJob,
 	armPump,
 	iso,
 	MAX_SCHEDULES,
@@ -84,14 +83,16 @@ function countersOf(job: Job): RunEntry["counters"] {
 /**
  * Writes the run log entry (at the head, `RUN_LOG_SIZE` kept) and the pause `pauseOf` gives for
  * the newest row, conditional on `current?.jobId` (spec Ruling 34). A pause already on the row
- * stays (`pausedKeeping`). True when the entry is recorded, was already there, or the schedule is gone;
- * false when the write lost, so the next tick finalizes the job again.
+ * stays (`pausedKeeping`). `orphan` rows get nothing written. True when the entry is recorded,
+ * was already there, the job is an orphan or the schedule is gone; false when the write lost, so
+ * the next tick finalizes the job again.
  */
 async function recordRun(
 	deps: PumpDeps,
 	scheduleId: string,
 	entry: RunEntry,
 	pauseOf: (row: ScheduleRow) => PauseReason | undefined,
+	orphan: (row: ScheduleRow) => boolean,
 ): Promise<boolean> {
 	const row = await deps.schedules.get(scheduleId);
 	if (row === null) return true;
@@ -101,6 +102,10 @@ async function recordRun(
 	const written = await writeSchedule(deps.schedules, scheduleId, row.current?.jobId, (r) => {
 		const old = r.runs.find((run) => run.jobId === entry.jobId);
 		if (old !== undefined && JSON.stringify(old) === JSON.stringify(entry)) {
+			already = true;
+			return null;
+		}
+		if (old === undefined && orphan(r)) {
 			already = true;
 			return null;
 		}
@@ -114,8 +119,20 @@ async function recordRun(
 			? { ...r, runs }
 			: pausedKeeping({ ...r, runs }, reason, at, entry.jobId);
 	});
-	if (written !== null && pausing) await deps.cron.cancel(scheduleTask(scheduleId));
+	if (written !== null && pausing) {
+		// A side effect of a write that succeeded (preflight F11): reconciliation repairs the task.
+		try {
+			await deps.cron.cancel(scheduleTask(scheduleId));
+		} catch (e) {
+			deps.warn(`flux-import: schedule ${scheduleId}: cancelling its task failed: ${messageOf(e)}`);
+		}
+	}
 	return already || written !== null;
+}
+
+/** An error's message for the log, redacted. */
+function messageOf(e: unknown): string {
+	return redact(e instanceof Error ? e.message : String(e));
 }
 
 /**
@@ -169,11 +186,24 @@ async function finalize(deps: PumpDeps, job: Job): Promise<void> {
 	const repeated = reason === "cancelled" || reason === "rolled_back";
 	const pauseOf = (row: ScheduleRow) =>
 		repeated && Date.parse(row.updatedAt) > Date.parse(job.updatedAt) ? undefined : reason;
-	if (job.scheduleId !== undefined && !(await recordRun(deps, job.scheduleId, entry, pauseOf))) {
+	// Review 5: a cancelled job while another launch's claim stands, never logged as a run, is
+	// the orphan of a launch that lost its claim (`cancelLaunched` cancelled it but did not
+	// close it yet): it is closed with no run and no pause, which would drop the newer claim.
+	const orphan = (row: ScheduleRow) =>
+		job.status === "cancelled" && row.current !== undefined && row.current.jobId !== job.id;
+	const scheduleId = job.scheduleId;
+	if (scheduleId !== undefined && !(await recordRun(deps, scheduleId, entry, pauseOf, orphan))) {
 		return;
 	}
-	if (job.status === "failed" && job.sourceId !== undefined) {
-		await deps.clearLastImport(job.sourceId, job.id).catch(() => {});
+	const sourceId = job.sourceId;
+	if (job.status === "failed" && sourceId !== undefined) {
+		try {
+			await deps.clearLastImport(sourceId, job.id);
+		} catch (e) {
+			deps.warn(
+				`flux-import: scheduled job ${job.id}: clearing source ${sourceId}'s last import failed: ${messageOf(e)}`,
+			);
+		}
 	}
 	await close(deps.jobs, job.id, true);
 }
@@ -224,8 +254,7 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 			await deps.batch(oldest.id, holder);
 		} catch (e) {
 			// The engine has already noted it on the job (P3); the batch was the tick's unit.
-			const message = e instanceof Error ? e.message : String(e);
-			deps.error(`flux-import: scheduled job ${oldest.id}: batch failed: ${redact(message)}`);
+			deps.error(`flux-import: scheduled job ${oldest.id}: batch failed: ${messageOf(e)}`);
 		}
 		tick.batch = oldest.id;
 		return tick;
@@ -237,7 +266,14 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 		return tick;
 	}
 	// 5. Idle: cancel, then re-arm if a schedule became due meanwhile (spec Ruling 36).
-	if (tick.finalized.length === 0 && !(await anyOpenJob(deps.jobs))) {
+	if (tick.finalized.length > 0) return tick;
+	const open = (await deps.jobs.query({ where: { scheduled: "open" }, limit: 1 })).items[0]?.data;
+	if (open !== undefined && open.origin !== "schedule") {
+		// Review 6: a paused job no schedule launched is closed here, so the pump can idle.
+		await closeForeign(deps, tick, open);
+		return tick;
+	}
+	if (open === undefined) {
 		await deps.cron.cancel(PUMP_TASK);
 		tick.idle = "cancelled";
 		if ((await dueSchedules(deps.schedules)).length > 0) {

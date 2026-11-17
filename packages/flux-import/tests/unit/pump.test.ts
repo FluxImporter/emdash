@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import type { PluginContext } from "emdash";
+import { describe, expect, it, vi } from "vitest";
 import type { Fence } from "../../src/emdash/fence.js";
 import type { Job } from "../../src/engine/types.js";
 import type { JobRequest } from "../../src/plugin/job-templates.js";
-import { type PumpDeps, pumpTick } from "../../src/plugin/pump.js";
+import { type PumpDeps, pumpDeps, pumpTick } from "../../src/plugin/pump.js";
 import {
 	PUMP_SCHEDULE,
 	PUMP_TASK,
@@ -11,10 +12,20 @@ import {
 	sourcePinOf,
 	writeSchedule,
 } from "../../src/plugin/schedules.js";
+import { nextBatch, tickLimits } from "../../src/plugin/service.js";
+import type { Services } from "../../src/plugin/services.js";
 import { setup as engineSetup, importRows } from "./rollback-fixture.js";
 import { jobRow, NOW, scheduleDeps, scheduleRow, sourceRow } from "./schedule-fakes.js";
 
+// nextBatch as it is, with its calls recorded: pumpDeps is where the tick caps are applied.
+vi.mock("../../src/plugin/service.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../src/plugin/service.js")>();
+	return { ...actual, nextBatch: vi.fn(actual.nextBatch) };
+});
+
 const AT = new Date(NOW).toISOString();
+/** An upload ID, which a logged message never shows (`redact`). */
+const UPLOAD = `01JZ0000000000000000000000${"0".repeat(32)}`;
 /** When schedule A was last changed by a route: before its jobs finished (preflight F10). */
 const ARMED = "2026-11-17T10:00:00.000Z";
 const zero = {
@@ -238,6 +249,14 @@ describe('pumpTick (spec "The pump")', () => {
 		expect(await t.base.jobs.get("J2")).toMatchObject({ scheduled: "open" });
 	});
 
+	it("finalizes and then runs a batch in the same tick", async () => {
+		const t = await setup();
+		await t.base.jobs.put("J1", finished("J1"));
+		await t.base.jobs.put("J2", jobRow("J2", { ...open, status: "running" }));
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: ["J1"], batch: "J2" });
+		expect(t.batches).toEqual([["J2", "schedule:A:N1"]]);
+	});
+
 	it("runs one batch of the oldest open job under a schedule holder, and launches nothing that tick", async () => {
 		const t = await setup({ due: { at: AT } });
 		await t.base.jobs.put("J1", jobRow("J1", { ...open, createdAt: "2026-11-17T11:00:02.000Z" }));
@@ -413,4 +432,133 @@ describe('pumpTick (spec "The pump")', () => {
 			expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
 		},
 	);
+	it("logs a clearLastImport that failed, and still closes the failed job", async () => {
+		const t = await setup();
+		t.deps.clearLastImport = async () => {
+			throw new Error(`storage down reading ${UPLOAD}`);
+		};
+		await t.base.jobs.put("J1", finished("J1", { status: "failed", sourceId: "S1" }));
+		await pumpTick(t.deps);
+		expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
+		expect(t.warnings).toHaveLength(1);
+		expect(t.warnings[0]).toMatch(
+			/^flux-import: scheduled job J1: clearing source S1's last import failed: /,
+		);
+		expect(t.warnings[0]).not.toContain(UPLOAD);
+	});
+
+	it("logs a task cancel that failed after the pause was written, and still closes the job (preflight F11)", async () => {
+		const t = await setup();
+		t.base.cron.cancel = async () => {
+			throw new Error(`cron down after ${UPLOAD}`);
+		};
+		await t.base.jobs.put("J1", finished("J1", { status: "failed" }));
+		await pumpTick(t.deps);
+		expect(await t.row()).toMatchObject({ enabled: false, pause: { reason: "job_failed" } });
+		expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
+		expect(t.warnings).toHaveLength(1);
+		expect(t.warnings[0]).toMatch(/^flux-import: schedule A: cancelling its task failed: /);
+		expect(t.warnings[0]).not.toContain(UPLOAD);
+	});
+
+	it("closes a cancelled orphan of a lost launch without a run or a pause, keeping the newer claim (review 5)", async () => {
+		const claim = { jobId: "J2", claimedAt: AT };
+		const t = await setup({ current: claim, due: { at: AT } });
+		await t.base.jobs.put("J1", finished("J1", { status: "cancelled" }));
+		await pumpTick(t.deps);
+		const row = await t.row();
+		expect(row).toMatchObject({ enabled: true, runs: [], current: claim, due: { at: AT } });
+		expect(row).not.toHaveProperty("pause");
+		expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
+	});
+
+	it("still logs and pauses a failed job while another launch's claim stands", async () => {
+		const t = await setup({ current: { jobId: "J2", claimedAt: AT } });
+		await t.base.jobs.put("J1", finished("J1", { status: "failed" }));
+		await pumpTick(t.deps);
+		expect(await t.row()).toMatchObject({
+			enabled: false,
+			pause: { reason: "job_failed", jobId: "J1" },
+			runs: [{ jobId: "J1", outcome: "failed" }],
+		});
+	});
+
+	it("still logs and pauses a route-cancelled job, with or without a claim naming it", async () => {
+		for (const current of [undefined, { jobId: "J1", claimedAt: AT }]) {
+			const t = await setup(current === undefined ? {} : { current });
+			await t.base.jobs.put("J1", finished("J1", { status: "cancelled" }));
+			await pumpTick(t.deps);
+			expect(await t.row()).toMatchObject({
+				enabled: false,
+				pause: { reason: "cancelled", jobId: "J1" },
+				runs: [{ jobId: "J1", outcome: "cancelled" }],
+			});
+		}
+		// A run entry already there: the claim of another job does not hide a later repeat.
+		const t = await setup({ current: { jobId: "J2", claimedAt: AT } });
+		const run: RunEntry = { jobId: "J1", at: AT, outcome: "completed", counters: zero };
+		await writeSchedule(t.base.schedules, "A", "J2", (r) => ({ ...r, runs: [run] }));
+		await t.base.jobs.put("J1", finished("J1", { status: "cancelled" }));
+		await pumpTick(t.deps);
+		expect((await t.row()).runs).toEqual([
+			expect.objectContaining({ jobId: "J1", outcome: "cancelled" }),
+		]);
+	});
+
+	it("closes a paused job no schedule launched, so the pump can idle (review 6)", async () => {
+		const t = await setup();
+		await t.base.jobs.put(
+			"G1",
+			jobRow("G1", { origin: "agent", scheduled: "open", status: "paused" }),
+		);
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: [], closed: ["G1"] });
+		expect(await t.base.jobs.get("G1")).toMatchObject({ status: "paused", scheduled: "closed" });
+		expect((await pumpTick(t.deps)).idle).toBe("cancelled");
+	});
+});
+
+describe("pumpDeps", () => {
+	/** The cron hook's context and services, as far as pumpDeps reads them. */
+	function hookParts() {
+		const ctx = {
+			storage: { schedules: {}, templates: {} },
+			cron: { schedule: async () => {}, cancel: async () => {}, list: async () => [] },
+			users: undefined,
+			log: { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} },
+		} as unknown as PluginContext;
+		const services = {
+			deps: { jobs: {} },
+			uploads: {},
+			keep: async () => false,
+			sources: { sources: {} },
+			runtime: { db: {} },
+		} as unknown as Services;
+		return { ctx, services };
+	}
+
+	it.each([
+		[true, "the tick caps on Workers"],
+		[false, "the job's own batch size on Node"],
+	] as const)("runs a tick's batch at tickLimits(%s): %s (Fact V5)", async (workers, _what) => {
+		const global = globalThis as { FixedLengthStream?: unknown };
+		if (workers) global.FixedLengthStream = class extends TransformStream {};
+		try {
+			const { ctx, services } = hookParts();
+			const spy = vi.mocked(nextBatch);
+			spy.mockClear();
+			spy.mockResolvedValueOnce(jobRow("J1"));
+			await pumpDeps(ctx, services).batch("J1", "schedule:A:h");
+			expect(spy).toHaveBeenCalledTimes(1);
+			expect(spy).toHaveBeenCalledWith(
+				services.deps,
+				services.uploads,
+				"J1",
+				"schedule:A:h",
+				services.keep,
+				tickLimits(workers),
+			);
+		} finally {
+			delete global.FixedLengthStream;
+		}
+	});
 });
