@@ -286,14 +286,46 @@ describe("bounded retention (M6b, spec Ruling 39, plan Ruling 16)", () => {
 		for (let seq = 0; seq < 450; seq++) {
 			await deps.records.put(`${id}:${seq}`, { jobId: id, seq, status: "created" } as never);
 		}
-		// 3 to start, 2 to mark, four pages of 100 rows (a query and a deleteMany each), then the
-		// cursor write, the one call a run makes past its target.
+		// 3 to start, 2 to mark, four pages of 50 rows (a query and a deleteMany each, one D1
+		// statement apiece), then the cursor write, the one call a run makes past its target.
 		const first = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(13));
-		expect(first).toMatchObject({ jobs: 0, records: 400, more: true, queries: 14 });
+		expect(first).toMatchObject({ jobs: 0, records: 200, more: true, queries: 14 });
 		expect(await deps.jobs.get(id)).toMatchObject({ purging: true });
+		// 3 to start, the re-check, five pages and the empty query, the journal's two empty
+		// queries, the job's delete and the cursor delete.
 		const second = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
-		expect(second).toMatchObject({ jobs: 1, records: 50 });
+		expect(second).toMatchObject({ jobs: 1, records: 250, queries: 19 });
 		expect(deps.records.rows.size).toBe(0);
+	});
+
+	it("makes at most one call past its target, whatever the target, and finishes in later runs", async () => {
+		for (let target = 13; target <= 40; target++) {
+			const { deps, ids, bounds } = await expired(2);
+			for (const id of ids) {
+				for (let seq = 0; seq < 450; seq++) {
+					await deps.records.put(`${id}:${seq}`, { jobId: id, seq, status: "created" } as never);
+				}
+			}
+			for (let run = 0; ; run++) {
+				expect(run).toBeLessThan(50);
+				const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(target));
+				expect((result.queries as number) - target).toBeLessThanOrEqual(1);
+				if (!result.more) break;
+			}
+			expect(deps.records.rows.size).toBe(0);
+			expect(deps.jobs.rows.size).toBe(0);
+		}
+	});
+
+	it("starts at the head when the saved cursor names a job no longer due", async () => {
+		const { deps, ids, kv, bounds } = await expired(3);
+		kv.values.set(RETENTION_CURSOR_KEY, "gone");
+		// 3 to start and 6 for one job leave 9 < RETENTION_PRUNE_MIN.
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(18));
+		expect(result).toMatchObject({ jobs: 1, more: true });
+		expect(await deps.jobs.get(ids[0] as string)).toBeNull();
+		expect(await deps.jobs.get(ids[2] as string)).not.toBeNull();
+		expect(kv.values.get(RETENTION_CURSOR_KEY)).toBe(ids[1]);
 	});
 
 	it("skips its deletes when the scan passes RETENTION_SCAN_MAX rows", async () => {

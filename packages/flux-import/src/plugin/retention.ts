@@ -22,7 +22,12 @@ export const RETENTION_PRUNE_MIN = 10;
 /** Where a run that stopped at its budget leaves the next job to purge (plugin KV, M6a F9). */
 export const RETENTION_CURSOR_KEY = "retention:cursor";
 const DAY_MS = 24 * 60 * 60 * 1000;
-const PAGE = 100;
+/**
+ * Rows a job's delete page reads and deletes: EmDash's `deleteMany` runs one DELETE per 50 IDs
+ * (`SQL_BATCH_SIZE`, emdash 1.2.0 `dist/chunks-Dr5Vr0zA.mjs:21`), so a page of 50 is one D1
+ * statement and the meter counts every statement.
+ */
+const DELETE_PAGE = 50;
 
 export interface PurgeResult {
 	jobs: number;
@@ -102,22 +107,27 @@ function metered<T extends object>(target: T, meter: { used: number }): T {
 
 type JobRows = Pick<KvCollection<unknown>, "query" | "deleteMany">;
 
-/** Deletes a job's rows of one collection; false when it stopped with rows left. */
+/** How deleting a job's rows ended: all gone, stuck on rows that will not delete, or out of budget. */
+type Deleted = "done" | "stuck" | "out";
+
+/** Deletes a job's rows of one collection. */
 async function deleteRows(
 	rows: JobRows,
 	jobId: string,
 	count: { n: number },
 	left: () => number,
-): Promise<boolean> {
+): Promise<Deleted> {
 	for (;;) {
-		// Out of budget: the job stays marked purging and the next run finishes it.
-		if (left() <= 0) return false;
-		const page = await rows.query({ where: { jobId }, limit: PAGE });
-		if (page.items.length === 0) return true;
+		// A page is two calls (the query and the deleteMany): one starts only with both left, so
+		// the cursor write stays the one call a run makes past its target. The job stays marked
+		// purging and the next run finishes it.
+		if (left() < 2) return "out";
+		const page = await rows.query({ where: { jobId }, limit: DELETE_PAGE });
+		if (page.items.length === 0) return "done";
 		const n = await rows.deleteMany(page.items.map((i) => i.id));
 		count.n += n;
 		// Nothing deleted means the same page would come back forever; the next run tries again.
-		if (n === 0) return false;
+		if (n === 0) return "stuck";
 	}
 }
 
@@ -223,11 +233,12 @@ export async function purgeExpired(
 	/** False only when the budget ran out part way. */
 	const prune = async (id: string): Promise<boolean> => {
 		if (!(await markPurging(id))) return true;
-		const complete =
-			(await deleteRows(records, id, counts.records, left)) &&
-			(await deleteRows(journal, id, counts.journal, left)) &&
-			(await deleteRows(journalMedia, id, counts.journal, left));
-		if (!complete) return left() > 0;
+		let ended = await deleteRows(records, id, counts.records, left);
+		if (ended === "done") ended = await deleteRows(journal, id, counts.journal, left);
+		if (ended === "done") ended = await deleteRows(journalMedia, id, counts.journal, left);
+		// Stuck, the job stays for a later run and this one goes on; out of budget, it stops here.
+		if (ended !== "done") return ended === "stuck";
+		// "done" ended on a query started with 2 calls left, so the delete stays within the target.
 		await jobs.delete(id);
 		pruned.add(id);
 		return true;
