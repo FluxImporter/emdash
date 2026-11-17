@@ -3,6 +3,7 @@ import { fingerprint } from "../../src/engine/fingerprints.js";
 import type { Job } from "../../src/engine/types.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_TASK } from "../../src/plugin/retention.js";
+import { SCHEDULE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
 import { PUMP_TASK, type ScheduleRow, type ScheduleView } from "../../src/plugin/schedules.js";
 import type { Page } from "../../src/plugin/service.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
@@ -70,6 +71,8 @@ let kv: {
 let caller: string;
 /** Replaces parts of the route context, to break a side effect (preflight F11). */
 let overrides: Record<string, unknown>;
+/** What the routes wrote to `ctx.log.warn`. */
+let warned: unknown[][];
 
 beforeEach(async () => {
 	deps = setup().deps;
@@ -83,6 +86,7 @@ beforeEach(async () => {
 	};
 	caller = "admin";
 	overrides = {};
+	warned = [];
 	await kv.templates.put("T1", savedTemplate("T1"));
 	await kv.sources.put("S1", sourceRow("S1"));
 });
@@ -96,6 +100,12 @@ function context(input: unknown) {
 		settings: { get: async () => undefined },
 		taxonomies: { getAll: async () => [] },
 		bylines: {},
+		log: {
+			debug: () => {},
+			info: () => {},
+			warn: (...args: unknown[]) => warned.push(args),
+			error: () => {},
+		},
 		...overrides,
 	} as never;
 }
@@ -155,6 +165,27 @@ describe("the schedule routes (M6b)", () => {
 		expect(cron.tasks.get("schedule-A")?.schedule).toBe("0 3 * * *");
 	});
 
+	it("answers the call when the reconciliation after it fails, and logs the failure", async () => {
+		await kv.schedules.put("A", scheduleRow("A"));
+		cron.list = async () => {
+			throw new Error("cron down");
+		};
+		expect(await call("schedules/delete", { id: "A", revision: 1 })).toEqual({ deleted: true });
+		expect(warned).toEqual([[expect.stringContaining("cron down")]]);
+	});
+
+	it("caps every schedule route's JSON body at 16 KiB", () => {
+		expect(SCHEDULE_BODY_MAX_BYTES).toBe(16 * 1024);
+		const names = Object.keys(plugin.routes).filter((r) => r.startsWith("schedules/"));
+		expect(names).toHaveLength(5);
+		for (const name of names) {
+			expect(plugin.routes[name]?.request, name).toEqual({
+				body: "json",
+				maxBytes: SCHEDULE_BODY_MAX_BYTES,
+			});
+		}
+	});
+
 	it("refuses unknown keys, bounds, an update with no change, and templateId without templateRevision", () => {
 		const input = (name: string) => plugin.routes[name]!.input!;
 		const create = {
@@ -174,6 +205,16 @@ describe("the schedule routes (M6b)", () => {
 			false,
 		);
 		expect(parses("schedules/create", { ...create, name: " N" })).toBe(false);
+		// The coordinator's Task 2 note: a schedule's name is refused in schedule wording.
+		const rule =
+			"A schedule name is 1-100 characters, with no leading or trailing whitespace and no control or format characters";
+		const issues = (name: string, value: object) =>
+			input(name)
+				.safeParse(value)
+				.error?.issues.map((i) => i.message);
+		expect(issues("schedules/create", { ...create, name: " N" })).toEqual([rule]);
+		expect(issues("schedules/create", { ...create, name: "x".repeat(101) })).toEqual([rule]);
+		expect(issues("schedules/update", { id: "A", revision: 1, name: "" })).toEqual([rule]);
 		expect(parses("schedules/update", { id: "A", revision: 1 })).toBe(false);
 		expect(parses("schedules/update", { id: "A", revision: 1, templateId: "T2" })).toBe(false);
 		expect(parses("schedules/update", { id: "A", revision: 1, missing: null })).toBe(true);
@@ -324,8 +365,9 @@ describe("the schedule routes (M6b)", () => {
 		expect(await call("jobs/rollback", { id: original.id })).toMatchObject({ dryRun: false });
 		// A schedules collection whose reads throw: the warnings are left out.
 		const broken = new MemoryKv<ScheduleRow>(STORAGE.schedules.indexes);
+		const upload = `01JZ0000000000000000000000${"0".repeat(32)}`;
 		broken.query = async () => {
-			throw new Error("storage down");
+			throw new Error(`storage down reading ${upload}`);
 		};
 		overrides = { storage: { ...kv, schedules: broken } };
 		const saved = await call<SavedResult>("templates/update", {
@@ -340,6 +382,20 @@ describe("the schedule routes (M6b)", () => {
 		});
 		expect(moved).toMatchObject({ url: "https://feeds.example/other.csv" });
 		expect(moved).not.toHaveProperty("warnings");
+		// Every dropped side effect is logged, redacted (preflight F12 style).
+		const logged = warned.map((args) => String(args[0]));
+		expect(logged).toHaveLength(5);
+		expect(logged.filter((m) => m.includes("cron API is not available"))).toHaveLength(3);
+		expect(logged.filter((m) => m.includes("storage down reading [staged file]"))).toHaveLength(2);
+		expect(logged.join("\n")).not.toContain(upload);
+		expect(warned.every((args) => args.length === 1)).toBe(true);
+	});
+
+	it("touches no cron task and logs nothing when a job no schedule launched is resumed", async () => {
+		await deps.jobs.put("J1", jobRow("J1", { status: "failed" }));
+		overrides = { cron: undefined };
+		expect(await call("jobs/resume", { id: "J1" })).toMatchObject({ status: "running" });
+		expect(warned).toEqual([]);
 	});
 
 	describe("an update that changes what an enabled schedule runs (preflight F9)", () => {
@@ -372,6 +428,24 @@ describe("the schedule routes (M6b)", () => {
 			expect(lowered.schedule).toMatchObject({
 				missing: { maxPercent: 5 },
 				armedBy: "fourth",
+			});
+		});
+
+		it("arms the schedule as the caller on a change of template revision alone, or of source alone", async () => {
+			await kv.templates.put("T1", savedTemplate("T1", undefined, 2));
+			await kv.schedules.put("A", scheduleRow("A", { armedBy: "first" }));
+			caller = "second";
+			const revision = { id: "A", revision: 1, templateRevision: 2 };
+			const moved = await call<{ schedule: ScheduleView }>("schedules/update", revision);
+			expect(moved.schedule).toMatchObject({ templateRevision: 2, armedBy: "second" });
+			expect(moved.schedule).not.toHaveProperty("missing");
+			caller = "third";
+			const source = { id: "A", revision: 2, sourceId: "S2" };
+			const resourced = await call<{ schedule: ScheduleView }>("schedules/update", source);
+			expect(resourced.schedule).toMatchObject({
+				templateRevision: 2,
+				sourceId: "S2",
+				armedBy: "third",
 			});
 		});
 

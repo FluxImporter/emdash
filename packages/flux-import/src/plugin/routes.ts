@@ -74,7 +74,7 @@ import {
 	listSources,
 	updateSource,
 } from "./sources.js";
-import { step, summarize } from "./summaries.js";
+import { redact, step, summarize } from "./summaries.js";
 import { exportTemplate, importTemplate } from "./template-files.js";
 import {
 	createTemplate,
@@ -139,6 +139,12 @@ const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template I
 const templateName = z
 	.string()
 	.refine((name) => templateNameProblem(name) === null, TEMPLATE_NAME_RULE);
+/** A schedule's name: the rule of a template's name (M6a "Names"), in schedule wording. */
+const SCHEDULE_NAME_RULE =
+	"A schedule name is 1-100 characters, with no leading or trailing whitespace and no control or format characters";
+const scheduleName = z
+	.string()
+	.refine((name) => templateNameProblem(name) === null, SCHEDULE_NAME_RULE);
 const templateDescription = z.string().max(TEMPLATE_DESCRIPTION_MAX);
 /** Required on update and delete (spec Rulings 6, 37): the service accepts none at runtime. */
 const templateRevision = z.number().int().min(1);
@@ -198,12 +204,20 @@ function scheduleWrites(ctx: RouteContext<unknown>) {
 
 /**
  * Runs a side effect that follows a write that already succeeded: whatever it throws, before or
- * after it returns a promise, is dropped (preflight F11). `fallback` is the answer then.
+ * after it returns a promise, is dropped (preflight F11) and logged as `what` failed, its message
+ * redacted (preflight F12). `fallback` is the answer then.
  */
-async function bestEffort<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+async function bestEffort<T>(
+	ctx: Pick<RouteContext<unknown>, "log">,
+	what: string,
+	run: () => Promise<T>,
+	fallback: T,
+): Promise<T> {
 	try {
 		return await run();
-	} catch {
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		ctx.log.warn(`flux-import: ${what} failed: ${redact(message)}`);
 		return fallback;
 	}
 }
@@ -267,6 +281,12 @@ async function withServices<T>(
  * is now 413 `INVALID_PLUGIN_REQUEST`, an accepted change (M6a spec, Amendments).
  */
 export const TEMPLATE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The most bytes of JSON a `schedules/*` route reads (M6b review). Its largest input, an update
+ * with every field, is well under 1 KiB; without a cap EmDash reads a body of any size.
+ */
+export const SCHEDULE_BODY_MAX_BYTES = 16 * 1024;
 
 /** Caps a route's JSON body at `TEMPLATE_BODY_MAX_BYTES`; it stays an MCP-ready JSON POST route. */
 function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
@@ -479,7 +499,7 @@ const scheduleOptions = {
  */
 export const SCHEDULE_CREATE_INPUT = z
 	.object({
-		name: templateName,
+		name: scheduleName,
 		templateId,
 		templateRevision,
 		sourceId,
@@ -494,7 +514,7 @@ export const SCHEDULE_UPDATE_INPUT = z
 	.object({
 		id: scheduleId,
 		revision: scheduleRevision,
-		name: templateName.optional(),
+		name: scheduleName.optional(),
 		templateId: templateId.optional(),
 		templateRevision: templateRevision.optional(),
 		sourceId: sourceId.optional(),
@@ -523,15 +543,18 @@ function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRout
 			const scheduleId = job.scheduleId;
 			if (action === "cancel" && scheduleId !== undefined) {
 				await bestEffort(
+					ctx,
+					"pausing the schedule of a cancelled job",
 					() => pauseSchedule(scheduleWrites(ctx), scheduleId, "cancelled", job.id),
 					false,
 				);
 			}
 			// Plan Ruling 11: a finalized scheduled job that runs again is the pump's again; the
 			// answer is the reopened row (preflight F19).
-			if (action === "resume" || action === "retry") {
+			if ((action === "resume" || action === "retry") && job.origin === "schedule") {
 				const id = job.id;
-				job = (await bestEffort(() => reopenScheduled(deps.jobs, cronOf(ctx), id), null)) ?? job;
+				const reopen = () => reopenScheduled(deps.jobs, cronOf(ctx), id);
+				job = (await bestEffort(ctx, "reopening a scheduled job", reopen, null)) ?? job;
 			}
 			return withoutPlannedTerms(job);
 		}),
@@ -546,16 +569,17 @@ function scheduleRoute<T>(
 	input: z.ZodType<T>,
 	run: (ctx: RouteContext<T>, deps: ScheduleDeps, actor: ActorInfo) => Promise<unknown>,
 ): PluginRoute<T> {
-	return route(input, (ctx) =>
+	const r = route(input, (ctx) =>
 		withServices(ctx, async (services) => {
 			const deps = scheduleDeps(ctx, services);
 			try {
 				return await run(ctx, deps, services.actor);
 			} finally {
-				await bestEffort(() => reconcile(deps), null);
+				await bestEffort(ctx, "reconciling the schedule tasks", () => reconcile(deps), null);
 			}
 		}),
 	);
+	return { ...r, request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES } };
 }
 
 const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
@@ -686,14 +710,19 @@ export const routes: Record<string, PluginRoute> = {
 				// M6b (spec Ruling 40, plan Ruling 14): `warnings` only when a schedule pins another
 				// URL or credential, so the response is unchanged otherwise. Best effort: the source is
 				// already saved (preflight F11).
-				const warnings = await bestEffort(async () => {
-					const using = await schedulesUsing(
-						schedulesCollection(ctx.storage),
-						{ sourceId: row.id },
-						MAX_SCHEDULES,
-					);
-					return sourceWarnings(using, await sourcePinOf(row));
-				}, []);
+				const warnings = await bestEffort(
+					ctx,
+					"reading the schedules of a source",
+					async () => {
+						const using = await schedulesUsing(
+							schedulesCollection(ctx.storage),
+							{ sourceId: row.id },
+							MAX_SCHEDULES,
+						);
+						return sourceWarnings(using, await sourcePinOf(row));
+					},
+					[],
+				);
 				return warnings.length === 0 ? row : { ...row, warnings };
 			}),
 	),
@@ -789,6 +818,8 @@ export const routes: Record<string, PluginRoute> = {
 					const mark = (row: ScheduleRow) =>
 						withRollback(row, original.id, rollback.id, rollback.createdAt);
 					await bestEffort(
+						ctx,
+						"pausing the schedule of a rolled back job",
 						() => pauseSchedule(scheduleWrites(ctx), scheduleId, "rolled_back", original.id, mark),
 						false,
 					);
@@ -907,14 +938,19 @@ export const routes: Record<string, PluginRoute> = {
 				});
 				// M6b (spec Ruling 11): the schedules still pinned to another revision. Best effort:
 				// the template is already saved (preflight F11).
-				const pinned = await bestEffort(async () => {
-					const using = await schedulesUsing(
-						schedulesCollection(ctx.storage),
-						{ templateId: id },
-						MAX_SCHEDULES,
-					);
-					return templateWarnings(using, saved.template.revision);
-				}, []);
+				const pinned = await bestEffort(
+					ctx,
+					"reading the schedules of a template",
+					async () => {
+						const using = await schedulesUsing(
+							schedulesCollection(ctx.storage),
+							{ templateId: id },
+							MAX_SCHEDULES,
+						);
+						return templateWarnings(using, saved.template.revision);
+					},
+					[],
+				);
 				if (pinned.length === 0) return saved;
 				return {
 					...saved,
