@@ -12,8 +12,11 @@ const AT = new Date(NOW).toISOString();
 export class FakeCron implements CronPort {
 	readonly tasks = new Map<string, { schedule: string; data?: Record<string, unknown> }>();
 	readonly calls: string[] = [];
-	/** The expression `schedule()` refuses, as EmDash refuses a date that never comes (Fact E1). */
-	refuse = "0 3 31 2 *";
+	/**
+	 * An expression flux-import's grammar accepts and `schedule()` refuses, as EmDash 1.2.0 refuses
+	 * this step form that never comes (Fact E1).
+	 */
+	refuse = "0 0 31 4-6/2 *";
 
 	async schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }) {
 		this.calls.push(`schedule ${name} ${opts.schedule}`);

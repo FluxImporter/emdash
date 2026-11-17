@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fingerprint } from "../../src/engine/fingerprints.js";
+import { CRON_RULE } from "../../src/plugin/cron-syntax.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import {
 	busyJob,
@@ -198,22 +199,34 @@ describe("createSchedule", () => {
 	it("deletes the row when EmDash refuses the expression, with EmDash's message (Fact E1)", async () => {
 		const { deps } = await scheduleDeps();
 		await expect(
-			createSchedule(deps, "admin", { ...base, cron: "0 3 31 2 *" }),
+			createSchedule(deps, "admin", { ...base, cron: "0 0 31 4-6/2 *" }),
 		).rejects.toMatchObject({
 			code: "INVALID_CRON",
-			message: 'Invalid cron expression or no future run: "0 3 31 2 *"',
+			message: 'Invalid cron expression or no future run: "0 0 31 4-6/2 *"',
 		});
+		expect((await deps.schedules.query({ limit: 100 })).items).toEqual([]);
+	});
+
+	it("refuses a day the listed months never have before EmDash sees it", async () => {
+		const { deps } = await scheduleDeps();
+		// EmDash 1.2.0's nextCronTime overflows the stack on this one (croner recursion).
+		const never = { ...base, cron: "0 0 31 4,6,9,11 *" };
+		await expect(createSchedule(deps, "admin", never)).rejects.toMatchObject({
+			code: "INVALID_CRON",
+			status: 400,
+			message: `Day 31 never occurs in the listed months. ${CRON_RULE}`,
+		});
+		expect(deps.cron.calls).toEqual([]);
 		expect((await deps.schedules.query({ limit: 100 })).items).toEqual([]);
 	});
 
 	it("refuses an expression whose next run overflows EmDash's search, and rethrows any other error", async () => {
 		const { deps } = await scheduleDeps();
-		// EmDash 1.2.0's nextCronTime("0 0 31 4,6,9,11 *") throws this RangeError (croner recursion).
+		// The backstop for anything else that reaches croner's recursion as a RangeError.
 		deps.cron.schedule = async () => {
 			throw new RangeError("Maximum call stack size exceeded");
 		};
-		const never = { ...base, cron: "0 0 31 4,6,9,11 *" };
-		await expect(createSchedule(deps, "admin", never)).rejects.toMatchObject({
+		await expect(createSchedule(deps, "admin", base)).rejects.toMatchObject({
 			code: "INVALID_CRON",
 			status: 400,
 			message: "Maximum call stack size exceeded",
@@ -358,7 +371,7 @@ describe("updateSchedule", () => {
 			schedule: "@hourly",
 			data: { scheduleId: "A" },
 		});
-		const refused = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 3 31 2 *" });
+		const refused = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 0 31 4-6/2 *" });
 		await expect(refused).rejects.toMatchObject({ code: "INVALID_CRON" });
 		expect(await deps.schedules.get("A")).toMatchObject({ cron: "@hourly", revision: 2 });
 		const sixFields = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 3 * * * *" });

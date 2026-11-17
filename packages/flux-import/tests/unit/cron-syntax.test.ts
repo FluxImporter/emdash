@@ -20,8 +20,17 @@ describe("cronProblem (spec Ruling 7, plan Ruling 3)", () => {
 		"0 0 1 12-dec *",
 		// EmDash reads any run of whitespace as one separator, as it schedules "0  3 * * *".
 		"0  3 * * *",
+		// A day of month is checked against explicit months only, never against * or a step.
+		"0 0 29 2 *",
+		"0 0 30 4,6,9,11 *",
+		"0 0 31 4,5 *",
+		"0 0 31 4-5 *",
+		"0 0 31 feb,apr-jun *",
+		"0 0 31 * *",
+		"0 0 */31 2 *",
+		"0 0 30-31/1 2 *",
 		// EmDash refuses this one itself (Fact E1); the route answers with its message.
-		"0 3 31 2 *",
+		"0 0 31 4-6/2 *",
 	])("accepts %s", (cron) => {
 		expect(cronProblem(cron)).toBeNull();
 	});
@@ -44,6 +53,13 @@ describe("cronProblem (spec Ruling 7, plan Ruling 3)", () => {
 		// EmDash 1.2.0 stores these two as one-shot runs in the past (probed in M6b Task 2).
 		["0 3 1, * *", 'day of month: "" is not a value from 1 to 31, a range or a step'],
 		["1-2-3 * * * *", 'minute: "1-2-3" is not a value from 0 to 59, a range or a step'],
+		["0 3 31 2 *", "Day 31 never occurs in the listed months"],
+		["0 0 30 2 *", "Day 30 never occurs in the listed months"],
+		["0 0 31 4,6,9,11 *", "Day 31 never occurs in the listed months"],
+		["0 0 31 feb,apr *", "Day 31 never occurs in the listed months"],
+		["0 0 1,30-31 2 *", "Day 30 never occurs in the listed months"],
+		// The day itself never occurs, whatever the day of week adds (croner ORs the two).
+		["0 0 31 2 mon", "Day 31 never occurs in the listed months"],
 		["0 3 L * *", 'day of month: "L" is not a value from 1 to 31, a range or a step'],
 		["0 3 * * 8", 'day of week: "8" is not a value from 0 to 7, a range or a step'],
 		["0 3 * * jan", 'day of week: "jan" is not a value from 0 to 7, a range or a step'],
