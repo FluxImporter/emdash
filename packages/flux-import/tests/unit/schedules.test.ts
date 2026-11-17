@@ -13,6 +13,7 @@ import {
 	PUMP_SCHEDULE,
 	PUMP_TASK,
 	paused,
+	pausedKeeping,
 	pauseSchedule,
 	type RunEntry,
 	reconcile,
@@ -804,20 +805,20 @@ describe("scheduler writes and pauses", () => {
 		expect(await pauseSchedule(deps, "gone", "cancelled", "J1")).toBe(false);
 	});
 
-	it("never overwrites an existing pause: its reason, time and job stay, the claim and mark go", () => {
+	it("keeps an existing pause on an automatic pause: its reason, time and job stay, the claim and mark go", () => {
 		const earlier = "2026-11-17T10:00:00.000Z";
 		const first = { reason: "rolled_back", at: earlier, jobId: "J1" } as const;
 		const current = { jobId: "J2", claimedAt: AT };
 		// Disabled with a pause, and (a pending pause) enabled with one: both keep it.
 		for (const enabled of [false, true]) {
 			const row = scheduleRow("A", { enabled, pause: first, due: { at: AT }, current });
-			const next = paused(row, "job_failed", AT, "J9");
+			const next = pausedKeeping(row, "job_failed", AT, "J9");
 			expect(next).toMatchObject({ enabled: false, pause: first });
 			expect(next).not.toHaveProperty("due");
 			expect(next).not.toHaveProperty("current");
 		}
 		// A pause with no job keeps having none.
-		const bare = paused(
+		const bare = pausedKeeping(
 			scheduleRow("A", { pause: { reason: "creator_gone", at: earlier } }),
 			"cancelled",
 			AT,
@@ -825,14 +826,24 @@ describe("scheduler writes and pauses", () => {
 		);
 		expect(bare.pause).toEqual({ reason: "creator_gone", at: earlier });
 		// A schedule an Admin disabled without a pause takes the new one.
-		expect(paused(scheduleRow("A", { enabled: false }), "job_failed", AT, "J9").pause).toEqual({
+		const off = scheduleRow("A", { enabled: false });
+		expect(pausedKeeping(off, "job_failed", AT, "J9").pause).toEqual({
 			reason: "job_failed",
 			at: AT,
 			jobId: "J9",
 		});
+		// A route's pause replaces it (preflight F7).
+		const row = scheduleRow("A", { enabled: false, pause: first, due: { at: AT }, current });
+		const routed = paused(row, "cancelled", AT, "J9");
+		expect(routed).toMatchObject({
+			enabled: false,
+			pause: { reason: "cancelled", at: AT, jobId: "J9" },
+		});
+		expect(routed).not.toHaveProperty("due");
+		expect(routed).not.toHaveProperty("current");
 	});
 
-	it("keeps the first pause when a route pauses a paused schedule, and still marks the run", async () => {
+	it("replaces the pause when a route pauses a paused schedule, and marks the run (preflight F7)", async () => {
 		const { deps } = await scheduleDeps();
 		const run: RunEntry = { jobId: "J1", at: AT, outcome: "failed", counters: zero };
 		const first = { reason: "job_failed", at: "2026-11-17T10:00:00.000Z", jobId: "J1" } as const;
@@ -841,7 +852,7 @@ describe("scheduler writes and pauses", () => {
 		expect(await pauseSchedule(deps, "A", "rolled_back", "J1", mark)).toBe(true);
 		expect(await deps.schedules.get("A")).toMatchObject({
 			enabled: false,
-			pause: first,
+			pause: { reason: "rolled_back", at: AT, jobId: "J1" },
 			runs: [{ ...run, rolledBack: { by: "R1", at: AT } }],
 		});
 	});

@@ -394,17 +394,23 @@ describe('pumpTick (spec "The pump")', () => {
 		});
 	});
 
-	it("keeps a pause already on the schedule, with its reason and time (coordinator ruling)", async () => {
-		const first = { reason: "rolled_back", at: ARMED, jobId: "J0" } as const;
-		const t = await setup({ enabled: false, pause: first });
-		await t.base.jobs.put("J1", finished("J1", { status: "failed", sourceId: "S1" }));
-		await pumpTick(t.deps);
-		expect(await t.row()).toMatchObject({
-			enabled: false,
-			pause: first,
-			runs: [{ jobId: "J1", outcome: "failed" }],
-		});
-		expect(t.cleared).toEqual(["S1/J1"]);
-		expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
-	});
+	it.each([
+		["a failed job", "failed", ["S1/J1"]],
+		["the repeat of a cancel's pause", "cancelled", []],
+	] as const)(
+		"keeps a rolled_back pause already on the schedule on %s (an automatic pause)",
+		async (_what, status, cleared) => {
+			const first = { reason: "rolled_back", at: ARMED, jobId: "J0" } as const;
+			const t = await setup({ enabled: false, pause: first });
+			await t.base.jobs.put("J1", finished("J1", { status, sourceId: "S1" }));
+			await pumpTick(t.deps);
+			expect(await t.row()).toMatchObject({
+				enabled: false,
+				pause: first,
+				runs: [{ jobId: "J1", outcome: status }],
+			});
+			expect(t.cleared).toEqual(cleared);
+			expect(await t.base.jobs.get("J1")).toMatchObject({ scheduled: "closed" });
+		},
+	);
 });

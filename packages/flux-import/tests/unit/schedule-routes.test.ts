@@ -338,6 +338,24 @@ describe("the schedule routes (M6b)", () => {
 		});
 	});
 
+	it("jobs/rollback replaces a job_failed pause with rolled_back (preflight F7: a route pause wins)", async () => {
+		const original = await importRows(deps, [{ sku: "A1", name: "Desk", price: 10 }]);
+		const marked = { origin: "schedule", scheduleId: "A", scheduled: "closed" } as const;
+		await deps.jobs.put(original.id, { ...original, ...marked });
+		const run = { jobId: original.id, at: original.updatedAt, outcome: "failed" as const };
+		const failed = { reason: "job_failed", at: "2026-11-17T10:00:00.000Z", jobId: "J0" } as const;
+		await kv.schedules.put(
+			"A",
+			scheduleRow("A", { enabled: false, pause: failed, runs: [{ ...run, counters: zero }] }),
+		);
+		const rollback = await call<Job>("jobs/rollback", { id: original.id });
+		expect(await kv.schedules.get("A")).toMatchObject({
+			enabled: false,
+			pause: { reason: "rolled_back", jobId: original.id },
+			runs: [{ jobId: original.id, rolledBack: { by: rollback.id, at: rollback.createdAt } }],
+		});
+	});
+
 	it("a dry-run rollback of a scheduled job leaves its schedule alone", async () => {
 		const original = await importRows(deps, [{ sku: "A1", name: "Desk", price: 10 }]);
 		const marked = { origin: "schedule", scheduleId: "A", scheduled: "closed" } as const;

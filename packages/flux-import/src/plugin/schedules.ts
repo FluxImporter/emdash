@@ -296,10 +296,9 @@ export async function writeSchedule(
 }
 
 /**
- * The row paused: disabled with the reason; the claim and the due mark go (plan Ruling 6). A
- * pause already on the row is never overwritten (coordinator ruling after Task 4): its reason,
- * time and job stay, so the first cause is what the Admin sees, whichever of a route, a launch or
- * finalization pauses it again.
+ * The row paused by a route (an Admin's cancel or rollback): disabled with this reason, which
+ * replaces any pause already there (preflight F7: a route pause always wins); the claim and the
+ * due mark go (plan Ruling 6).
  */
 export function paused(
 	row: ScheduleRow,
@@ -311,8 +310,24 @@ export function paused(
 	return {
 		...rest,
 		enabled: false,
-		pause: row.pause ?? { reason, at, ...(jobId === undefined ? {} : { jobId }) },
+		pause: { reason, at, ...(jobId === undefined ? {} : { jobId }) },
 	};
+}
+
+/**
+ * The row paused by the scheduler itself (a launch's record, finalization and its repeat of a
+ * route's pause): as `paused`, except that a pause already on the row is never overwritten
+ * (coordinator rulings after Task 4 and on F7). Its reason, time and job stay, so an automatic
+ * pause never hides an Admin's or an earlier cause.
+ */
+export function pausedKeeping(
+	row: ScheduleRow,
+	reason: PauseReason,
+	at: string,
+	jobId?: string,
+): ScheduleRow {
+	const next = paused(row, reason, at, jobId);
+	return row.pause === undefined ? next : { ...next, pause: row.pause };
 }
 
 /** Marks a run log entry rolled back (spec Ruling 42). */
@@ -325,7 +340,8 @@ export function withRollback(row: ScheduleRow, jobId: string, by: string, at: st
 
 /**
  * Pauses a schedule from a route (spec Ruling 32: a cancel or rollback of its job), then cancels
- * its task; `mark` changes the row further. False when the row is gone or every attempt lost.
+ * its task; `mark` changes the row further. A route pause replaces any pause already there
+ * (`paused`, preflight F7). False when the row is gone or every attempt lost.
  */
 export async function pauseSchedule(
 	deps: Pick<ScheduleDeps, "schedules" | "cron" | "now">,

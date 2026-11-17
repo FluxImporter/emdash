@@ -438,6 +438,28 @@ describe('launch (spec "Launch")', () => {
 		expect(await t.row()).toMatchObject({ enabled: false, pause: { reason: "url_blocked" } });
 	});
 
+	it("keeps the existing pause of a row an Admin disabled with the claim held (an automatic pause)", async () => {
+		const t = await setup();
+		const first = { reason: "creator_gone", at: "2026-11-17T10:00:00.000Z" } as const;
+		t.fake.answer = async () => {
+			// schedules/update { enabled: false } keeps the claim and any pause already there.
+			await writeSchedule(t.base.schedules, "A", "J1", (r) => ({
+				...r,
+				enabled: false,
+				pause: first,
+			}));
+			throw new ServiceError("URL_BLOCKED", "blocked", 400);
+		};
+		expect(await launch(t.deps, await t.row())).toBe("failed");
+		const row = await t.row();
+		expect(row).toMatchObject({
+			enabled: false,
+			pause: first,
+			lastLaunch: { errorCode: "URL_BLOCKED" },
+		});
+		expect(row).not.toHaveProperty("current");
+	});
+
 	it("logs a cancelled job it could not close apart from one it could not cancel (preflight F6)", async () => {
 		const t = await setup();
 		const cas = t.base.jobs.compareAndSet.bind(t.base.jobs);

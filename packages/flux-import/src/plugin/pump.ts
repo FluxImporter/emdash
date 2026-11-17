@@ -12,7 +12,7 @@ import {
 	MAX_SCHEDULES,
 	type PauseReason,
 	PUMP_TASK,
-	paused,
+	pausedKeeping,
 	RUN_LOG_SIZE,
 	type RunEntry,
 	type ScheduleRow,
@@ -84,7 +84,7 @@ function countersOf(job: Job): RunEntry["counters"] {
 /**
  * Writes the run log entry (at the head, `RUN_LOG_SIZE` kept) and the pause `pauseOf` gives for
  * the newest row, conditional on `current?.jobId` (spec Ruling 34). A pause already on the row
- * stays (`paused`). True when the entry is recorded, was already there, or the schedule is gone;
+ * stays (`pausedKeeping`). True when the entry is recorded, was already there, or the schedule is gone;
  * false when the write lost, so the next tick finalizes the job again.
  */
 async function recordRun(
@@ -110,7 +110,9 @@ async function recordRun(
 		);
 		const reason = pauseOf(r);
 		pausing = reason !== undefined;
-		return reason === undefined ? { ...r, runs } : paused({ ...r, runs }, reason, at, entry.jobId);
+		return reason === undefined
+			? { ...r, runs }
+			: pausedKeeping({ ...r, runs }, reason, at, entry.jobId);
 	});
 	if (written !== null && pausing) await deps.cron.cancel(scheduleTask(scheduleId));
 	return already || written !== null;

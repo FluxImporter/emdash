@@ -14,7 +14,7 @@ import {
 	iso,
 	LAUNCH_CLAIM_STALE_MS,
 	type PauseReason,
-	paused,
+	pausedKeeping,
 	type ScheduleRow,
 	schedulesCollection,
 	scheduleTask,
@@ -157,7 +157,7 @@ async function record(
 	const written = await writeSchedule(deps.schedules, id, jobId, (current) => {
 		wasEnabled = current.enabled;
 		const { row, pause } = change(current);
-		return pause === undefined ? released(row) : paused(row, pause, at);
+		return pause === undefined ? released(row) : pausedKeeping(row, pause, at);
 	});
 	if (written !== null && !written.enabled) await deps.cron.cancel(scheduleTask(id));
 	return { written, pausedNow: written !== null && wasEnabled && !written.enabled };
