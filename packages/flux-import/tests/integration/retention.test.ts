@@ -90,7 +90,7 @@ describe("retention cleanup", () => {
 			const task = db
 				.prepare(`SELECT schedule FROM _emdash_cron_tasks WHERE ${RETENTION_TASK_SQL}`)
 				.get() as { schedule: string } | undefined;
-			expect(task?.schedule).toBe("0 3 * * *");
+			expect(task?.schedule).toBe("17 * * * *");
 			db.prepare(`UPDATE _emdash_cron_tasks SET next_run_at = ? WHERE ${RETENTION_TASK_SQL}`).run(
 				new Date(Date.now() - 60_000).toISOString(),
 			);

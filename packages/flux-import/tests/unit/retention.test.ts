@@ -5,10 +5,13 @@ import type { Job } from "../../src/engine/types.js";
 import {
 	ensureRetentionScheduled,
 	purgeExpired,
+	RETENTION_CURSOR_KEY,
 	RETENTION_SCHEDULE,
 	RETENTION_TASK,
 } from "../../src/plugin/retention.js";
-import { makeDeps } from "./fakes.js";
+import type { ScheduleRow } from "../../src/plugin/schedules.js";
+import { MemoryKv, makeDeps } from "./fakes.js";
+import { scheduleRow } from "./schedule-fakes.js";
 
 const template = {
 	version: 1,
@@ -218,8 +221,137 @@ describe("purgeExpired", () => {
 	});
 });
 
+/** Plugin KV in memory. */
+class KvStore {
+	readonly values = new Map<string, unknown>();
+	async get<T>(key: string): Promise<T | null> {
+		return (this.values.get(key) as T | undefined) ?? null;
+	}
+	async set(key: string, value: unknown): Promise<void> {
+		this.values.set(key, value);
+	}
+	async delete(key: string): Promise<boolean> {
+		return this.values.delete(key);
+	}
+}
+
+/** `n` completed jobs a day old (retention 0 days), and the bounds of a run. */
+async function expired(n: number) {
+	const made = makeDeps();
+	made.deps.source.add("u1", "sku,Name\nA,1\n");
+	const ids: string[] = [];
+	for (let i = 0; i < n; i++) {
+		const job = await createJob(made.deps, { uploadId: "u1", template, schemaFields });
+		await made.deps.jobs.put(job.id, { ...job, status: "completed" });
+		ids.push(job.id);
+	}
+	made.clock.t += DAY;
+	const schedules = new MemoryKv<ScheduleRow>();
+	const kv = new KvStore();
+	const bounds = (target: number) => ({ schedules, kv, target });
+	return { ...made, ids, schedules, kv, bounds };
+}
+
+describe("bounded retention (M6b, spec Ruling 39, plan Ruling 16)", () => {
+	it("never purges an open scheduled job or one a launch claim names, whatever its status", async () => {
+		const { deps, ids, schedules, bounds } = await expired(3);
+		const [open, claimed, plain] = ids as [string, string, string];
+		await deps.jobs.put(open, { ...((await deps.jobs.get(open)) as Job), scheduled: "open" });
+		const current = { jobId: claimed, claimedAt: "2026-01-01T00:00:00.000Z" };
+		await schedules.put("A", scheduleRow("A", { current }));
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		// 3 to start and 6 for the one job: the kept jobs cost no call past the scan.
+		expect(result).toEqual({ jobs: 1, records: 0, journal: 0, uploads: 2, queries: 9 });
+		expect(await deps.jobs.get(plain)).toBeNull();
+		expect(await deps.jobs.get(open)).not.toBeNull();
+		expect(await deps.jobs.get(claimed)).not.toBeNull();
+	});
+
+	it("stops before a job it cannot finish within the budget, saves it as the cursor, and the next run finishes", async () => {
+		const { deps, ids, kv, bounds } = await expired(3);
+		// Scan page, schedules read, cursor read: 3. Each job: getVersioned, compareAndSet, three
+		// row queries and the delete: 6. A third job would start with 5 < RETENTION_PRUNE_MIN left.
+		const first = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(20));
+		expect(first).toEqual({ jobs: 2, records: 0, journal: 0, uploads: 2, more: true, queries: 16 });
+		expect(kv.values.get(RETENTION_CURSOR_KEY)).toBe(ids[2]);
+		const second = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(20));
+		expect(second).toEqual({ jobs: 1, records: 0, journal: 0, uploads: 2, queries: 10 });
+		expect(kv.values.has(RETENTION_CURSOR_KEY)).toBe(false);
+		for (const id of ids) expect(await deps.jobs.get(id)).toBeNull();
+	});
+
+	it("leaves a job cut short marked purging, and the next run finishes it", async () => {
+		const { deps, ids, bounds } = await expired(1);
+		const id = ids[0] as string;
+		for (let seq = 0; seq < 450; seq++) {
+			await deps.records.put(`${id}:${seq}`, { jobId: id, seq, status: "created" } as never);
+		}
+		// 3 to start, 2 to mark, four pages of 100 rows (a query and a deleteMany each), then the
+		// cursor write, the one call a run makes past its target.
+		const first = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(13));
+		expect(first).toMatchObject({ jobs: 0, records: 400, more: true, queries: 14 });
+		expect(await deps.jobs.get(id)).toMatchObject({ purging: true });
+		const second = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		expect(second).toMatchObject({ jobs: 1, records: 50 });
+		expect(deps.records.rows.size).toBe(0);
+	});
+
+	it("skips its deletes when the scan passes RETENTION_SCAN_MAX rows", async () => {
+		const { deps, ids, bounds } = await expired(1);
+		const job = (await deps.jobs.get(ids[0] as string)) as Job;
+		for (let i = 0; i < 1000; i++) await deps.jobs.put(`X${i}`, { ...job, id: `X${i}` });
+		const purger = new Purger();
+		const result = await purgeExpired(deps, purger, 0, new Set(), bounds(150));
+		expect(result).toEqual({
+			jobs: 0,
+			records: 0,
+			journal: 0,
+			uploads: 0,
+			skipped: 1000,
+			queries: 50,
+		});
+		expect(purger.cutoffs).toEqual([]);
+		expect(deps.jobs.rows.size).toBe(1001);
+	});
+
+	it("still deletes at exactly RETENTION_SCAN_MAX rows", async () => {
+		const { deps, ids, bounds } = await expired(1);
+		const job = (await deps.jobs.get(ids[0] as string)) as Job;
+		for (let i = 0; i < 999; i++) {
+			await deps.jobs.put(`X${i}`, { ...job, id: `X${i}`, status: "running" });
+		}
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		// 50 scan pages, the schedules and the cursor, then 6 for the one finished job.
+		expect(result).toEqual({ jobs: 1, records: 0, journal: 0, uploads: 2, queries: 58 });
+	});
+
+	it("starts at the saved cursor, so a job stays due behind it does not starve the rest", async () => {
+		const { deps, ids, kv, bounds } = await expired(3);
+		kv.values.set(RETENTION_CURSOR_KEY, ids[1]);
+		// 3 to start and 6 for one job leave 9 < RETENTION_PRUNE_MIN.
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(18));
+		expect(result).toMatchObject({ jobs: 1, more: true });
+		expect(await deps.jobs.get(ids[1] as string)).toBeNull();
+		expect(await deps.jobs.get(ids[0] as string)).not.toBeNull();
+		expect(kv.values.get(RETENTION_CURSOR_KEY)).toBe(ids[2]);
+	});
+
+	it("goes on past a job whose rows will not delete, and saves no cursor", async () => {
+		const { deps, ids, kv, bounds } = await expired(2);
+		const [stuck, next] = ids as [string, string];
+		await deps.records.put(`${stuck}:0`, { jobId: stuck, seq: 0, status: "created" } as never);
+		deps.records.deleteMany = async () => 0;
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		expect(result).toMatchObject({ jobs: 1 });
+		expect(result.more).toBeUndefined();
+		expect(await deps.jobs.get(stuck)).toMatchObject({ purging: true });
+		expect(await deps.jobs.get(next)).toBeNull();
+		expect(kv.values.has(RETENTION_CURSOR_KEY)).toBe(false);
+	});
+});
+
 describe("ensureRetentionScheduled", () => {
-	it("schedules the daily task once", async () => {
+	it("schedules the hourly task once", async () => {
 		const scheduled: string[] = [];
 		const tasks: { name: string }[] = [];
 		const cron = {
@@ -233,7 +365,23 @@ describe("ensureRetentionScheduled", () => {
 		};
 		await ensureRetentionScheduled({ cron });
 		await ensureRetentionScheduled({ cron });
-		expect(scheduled).toEqual([`${RETENTION_TASK}@0 3 * * *`]);
+		expect(scheduled).toEqual([`${RETENTION_TASK}@17 * * * *`]);
 		await expect(ensureRetentionScheduled({})).resolves.toBeUndefined();
+	});
+
+	it("moves a pre-0.4.0 daily task to the hourly expression (spec Ruling 39)", async () => {
+		const scheduled: string[] = [];
+		const cron = {
+			list: async () => [
+				{ name: RETENTION_TASK, schedule: "0 3 * * *", nextRunAt: "", lastRunAt: null },
+			],
+			schedule: async (name: string, opts: { schedule: string }) => {
+				scheduled.push(`${name}@${opts.schedule}`);
+			},
+			cancel: async () => {},
+		};
+		await ensureRetentionScheduled({ cron });
+		expect(RETENTION_SCHEDULE).toBe("17 * * * *");
+		expect(scheduled).toEqual([`${RETENTION_TASK}@17 * * * *`]);
 	});
 });

@@ -6,7 +6,7 @@ import type { KvCollection } from "../engine/ports.js";
 import type { Template } from "../engine/template.js";
 import { type Job, type JobStatus, MISSING_MAX_PERCENT_DEFAULT } from "../engine/types.js";
 import { CRON_RULE, cronProblem } from "./cron-syntax.js";
-import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
+import { syncRetentionTask } from "./retention.js";
 import { type Page, page, ServiceError } from "./service.js";
 import type { SourceRow } from "./sources.js";
 import { assertRevision, staleRevision, templateNotFound } from "./template-errors.js";
@@ -771,10 +771,7 @@ export async function reconcile(
 			result.pump = true;
 		}
 	}
-	if (byName.get(RETENTION_TASK)?.schedule !== RETENTION_SCHEDULE) {
-		await deps.cron.schedule(RETENTION_TASK, { schedule: RETENTION_SCHEDULE });
-		result.retention = true;
-	}
+	result.retention = await syncRetentionTask(deps.cron, tasks);
 	return result;
 }
 
