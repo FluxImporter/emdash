@@ -20,8 +20,14 @@ export interface ResolvedTemplate {
 export interface JobRequest {
 	/** M6c, `jobs/start`: the ID the dry run claimed (`createJob`'s `id`). */
 	id?: string | undefined;
-	/** M6c: the agent routes' marker (spec Ruling 31); never set by `jobs/create`. */
-	origin?: "agent" | undefined;
+	/** M6c: the agent routes' marker (spec Ruling 31); M6b: a schedule's launch. Never set by `jobs/create`. */
+	origin?: "agent" | "schedule" | undefined;
+	/** M6b, a launch: the schedule. */
+	scheduleId?: string | undefined;
+	/** M6b, a launch: the job starts open for the pump. */
+	scheduled?: "open" | undefined;
+	/** M6b, `jobs/start`: the URL source of the dry run the job imports (no `sourceId`). */
+	feedSourceId?: string | undefined;
 	/** M6c, `jobs/start`: the dry run the job imports. */
 	dryRunOf?: string | undefined;
 	uploadId?: string | undefined;

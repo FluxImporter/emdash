@@ -99,10 +99,21 @@ export interface Job {
 	templateRevision?: number;
 	/**
 	 * M6c: the job was created by the agent routes (`jobs/plan`, `jobs/start`), under their rules:
-	 * a saved template, no missing phase, always a journal. Never inferred from a job's shape, and
-	 * never copied by a rollback (spec Ruling 31).
+	 * a saved template, no missing phase, always a journal. M6b: `"schedule"`, created by a
+	 * schedule's launch (spec Ruling 22). Never inferred from a job's shape, and never copied by a
+	 * rollback (M6c spec Ruling 31).
 	 */
-	origin?: "agent";
+	origin?: "agent" | "schedule";
+	/** M6b: the schedule that launched the job; not copied by a rollback. */
+	scheduleId?: string;
+	/** M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). */
+	scheduled?: "open" | "closed";
+	/**
+	 * M6b (spec Ruling 33): the URL source whose data the job reads, or that a rollback undoes. Set
+	 * on every job `jobFromSource` creates, on a real job started from a URL-source dry run (which
+	 * has no `sourceId`, M6c Ruling 9), and on a rollback, copied from its original.
+	 */
+	feedSourceId?: string;
 	/** M6c: a real job from `jobs/start`: the dry run it imports. */
 	dryRunOf?: string;
 	/** M6c: a dry run from `jobs/plan`: the real job `jobs/start` claimed for it (Ruling 38). */

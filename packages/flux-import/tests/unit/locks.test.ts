@@ -10,6 +10,7 @@ import {
 	SqliteQueryCompiler,
 } from "kysely";
 import { describe, expect, it } from "vitest";
+import { NO_USER } from "../../src/emdash/content.js";
 import { foreignLockQuery, isEntryLocked, isPostgres } from "../../src/emdash/locks.js";
 
 function dummyDb(dialect: "sqlite" | "postgres"): Kysely<Database> {
@@ -32,6 +33,11 @@ function dummyDb(dialect: "sqlite" | "postgres"): Kysely<Database> {
 }
 
 describe("foreignLockQuery", () => {
+	it("compares with the sentinel user, which owns no lease (spec Ruling 5)", () => {
+		const { parameters } = foreignLockQuery(dummyDb("sqlite"), "products", "e1", NO_USER).compile();
+		expect(parameters).toEqual(["products", "e1", "", 0, 1]);
+	});
+
 	it("compares expiry to the SQLite clock and excludes the importing user", () => {
 		const db = dummyDb("sqlite");
 		expect(isPostgres(db)).toBe(false);

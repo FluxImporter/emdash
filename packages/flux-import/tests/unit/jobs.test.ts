@@ -20,6 +20,31 @@ function setup(csv = "sku,Name\nA1,Desk\n") {
 }
 
 describe("createJob", () => {
+	it("records a scheduled job's origin, schedule, open state and feed (M6b)", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template,
+			schemaFields,
+			sourceId: "S1",
+			origin: "schedule",
+			scheduleId: "SCH1",
+			scheduled: "open",
+			feedSourceId: "S1",
+		});
+		expect(job).toMatchObject({
+			origin: "schedule",
+			scheduleId: "SCH1",
+			scheduled: "open",
+			feedSourceId: "S1",
+			sourceId: "S1",
+		});
+		const plain = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		for (const key of ["origin", "scheduleId", "scheduled", "feedSourceId"]) {
+			expect(key in plain).toBe(false);
+		}
+	});
+
 	it("records an agent job's origin and the dry run it ran (M6c)", async () => {
 		const { deps } = setup();
 		const job = await createJob(deps, {

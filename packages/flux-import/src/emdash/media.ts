@@ -59,12 +59,14 @@ function infoOf(item: z.infer<typeof mediaItem>): MediaInfo {
 /**
  * `MediaPort` over the trusted runtime. Uploads go through `handleMediaUpload`, which runs
  * EmDash's allowlist, size check, content-hash dedupe, storage write, image enrichment and the
- * media hooks; they are credited to `authorId` and limited by the site's `maxUploadSize`.
+ * media hooks; they are credited to `authorId` (to no one when it is `null`) and limited by the
+ * site's `maxUploadSize`.
  */
 export class EmDashMedia implements MediaPort {
 	constructor(
 		private readonly runtime: MediaRuntime,
-		private readonly authorId: string,
+		/** `null`: an unattended upload, with no author (spec Ruling 4). */
+		private readonly authorId: string | null,
 		private readonly maxUploadSize: number | undefined,
 	) {}
 
@@ -97,7 +99,7 @@ export class EmDashMedia implements MediaPort {
 			filename: input.filename,
 			base64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
 			contentType: input.contentType,
-			authorId: this.authorId,
+			...(this.authorId === null ? {} : { authorId: this.authorId }),
 			...(input.alt === undefined ? {} : { alt: input.alt }),
 			...(this.maxUploadSize === undefined ? {} : { maxUploadSize: this.maxUploadSize }),
 		});

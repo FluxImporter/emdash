@@ -50,6 +50,15 @@ class FakeRuntime implements MediaRuntime {
 }
 
 describe("EmDashMedia", () => {
+	it("uploads without an author when the job has none (spec Ruling 4)", async () => {
+		const runtime = new FakeRuntime();
+		const media = new EmDashMedia(runtime, null, undefined);
+		const bytes = new Uint8Array([1, 2, 3]);
+		await media.upload({ filename: "a.png", contentType: "image/png", bytes });
+		expect(runtime.uploads).toHaveLength(1);
+		expect(runtime.uploads[0]).not.toHaveProperty("authorId");
+	});
+
 	it("gets a ready item, and null for a missing or unfinished one", async () => {
 		const runtime = new FakeRuntime();
 		const media = new EmDashMedia(runtime, "u1", undefined);

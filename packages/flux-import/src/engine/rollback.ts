@@ -125,6 +125,8 @@ export async function createRollback(
 		...(original.templateRevision === undefined
 			? {}
 			: { templateRevision: original.templateRevision }),
+		// M6b (spec Ruling 33): a rollback undoes its original's feed, so the schedule stays busy.
+		...(original.feedSourceId === undefined ? {} : { feedSourceId: original.feedSourceId }),
 		// Shown for the collection and locale; a rollback never reads the original's file.
 		uploadId: original.uploadId,
 		template: original.template,

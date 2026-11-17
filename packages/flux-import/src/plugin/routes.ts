@@ -1,24 +1,14 @@
 import { z } from "astro/zod";
-import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash";
+import type { ActorInfo, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
-import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/config.js";
-import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js";
-import { isEntryLocked } from "../emdash/locks.js";
-import { EmDashLookups } from "../emdash/lookups.js";
-import { EmDashMedia } from "../emdash/media.js";
-import { listSchemaFields, readPublishAtCollection } from "../emdash/schema.js";
-import { pluginCollections } from "../emdash/storage.js";
-import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
-import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
-import { onWorkers } from "../emdash/workers.js";
+import { listSchemaFields } from "../emdash/schema.js";
+import { readSiteTimezone } from "../emdash/timezone.js";
+import { isUploadId } from "../emdash/uploads.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import { createRollback } from "../engine/rollback.js";
 import { OWNER_PATTERN, OWNER_RULE } from "../engine/template.js";
-import type { EngineDeps, Job, JobStatus, RecordStatus } from "../engine/types.js";
-import { FETCH_LIMITS } from "../sources/fetcher.js";
-import { createMediaFetcher } from "../sources/media-fetch.js";
-import { defaultResolver, type NetOptions } from "../sources/net.js";
+import type { JobStatus, RecordStatus } from "../engine/types.js";
 import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
 import {
 	type AgentDeps,
@@ -38,14 +28,8 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
-import {
-	type JobRequest,
-	jobTemplateRef,
-	type ResolvedTemplate,
-	resolveJobTemplate,
-} from "./job-templates.js";
-import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
-import { type EmDashRuntime, withRuntime } from "./runtime.js";
+import { resolveJobTemplate } from "./job-templates.js";
+import { withRuntime } from "./runtime.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
 import {
 	changeJob,
@@ -53,27 +37,20 @@ import {
 	jobLogCsv,
 	listJobs,
 	listRecords,
-	mediaMaxBytes,
 	nextBatch,
 	PASTE_MAX_BYTES,
 	SAMPLE_MAX,
 	ServiceError,
-	type StartJobInput,
 	stagePaste,
-	type UploadKeeper,
 } from "./service.js";
+import { buildServices, createJobFrom, type Services } from "./services.js";
 import {
 	clearLastImport,
 	createSource,
 	deleteSource,
 	fetchSource,
 	getSource,
-	jobFromSource,
-	latestSourceUploads,
 	listSources,
-	type SkippedJob,
-	type SourceDeps,
-	sourcesCollection,
 	updateSource,
 } from "./sources.js";
 import { step, summarize } from "./summaries.js";
@@ -90,13 +67,7 @@ import {
 	templatesCollection,
 	updateTemplate,
 } from "./templates.js";
-import {
-	fetchLimitsFor,
-	sampleImport,
-	startImport,
-	XLSX_WORKERS_BUFFER,
-	type XlsxStaging,
-} from "./xlsx.js";
+import { sampleImport } from "./xlsx.js";
 
 /** Every route requires Admin (`import:execute` is level 50 in @emdash-cms/auth). */
 const PERMISSION = "import:execute";
@@ -165,29 +136,11 @@ const source = z
 	})
 	.strict();
 
-export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {
-	if (!ctx.cron) return;
-	const tasks = await ctx.cron.list();
-	if (!tasks.some((t) => t.name === RETENTION_TASK)) {
-		await ctx.cron.schedule(RETENTION_TASK, { schedule: RETENTION_SCHEDULE });
-	}
-}
-
-interface Services {
-	deps: EngineDeps;
-	uploads: EmDashUploads;
-	storage: UploadStorage;
-	runtime: EmDashRuntime;
-	actor: ActorInfo;
-	sources: SourceDeps;
-	/** Keeps each URL source's latest staged file when a finished job releases its file. */
-	keep: UploadKeeper;
-	/** Where an XLSX sheet is staged once converted, and its limits. */
-	xlsx: XlsxStaging;
-}
+/** A route's services: the caller is always the actor (`withServices` refuses a call without one). */
+type RouteServices = Services & { actor: ActorInfo };
 
 /** The saved-template services' dependencies for one request (M6a). */
-function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): TemplateDeps {
+function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: RouteServices): TemplateDeps {
 	return {
 		templates: templatesCollection(ctx.storage),
 		links: deps.links,
@@ -235,66 +188,14 @@ export function toRouteError(e: unknown): unknown {
 /** Builds the engine's dependencies for one request and maps service errors to HTTP errors. */
 async function withServices<T>(
 	ctx: RouteContext<unknown>,
-	run: (services: Services) => Promise<T>,
+	run: (services: RouteServices) => Promise<T>,
 ): Promise<T> {
 	if (!ctx.user) throw PluginRouteError.unauthorized("Importing requires a signed-in user");
 	const actor: ActorInfo = { id: ctx.user.id, role: ctx.user.role, source: "api" };
 	return withRuntime(async (runtime) => {
-		if (!runtime.storage) {
-			throw new PluginRouteError("NOT_CONFIGURED", "EmDash storage is not configured", 500);
-		}
-		const uploads = new EmDashUploads(runtime.storage);
-		const collection = sourcesCollection(ctx.storage);
-		const net: NetOptions = {
-			resolver: defaultResolver(),
-			allowPrivateNetwork: allowPrivateNetwork(),
-			// A plain call: workerd rejects fetch() called as a method of another object.
-			fetch: (input, init) => fetch(input, init),
-		};
-		const sources: SourceDeps = {
-			sources: collection,
-			jobs: pluginCollections(ctx.storage).jobs,
-			settings: ctx.settings,
-			storage: runtime.storage,
-			net,
-			limits: { ...FETCH_LIMITS, maxBytes: maxSourceBytes() },
-			workers: onWorkers(),
-			now: Date.now,
-			newId: () => ulid(),
-		};
-		const keep: UploadKeeper = async (uploadId) =>
-			(await latestSourceUploads(collection)).has(uploadId);
-		const deps: EngineDeps = {
-			...pluginCollections(ctx.storage),
-			content: new EmDashContent(runtime, actor, (collection, entryId, userId) =>
-				isEntryLocked(runtime.db, collection, entryId, userId),
-			),
-			lookups: new EmDashLookups(ctx.taxonomies, ctx.bylines, runtime),
-			// Media is fetched without credentials, behind the same SSRF guard as URL sources.
-			media: new EmDashMedia(runtime, actor.id, runtime.config.maxUploadSize),
-			mediaFetcher: createMediaFetcher(net),
-			source: uploads,
-			now: Date.now,
-			newId: () => ulid(),
-		};
-		const xlsx: XlsxStaging = {
-			storage: runtime.storage,
-			maxXlsxBytes: maxXlsxBytes(),
-			maxSourceBytes: maxSourceBytes(),
-			workers: onWorkers(),
-			bufferBytes: XLSX_WORKERS_BUFFER,
-		};
+		const services = buildServices(ctx, runtime, actor);
 		try {
-			return await run({
-				deps,
-				uploads,
-				storage: runtime.storage,
-				runtime,
-				actor,
-				sources,
-				keep,
-				xlsx,
-			});
+			return await run({ ...services, actor });
 		} catch (e) {
 			throw toRouteError(e);
 		}
@@ -533,83 +434,6 @@ const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
 		}),
 };
 
-/**
- * Creates a job as `jobs/create` always has (M6c: shared with `jobs/plan` and `jobs/start`,
- * which pass the template they resolved themselves, plan Ruling 8). A saved template is read
- * once, here or by the caller; everything below uses it as an inline template, and the job
- * stores a snapshot of it.
- */
-async function createJobFrom(
-	ctx: RouteContext<unknown>,
-	{ deps, runtime, sources, xlsx }: Services,
-	request: JobRequest,
-	given?: ResolvedTemplate,
-): Promise<Job | SkippedJob> {
-	await ensureRetentionScheduled(ctx);
-	const resolved =
-		given ??
-		(request.templateId === undefined
-			? { template: request.template }
-			: await resolveJobTemplate(
-					templatesCollection(ctx.storage),
-					request.templateId,
-					request.templateRevision,
-				));
-	const { template } = resolved;
-	// Read once here and stored on the job, so a resumed or retried job converts the same way.
-	const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-	// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-	// serves the job's schema lookup for that collection.
-	const own = await readPublishAtCollection(runtime.schemaRegistry, template);
-	const revisions = own === null ? undefined : own.revisions;
-	const start = (upload: string, fromSource?: string) => {
-		const options: StartJobInput = {
-			uploadId: upload,
-			template,
-			dryRun: request.dryRun,
-			...(request.id === undefined ? {} : { id: request.id }),
-			...(request.origin === undefined ? {} : { origin: request.origin }),
-			...(request.dryRunOf === undefined ? {} : { dryRunOf: request.dryRunOf }),
-			...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
-			...(fromSource === undefined ? {} : { sourceId: fromSource }),
-			...(request.journal === undefined ? {} : { journal: request.journal }),
-			...(request.missing === undefined ? {} : { missing: request.missing }),
-			mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-			...(siteTimezone === undefined ? {} : { siteTimezone }),
-			...(revisions === undefined ? {} : { revisions }),
-			...(request.publish === undefined ? {} : { publish: request.publish }),
-			...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
-			...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
-		};
-		return startImport(
-			deps,
-			xlsx,
-			options,
-			(collection) =>
-				own !== null && collection === own.collection
-					? Promise.resolve(own.fields)
-					: listSchemaFields(runtime.schemaRegistry, collection),
-			(locale) => resolveSiteLocale(locale),
-			(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-		);
-	};
-	if (request.sourceId !== undefined) {
-		const options = {
-			force: request.force ?? false,
-			dryRun: request.dryRun,
-			// The unchanged-content skip also compares the template (spec Ruling 29).
-			template: await jobTemplateRef(resolved),
-		};
-		// A workbook is fetched only up to the XLSX file limit.
-		const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
-		return jobFromSource({ ...sources, limits }, request.sourceId, options, start);
-	}
-	if (request.uploadId === undefined) {
-		throw new PluginRouteError("VALIDATION_ERROR", "Set exactly one of uploadId and sourceId", 400);
-	}
-	return start(request.uploadId);
-}
-
 /** The agent rules' dependencies for one request (plan Ruling 7). */
 function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
 	const { deps, storage, uploads } = services;
@@ -639,7 +463,7 @@ function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
  */
 function agentRoute<T>(
 	input: z.ZodType<T>,
-	run: (ctx: RouteContext<T>, services: Services) => Promise<unknown>,
+	run: (ctx: RouteContext<T>, services: RouteServices) => Promise<unknown>,
 	missing?: string,
 ): PluginRoute<T> {
 	// try/await rather than .catch, so a run that throws before returning a promise is redacted too.
@@ -742,12 +566,15 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/next": route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads, actor, keep }) =>
+		withServices(ctx, async (services) => {
+			// Spec Ruling 5: a scheduled job's writes carry no user, whoever drives its batch.
+			const job = await getJob(services.deps, ctx.input.id);
+			const { deps, uploads, keep } =
+				job.origin === "schedule" ? buildServices(ctx, services.runtime, null) : services;
 			// A unique holder per call: two concurrent calls never share a lease.
-			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`, keep).then(
-				withoutPlannedTerms,
-			),
-		),
+			const holder = `${services.actor.id}:${ulid()}`;
+			return withoutPlannedTerms(await nextBatch(deps, uploads, ctx.input.id, holder, keep));
+		}),
 	),
 
 	"jobs/get": route(byId, (ctx) =>

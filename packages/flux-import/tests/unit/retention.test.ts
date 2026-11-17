@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import type { Job } from "../../src/engine/types.js";
-import { purgeExpired } from "../../src/plugin/retention.js";
+import {
+	ensureRetentionScheduled,
+	purgeExpired,
+	RETENTION_SCHEDULE,
+	RETENTION_TASK,
+} from "../../src/plugin/retention.js";
 import { makeDeps } from "./fakes.js";
 
 const template = {
@@ -210,5 +215,25 @@ describe("purgeExpired", () => {
 		expect(await deps.jobs.get(stalled.id)).toBeNull();
 		expect(await deps.jobs.get(leased.id)).toMatchObject({ purging: true });
 		expect((await deps.records.query({ where: { jobId: leased.id } })).items).toHaveLength(2);
+	});
+});
+
+describe("ensureRetentionScheduled", () => {
+	it("schedules the daily task once", async () => {
+		const scheduled: string[] = [];
+		const tasks: { name: string }[] = [];
+		const cron = {
+			list: async () =>
+				tasks.map((t) => ({ ...t, schedule: RETENTION_SCHEDULE, nextRunAt: "", lastRunAt: null })),
+			schedule: async (name: string, opts: { schedule: string }) => {
+				scheduled.push(`${name}@${opts.schedule}`);
+				tasks.push({ name });
+			},
+			cancel: async () => {},
+		};
+		await ensureRetentionScheduled({ cron });
+		await ensureRetentionScheduled({ cron });
+		expect(scheduled).toEqual([`${RETENTION_TASK}@0 3 * * *`]);
+		await expect(ensureRetentionScheduled({})).resolves.toBeUndefined();
 	});
 });

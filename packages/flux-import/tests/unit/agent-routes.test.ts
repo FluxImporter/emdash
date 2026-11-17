@@ -3,6 +3,7 @@ import type { Job } from "../../src/engine/types.js";
 import type { StatusReply } from "../../src/plugin/agent.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { PASTE_MAX_BYTES, ServiceError, stagePaste } from "../../src/plugin/service.js";
+import { createJobFrom, withScheduledServices } from "../../src/plugin/services.js";
 import type { JobSummary, StepReply } from "../../src/plugin/summaries.js";
 import type { SavedResult } from "../../src/plugin/templates.js";
 import { FakeStorage, MemoryKv, makeDeps } from "./fakes.js";
@@ -224,6 +225,43 @@ describe("the M6c agent routes", () => {
 			dryRun: false,
 			origin: "agent",
 			dryRunOf: dry.id,
+		});
+	});
+
+	it("records a URL source as feedSourceId on its dry run and on the job jobs/start makes (M6b, spec Ruling 33)", async () => {
+		state.feedUpload = (await stagePaste(storage, CSV)).uploadId;
+		const templateId = await saveTemplate();
+		const { job: dry } = await call<{ job: JobSummary }>("jobs/plan", {
+			templateId,
+			sourceId: "S1",
+		});
+		expect(await storedJob(dry.id)).toMatchObject({ sourceId: "S1", feedSourceId: "S1" });
+		expect(await drive(dry.id)).toMatchObject({ status: "completed" });
+		const { job } = await call<{ job: JobSummary }>("jobs/start", { dryRunId: dry.id });
+		const stored = (await storedJob(job.id)) as Job;
+		expect(stored.feedSourceId).toBe("S1");
+		expect(stored).not.toHaveProperty("sourceId");
+	});
+
+	it("passes a launch's schedule markers and source through createJobFrom (M6b)", async () => {
+		state.feedUpload = (await stagePaste(storage, CSV)).uploadId;
+		const ctx = context({});
+		const job = (await withScheduledServices(ctx, (services) =>
+			createJobFrom(ctx, services, {
+				sourceId: "S1",
+				template,
+				dryRun: false,
+				origin: "schedule",
+				scheduleId: "SCH1",
+				scheduled: "open",
+			}),
+		)) as Job;
+		expect(await storedJob(job.id)).toMatchObject({
+			origin: "schedule",
+			scheduleId: "SCH1",
+			scheduled: "open",
+			sourceId: "S1",
+			feedSourceId: "S1",
 		});
 	});
 

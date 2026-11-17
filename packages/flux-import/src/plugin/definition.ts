@@ -4,8 +4,13 @@ import { pluginCollections } from "../emdash/storage.js";
 import { EmDashUploads } from "../emdash/uploads.js";
 import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "../meta.js";
 import { MCP_TOOLS } from "./mcp.js";
-import { purgeExpired, RETENTION_DAYS_DEFAULT, RETENTION_TASK } from "./retention.js";
-import { ensureRetentionScheduled, routes } from "./routes.js";
+import {
+	ensureRetentionScheduled,
+	purgeExpired,
+	RETENTION_DAYS_DEFAULT,
+	RETENTION_TASK,
+} from "./retention.js";
+import { routes } from "./routes.js";
 import { withRuntime } from "./runtime.js";
 import { latestSourceUploads, sourcesCollection } from "./sources.js";
 
@@ -21,11 +26,23 @@ export type FluxImportOptions = Record<string, never>;
  * rollback (`["jobId", "seq"]`); `journalMedia` the media items each job's uploads created (M5a).
  * `templates` holds saved templates (M6a): `name` serves the uniqueness check, `collection` the
  * listing filter, `owner` with `collection` the shared-owner warning; `jobs`
- * `["templateId", "createdAt"]` lists a template's jobs newest first.
+ * `["templateId", "createdAt"]` lists a template's jobs newest first. `schedules` holds the
+ * schedules (M6b): `name` serves the uniqueness check, `templateId` and `sourceId` the in-use
+ * checks of `templates/delete` and `sources/delete`; `jobs` `["scheduled", "status", "createdAt"]`
+ * serves the pump's finalization and batch queries, `["feedSourceId", "status"]` the busy check
+ * (plan Ruling 2).
  */
 export const STORAGE = {
 	jobs: {
-		indexes: ["status", "createdAt", "uploadId", "sourceUploadId", ["templateId", "createdAt"]],
+		indexes: [
+			"status",
+			"createdAt",
+			"uploadId",
+			"sourceUploadId",
+			["templateId", "createdAt"],
+			["scheduled", "status", "createdAt"],
+			["feedSourceId", "status"],
+		],
 	},
 	templates: { indexes: ["name", "collection", "owner"] },
 	records: {
@@ -43,6 +60,7 @@ export const STORAGE = {
 	media: { indexes: ["jobId", "mediaId"] },
 	journal: { indexes: ["jobId", ["jobId", "seq"]] },
 	journalMedia: { indexes: ["jobId", ["jobId", "seq"]] },
+	schedules: { indexes: ["name", "templateId", "sourceId"] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {
@@ -64,6 +82,9 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// so no network capability is declared. content:restore (M5c) is declared for disclosure
 		// too: a rollback of the missing phase restores trashed entries through the runtime's
 		// handleContentRestore, not ctx.content (emdash src/plugins/manifest-schema.ts:37).
+		// users:read (M6b) gates ctx.users, used for one check only: before each scheduled launch,
+		// the user who armed the schedule must still exist and hold import:execute (spec Ruling
+		// 43). It cannot see whether a user is disabled (spec F13).
 		capabilities: [
 			"content:read",
 			"content:write",
@@ -73,6 +94,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 			"taxonomies:write",
 			"bylines:read",
 			"media:write",
+			"users:read",
 		],
 		storage: STORAGE,
 		routes,

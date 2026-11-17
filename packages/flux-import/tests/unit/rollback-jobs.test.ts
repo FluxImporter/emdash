@@ -29,6 +29,20 @@ async function patch(deps: Deps, id: string, change: Partial<Job>) {
 }
 
 describe("jobs/rollback (M5a)", () => {
+	it("copies the original's feed, and none of its schedule markers (M6b, spec Ruling 33)", async () => {
+		const { deps } = setup();
+		const original = await importRows(deps, [desk]);
+		await patch(deps, original.id, {
+			origin: "schedule",
+			scheduleId: "SCH1",
+			scheduled: "closed",
+			feedSourceId: "S1",
+		});
+		const { rollback } = await createRollback(deps, { id: original.id });
+		expect(rollback.feedSourceId).toBe("S1");
+		for (const key of ["origin", "scheduleId", "scheduled"]) expect(key in rollback).toBe(false);
+	});
+
 	it("creates a rollback job that reads the journal newest first, and marks the original", async () => {
 		const { deps } = setup();
 		const original = await importRows(deps, [desk]);

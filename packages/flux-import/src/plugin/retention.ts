@@ -1,3 +1,4 @@
+import type { PluginContext } from "emdash";
 import type { KvCollection } from "../engine/ports.js";
 import { isPurging } from "../engine/rollback.js";
 import type { EngineDeps, Job, JobStatus } from "../engine/types.js";
@@ -127,4 +128,12 @@ export async function purgeExpired(
 		journal: counts.journal.n,
 		uploads: await uploads.purgeBefore(new Date(cutoff), keep),
 	};
+}
+
+export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {
+	if (!ctx.cron) return;
+	const tasks = await ctx.cron.list();
+	if (!tasks.some((t) => t.name === RETENTION_TASK)) {
+		await ctx.cron.schedule(RETENTION_TASK, { schedule: RETENTION_SCHEDULE });
+	}
 }

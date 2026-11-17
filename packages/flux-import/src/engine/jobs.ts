@@ -104,8 +104,14 @@ export type CreateJobInput = {
 	skippedRows?: number;
 	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
 	savedTemplate?: { id: string; revision: number };
-	/** M6c: created by the agent routes (`Job.origin`). */
-	origin?: "agent";
+	/** M6c: created by the agent routes; M6b: by a schedule's launch (`Job.origin`). */
+	origin?: "agent" | "schedule";
+	/** M6b: `Job.scheduleId`. */
+	scheduleId?: string;
+	/** M6b: a scheduled job starts open (`Job.scheduled`). */
+	scheduled?: "open";
+	/** M6b: `Job.feedSourceId`. */
+	feedSourceId?: string;
 	/** M6c: a real job from `jobs/start`: the dry run it imports. */
 	dryRunOf?: string;
 };
@@ -260,6 +266,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 				}),
 		...(input.origin === undefined ? {} : { origin: input.origin }),
 		...(input.dryRunOf === undefined ? {} : { dryRunOf: input.dryRunOf }),
+		...(input.scheduleId === undefined ? {} : { scheduleId: input.scheduleId }),
+		...(input.scheduled === undefined ? {} : { scheduled: input.scheduled }),
+		...(input.feedSourceId === undefined ? {} : { feedSourceId: input.feedSourceId }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),

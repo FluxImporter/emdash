@@ -3,6 +3,7 @@ import {
 	type ContentRuntime,
 	EmDashContent,
 	type HandlerResult,
+	NO_USER,
 } from "../../src/emdash/content.js";
 import type { SchemaRegistryLike } from "../../src/emdash/schema.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
@@ -217,6 +218,28 @@ function setup(locked: (c: string, id: string, user: string) => boolean = () => 
 }
 
 describe("EmDashContent", () => {
+	it("writes without an actor: no actor or authorId, and the lock reader gets NO_USER (spec Ruling 5)", async () => {
+		const runtime = new FakeRuntime();
+		const lockCalls: string[] = [];
+		const content = new EmDashContent(runtime, null, async (c, id, user) => {
+			lockCalls.push(`${c}/${id}/${user}`);
+			return false;
+		});
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.update({
+			collection: "products",
+			locale: "en",
+			id: "e1",
+			rev: "rev-1",
+			data: { title: "B" },
+		});
+		await content.publish({ collection: "products", locale: "en", id: "e1", rev: "rev-2" });
+		expect(await content.isLocked("products", "en", "e1")).toBe(false);
+		for (const call of runtime.calls) expect(JSON.stringify(call)).not.toMatch(/actor|authorId/);
+		expect(NO_USER).toBe("");
+		expect(lockCalls).toEqual(["products/e1/", "products/e1/"]);
+	});
+
 	it("creates, updates and publishes with the returned revisions and the actor", async () => {
 		const { runtime, content } = setup();
 		const created = await content.create({

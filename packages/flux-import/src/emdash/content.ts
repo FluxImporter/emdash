@@ -264,16 +264,33 @@ function linksOf(input: LinkWrites): LinkWrites {
 }
 
 /**
+ * The lock reader's user when a write has no actor (spec Ruling 5): no lease belongs to it, so
+ * every live lease is foreign and the entry is skipped as locked (Fact V3).
+ */
+export const NO_USER = "";
+
+/**
  * `ContentPort` over the EmDash runtime. Writes run as `actor` (revision attribution and hooks
- * only; the author is not changed). Lock enforcement is not part of the trusted write path
+ * only; the author is not changed), or with no user when `actor` is `null`, as EmDash's own
+ * unattended writes (spec F12). Lock enforcement is not part of the trusted write path
  * (verification report, question 3), so `isLocked` and `publish` read the lock table.
  */
 export class EmDashContent implements ContentPort {
 	constructor(
 		private readonly runtime: ContentRuntime,
-		private readonly actor: ActorInfo,
+		private readonly actor: ActorInfo | null,
 		private readonly lockReader: LockReader,
 	) {}
+
+	/** The `actor` option of a write: absent for an unattended write. */
+	private get as(): { actor?: ActorInfo } {
+		return this.actor === null ? {} : { actor: this.actor };
+	}
+
+	/** The user whose own lease does not lock the entry. */
+	private get lockUser(): string {
+		return this.actor?.id ?? NO_USER;
+	}
 
 	/**
 	 * With `references`, every reference field's selection is read as an editor sees it: a
@@ -349,10 +366,10 @@ export class EmDashContent implements ContentPort {
 	): Promise<StepResult> {
 		const { collection, id, rev } = input;
 		// As publish: an editor's lease stops every step, not only the publish (spec M5a).
-		if (await this.lockReader(collection, id, this.actor.id)) {
+		if (await this.lockReader(collection, id, this.lockUser)) {
 			return { ok: false, reason: "locked", message: "The entry is being edited" };
 		}
-		const options = { _rev: rev, actor: this.actor };
+		const options = { _rev: rev, ...this.as };
 		let result: HandlerResult;
 		switch (input.step) {
 			case "update":
@@ -360,7 +377,7 @@ export class EmDashContent implements ContentPort {
 					...(input.data === undefined ? {} : { data: input.data }),
 					locale: input.locale,
 					_rev: rev,
-					actor: this.actor,
+					...this.as,
 					...(input.slug === undefined ? {} : { slug: input.slug }),
 					...linksOf(input),
 				});
@@ -434,7 +451,7 @@ export class EmDashContent implements ContentPort {
 	}
 
 	isLocked(collection: string, _locale: string, id: string): Promise<boolean> {
-		return this.lockReader(collection, id, this.actor.id);
+		return this.lockReader(collection, id, this.lockUser);
 	}
 
 	async create(
@@ -449,8 +466,7 @@ export class EmDashContent implements ContentPort {
 		const result = await this.runtime.handleContentCreate(input.collection, {
 			data: input.data,
 			locale: input.locale,
-			authorId: this.actor.id,
-			actor: this.actor,
+			...(this.actor === null ? {} : { authorId: this.actor.id, actor: this.actor }),
 			...(input.slug === undefined ? {} : { slug: input.slug }),
 			...(input.translationOf === undefined ? {} : { translationOf: input.translationOf }),
 			...linksOf(input),
@@ -485,7 +501,7 @@ export class EmDashContent implements ContentPort {
 			...(input.data === undefined ? {} : { data: input.data }),
 			locale: input.locale,
 			_rev: input.rev,
-			actor: this.actor,
+			...this.as,
 			...(input.slug === undefined ? {} : { slug: input.slug }),
 			...linksOf(input),
 		});
@@ -502,12 +518,12 @@ export class EmDashContent implements ContentPort {
 		id: string;
 		rev: string;
 	}): Promise<WriteResult> {
-		if (await this.lockReader(input.collection, input.id, this.actor.id)) {
+		if (await this.lockReader(input.collection, input.id, this.lockUser)) {
 			return { ok: false, reason: "locked" };
 		}
 		const result = await this.runtime.handleContentPublish(input.collection, input.id, {
 			_rev: input.rev,
-			actor: this.actor,
+			...this.as,
 		});
 		if (!result.success) {
 			if (result.error?.code === "CONFLICT") return { ok: false, reason: "conflict" };
@@ -523,14 +539,14 @@ export class EmDashContent implements ContentPort {
 		rev: string;
 		scheduledAt: string;
 	}): Promise<WriteResult> {
-		if (await this.lockReader(input.collection, input.id, this.actor.id)) {
+		if (await this.lockReader(input.collection, input.id, this.lockUser)) {
 			return { ok: false, reason: "locked" };
 		}
 		const result = await this.runtime.handleContentSchedule(
 			input.collection,
 			input.id,
 			input.scheduledAt,
-			{ _rev: input.rev, actor: this.actor },
+			{ _rev: input.rev, ...this.as },
 		);
 		if (!result.success) {
 			if (result.error?.code === "CONFLICT") return { ok: false, reason: "conflict" };
