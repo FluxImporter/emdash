@@ -730,7 +730,7 @@ describe("agentError (spec Ruling 33)", () => {
 		expect(agentError(other)).toBe(other);
 	});
 
-	it("tells jobs/plan to send the data again, with no dry run to name", () => {
+	it("tells jobs/plan to call dry_run again, with no dry run to name", () => {
 		for (const e of [
 			new SourceMissingError(UPLOAD),
 			new JobError("invalid_source", "x", [], undefined, { cause: new SourceMissingError(UPLOAD) }),
@@ -738,7 +738,7 @@ describe("agentError (spec Ruling 33)", () => {
 			const mapped = agentError(e, PLAN_SOURCE_MISSING_MESSAGE);
 			expect(mapped).toMatchObject({ code: "SOURCE_FILE_MISSING", status: 404 });
 			expect((mapped as ServiceError).message).toBe(
-				"The data to plan from is no longer stored; send it again",
+				"The data to plan from is no longer stored; call dry_run again",
 			);
 			expect((agentError(e) as ServiceError).message).toBe(
 				"The dry run's data is no longer stored; run dry_run again",

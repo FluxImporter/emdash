@@ -303,7 +303,7 @@ describe("the M6c agent routes", () => {
 		await expect(plan).rejects.toMatchObject({
 			code: "SOURCE_FILE_MISSING",
 			status: 404,
-			message: "The data to plan from is no longer stored; send it again",
+			message: "The data to plan from is no longer stored; call dry_run again",
 		});
 	});
 

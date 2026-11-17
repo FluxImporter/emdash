@@ -24,9 +24,12 @@ import type { SavedTemplate } from "./templates.js";
 export const CLAIM_ATTEMPTS = 5;
 export const SOURCE_FILE_MISSING_MESSAGE =
 	"The dry run's data is no longer stored; run dry_run again";
-/** `SOURCE_FILE_MISSING` on `jobs/plan`, where there is no dry run yet to run again. */
+/**
+ * `SOURCE_FILE_MISSING` on `jobs/plan`, where there is no dry run yet: calling dry_run again fits
+ * both the text and the sourceId paths (final review).
+ */
 export const PLAN_SOURCE_MISSING_MESSAGE =
-	"The data to plan from is no longer stored; send it again";
+	"The data to plan from is no longer stored; call dry_run again";
 export const XLSX_TEXT_MESSAGE =
 	"An XLSX workbook is a binary file and cannot be sent as text; use a URL source instead";
 
