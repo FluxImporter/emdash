@@ -2,10 +2,9 @@
  * The schedule expressions flux-import accepts (spec Ruling 7, plan Ruling 3): five cron fields or
  * one of five aliases, which EmDash evaluates in UTC. EmDash's own parser takes far more and turns
  * many typos, such as `61 * * * *`, into one-shot runs in the past (Fact E1), so each field is
- * checked here. A day of month that none of the listed months has is refused too: such a schedule
- * never fires, and for some (`0 0 31 4,6,9,11 *`) EmDash's next-run search overflows the stack.
- * EmDash's `schedule()` still validates what passes (a step form that never comes, such as
- * `0 0 31 4-6/2 *`).
+ * checked here. A day of month that none of the listed months has is refused too, steps included:
+ * such a schedule never fires, and for some (`0 0 31 4,6,9,11 *`, `0 0 31-31/1 4,6,9,11 *`)
+ * EmDash's next-run search overflows the stack. EmDash's `schedule()` still validates what passes.
  */
 
 export const CRON_MAX_LENGTH = 256;
@@ -88,28 +87,32 @@ function itemProblem(item: string, field: Field): string | null {
 }
 
 /**
- * The values a field lists, for a field of values and ranges that `itemProblem` accepted; null
- * when any item is `*` or a step, which the never-day check leaves alone.
+ * The values one item of a field matches, as croner reads it, for an item `itemProblem` accepted:
+ * `*`, a value or a range, each with an optional step. (`itemProblem` refuses a value with a step.)
  */
-function listedValues(part: string, field: Field): number[] | null {
+function itemValues(item: string, field: Field): number[] {
+	const [range = "", step] = item.split("/");
+	const [from = "", to] = range.split("-");
+	const a = range === "*" ? field.min : (fieldValue(from, field) ?? 0);
+	const b = range === "*" ? field.max : to === undefined ? a : (fieldValue(to, field) ?? 0);
 	const values: number[] = [];
-	for (const item of part.split(",")) {
-		if (item === "*" || item.includes("/")) return null;
-		const [from = "", to] = item.split("-");
-		const a = fieldValue(from, field) ?? 0;
-		const b = to === undefined ? a : (fieldValue(to, field) ?? 0);
-		for (let v = a; v <= b; v++) values.push(v);
-	}
+	for (let v = a; v <= b; v += step === undefined ? 1 : Number(step)) values.push(v);
 	return values;
 }
 
-/** A listed day of month that none of the listed months has (coordinator ruling on Task 2). */
+/**
+ * The first day of a day-of-month item none of whose days occurs in any listed month
+ * (coordinator rulings on Task 2): a listed day is refused on its own, a range or a step only
+ * when every day it holds never occurs, so neither `*` nor a step from `*` ever is.
+ */
 function neverDay(days: string, months: string): number | null {
-	const dayValues = listedValues(days, FIELDS[2] as Field);
-	const monthValues = listedValues(months, FIELDS[3] as Field);
-	if (dayValues === null || monthValues === null) return null;
+	const monthValues = months.split(",").flatMap((item) => itemValues(item, FIELDS[3] as Field));
 	const longest = Math.max(...monthValues.map((m) => MONTH_DAYS[m - 1] ?? 31));
-	return dayValues.find((d) => d > longest) ?? null;
+	for (const item of days.split(",")) {
+		const values = itemValues(item, FIELDS[2] as Field);
+		if (values.every((d) => d > longest)) return values[0] as number;
+	}
+	return null;
 }
 
 /** Null when `cron` is a schedule flux-import accepts, else what is wrong with it. */

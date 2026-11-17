@@ -201,6 +201,15 @@ const busy = (id: string, jobId: string) =>
 const keptChanging = () =>
 	new ServiceError("CONFLICT", "The schedule kept changing; try again", 409);
 
+function disabled(row: ScheduleRow): ServiceError {
+	const why = row.pause ? ` (paused: ${row.pause.reason})` : "";
+	return new ServiceError(
+		"SCHEDULE_DISABLED",
+		`Schedule ${row.id} is disabled${why}; enable it first`,
+		409,
+	);
+}
+
 /** `SCHEDULE_CHANGED`, as templates answer `TEMPLATE_CHANGED` (M6a Ruling 6). */
 function assertScheduleRevision(row: ScheduleRow, revision: number): void {
 	if (row.revision !== revision) throw staleRevision("Schedule", row.id, row.revision, revision);
@@ -250,6 +259,11 @@ async function routeBusy(deps: ScheduleDeps, row: ScheduleRow): Promise<string |
 	const claim = row.current;
 	if (claim && deps.now() - Date.parse(claim.claimedAt) < LAUNCH_CLAIM_STALE_MS) return claim.jobId;
 	return (await openJobOf(deps.jobs, row.id))?.id ?? null;
+}
+
+async function assertNotBusy(deps: ScheduleDeps, row: ScheduleRow): Promise<void> {
+	const jobId = await routeBusy(deps, row);
+	if (jobId !== null) throw busy(row.id, jobId);
 }
 
 /**
@@ -341,9 +355,37 @@ export async function reopenScheduled(
 	}
 }
 
+/** The view of a row: its known fields only, so nothing stored beside them is returned (spec Ruling 47). */
 export function viewOf(row: ScheduleRow, tasks: readonly CronTask[]): ScheduleView {
 	const task = row.enabled ? tasks.find((t) => t.name === scheduleTask(row.id)) : undefined;
-	return { ...row, nextRunAt: task?.nextRunAt ?? null };
+	const { missing, pause, due, current, lastLaunch } = row;
+	return {
+		id: row.id,
+		name: row.name,
+		templateId: row.templateId,
+		templateRevision: row.templateRevision,
+		sourceId: row.sourceId,
+		sourcePin: row.sourcePin,
+		cron: row.cron,
+		publish: row.publish,
+		batchSize: row.batchSize,
+		budgetMs: row.budgetMs,
+		...(missing === undefined ? {} : { missing }),
+		enabled: row.enabled,
+		...(pause === undefined ? {} : { pause }),
+		...(due === undefined ? {} : { due }),
+		...(current === undefined ? {} : { current }),
+		...(lastLaunch === undefined ? {} : { lastLaunch }),
+		runs: row.runs,
+		launchFailures: row.launchFailures,
+		armedBy: row.armedBy,
+		revision: row.revision,
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+		createdBy: row.createdBy,
+		updatedBy: row.updatedBy,
+		nextRunAt: task?.nextRunAt ?? null,
+	};
 }
 
 /** The template at `revision`, its shape and its site checks (spec "Behaviour" step 3, plan Ruling 13). */
@@ -432,6 +474,20 @@ async function scheduleTaskOf(
 	}
 }
 
+/**
+ * Puts the task back as the newest row says (plan Ruling 5): its expression while the row is
+ * enabled, no task once it is disabled or gone. Best effort; reconciliation repairs the rest.
+ */
+async function resyncTask(deps: ScheduleDeps, id: string): Promise<void> {
+	try {
+		const newest = await deps.schedules.get(id);
+		if (newest?.enabled) await scheduleTaskOf(deps.cron, newest);
+		else await deps.cron.cancel(scheduleTask(id));
+	} catch {
+		// The caller's own error is the answer.
+	}
+}
+
 /** `schedules/create` (spec "Behaviour"): every check before any write, in the spec's order. */
 export async function createSchedule(
 	deps: ScheduleDeps,
@@ -508,10 +564,8 @@ export async function updateSchedule(
 	const sourceId = input.sourceId ?? first.sourceId;
 	const templateChanged =
 		templateId !== first.templateId || templateRevision !== first.templateRevision;
-	if (templateChanged || sourceId !== first.sourceId) {
-		const jobId = await routeBusy(deps, first);
-		if (jobId !== null) throw busy(first.id, jobId);
-	}
+	const moving = templateChanged || sourceId !== first.sourceId;
+	if (moving) await assertNotBusy(deps, first);
 	const missing = input.missing === undefined ? first.missing : (input.missing ?? undefined);
 	if (templateChanged || input.missing !== undefined) {
 		checkMissing(await checkedTemplate(deps, templateId, templateRevision), missing);
@@ -523,48 +577,51 @@ export async function updateSchedule(
 	if (input.cron !== undefined) checkCron(input.cron);
 	const cron = input.cron ?? first.cron;
 	// Plan Ruling 5: EmDash's refusal leaves the row unchanged.
-	if ((input.enabled ?? first.enabled) && (enabling || input.cron !== undefined)) {
-		await scheduleTaskOf(deps.cron, { id: first.id, cron });
-	}
+	const scheduled = (input.enabled ?? first.enabled) && (enabling || input.cron !== undefined);
+	if (scheduled) await scheduleTaskOf(deps.cron, { id: first.id, cron });
 	const now = iso(deps.now());
-	let read = await deps.schedules.getVersioned(input.id);
-	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
-		if (!read) throw notFound(input.id);
-		const row = read.value;
-		assertScheduleRevision(row, input.revision);
-		const enabled = input.enabled ?? row.enabled;
-		const { missing: _missing, pause, due, ...rest } = row;
-		const next: ScheduleRow = {
-			...rest,
-			name: name ?? row.name,
-			templateId,
-			templateRevision,
-			sourceId,
-			sourcePin,
-			cron,
-			publish: input.publish ?? row.publish,
-			batchSize: input.batchSize ?? row.batchSize,
-			budgetMs: input.budgetMs ?? row.budgetMs,
-			...(missing === undefined ? {} : { missing }),
-			enabled,
-			// Enabling clears the pause and the failures and takes the caller as creator.
-			...(enabling ? { launchFailures: 0, armedBy: user } : pause ? { pause } : {}),
-			// A disabled schedule is never due (plan Ruling 6).
-			...(enabled && due ? { due } : {}),
-			revision: row.revision + 1,
-			updatedAt: now,
-			updatedBy: user,
-		};
-		if ((await deps.schedules.compareAndSet(row.id, read.revision, next)).applied) {
-			if (!next.enabled) await deps.cron.cancel(scheduleTask(row.id));
-			return viewOf(next, await deps.cron.list());
+	try {
+		let read = await deps.schedules.getVersioned(input.id);
+		for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+			if (!read) throw notFound(input.id);
+			const row = read.value;
+			assertScheduleRevision(row, input.revision);
+			if (moving) await assertNotBusy(deps, row);
+			const enabled = input.enabled ?? row.enabled;
+			const { missing: _missing, pause, due, ...rest } = row;
+			const next: ScheduleRow = {
+				...rest,
+				name: name ?? row.name,
+				templateId,
+				templateRevision,
+				sourceId,
+				sourcePin,
+				cron,
+				publish: input.publish ?? row.publish,
+				batchSize: input.batchSize ?? row.batchSize,
+				budgetMs: input.budgetMs ?? row.budgetMs,
+				...(missing === undefined ? {} : { missing }),
+				enabled,
+				// Enabling clears the pause and the failures and takes the caller as creator.
+				...(enabling ? { launchFailures: 0, armedBy: user } : pause ? { pause } : {}),
+				// A disabled schedule is never due (plan Ruling 6).
+				...(enabled && due ? { due } : {}),
+				revision: row.revision + 1,
+				updatedAt: now,
+				updatedBy: user,
+			};
+			if ((await deps.schedules.compareAndSet(row.id, read.revision, next)).applied) {
+				if (!next.enabled) await deps.cron.cancel(scheduleTask(row.id));
+				return viewOf(next, await deps.cron.list());
+			}
+			read = await deps.schedules.getVersioned(input.id);
 		}
-		read = await deps.schedules.getVersioned(input.id);
+		throw keptChanging();
+	} catch (e) {
+		// The task may now hold the losing expression (plan Ruling 5).
+		if (scheduled) await resyncTask(deps, input.id);
+		throw e;
 	}
-	// The task may now hold the new expression: put it back as the newest row says (plan Ruling 5).
-	const newest = await deps.schedules.get(input.id);
-	if (newest?.enabled) await scheduleTaskOf(deps.cron, newest).catch(() => {});
-	throw keptChanging();
 }
 
 /** `schedules/delete`: at `revision`, never while busy (spec "Behaviour", plan Ruling 7). */
@@ -573,13 +630,11 @@ export async function deleteSchedule(
 	input: { id: string; revision: number },
 ): Promise<{ deleted: true }> {
 	let read = await deps.schedules.getVersioned(input.id);
-	if (!read) throw notFound(input.id);
-	assertScheduleRevision(read.value, input.revision);
-	const jobId = await routeBusy(deps, read.value);
-	if (jobId !== null) throw busy(input.id, jobId);
 	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
 		if (!read) throw notFound(input.id);
 		assertScheduleRevision(read.value, input.revision);
+		// Re-checked on each newest row: a launch may claim it between the read and the delete.
+		await assertNotBusy(deps, read.value);
 		if ((await deps.schedules.compareAndDelete(input.id, read.revision)).applied) {
 			// The pump cancels itself once nothing is due or open (spec Ruling 36).
 			await deps.cron.cancel(scheduleTask(input.id));
@@ -597,14 +652,7 @@ export async function runSchedule(
 ): Promise<ScheduleView> {
 	const row = await deps.schedules.get(input.id);
 	if (!row) throw notFound(input.id);
-	if (!row.enabled) {
-		const why = row.pause ? ` (paused: ${row.pause.reason})` : "";
-		throw new ServiceError(
-			"SCHEDULE_DISABLED",
-			`Schedule ${input.id} is disabled${why}; enable it first`,
-			409,
-		);
-	}
+	if (!row.enabled) throw disabled(row);
 	const claimed = await routeBusy(deps, row);
 	const job = claimed === null ? await busyJob(deps.jobs, row.sourceId) : null;
 	const jobId = claimed ?? job?.id ?? null;
@@ -621,7 +669,13 @@ export async function runSchedule(
 				}
 			: null,
 	);
-	if (!written) throw keptChanging();
+	if (!written) {
+		// Say why the mark was lost when the newest row shows it: a pause or a launch's claim.
+		const newest = await deps.schedules.get(input.id);
+		if (newest && !newest.enabled) throw disabled(newest);
+		if (newest) await assertNotBusy(deps, newest);
+		throw keptChanging();
+	}
 	await armPump(deps.cron);
 	return viewOf(written, await deps.cron.list());
 }
@@ -652,6 +706,8 @@ async function allSchedules(schedules: KvCollection<ScheduleRow>): Promise<Sched
 export interface ReconcileResult {
 	scheduled: string[];
 	cancelled: string[];
+	/** The IDs of the schedules whose task could not be scheduled (Task 7 logs them). */
+	failed: string[];
 	pump: boolean;
 	retention: boolean;
 }
@@ -659,8 +715,8 @@ export interface ReconcileResult {
 /**
  * Repairs the cron tasks from storage (spec "Reconciliation", Ruling 29): each enabled schedule's
  * task with its expression, no task without an enabled schedule, the pump while something is due
- * or open, and `retention` at `RETENTION_SCHEDULE`. An expression EmDash refuses stays
- * unscheduled (the list shows no next run).
+ * or open, and `retention` at `RETENTION_SCHEDULE`. A task EmDash refuses or fails to write stays
+ * unscheduled (the list shows no next run) and its schedule is named in `failed`.
  */
 export async function reconcile(
 	deps: Pick<ScheduleDeps, "schedules" | "jobs" | "cron">,
@@ -668,7 +724,13 @@ export async function reconcile(
 	const tasks = await deps.cron.list();
 	const rows = await allSchedules(deps.schedules);
 	const byName = new Map(tasks.map((t) => [t.name, t]));
-	const result: ReconcileResult = { scheduled: [], cancelled: [], pump: false, retention: false };
+	const result: ReconcileResult = {
+		scheduled: [],
+		cancelled: [],
+		failed: [],
+		pump: false,
+		retention: false,
+	};
 	const wanted = new Set<string>();
 	for (const row of rows) {
 		if (!row.enabled) continue;
@@ -679,7 +741,8 @@ export async function reconcile(
 			await scheduleTaskOf(deps.cron, row);
 			result.scheduled.push(name);
 		} catch {
-			// Left unscheduled; schedules/update with a valid expression repairs it.
+			// Left unscheduled and reported; schedules/update with a valid expression repairs it.
+			result.failed.push(row.id);
 		}
 	}
 	for (const task of tasks) {

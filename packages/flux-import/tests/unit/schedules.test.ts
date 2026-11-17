@@ -12,6 +12,7 @@ import {
 	MAX_SCHEDULES,
 	PUMP_SCHEDULE,
 	PUMP_TASK,
+	paused,
 	pauseSchedule,
 	type RunEntry,
 	reconcile,
@@ -28,6 +29,7 @@ import {
 	writeSchedule,
 } from "../../src/plugin/schedules.js";
 import { ServiceError } from "../../src/plugin/service.js";
+import type { MemoryKv } from "./fakes.js";
 import {
 	jobRow,
 	NOW,
@@ -46,6 +48,7 @@ const base = {
 	sourceId: "S1",
 	cron: "0 3 * * *",
 };
+type Deps = Awaited<ReturnType<typeof scheduleDeps>>["deps"];
 const pinOf = (url: string) => fingerprint({ url, credential: null });
 const zero = {
 	created: 0,
@@ -66,6 +69,29 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 	}
 	throw new Error("Expected a ServiceError");
 }
+
+/** Runs `meanwhile` just before each of the next `times` compare-and-set or -delete calls. */
+function beforeWrites(
+	schedules: MemoryKv<ScheduleRow>,
+	meanwhile: () => Promise<unknown>,
+	times = 1,
+): void {
+	const cas = schedules.compareAndSet.bind(schedules);
+	const cad = schedules.compareAndDelete.bind(schedules);
+	let left = times;
+	schedules.compareAndSet = async (id, revision, data) => {
+		if (left-- > 0) await meanwhile();
+		return cas(id, revision, data);
+	};
+	schedules.compareAndDelete = async (id, revision) => {
+		if (left-- > 0) await meanwhile();
+		return cad(id, revision);
+	};
+}
+
+/** A launch's claim, written as the scheduler writes it (no new revision). */
+const claim = (schedules: MemoryKv<ScheduleRow>, jobId: string) => () =>
+	writeSchedule(schedules, "A", undefined, (r) => ({ ...r, current: { jobId, claimedAt: AT } }));
 
 describe("createSchedule", () => {
 	it("creates an enabled schedule: the row, its pin and creator, and its task", async () => {
@@ -198,11 +224,12 @@ describe("createSchedule", () => {
 
 	it("deletes the row when EmDash refuses the expression, with EmDash's message (Fact E1)", async () => {
 		const { deps } = await scheduleDeps();
+		deps.cron.refuse = "0 4 * * *";
 		await expect(
-			createSchedule(deps, "admin", { ...base, cron: "0 0 31 4-6/2 *" }),
+			createSchedule(deps, "admin", { ...base, cron: "0 4 * * *" }),
 		).rejects.toMatchObject({
 			code: "INVALID_CRON",
-			message: 'Invalid cron expression or no future run: "0 0 31 4-6/2 *"',
+			message: 'Invalid cron expression or no future run: "0 4 * * *"',
 		});
 		expect((await deps.schedules.query({ limit: 100 })).items).toEqual([]);
 	});
@@ -371,11 +398,74 @@ describe("updateSchedule", () => {
 			schedule: "@hourly",
 			data: { scheduleId: "A" },
 		});
-		const refused = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 0 31 4-6/2 *" });
-		await expect(refused).rejects.toMatchObject({ code: "INVALID_CRON" });
+		deps.cron.refuse = "0 4 * * *";
+		const refused = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 4 * * *" });
+		await expect(refused).rejects.toMatchObject({
+			code: "INVALID_CRON",
+			message: 'Invalid cron expression or no future run: "0 4 * * *"',
+		});
 		expect(await deps.schedules.get("A")).toMatchObject({ cron: "@hourly", revision: 2 });
 		const sixFields = updateSchedule(deps, "admin", { id: "A", revision: 2, cron: "0 3 * * * *" });
 		expect(await codeOf(sixFields)).toBe("INVALID_CRON");
+	});
+
+	it.each([
+		[
+			"another route's write takes the revision",
+			(deps: Deps) => deps.schedules.put("A", scheduleRow("A", { name: "Other", revision: 2 })),
+			"SCHEDULE_CHANGED",
+			{ schedule: "0 3 * * *", data: { scheduleId: "A" } },
+		],
+		[
+			"another route disables the schedule",
+			(deps: Deps) => deps.schedules.put("A", scheduleRow("A", { enabled: false, revision: 2 })),
+			"SCHEDULE_CHANGED",
+			undefined,
+		],
+		["the schedule is deleted", (deps: Deps) => deps.schedules.delete("A"), "NOT_FOUND", undefined],
+	] as const)(
+		"re-syncs the task from the newest row when %s after scheduling (plan Ruling 5)",
+		async (_what, meanwhile, code, task) => {
+			const { deps } = await scheduleDeps();
+			await deps.schedules.put("A", scheduleRow("A"));
+			await deps.cron.schedule("schedule-A", { schedule: "0 3 * * *", data: { scheduleId: "A" } });
+			beforeWrites(deps.schedules, () => meanwhile(deps));
+			const update = updateSchedule(deps, "admin", { id: "A", revision: 1, cron: "@hourly" });
+			expect(await codeOf(update)).toBe(code);
+			expect(deps.cron.tasks.get("schedule-A")).toEqual(task);
+		},
+	);
+
+	it("rethrows the update's own error when the re-sync fails too", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		beforeWrites(deps.schedules, () => deps.schedules.delete("A"));
+		deps.cron.cancel = async () => {
+			throw new Error("D1_ERROR: database is locked");
+		};
+		const update = updateSchedule(deps, "admin", { id: "A", revision: 1, cron: "@hourly" });
+		expect(await codeOf(update)).toBe("NOT_FOUND");
+	});
+
+	it("re-checks the busy rule on the newest row: a claim between the read and the write refuses a source change", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.sources.put("S2", sourceRow("S2"));
+		await deps.schedules.put("A", scheduleRow("A"));
+		beforeWrites(deps.schedules, claim(deps.schedules, "J7"));
+		const move = updateSchedule(deps, "admin", { id: "A", revision: 1, sourceId: "S2" });
+		await expect(move).rejects.toMatchObject({ code: "SCHEDULE_BUSY", details: { jobId: "J7" } });
+		expect(await deps.schedules.get("A")).toMatchObject({ sourceId: "S1", revision: 1 });
+		// Nothing was scheduled, so nothing is re-synced.
+		expect(deps.cron.calls).toEqual([]);
+	});
+
+	it("refuses a busy change before it touches the task", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.sources.put("S2", sourceRow("S2"));
+		await deps.schedules.put("A", scheduleRow("A", { current: { jobId: "J7", claimedAt: AT } }));
+		const move = { id: "A", revision: 1, sourceId: "S2", cron: "@hourly" };
+		expect(await codeOf(updateSchedule(deps, "admin", move))).toBe("SCHEDULE_BUSY");
+		expect(deps.cron.calls).toEqual([]);
 	});
 
 	it("removes missing with null only when the template has no rules.missing", async () => {
@@ -412,6 +502,19 @@ describe("deleteSchedule", () => {
 		expect(await deleteSchedule(deps, { id: "A", revision: 1 })).toEqual({ deleted: true });
 		expect(await deps.schedules.get("A")).toBeNull();
 		expect(deps.cron.tasks.has("schedule-A")).toBe(false);
+	});
+});
+
+describe("deleteSchedule races", () => {
+	it("re-checks the busy rule on the newest row: a claim between the read and the delete refuses it", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		beforeWrites(deps.schedules, claim(deps.schedules, "J7"));
+		await expect(deleteSchedule(deps, { id: "A", revision: 1 })).rejects.toMatchObject({
+			code: "SCHEDULE_BUSY",
+			details: { jobId: "J7" },
+		});
+		expect(await deps.schedules.get("A")).not.toBeNull();
 	});
 });
 
@@ -458,6 +561,41 @@ describe("runSchedule", () => {
 		expect((await busyJob(deps.jobs, "S1"))?.id).toBe("Z9");
 	});
 
+	it("answers why a due mark was lost: disabled, busy, or else CONFLICT", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		// A pause lands between the read and the write.
+		beforeWrites(deps.schedules, async () => {
+			const row = (await deps.schedules.get("A")) as ScheduleRow;
+			await deps.schedules.put("A", paused(row, "job_failed", AT));
+		});
+		await expect(runSchedule(deps, { id: "A" })).rejects.toMatchObject({
+			code: "SCHEDULE_DISABLED",
+			status: 409,
+			message: "Schedule A is disabled (paused: job_failed); enable it first",
+		});
+		// A launch claims it between the read and the write.
+		await deps.schedules.put("A", scheduleRow("A"));
+		beforeWrites(deps.schedules, claim(deps.schedules, "J7"));
+		await expect(runSchedule(deps, { id: "A" })).rejects.toMatchObject({
+			code: "SCHEDULE_BUSY",
+			details: { jobId: "J7" },
+		});
+		// Every attempt loses to writes that leave it enabled and unclaimed.
+		await deps.schedules.put("A", scheduleRow("A"));
+		beforeWrites(
+			deps.schedules,
+			async () => deps.schedules.put("A", scheduleRow("A")),
+			Number.POSITIVE_INFINITY,
+		);
+		await expect(runSchedule(deps, { id: "A" })).rejects.toMatchObject({
+			code: "CONFLICT",
+			status: 409,
+			message: "The schedule kept changing; try again",
+		});
+		expect(deps.cron.tasks.has(PUMP_TASK)).toBe(false);
+	});
+
 	it("queues a due mark, with force when asked, and arms the pump; an older mark is kept (spec Ruling 51)", async () => {
 		const { deps, clock } = await scheduleDeps();
 		await deps.schedules.put("A", scheduleRow("A"));
@@ -480,7 +618,17 @@ describe("listSchedules", () => {
 		await deps.sources.put("S1", sourceRow("S1", { lastError }));
 		await deps.cron.schedule("schedule-A", { schedule: "0 3 * * *" });
 		const lastLaunch = { at: AT, outcome: "failed" as const, errorCode: "HTTP_ERROR" };
-		await deps.schedules.put("A", scheduleRow("A", { lastLaunch, launchFailures: 1 }));
+		const known = scheduleRow("A", {
+			lastLaunch,
+			launchFailures: 1,
+			missing: false,
+			due: { at: AT, force: true },
+			current: { jobId: "J5", claimedAt: AT },
+			pause: { reason: "cancelled", at: AT, jobId: "J4" },
+		});
+		// Fields no code writes, as a stray older or foreign write could leave them.
+		const strays = { message: launchMessage, token: "s3cret" };
+		await deps.schedules.put("A", { ...known, ...strays } as ScheduleRow);
 		// A failed job: the job keeps its message, the run log and the pause only codes.
 		const jobMessage = "Row 7: price s3cret-value is not a number";
 		const failed = { status: "failed", origin: "schedule", scheduleId: "B" } as const;
@@ -502,7 +650,8 @@ describe("listSchedules", () => {
 			["B", null],
 		]);
 		expect(page.hasMore).toBe(false);
-		expect(page.items[0]?.lastLaunch?.errorCode).toBe("HTTP_ERROR");
+		// Only the view's own fields, each one kept.
+		expect(page.items[0]).toEqual({ ...known, nextRunAt: "2026-11-18T03:00:00.000Z" });
 		expect(page.items[1]).toMatchObject({ pause: { reason: "job_failed" }, runs: [run] });
 		// Every key and every string anywhere in the page.
 		const texts = (value: unknown): string[] =>
@@ -513,6 +662,7 @@ describe("listSchedules", () => {
 					: [];
 		const all = texts(page);
 		expect(all).not.toContain("message");
+		expect(all).not.toContain("token");
 		for (const text of all) {
 			expect(text).not.toContain("s3cret");
 			expect(text).not.toContain("503");
@@ -547,6 +697,7 @@ describe("reconcile (spec Ruling 29)", () => {
 		expect(await reconcile(deps)).toEqual({
 			scheduled: ["schedule-A", "schedule-B"],
 			cancelled: ["schedule-GONE"],
+			failed: [],
 			pump: true,
 			retention: true,
 		});
@@ -556,9 +707,31 @@ describe("reconcile (spec Ruling 29)", () => {
 		});
 		expect(deps.cron.tasks.get(RETENTION_TASK)).toEqual({ schedule: RETENTION_SCHEDULE });
 		deps.cron.calls.length = 0;
-		const quiet = { scheduled: [], cancelled: [], pump: false, retention: false };
+		const quiet = { scheduled: [], cancelled: [], failed: [], pump: false, retention: false };
 		expect(await reconcile(deps)).toEqual(quiet);
 		expect(deps.cron.calls).toEqual([]);
+	});
+
+	it("reports the schedules it could not schedule, and repairs the rest", async () => {
+		const { deps } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A", { cron: "0 4 * * *" }));
+		await deps.schedules.put("B", scheduleRow("B", { cron: "0 5 * * *" }));
+		await deps.schedules.put("C", scheduleRow("C"));
+		// EmDash refuses A's expression; B's write fails in EmDash's storage.
+		deps.cron.refuse = "0 4 * * *";
+		const schedule = deps.cron.schedule.bind(deps.cron);
+		deps.cron.schedule = async (name, opts) => {
+			if (name === "schedule-B") throw new Error("D1_ERROR: database is locked");
+			return schedule(name, opts);
+		};
+		expect(await reconcile(deps)).toEqual({
+			scheduled: ["schedule-C"],
+			cancelled: [],
+			failed: ["A", "B"],
+			pump: false,
+			retention: true,
+		});
+		expect(deps.cron.tasks.get(RETENTION_TASK)).toEqual({ schedule: RETENTION_SCHEDULE });
 	});
 });
 

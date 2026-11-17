@@ -13,10 +13,10 @@ export class FakeCron implements CronPort {
 	readonly tasks = new Map<string, { schedule: string; data?: Record<string, unknown> }>();
 	readonly calls: string[] = [];
 	/**
-	 * An expression flux-import's grammar accepts and `schedule()` refuses, as EmDash 1.2.0 refuses
-	 * this step form that never comes (Fact E1).
+	 * An expression `schedule()` refuses, as EmDash refuses a date that never comes (Fact E1). The
+	 * grammar refuses every such date the M6b probe found, so a test sets this to reach the backstop.
 	 */
-	refuse = "0 0 31 4-6/2 *";
+	refuse: string | null = null;
 
 	async schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }) {
 		this.calls.push(`schedule ${name} ${opts.schedule}`);
