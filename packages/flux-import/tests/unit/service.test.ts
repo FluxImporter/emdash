@@ -18,12 +18,15 @@ import {
 	sampleSource,
 	stagePaste,
 	startJob,
+	tickBatchCap,
+	tickLimits,
 	uploadNeeded,
 	WORKERS_BATCH_CAP,
 	WORKERS_LINKED_BATCH_CAP,
 	WORKERS_MEDIA_MAX_BYTES,
 	WORKERS_MISSING_BATCH_CAP,
 	WORKERS_MISSING_SCAN_CAP,
+	WORKERS_ROLLBACK_BATCH_CAP,
 	workersBatchCap,
 } from "../../src/plugin/service.js";
 import { FakeStorage, makeDeps } from "./fakes.js";
@@ -604,5 +607,54 @@ describe("Workers caps of the missing phase (M5c)", () => {
 				missing: { stage: "act", fromSeq: 0, owned: 0, found: 0, rows: 0, removed: 0 },
 			}),
 		).toBe(10);
+	});
+});
+
+describe("pump tick caps (M6b, Fact V5)", () => {
+	it("caps a tick's batch below a jobs/next batch on Workers, and leaves Node to batchSize", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(1));
+		const job = await startJob(deps, { uploadId: "u1", template, dryRun: true }, fields);
+		const tagged = { ...job, template: { ...job.template, bylines: { from: "Name" } } };
+		const missing = { fromSeq: 0, owned: 0, found: 0, rows: 0, removed: 0 };
+		const counting = {
+			...job,
+			phase: "missing",
+			missing: { ...missing, stage: "count" },
+		} as unknown as Job;
+		const acting = {
+			...job,
+			phase: "missing",
+			missing: { ...missing, stage: "act" },
+		} as unknown as Job;
+		const rollback = { ...job, kind: "rollback" } as Job;
+		const jobs = [job, tagged, counting, acting, rollback];
+		expect(jobs.map(tickBatchCap)).toEqual([6, 3, 20, 5, WORKERS_ROLLBACK_BATCH_CAP]);
+		// The shared helper: jobs/next keeps its own caps for the same jobs.
+		expect(jobs.map(workersBatchCap)).toEqual([
+			WORKERS_BATCH_CAP,
+			WORKERS_LINKED_BATCH_CAP,
+			WORKERS_MISSING_SCAN_CAP,
+			WORKERS_MISSING_BATCH_CAP,
+			WORKERS_ROLLBACK_BATCH_CAP,
+		]);
+		expect(tickLimits(true)).toEqual({ maxRecords: tickBatchCap, lookupBudget: 350 });
+		expect(tickLimits(false)).toEqual({
+			maxRecords: Number.POSITIVE_INFINITY,
+			lookupBudget: Number.POSITIVE_INFINITY,
+		});
+	});
+
+	it("runs a batch at the limits it is given (the pump's tick limits)", async () => {
+		const { deps } = makeDeps();
+		deps.source.add("u1", csv(60));
+		const job = await startJob(
+			deps,
+			{ uploadId: "u1", template, dryRun: false, batchSize: 50 },
+			fields,
+		);
+		const after = await nextBatch(deps, new Uploads(), job.id, "h", undefined, tickLimits(true));
+		expect(after.cursor.seq).toBe(6);
+		expect(after.batchSize).toBe(50);
 	});
 });

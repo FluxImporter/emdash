@@ -295,7 +295,12 @@ export async function writeSchedule(
 	return null;
 }
 
-/** The row paused: disabled with the reason; the claim and the due mark go (plan Ruling 6). */
+/**
+ * The row paused: disabled with the reason; the claim and the due mark go (plan Ruling 6). A
+ * pause already on the row is never overwritten (coordinator ruling after Task 4): its reason,
+ * time and job stay, so the first cause is what the Admin sees, whichever of a route, a launch or
+ * finalization pauses it again.
+ */
 export function paused(
 	row: ScheduleRow,
 	reason: PauseReason,
@@ -306,7 +311,7 @@ export function paused(
 	return {
 		...rest,
 		enabled: false,
-		pause: { reason, at, ...(jobId === undefined ? {} : { jobId }) },
+		pause: row.pause ?? { reason, at, ...(jobId === undefined ? {} : { jobId }) },
 	};
 }
 
