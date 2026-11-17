@@ -20,9 +20,12 @@ export const TOOL_NAMES = [
 	"next_batch",
 	"start_import",
 ];
-/** A bare upload ID anywhere in a text (src/emdash/uploads.ts:17, unanchored). */
+/** A bare upload ID anywhere in a text (src/emdash/uploads.ts:23, unanchored). */
 export const UPLOAD_ID_PATTERN = /[0-9A-HJKMNP-TV-Z]{26}[0-9a-f]{32}/;
-/** Every text a tool call returned in this process, checked for upload IDs by the tests. */
+/**
+ * Every tool result this process received, serialized whole (`_meta` too, where EmDash puts an
+ * error's details), checked for upload IDs by the tests.
+ */
 export const seen: string[] = [];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,7 +58,7 @@ export async function call(
 	const result = await mcp.callTool({ name, arguments: args });
 	const content = (result.content ?? []) as { type: string; text?: string }[];
 	const text = content.map((c) => c.text ?? "").join("");
-	seen.push(text);
+	seen.push(JSON.stringify(result));
 	const meta = result._meta as { code?: string; details?: unknown } | undefined;
 	return {
 		isError: result.isError === true,

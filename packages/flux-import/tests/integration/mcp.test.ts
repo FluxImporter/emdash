@@ -92,10 +92,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	for (const mcp of clients) await mcp.close().catch(() => {});
-	for (const id of minted) await revokeToken(admin, id).catch(() => {});
-	await stopServer(server);
-	await rm(server.dir, { recursive: true, force: true });
-	await feeds.stop();
+	try {
+		for (const id of minted) await revokeToken(admin, id).catch(() => {});
+		// `server` is unset when startServer threw in beforeAll.
+		if (server) {
+			await stopServer(server);
+			await rm(server.dir, { recursive: true, force: true });
+		}
+	} finally {
+		await feeds.stop();
+	}
 });
 
 describe("M6c MCP tools on sites/dev", () => {
@@ -142,6 +148,8 @@ describe("M6c MCP tools on sites/dev", () => {
 		const entries = await admin.listAll("it_mcp");
 		expect(entries).toHaveLength(20);
 		expect(entries.every((e) => e.status === "published")).toBe(true);
+		const first = entries.find((e) => e.data.flux_source_id === "SKU-0");
+		expect(first?.data).toMatchObject({ title: 'Product 0, "quoted"', price: 0.5 });
 		const stored = await admin.plugin<Job>("jobs/get", { id: run.real.id });
 		expect(stored).toMatchObject({ journal: true, origin: "agent" });
 		expect(stored).not.toHaveProperty("sourceId");
@@ -151,7 +159,19 @@ describe("M6c MCP tools on sites/dev", () => {
 		});
 		expect(again.job.id).toBe(run.real.id);
 		const rollback = await admin.plugin<Job>("jobs/rollback", { id: run.real.id });
+		// A rollback job never carries the agent marker, so the tools cannot advance it.
+		expect(await tool(agent, "next_batch", { id: rollback.id })).toMatchObject({
+			isError: true,
+			code: "JOB_NOT_AGENT",
+		});
 		expect(await admin.runToEnd(rollback.id)).toMatchObject({ status: "completed" });
+		// The rollback deletes the entries the import created, not into Trash (as M5a's).
+		expect(await admin.listAll("it_mcp")).toEqual([]);
+		const trash = await admin.api<{ items: unknown[] }>(
+			"GET",
+			"/_emdash/api/content/it_mcp/trash?locale=en",
+		);
+		expect(trash.items).toEqual([]);
 		const used = await tool(agent, "start_import", { dryRunId: run.dryRun.id });
 		expect(used).toMatchObject({ isError: true, code: "DRY_RUN_USED" });
 		expect(used.details).toEqual({ jobId: run.real.id });
@@ -189,7 +209,9 @@ describe("M6c MCP tools on sites/dev", () => {
 		const after = await admin.plugin<SourceRow>("sources/get", { id: source.id });
 		expect(after.lastFetch).toBeDefined();
 		expect(after.lastImport).toBeUndefined();
-		expect(await admin.listAll("it_mcp_url")).toHaveLength(20);
+		const urlEntries = await admin.listAll("it_mcp_url");
+		expect(urlEntries).toHaveLength(20);
+		expect(urlEntries.every((e) => e.status === "published")).toBe(true);
 	});
 
 	it("refuses what the token, the input or the job does not allow", async () => {
@@ -288,6 +310,8 @@ describe("M6c MCP tools on sites/dev", () => {
 			text: productsCsv(3),
 		});
 		const { uploadId } = await admin.plugin<Job>("jobs/get", { id: plan.job.id });
+		// The pattern the transcript scan uses matches a real upload ID.
+		expect(uploadId).toMatch(UPLOAD_ID_PATTERN);
 		const staged = (await readdir(server.uploadsDir)).filter(
 			(f) => f.startsWith(UPLOAD_PREFIX) && f.includes(uploadId),
 		);
