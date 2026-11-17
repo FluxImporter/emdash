@@ -52,13 +52,24 @@ export class JobError extends Error {
 		readonly details: string[] = [],
 		/** The `SourceError` code when an unreadable source caused this error. */
 		readonly sourceCode?: SourceErrorCode,
+		options?: ErrorOptions,
 	) {
-		super(message);
+		super(message, options);
 		this.name = "JobError";
 	}
 }
 
+/** `createJob`'s create-only write found a job under the same ID (M6c, spec P16). */
+export class JobExistsError extends Error {
+	constructor(readonly id: string) {
+		super(`Job id ${id} already exists`);
+		this.name = "JobExistsError";
+	}
+}
+
 export type CreateJobInput = {
+	/** M6c: the job's ID; `deps.newId()` when absent. */
+	id?: string;
 	uploadId: string;
 	template: unknown;
 	schemaFields: SchemaField[];
@@ -93,6 +104,10 @@ export type CreateJobInput = {
 	skippedRows?: number;
 	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
 	savedTemplate?: { id: string; revision: number };
+	/** M6c: created by the agent routes (`Job.origin`). */
+	origin?: "agent";
+	/** M6c: a real job from `jobs/start`: the dry run it imports. */
+	dryRunOf?: string;
 };
 
 /**
@@ -232,7 +247,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const dryRun = input.dryRun ?? false;
 	const missingLimit = missingLimitOf(template, input.missing);
 	const job: Job = {
-		id: deps.newId(),
+		id: input.id ?? deps.newId(),
 		status: "created",
 		// A dry run writes nothing, so it keeps no journal.
 		...(dryRun ? {} : { journal: input.journal ?? true }),
@@ -243,6 +258,8 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 					templateId: input.savedTemplate.id,
 					templateRevision: input.savedTemplate.revision,
 				}),
+		...(input.origin === undefined ? {} : { origin: input.origin }),
+		...(input.dryRunOf === undefined ? {} : { dryRunOf: input.dryRunOf }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
@@ -278,7 +295,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		updatedAt: now,
 	};
 	const result = await deps.jobs.compareAndSet(job.id, null, job);
-	if (!result.applied) throw new Error(`Job id ${job.id} already exists`);
+	if (!result.applied) throw new JobExistsError(job.id);
 	return job;
 }
 
@@ -287,7 +304,9 @@ async function asJobError<T>(run: () => Promise<T>): Promise<T> {
 	try {
 		return await run();
 	} catch (e) {
-		if (e instanceof SourceMissingError) throw new JobError("invalid_source", e.message);
+		if (e instanceof SourceMissingError) {
+			throw new JobError("invalid_source", e.message, [], undefined, { cause: e });
+		}
 		if (e instanceof SourceError) {
 			throw new JobError("invalid_source", e.message, [`${e.code} at byte ${e.offset}`], e.code);
 		}

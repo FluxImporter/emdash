@@ -4,6 +4,7 @@ import { fingerprint } from "../../src/engine/fingerprints.js";
 import { templateSchema } from "../../src/engine/template.js";
 import type { Job } from "../../src/engine/types.js";
 import { createPlugin } from "../../src/plugin/definition.js";
+import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import { JOB_PAGE } from "../../src/plugin/service.js";
 import type { SavedResult, SavedTemplate } from "../../src/plugin/templates.js";
 import { MemoryKv, makeDeps } from "./fakes.js";
@@ -325,5 +326,32 @@ describe("template routes (M6a)", () => {
 		await call("jobs/create", { sourceId: "SRC1", template, dryRun: false });
 		expect(state.fromSource.map((o) => o.maxBytes)).toEqual([maxXlsxBytes(), maxSourceBytes()]);
 		expect(maxXlsxBytes()).toBeLessThan(maxSourceBytes());
+	});
+
+	it("answers a malformed cursor with INVALID_CURSOR, not a 500 (M6c, Fact V9)", async () => {
+		await call("templates/create", { name: "Feed", template });
+		await expect(call("templates/list", { cursor: "x" })).rejects.toMatchObject({
+			code: "INVALID_CURSOR",
+			status: 400,
+		});
+	});
+
+	it("schedules the retention task once when it creates jobs (M6c, createJobFrom)", async () => {
+		const scheduled: { name: string; options: unknown }[] = [];
+		const cron = {
+			list: async () => scheduled.map(({ name }) => ({ name })),
+			schedule: async (name: string, options: unknown) => {
+				scheduled.push({ name, options });
+			},
+		};
+		const route = plugin.routes["jobs/create"]!;
+		for (let i = 0; i < 2; i++) {
+			const input = route.input!.parse({ sourceId: "SRC1", template, dryRun: false });
+			await route.handler({ ...(context(input) as object), cron } as never);
+		}
+		expect(scheduled).toEqual([
+			{ name: RETENTION_TASK, options: { schedule: RETENTION_SCHEDULE } },
+		]);
+		expect(state.fromSource).toHaveLength(2);
 	});
 });

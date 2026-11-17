@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
-import { createJob, JobError, transitionJob } from "../../src/engine/jobs.js";
+import { createJob, JobError, JobExistsError, transitionJob } from "../../src/engine/jobs.js";
+import { SourceMissingError } from "../../src/engine/ports.js";
 import { makeDeps } from "./fakes.js";
 
 const template = {
@@ -19,6 +20,22 @@ function setup(csv = "sku,Name\nA1,Desk\n") {
 }
 
 describe("createJob", () => {
+	it("records an agent job's origin and the dry run it ran (M6c)", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, {
+			uploadId: "u1",
+			template,
+			schemaFields,
+			origin: "agent",
+			dryRunOf: "D1",
+		});
+		expect(job).toMatchObject({ origin: "agent", dryRunOf: "D1" });
+		expect(await deps.jobs.get(job.id)).toMatchObject({ origin: "agent", dryRunOf: "D1" });
+		const plain = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(plain).not.toHaveProperty("origin");
+		expect(plain).not.toHaveProperty("dryRunOf");
+	});
+
 	it("creates a job positioned after the header with defaults", async () => {
 		const { deps } = setup("﻿sku,Name\r\nA1,Desk\r\n");
 		const job = await createJob(deps, { uploadId: "u1", template, schemaFields });
@@ -196,6 +213,28 @@ describe("createJob", () => {
 		await expect(createJob(deps, { uploadId: "u1", template, schemaFields })).rejects.toMatchObject(
 			{ code: "invalid_source" },
 		);
+	});
+	it("takes a given ID, and refuses a second job under it with JobExistsError (M6c)", async () => {
+		const { deps } = setup();
+		const job = await createJob(deps, { id: "R1", uploadId: "u1", template, schemaFields });
+		expect(job.id).toBe("R1");
+		expect(await deps.jobs.get("R1")).toMatchObject({ id: "R1", status: "created" });
+		const again = createJob(deps, { id: "R1", uploadId: "u1", template, schemaFields });
+		await expect(again).rejects.toBeInstanceOf(JobExistsError);
+		await expect(again).rejects.toThrow("Job id R1 already exists");
+		expect((await createJob(deps, { uploadId: "u1", template, schemaFields })).id).toBe(
+			"id00000001",
+		);
+	});
+
+	it("keeps a missing upload's SourceMissingError as the cause (M6c)", async () => {
+		const { deps } = setup();
+		const error = await createJob(deps, { uploadId: "gone", template, schemaFields }).catch(
+			(e: unknown) => e,
+		);
+		expect(error).toBeInstanceOf(JobError);
+		expect(error).toMatchObject({ code: "invalid_source", message: "Upload gone not found" });
+		expect((error as JobError).cause).toBeInstanceOf(SourceMissingError);
 	});
 });
 

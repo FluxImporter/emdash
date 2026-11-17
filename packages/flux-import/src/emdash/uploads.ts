@@ -15,7 +15,13 @@ import { fixedLengthStream } from "./workers.js";
  * name prefix (src/storage/local.ts:175-200), so a prefix ending in `/` would list the parent.
  */
 export const UPLOAD_PREFIX = "flux-import-upload-";
-const UPLOAD_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}[0-9a-f]{32}$/;
+/**
+ * An upload ID, unanchored: a ULID (Crockford base 32) and 32 lowercase hex characters. The one
+ * source of the pattern: `isUploadId` anchors it, and M6c's redaction (`src/plugin/summaries.ts`)
+ * searches text for it.
+ */
+export const UPLOAD_ID_PATTERN = "[0-9A-HJKMNP-TV-Z]{26}[0-9a-f]{32}";
+const UPLOAD_ID_RE = new RegExp(`^${UPLOAD_ID_PATTERN}$`);
 const PAGE = 100;
 
 export type UploadStorage = Pick<Storage, "upload" | "download" | "delete" | "list" | "exists">;

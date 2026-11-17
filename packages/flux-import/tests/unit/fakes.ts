@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { EmDashStorageError } from "emdash";
+import { EmDashStorageError, InvalidCursorError } from "emdash";
 import type { UploadStorage } from "../../src/emdash/uploads.js";
 import {
 	type BylineRef,
@@ -138,6 +138,11 @@ export class MemoryKv<T> implements KvCollection<T> {
 		}
 		// Rows come back in insertion order, stricter than EmDash's (created_at, id): rows written in the same millisecond come back in id order on a real site.
 		const keyset = !opts.orderBy || Object.keys(opts.orderBy).length === 0;
+		// EmDash throws on a cursor it did not issue, and reads an empty one as none
+		// (plugin-storage.ts:390-392, Fact V9).
+		if (opts.cursor && !(keyset ? /^c\d+$/ : /^\d+$/).test(opts.cursor)) {
+			throw new InvalidCursorError(opts.cursor);
+		}
 		const after = keyset && opts.cursor ? Number(opts.cursor.slice(1)) : 0;
 		const created = new Map<string, number>();
 		let items = [...this.rows.entries()]

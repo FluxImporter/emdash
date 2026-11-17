@@ -15,11 +15,20 @@ import { onWorkers } from "../emdash/workers.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import { createRollback } from "../engine/rollback.js";
 import { OWNER_PATTERN, OWNER_RULE } from "../engine/template.js";
-import type { EngineDeps, JobStatus, RecordStatus } from "../engine/types.js";
+import type { EngineDeps, Job, JobStatus, RecordStatus } from "../engine/types.js";
 import { FETCH_LIMITS } from "../sources/fetcher.js";
 import { createMediaFetcher } from "../sources/media-fetch.js";
 import { defaultResolver, type NetOptions } from "../sources/net.js";
 import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
+import {
+	type AgentDeps,
+	agentError,
+	PLAN_SOURCE_MISSING_MESSAGE,
+	planJob,
+	readJobStatus,
+	startFromDryRun,
+	stepAgentJob,
+} from "./agent.js";
 import {
 	CREDENTIAL_NAME,
 	deleteCredential,
@@ -29,7 +38,12 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
-import { jobTemplateRef, resolveJobTemplate } from "./job-templates.js";
+import {
+	type JobRequest,
+	jobTemplateRef,
+	type ResolvedTemplate,
+	resolveJobTemplate,
+} from "./job-templates.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type EmDashRuntime, withRuntime } from "./runtime.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
@@ -57,10 +71,12 @@ import {
 	jobFromSource,
 	latestSourceUploads,
 	listSources,
+	type SkippedJob,
 	type SourceDeps,
 	sourcesCollection,
 	updateSource,
 } from "./sources.js";
+import { step, summarize } from "./summaries.js";
 import { exportTemplate, importTemplate } from "./template-files.js";
 import {
 	createTemplate,
@@ -187,6 +203,15 @@ function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): 
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
 export function toRouteError(e: unknown): unknown {
+	// EmDash's plugin storage throws its own InvalidCursorError (Fact V9); matched by name, so a
+	// second copy of emdash in a bundle still matches (plan Ruling 1).
+	if (e instanceof Error && e.name === "InvalidCursorError") {
+		return new PluginRouteError(
+			"INVALID_CURSOR",
+			"The cursor is not valid; start again without it",
+			400,
+		);
+	}
 	if (e instanceof ServiceError) {
 		return new PluginRouteError(e.code, e.message, e.status, e.details);
 	}
@@ -293,12 +318,109 @@ function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
 	return { ...r, request: { body: "json", maxBytes: TEMPLATE_BODY_MAX_BYTES } };
 }
 
+/**
+ * `jobs/plan`'s body: text of at most 1 MiB (`PASTE_MAX_BYTES`), JSON-escaped, must fit with the
+ * other arguments (spec Ruling 42). EmDash re-serializes the tool's arguments into this body. The
+ * same 2 MiB as a template body (plan P7).
+ */
+export const PLAN_BODY_MAX_BYTES = TEMPLATE_BODY_MAX_BYTES;
+
 function route<T>(
 	input: z.ZodType<T>,
 	handler: (ctx: RouteContext<T>) => Promise<unknown>,
 ): PluginRoute<T> {
 	return { input, permission: PERMISSION, methods: ["POST"], handler };
 }
+
+/**
+ * The agent routes' pace (spec "Input schemas"), shared by `jobs/plan` and `jobs/start`; each
+ * field adds its own description (plan P7).
+ */
+const pace = {
+	batchSize: z.number().int().min(1).max(500),
+	budgetMs: z.number().int().min(500).max(25_000),
+};
+
+/**
+ * The agent routes' inputs (spec "Input schemas"), which M6c's tools share (Task 5). Strict, so
+ * a misspelt key is refused instead of ignored; described, because the descriptions are all an
+ * agent sees; no transforms or defaults (plan Ruling 14). No `missing` or `journal` input
+ * (spec Rulings 10, 29).
+ */
+export const PLAN_INPUT = z
+	.object({
+		templateId: templateId.describe("A saved template's id, from list_templates"),
+		templateRevision: templateRevision
+			.optional()
+			.describe("Refuse with TEMPLATE_CHANGED unless the template is at this revision"),
+		text: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("The data, in the template's source format, at most 1 MiB"),
+		sourceId: sourceId
+			.optional()
+			.describe("A URL source's id, given by the user or an administrator"),
+		publish: z
+			.boolean()
+			.optional()
+			.describe("Publish written entries (default true); false keeps them as drafts"),
+		batchSize: pace.batchSize
+			.optional()
+			.describe("Records per next_batch call, 1-500 (default 50); Cloudflare Workers does fewer"),
+		budgetMs: pace.budgetMs
+			.optional()
+			.describe("Time per next_batch call in milliseconds, 500-25000 (default 4000)"),
+	})
+	.strict()
+	.refine((input) => (input.text === undefined) !== (input.sourceId === undefined), {
+		message: "Set exactly one of text and sourceId",
+	});
+
+export const START_INPUT = z
+	.object({
+		dryRunId: jobId.describe("The id of a completed dry run, from dry_run"),
+		batchSize: pace.batchSize
+			.optional()
+			.describe("Records per next_batch call, 1-500 (default: the dry run's)"),
+		budgetMs: pace.budgetMs
+			.optional()
+			.describe("Time per next_batch call in milliseconds, 500-25000 (default: the dry run's)"),
+	})
+	.strict();
+
+export const STEP_INPUT = z
+	.object({ id: jobId.describe("The job's id, from dry_run or start_import") })
+	.strict();
+
+export const STATUS_INPUT = z
+	.object({
+		id: jobId.describe("The job's id"),
+		records: z
+			.enum(RECORD_STATUSES)
+			.optional()
+			.describe("Also list up to 10 rows with this outcome"),
+		cursor: cursor.describe("From the previous import_status call with the same records value"),
+	})
+	.strict();
+
+/**
+ * `templates/list` and `templates/get`'s inputs, which list_templates and get_template share
+ * (M6c). Not strict: the REST routes have always stripped unknown keys, and so does the SDK.
+ */
+export const TEMPLATE_LIST_INPUT = z.object({
+	collection: z
+		.string()
+		.min(1)
+		.max(63)
+		.optional()
+		.describe("Only the templates that import into this collection (its slug)"),
+	cursor: cursor.describe("From the previous list_templates call"),
+});
+
+export const TEMPLATE_GET_INPUT = z.object({
+	id: templateId.describe("The template's id, from list_templates"),
+});
 
 const createInput = z
 	.object({
@@ -411,6 +533,127 @@ const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
 		}),
 };
 
+/**
+ * Creates a job as `jobs/create` always has (M6c: shared with `jobs/plan` and `jobs/start`,
+ * which pass the template they resolved themselves, plan Ruling 8). A saved template is read
+ * once, here or by the caller; everything below uses it as an inline template, and the job
+ * stores a snapshot of it.
+ */
+async function createJobFrom(
+	ctx: RouteContext<unknown>,
+	{ deps, runtime, sources, xlsx }: Services,
+	request: JobRequest,
+	given?: ResolvedTemplate,
+): Promise<Job | SkippedJob> {
+	await ensureRetentionScheduled(ctx);
+	const resolved =
+		given ??
+		(request.templateId === undefined
+			? { template: request.template }
+			: await resolveJobTemplate(
+					templatesCollection(ctx.storage),
+					request.templateId,
+					request.templateRevision,
+				));
+	const { template } = resolved;
+	// Read once here and stored on the job, so a resumed or retried job converts the same way.
+	const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
+	// Read once here: whether a published entry's update can be scheduled (M5b). The same read
+	// serves the job's schema lookup for that collection.
+	const own = await readPublishAtCollection(runtime.schemaRegistry, template);
+	const revisions = own === null ? undefined : own.revisions;
+	const start = (upload: string, fromSource?: string) => {
+		const options: StartJobInput = {
+			uploadId: upload,
+			template,
+			dryRun: request.dryRun,
+			...(request.id === undefined ? {} : { id: request.id }),
+			...(request.origin === undefined ? {} : { origin: request.origin }),
+			...(request.dryRunOf === undefined ? {} : { dryRunOf: request.dryRunOf }),
+			...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
+			...(fromSource === undefined ? {} : { sourceId: fromSource }),
+			...(request.journal === undefined ? {} : { journal: request.journal }),
+			...(request.missing === undefined ? {} : { missing: request.missing }),
+			mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
+			...(siteTimezone === undefined ? {} : { siteTimezone }),
+			...(revisions === undefined ? {} : { revisions }),
+			...(request.publish === undefined ? {} : { publish: request.publish }),
+			...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
+			...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
+		};
+		return startImport(
+			deps,
+			xlsx,
+			options,
+			(collection) =>
+				own !== null && collection === own.collection
+					? Promise.resolve(own.fields)
+					: listSchemaFields(runtime.schemaRegistry, collection),
+			(locale) => resolveSiteLocale(locale),
+			(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
+		);
+	};
+	if (request.sourceId !== undefined) {
+		const options = {
+			force: request.force ?? false,
+			dryRun: request.dryRun,
+			// The unchanged-content skip also compares the template (spec Ruling 29).
+			template: await jobTemplateRef(resolved),
+		};
+		// A workbook is fetched only up to the XLSX file limit.
+		const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
+		return jobFromSource({ ...sources, limits }, request.sourceId, options, start);
+	}
+	if (request.uploadId === undefined) {
+		throw new PluginRouteError("VALIDATION_ERROR", "Set exactly one of uploadId and sourceId", 400);
+	}
+	return start(request.uploadId);
+}
+
+/** The agent rules' dependencies for one request (plan Ruling 7). */
+function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
+	const { deps, storage, uploads } = services;
+	return {
+		jobs: deps.jobs,
+		templates: templatesCollection(ctx.storage),
+		// The rule's resolved template is passed on, so the job keeps the revision the rule checked
+		// and the template is read once per call (plan Ruling 8).
+		create: async (request, resolved) => {
+			const job = await createJobFrom(ctx, services, request, resolved);
+			// Documented invariant (plan P7): only a real URL-source job can be skipped (spec P2);
+			// an agent URL job is a dry run, and jobs/start passes an upload, never a source.
+			if ("skipped" in job) throw new Error("An agent job was skipped as unchanged");
+			return job;
+		},
+		// stagePaste refuses empty text and text over PASTE_MAX_BYTES; planJob checks no size.
+		stage: async (text) => (await stagePaste(storage, text)).uploadId,
+		unstage: (uploadId) => uploads.delete(uploadId),
+		newId: () => ulid(),
+	};
+}
+
+/**
+ * An agent route: every error the rule throws is redacted, and a missing file is
+ * `SOURCE_FILE_MISSING` with `missing` as its message (spec Ruling 33), before `withServices`
+ * maps it with `toRouteError`.
+ */
+function agentRoute<T>(
+	input: z.ZodType<T>,
+	run: (ctx: RouteContext<T>, services: Services) => Promise<unknown>,
+	missing?: string,
+): PluginRoute<T> {
+	// try/await rather than .catch, so a run that throws before returning a promise is redacted too.
+	return route(input, (ctx) =>
+		withServices(ctx, async (services) => {
+			try {
+				return await run(ctx, services);
+			} catch (e) {
+				throw agentError(e, missing);
+			}
+		}),
+	);
+}
+
 export const routes: Record<string, PluginRoute> = {
 	"sources/sample": route(
 		z.object({
@@ -493,76 +736,9 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/create": withTemplateBody(
-		route(createInput, async (ctx) => {
-			await ensureRetentionScheduled(ctx);
-			return withServices(ctx, async ({ deps, runtime, sources, xlsx }) => {
-				const { input } = ctx;
-				// A saved template is read once, here (spec "Jobs from saved templates"); everything
-				// below uses it as an inline template, and the job stores a snapshot of it.
-				const resolved =
-					input.templateId === undefined
-						? { template: input.template }
-						: await resolveJobTemplate(
-								templatesCollection(ctx.storage),
-								input.templateId,
-								input.templateRevision,
-							);
-				const { template } = resolved;
-				// Read once here and stored on the job, so a resumed or retried job converts the same way.
-				const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-				// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-				// serves the job's schema lookup for that collection.
-				const own = await readPublishAtCollection(runtime.schemaRegistry, template);
-				const revisions = own === null ? undefined : own.revisions;
-				const start = (upload: string, fromSource?: string) => {
-					const options: StartJobInput = {
-						uploadId: upload,
-						template,
-						dryRun: input.dryRun,
-						...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
-						...(fromSource === undefined ? {} : { sourceId: fromSource }),
-						...(input.journal === undefined ? {} : { journal: input.journal }),
-						...(input.missing === undefined ? {} : { missing: input.missing }),
-						mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-						...(siteTimezone === undefined ? {} : { siteTimezone }),
-						...(revisions === undefined ? {} : { revisions }),
-						...(input.publish === undefined ? {} : { publish: input.publish }),
-						...(input.batchSize === undefined ? {} : { batchSize: input.batchSize }),
-						...(input.budgetMs === undefined ? {} : { budgetMs: input.budgetMs }),
-					};
-					return startImport(
-						deps,
-						xlsx,
-						options,
-						(collection) =>
-							own !== null && collection === own.collection
-								? Promise.resolve(own.fields)
-								: listSchemaFields(runtime.schemaRegistry, collection),
-						(locale) => resolveSiteLocale(locale),
-						(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-					);
-				};
-				if (input.sourceId !== undefined) {
-					const options = {
-						force: input.force ?? false,
-						dryRun: input.dryRun,
-						// The unchanged-content skip also compares the template (spec Ruling 29).
-						template: await jobTemplateRef(resolved),
-					};
-					// A workbook is fetched only up to the XLSX file limit.
-					const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
-					return jobFromSource({ ...sources, limits }, input.sourceId, options, start);
-				}
-				if (input.uploadId === undefined) {
-					throw new PluginRouteError(
-						"VALIDATION_ERROR",
-						"Set exactly one of uploadId and sourceId",
-						400,
-					);
-				}
-				return start(input.uploadId);
-			});
-		}),
+		route(createInput, (ctx) =>
+			withServices(ctx, (services) => createJobFrom(ctx, services, ctx.input)),
+		),
 	),
 
 	"jobs/next": route(byId, (ctx) =>
@@ -637,6 +813,37 @@ export const routes: Record<string, PluginRoute> = {
 
 	"jobs/log.csv": logCsv,
 
+	// M6c: the agent routes behind the MCP tools (spec "Routes"). They return summaries, never
+	// job rows, and enforce the agent's limits server-side (spec Ruling 35).
+	"jobs/plan": {
+		...agentRoute(
+			PLAN_INPUT,
+			async (ctx, services) => ({
+				job: summarize(await planJob(agentDeps(ctx, services), ctx.input), services.deps.now()),
+			}),
+			PLAN_SOURCE_MISSING_MESSAGE,
+		),
+		request: { body: "json", maxBytes: PLAN_BODY_MAX_BYTES },
+	},
+
+	"jobs/start": agentRoute(START_INPUT, async (ctx, services) => {
+		const job = await startFromDryRun(agentDeps(ctx, services), ctx.input);
+		return { job: summarize(job, services.deps.now()) };
+	}),
+
+	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep }) => {
+		const { id } = ctx.input;
+		// As jobs/next: a unique holder per call, so two calls never share a lease.
+		const job = await stepAgentJob(deps.jobs, id, () =>
+			nextBatch(deps, uploads, id, `${actor.id}:${ulid()}`, keep),
+		);
+		return step(job, deps.now());
+	}),
+
+	"jobs/status": agentRoute(STATUS_INPUT, (ctx, { deps }) =>
+		readJobStatus(deps, ctx.input, deps.now()),
+	),
+
 	// Additive only: creates missing fields and adds missing select options. With a templateId,
 	// plans from the saved template as from an inline one; a given collection must still match.
 	"schema/apply": withTemplateBody(
@@ -652,18 +859,16 @@ export const routes: Record<string, PluginRoute> = {
 
 	// Saved templates (M6a). Every route is a JSON POST with a permission, so M6c can expose it
 	// as an MCP tool unchanged (spec Ruling 17). The author is always the caller.
-	"templates/list": route(
-		z.object({ collection: z.string().min(1).max(63).optional(), cursor }),
-		(ctx) =>
-			withServices(ctx, (services) =>
-				listTemplates(templateDeps(ctx, services), {
-					...(ctx.input.collection ? { collection: ctx.input.collection } : {}),
-					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
-				}),
-			),
+	"templates/list": route(TEMPLATE_LIST_INPUT, (ctx) =>
+		withServices(ctx, (services) =>
+			listTemplates(templateDeps(ctx, services), {
+				...(ctx.input.collection ? { collection: ctx.input.collection } : {}),
+				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
+			}),
+		),
 	),
 
-	"templates/get": route(z.object({ id: templateId }), (ctx) =>
+	"templates/get": route(TEMPLATE_GET_INPUT, (ctx) =>
 		withServices(ctx, (services) => getTemplate(templateDeps(ctx, services), ctx.input.id)),
 	),
 

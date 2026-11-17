@@ -1,6 +1,6 @@
 import { z } from "astro/zod";
 import type { RouteContext } from "emdash";
-import { definePlugin } from "emdash";
+import { definePlugin, InvalidCursorError, PluginRouteError } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
@@ -9,6 +9,7 @@ import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import {
 	ensureRetentionScheduled,
+	PLAN_BODY_MAX_BYTES,
 	TEMPLATE_BODY_MAX_BYTES,
 	toRouteError,
 } from "../../src/plugin/routes.js";
@@ -37,6 +38,10 @@ const ROUTES = [
 	"jobs/rollback",
 	"jobs/records",
 	"jobs/log.csv",
+	"jobs/plan",
+	"jobs/start",
+	"jobs/step",
+	"jobs/status",
 	"schema/apply",
 	"templates/list",
 	"templates/get",
@@ -50,6 +55,57 @@ const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
 describe("createPlugin", () => {
 	const plugin = createPlugin();
+
+	it("declares the M6c routes as strict JSON POST routes, with a 2 MiB body for jobs/plan", () => {
+		expect(PLAN_BODY_MAX_BYTES).toBe(2 * 1024 * 1024);
+		expect(plugin.routes["jobs/plan"]?.request).toEqual({
+			body: "json",
+			maxBytes: PLAN_BODY_MAX_BYTES,
+		});
+		for (const name of ["jobs/start", "jobs/step", "jobs/status"]) {
+			expect(plugin.routes[name], name).not.toHaveProperty("request");
+		}
+		// isJsonPostRouteContract (@emdash-cms/plugin-types dist/index.js:94-96, not a dependency
+		// of this package): no raw response, POST allowed, a JSON body if one is declared.
+		for (const name of ["jobs/plan", "jobs/start", "jobs/step", "jobs/status"]) {
+			const route = plugin.routes[name]!;
+			expect(route.methods, name).toEqual(["POST"]);
+			expect(route, name).not.toHaveProperty("response");
+			expect(route.request?.body ?? "json", name).toBe("json");
+		}
+		const input = (name: string) => plugin.routes[name]!.input!;
+		const plan = { templateId: "T1", text: "sku\nA\n" };
+		expect(input("jobs/plan").safeParse(plan).success).toBe(true);
+		expect(input("jobs/plan").safeParse({ templateId: "T1", sourceId: "S1" }).success).toBe(true);
+		for (const bad of [
+			{ templateId: "T1" },
+			{ ...plan, sourceId: "S1" },
+			{ ...plan, missing: false },
+			{ ...plan, journal: false },
+			{ ...plan, text: "" },
+			{ ...plan, batchSize: 0 },
+			{ ...plan, batchSize: 501 },
+			{ ...plan, batchSize: 1.5 },
+			{ ...plan, budgetMs: 499 },
+			{ ...plan, budgetMs: 25_001 },
+		]) {
+			expect(input("jobs/plan").safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+		}
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", batchSize: 5 }).success).toBe(true);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", publish: true }).success).toBe(false);
+		expect(input("jobs/step").safeParse({ id: "J1", extra: 1 }).success).toBe(false);
+		const status = { id: "J1", records: "planned", cursor: "c1" };
+		expect(input("jobs/status").safeParse(status).success).toBe(true);
+		expect(input("jobs/status").safeParse({ id: "J1", records: "nope" }).success).toBe(false);
+		expect(input("jobs/status").safeParse({ ...status, extra: 1 }).success).toBe(false);
+		const edges = { batchSize: 1, budgetMs: 500 };
+		expect(input("jobs/plan").safeParse({ ...plan, ...edges }).success).toBe(true);
+		expect(
+			input("jobs/plan").safeParse({ ...plan, batchSize: 500, budgetMs: 25_000 }).success,
+		).toBe(true);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", batchSize: 0 }).success).toBe(false);
+		expect(input("jobs/start").safeParse({ dryRunId: "D1", budgetMs: 25_001 }).success).toBe(false);
+	});
 
 	it("declares every API route with import:execute", () => {
 		expect(Object.keys(plugin.routes).sort()).toEqual([...ROUTES].sort());
@@ -468,6 +524,36 @@ describe("createPlugin", () => {
 			name: "PluginRouteError",
 			status: 401,
 		});
+	});
+	it("maps EmDash's cursor error to INVALID_CURSOR, by name (M6c, plan Ruling 1)", () => {
+		const copy = Object.assign(new Error("Invalid pagination cursor: x"), {
+			name: "InvalidCursorError",
+		});
+		for (const e of [new InvalidCursorError("x"), copy]) {
+			const mapped = toRouteError(e);
+			expect(mapped).toBeInstanceOf(PluginRouteError);
+			expect(mapped).toMatchObject({
+				code: "INVALID_CURSOR",
+				message: "The cursor is not valid; start again without it",
+				status: 400,
+			});
+		}
+		const other = new Error("boom");
+		expect(toRouteError(other)).toBe(other);
+	});
+
+	it("strips origin, id and dryRunOf from jobs/create's input (M6c, spec Ruling 31)", () => {
+		const create = plugin.routes["jobs/create"]!.input!;
+		const parsed = create.parse({
+			uploadId: UPLOAD_ID,
+			template: {},
+			dryRun: false,
+			origin: "agent",
+			id: "R1",
+			dryRunOf: "D1",
+		}) as Record<string, unknown>;
+		expect(parsed).toEqual({ uploadId: UPLOAD_ID, template: {}, dryRun: false });
+		for (const key of ["origin", "id", "dryRunOf"]) expect(key in parsed).toBe(false);
 	});
 });
 

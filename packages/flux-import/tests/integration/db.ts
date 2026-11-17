@@ -46,19 +46,20 @@ export function expireLock(dbPath: string, collection: string, entryId: string):
 }
 
 /**
- * Creates a user with `role` and an `admin`-scoped PAT for it, stored the way
+ * Creates a user with `role` and a PAT with `scopes` for it, stored the way
  * `handleApiTokenCreate` stores one (SHA-256 of the raw token, base64url without padding,
  * `@emdash-cms/auth` src/tokens.ts:206-210). The scope lets the request past the middleware, so
- * only the role decides what the route answers.
+ * only the role decides what the route answers. `scopes` defaults to `admin`; M6c passes
+ * `mcp:tools` (Fact E4).
  */
-export function createUserToken(dbPath: string, role: number): string {
+export function createUserToken(dbPath: string, role: number, scopes = ["admin"]): string {
 	const raw = `ec_pat_test${role}x${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 	const hash = createHash("sha256").update(raw).digest("base64url");
 	withDb(dbPath, (db) => {
 		const userId = insertUser(db, role, `Role ${role}`);
 		db.prepare(
 			"INSERT INTO _emdash_api_tokens (id, name, token_hash, prefix, user_id, scopes) VALUES (?, ?, ?, ?, ?, ?)",
-		).run(`TOKEN${userId}`, "test", hash, raw.slice(0, 11), userId, JSON.stringify(["admin"]));
+		).run(`TOKEN${userId}`, "test", hash, raw.slice(0, 11), userId, JSON.stringify(scopes));
 	});
 	return raw;
 }

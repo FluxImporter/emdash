@@ -87,7 +87,9 @@ function asJobError(e: unknown): unknown {
 	if (e instanceof XlsxError || e instanceof SourceError) {
 		return new JobError("invalid_source", e.message);
 	}
-	if (e instanceof SourceMissingError) return new JobError("invalid_source", e.message);
+	if (e instanceof SourceMissingError) {
+		return new JobError("invalid_source", e.message, [], undefined, { cause: e });
+	}
 	return e;
 }
 

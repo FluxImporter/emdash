@@ -3,6 +3,7 @@ import { definePlugin } from "emdash";
 import { pluginCollections } from "../emdash/storage.js";
 import { EmDashUploads } from "../emdash/uploads.js";
 import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "../meta.js";
+import { MCP_TOOLS } from "./mcp.js";
 import { purgeExpired, RETENTION_DAYS_DEFAULT, RETENTION_TASK } from "./retention.js";
 import { ensureRetentionScheduled, routes } from "./routes.js";
 import { withRuntime } from "./runtime.js";
@@ -75,6 +76,9 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		],
 		storage: STORAGE,
 		routes,
+		// M6c: six routes as MCP tools. An Administrator enables them once ("Agent access");
+		// tokens need mcp:tools:flux-import or mcp:tools, and the routes still need Admin.
+		mcp: { tools: MCP_TOOLS },
 		admin: {
 			settingsSchema: {
 				credentials: {

@@ -98,6 +98,16 @@ export interface Job {
 	templateId?: string;
 	templateRevision?: number;
 	/**
+	 * M6c: the job was created by the agent routes (`jobs/plan`, `jobs/start`), under their rules:
+	 * a saved template, no missing phase, always a journal. Never inferred from a job's shape, and
+	 * never copied by a rollback (spec Ruling 31).
+	 */
+	origin?: "agent";
+	/** M6c: a real job from `jobs/start`: the dry run it imports. */
+	dryRunOf?: string;
+	/** M6c: a dry run from `jobs/plan`: the real job `jobs/start` claimed for it (Ruling 38). */
+	startedAs?: string;
+	/**
 	 * Whether the collection keeps revisions (M5b, read at job creation when the template maps
 	 * `publishAt`): without them an update of a published entry is live at once and cannot be
 	 * scheduled. Absent when the template maps no `publishAt`.

@@ -13,6 +13,32 @@ export interface ResolvedTemplate {
 }
 
 /**
+ * What a job is created from (M6c, plan Ruling 8): `jobs/create`'s input, which `jobs/plan` and
+ * `jobs/start` also build. Exactly one of `uploadId` and `sourceId`; `template` or `templateId`
+ * unless the caller passes the resolved template.
+ */
+export interface JobRequest {
+	/** M6c, `jobs/start`: the ID the dry run claimed (`createJob`'s `id`). */
+	id?: string | undefined;
+	/** M6c: the agent routes' marker (spec Ruling 31); never set by `jobs/create`. */
+	origin?: "agent" | undefined;
+	/** M6c, `jobs/start`: the dry run the job imports. */
+	dryRunOf?: string | undefined;
+	uploadId?: string | undefined;
+	sourceId?: string | undefined;
+	force?: boolean | undefined;
+	template?: unknown;
+	templateId?: string | undefined;
+	templateRevision?: number | undefined;
+	dryRun: boolean;
+	publish?: boolean | undefined;
+	batchSize?: number | undefined;
+	budgetMs?: number | undefined;
+	journal?: boolean | undefined;
+	missing?: false | { maxPercent: number } | undefined;
+}
+
+/**
  * `jobs/create` and `schema/apply` with a `templateId`: the stored template, through
  * `readSavedTemplate`. A missing row is `TEMPLATE_NOT_FOUND`; a `revision` other than the row's
  * is `TEMPLATE_CHANGED`. The template is not validated here: `createJob` re-validates it.

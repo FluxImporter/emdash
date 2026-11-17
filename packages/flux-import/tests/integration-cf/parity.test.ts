@@ -4,6 +4,7 @@ import { describe, expect, inject, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
 import { TEMPLATE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
 import type { ApplyResult } from "../../src/plugin/schema-apply.js";
+import { WORKERS_BATCH_CAP } from "../../src/plugin/service.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
 import { type SavedResult, TEMPLATE_MAX_BYTES } from "../../src/plugin/templates.js";
 import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
@@ -50,6 +51,18 @@ import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
 import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
+import {
+	agentImport,
+	connectMcp,
+	enableTools,
+	mintToken,
+	revokeToken,
+	seen,
+	TOOL_NAMES,
+	TOOL_PREFIX,
+	tool,
+	UPLOAD_ID_PATTERN,
+} from "../integration/mcp-client.js";
 import { CF_SITE_DIR } from "./global-setup.js";
 
 const client = new Client(inject("cfBaseUrl"), inject("cfToken"));
@@ -1034,6 +1047,60 @@ describe("workerd parity (D1, R2)", () => {
 			expect(listed.items.map((j) => j.id)).toEqual([first.id]);
 		} finally {
 			await feeds.stop();
+		}
+	});
+
+	it("completes an M6c agent import over MCP on D1 and R2, within the Workers caps", async () => {
+		await client.createProducts("cf_mcp");
+		await enableTools(client);
+		const minted = await mintToken(client, ["mcp:tools:flux-import"]);
+		const agent = await connectMcp(inject("cfBaseUrl"), minted.token);
+		try {
+			const tools = (await agent.listTools()).tools.filter((t) => t.name.startsWith(TOOL_PREFIX));
+			expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES.map((n) => TOOL_PREFIX + n));
+			const saved = await client.plugin<SavedResult>("templates/create", {
+				name: "M6c parity",
+				template: template("cf_mcp"),
+			});
+			const run = await agentImport(agent, saved.template.id, { text: productsCsv(20) });
+			expect(run.dryRun.counters).toMatchObject({ created: 20, failed: 0 });
+			expect(run.real).toMatchObject({
+				status: "completed",
+				origin: "agent",
+				counters: { created: 20, failed: 0 },
+			});
+			// On Workers one next_batch advances at most WORKERS_BATCH_CAP records (spec P3).
+			for (const id of [run.dryRun.id, run.real.id]) {
+				const processed = run.steps.filter((s) => s.id === id).map((s) => s.processed);
+				const advanced = processed.map((p, i) => p - (processed[i - 1] ?? 0));
+				expect(Math.max(...advanced), id).toBeLessThanOrEqual(WORKERS_BATCH_CAP);
+				expect(processed.length, id).toBeGreaterThanOrEqual(2);
+				expect(processed.at(-1), id).toBe(20);
+			}
+			const entries = await client.listAll("cf_mcp");
+			expect(entries.filter((e) => e.status === "published")).toHaveLength(20);
+			// Fact V9 on D1: EmDash's own cursor error, answered as INVALID_CURSOR.
+			expect(await tool(agent, "list_templates", { cursor: "x" })).toMatchObject({
+				isError: true,
+				code: "INVALID_CURSOR",
+			});
+			const records = { id: run.dryRun.id, records: "planned", cursor: "x" };
+			expect(await tool(agent, "import_status", records)).toMatchObject({
+				code: "INVALID_CURSOR",
+			});
+			// The tool result carries no HTTP status; the same routes over REST answer 400.
+			await expect(client.plugin("templates/list", { cursor: "x" })).rejects.toMatchObject({
+				status: 400,
+				code: "INVALID_CURSOR",
+			});
+			await expect(client.plugin("jobs/status", records)).rejects.toMatchObject({
+				status: 400,
+				code: "INVALID_CURSOR",
+			});
+			for (const text of seen) expect(text).not.toMatch(UPLOAD_ID_PATTERN);
+		} finally {
+			await agent.close();
+			await revokeToken(client, minted.id);
 		}
 	});
 });
