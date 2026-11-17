@@ -64,12 +64,19 @@ const PAUSES: Readonly<Record<string, PauseReason>> = {
 	INVALID_SOURCE: "invalid_template",
 };
 
-/** A launch error's code: a service or route error's, a job error's in capitals, else `INTERNAL_ERROR`. */
+/** What a stored error code may look like: never free text, a URL or a message (spec Ruling 47). */
+const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * A launch error's code: a service or route error's, a job error's in capitals, else the error's
+ * own `code`; `INTERNAL_ERROR` when there is none or it is not shaped like a code.
+ */
 export function errorCode(e: unknown): string {
-	if (e instanceof ServiceError) return e.code;
-	if (e instanceof JobError) return e.code.toUpperCase();
-	const code = e instanceof Error ? (e as { code?: unknown }).code : undefined;
-	return typeof code === "string" ? code : "INTERNAL_ERROR";
+	let code: unknown;
+	if (e instanceof ServiceError) code = e.code;
+	else if (e instanceof JobError) code = e.code.toUpperCase();
+	else if (e instanceof Error) code = (e as { code?: unknown }).code;
+	return typeof code === "string" && CODE.test(code) ? code : "INTERNAL_ERROR";
 }
 
 /**
@@ -82,17 +89,24 @@ export async function markDue(
 	scheduleId: string,
 	scheduledAt: string,
 ): Promise<"marked" | "kept" | "cancelled"> {
-	const row = await deps.schedules.get(scheduleId);
-	if (!row?.enabled) {
-		await deps.cron.cancel(scheduleTask(scheduleId));
-		return "cancelled";
-	}
 	let marked = false;
-	if (!row.due) {
-		const written = await writeSchedule(deps.schedules, scheduleId, row.current?.jobId, (r) =>
-			r.enabled && !r.due ? { ...r, due: { at: scheduledAt } } : null,
-		);
-		marked = written !== null;
+	let first: { holder: string | undefined } | undefined;
+	// One read and one compare-and-set, then the pump: four D1 queries (spec "Due marks").
+	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+		const read = await deps.schedules.getVersioned(scheduleId);
+		if (!read?.value.enabled) {
+			await deps.cron.cancel(scheduleTask(scheduleId));
+			return "cancelled";
+		}
+		// Conditional on the claim the first read saw: a launch that claimed since owns the mark.
+		const holder = read.value.current?.jobId;
+		first ??= { holder };
+		if (holder !== first.holder || read.value.due) break;
+		const next = { ...read.value, due: { at: scheduledAt } };
+		if ((await deps.schedules.compareAndSet(scheduleId, read.revision, next)).applied) {
+			marked = true;
+			break;
+		}
 	}
 	await armPump(deps.cron);
 	return marked ? "marked" : "kept";
@@ -129,21 +143,24 @@ function released(row: ScheduleRow): ScheduleRow {
 
 /**
  * Step 5: one write, conditional on the claim, that ends the launch: `change` returns the row and
- * the pause, if any, which also cancels the schedule's task. Null when the claim is gone.
+ * the pause, if any, which also cancels the schedule's task. `written` is null when the claim is
+ * gone; `pausedNow` is true only when this write disabled an enabled schedule.
  */
 async function record(
 	deps: LaunchDeps,
 	id: string,
 	jobId: string,
 	change: (row: ScheduleRow) => { row: ScheduleRow; pause?: PauseReason | undefined },
-): Promise<ScheduleRow | null> {
+): Promise<{ written: ScheduleRow | null; pausedNow: boolean }> {
 	const at = iso(deps.now());
+	let wasEnabled = false;
 	const written = await writeSchedule(deps.schedules, id, jobId, (current) => {
+		wasEnabled = current.enabled;
 		const { row, pause } = change(current);
 		return pause === undefined ? released(row) : paused(row, pause, at);
 	});
 	if (written !== null && !written.enabled) await deps.cron.cancel(scheduleTask(id));
-	return written;
+	return { written, pausedNow: written !== null && wasEnabled && !written.enabled };
 }
 
 /**
@@ -158,7 +175,7 @@ async function failed(
 	reason: PauseReason | undefined,
 ): Promise<LaunchOutcome> {
 	const lastLaunch = { at: iso(deps.now()), outcome: "failed" as const, errorCode: code };
-	const written = await record(deps, id, jobId, (row) => {
+	const { pausedNow } = await record(deps, id, jobId, (row) => {
 		if (reason !== undefined) return { row: { ...row, lastLaunch }, pause: reason };
 		const launchFailures = row.launchFailures + 1;
 		return {
@@ -166,7 +183,8 @@ async function failed(
 			pause: launchFailures >= LAUNCH_FAILURES_TO_PAUSE ? "fetch_failed" : undefined,
 		};
 	});
-	return reason !== undefined || written?.enabled === false ? "paused" : "failed";
+	// "paused" only when this write paused it: not when the claim was gone or it was already off.
+	return pausedNow ? "paused" : "failed";
 }
 
 /** The job option for the schedule's `missing` (spec "Launch" step 4, P6). */
@@ -206,8 +224,7 @@ async function checkPins(deps: LaunchDeps, row: ScheduleRow): Promise<ResolvedTe
 
 /** Logs a launch error's message, redacted; the schedule keeps its code only (spec Ruling 47). */
 function logFailure(deps: LaunchDeps, id: string, code: string, e: unknown): void {
-	const message = e instanceof Error ? e.message : String(e);
-	deps.warn(`flux-import: schedule ${id}: launch failed (${code}): ${redact(message)}`);
+	deps.warn(`flux-import: schedule ${id}: launch failed (${code}): ${messageOf(e)}`);
 }
 
 /** One launch of a due schedule (spec "Launch"), the pump's step 4. Never throws for an expected failure. */
@@ -216,9 +233,10 @@ export async function launch(deps: LaunchDeps, due: ScheduleRow): Promise<Launch
 	const busy = await busyJob(deps.jobs, due.sourceId);
 	if (busy !== null) {
 		const lastLaunch = { at: iso(deps.now()), outcome: "busy" as const, jobId: busy.id };
+		// Only over the mark this launch was for: a launch that consumed it keeps its record.
 		await writeSchedule(deps.schedules, due.id, due.current?.jobId, (r) => {
-			const { due: _due, ...rest } = r;
-			return { ...rest, lastLaunch };
+			const { due: mark, ...rest } = r;
+			return mark ? { ...rest, lastLaunch } : null;
 		});
 		return "busy";
 	}
@@ -277,7 +295,7 @@ export async function launch(deps: LaunchDeps, due: ScheduleRow): Promise<Launch
 		return "unchanged";
 	}
 	const lastLaunch = { at, outcome: "started" as const, jobId: result.id };
-	const written = await record(deps, row.id, jobId, (r) => ({
+	const { written } = await record(deps, row.id, jobId, (r) => ({
 		row: { ...r, lastLaunch, launchFailures: 0 },
 	}));
 	if (written === null) await dropOrphan(deps, row.id, jobId, result.id);
@@ -298,14 +316,32 @@ async function dropOrphan(
 ): Promise<void> {
 	const newest = await deps.schedules.get(id);
 	if (newest?.current?.jobId === claimed) return;
+	const lost = `flux-import: schedule ${id}: the launch lost its claim;`;
 	try {
 		await deps.cancel(jobId);
-		deps.warn(`flux-import: schedule ${id}: the launch lost its claim; cancelled job ${jobId}`);
+		deps.warn(`${lost} cancelled job ${jobId}`);
 	} catch (e) {
-		const message = e instanceof Error ? e.message : String(e);
-		deps.warn(
-			`flux-import: schedule ${id}: the launch lost its claim; job ${jobId} was not cancelled: ${redact(message)}`,
-		);
+		if (e instanceof JobCloseError) {
+			deps.warn(`${lost} cancelled job ${jobId}, which could not be closed: ${messageOf(e.cause)}`);
+		} else {
+			deps.warn(`${lost} job ${jobId} was not cancelled: ${messageOf(e)}`);
+		}
+	}
+}
+
+/** An error's message for the log, redacted. */
+function messageOf(e: unknown): string {
+	return redact(e instanceof Error ? e.message : String(e));
+}
+
+/** `cancelLaunched` cancelled the job but could not close it; finalization will see it. */
+export class JobCloseError extends Error {
+	constructor(
+		readonly jobId: string,
+		cause: unknown,
+	) {
+		super(`Job ${jobId} was cancelled but not closed`, { cause });
+		this.name = "JobCloseError";
 	}
 }
 
@@ -313,7 +349,8 @@ async function dropOrphan(
  * Cancels a job whose launch lost its claim, as `jobs/cancel` does (its file released and the
  * source's `lastImport` cleared, so the same content imports next time), then closes it, so
  * finalization neither logs it as a run nor pauses the schedule over it. A job that has finished
- * meanwhile is refused by the cancel and left open for finalization.
+ * meanwhile is refused by the cancel and left open for finalization. A close that fails after
+ * the cancel throws `JobCloseError`.
  */
 export async function cancelLaunched(
 	services: {
@@ -328,7 +365,11 @@ export async function cancelLaunched(
 	if (job.sourceId !== undefined) {
 		await clearLastImport(services.sources, job.sourceId, job.id).catch(() => {});
 	}
-	await updateJob(services.deps, jobId, (j) => ({ ...j, scheduled: "closed" }));
+	try {
+		await updateJob(services.deps, jobId, (j) => ({ ...j, scheduled: "closed" }));
+	} catch (e) {
+		throw new JobCloseError(jobId, e);
+	}
 }
 
 /**

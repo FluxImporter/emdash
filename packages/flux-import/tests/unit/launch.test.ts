@@ -6,6 +6,7 @@ import type { Job } from "../../src/engine/types.js";
 import { type JobRequest, jobTemplateRef } from "../../src/plugin/job-templates.js";
 import {
 	cancelLaunched,
+	errorCode,
 	type LaunchDeps,
 	launch,
 	markDue,
@@ -385,6 +386,77 @@ describe('launch (spec "Launch")', () => {
 		});
 	});
 
+	it("leaves a claim whose job is unfinished in flight, however old, when the busy scan cannot see it (plan Ruling 20)", async () => {
+		const held = { jobId: "K", claimedAt: new Date(NOW - 3_600_000).toISOString() };
+		const t = await setup({ current: held });
+		// No feedSourceId: busyJob does not find it, so only the claim guards it.
+		await t.base.jobs.put("K", jobRow("K", { status: "running" }));
+		expect(await launch(t.deps, await t.row())).toBe("in_flight");
+		expect(await t.row()).toMatchObject({ current: held, due: { at: AT } });
+		expect(t.requests).toEqual([]);
+	});
+
+	it("records busy while a crashed launch's claim stands: the mark goes, the claim stays", async () => {
+		const held = { jobId: "J7", claimedAt: AT };
+		const t = await setup({ current: held });
+		await t.base.jobs.put("J7", jobRow("J7", { status: "created", feedSourceId: "S1" }));
+		expect(await launch(t.deps, await t.row())).toBe("busy");
+		const row = await t.row();
+		expect(row).toMatchObject({ current: held, lastLaunch: { outcome: "busy", jobId: "J7" } });
+		expect(row).not.toHaveProperty("due");
+	});
+
+	it("does not record busy over a launch that already consumed the mark", async () => {
+		const t = await setup();
+		const stale = await t.row();
+		expect(await launch(t.deps, stale)).toBe("started");
+		// J1 now runs on the source; a tick holding the pump's old row launches again.
+		await t.base.jobs.put("J1", jobRow("J1", { status: "running", feedSourceId: "S1" }));
+		expect(await launch(t.deps, stale)).toBe("busy");
+		expect((await t.row()).lastLaunch).toEqual({ at: AT, outcome: "started", jobId: "J1" });
+	});
+
+	it("answers failed, not paused, when the claim was gone before the failure was recorded", async () => {
+		const t = await setup();
+		t.fake.answer = async () => {
+			const { current: _current, ...rest } = await t.row();
+			await t.base.schedules.put("A", { ...rest, enabled: false });
+			throw new ServiceError("URL_BLOCKED", "blocked", 400);
+		};
+		expect(await launch(t.deps, await t.row())).toBe("failed");
+		expect(await t.row()).not.toHaveProperty("pause");
+	});
+
+	it("answers failed, not paused, when the schedule was already disabled with the claim held", async () => {
+		const t = await setup();
+		t.fake.answer = async () => {
+			// schedules/update { enabled: false } keeps the claim.
+			await writeSchedule(t.base.schedules, "A", "J1", (r) => ({ ...r, enabled: false }));
+			throw new ServiceError("URL_BLOCKED", "blocked", 400);
+		};
+		expect(await launch(t.deps, await t.row())).toBe("failed");
+		expect(await t.row()).toMatchObject({ enabled: false, pause: { reason: "url_blocked" } });
+	});
+
+	it("logs a cancelled job it could not close apart from one it could not cancel (preflight F6)", async () => {
+		const t = await setup();
+		const cas = t.base.jobs.compareAndSet.bind(t.base.jobs);
+		t.base.jobs.compareAndSet = async (id, revision, data) => {
+			if (data.scheduled === "closed") throw new Error("D1 is down");
+			return cas(id, revision, data);
+		};
+		t.fake.answer = async (request) => {
+			const { current: _current, ...rest } = await t.row();
+			await t.base.schedules.put("A", { ...rest, enabled: false });
+			return jobRow(request.id ?? "", { scheduled: "open" });
+		};
+		expect(await launch(t.deps, await t.row())).toBe("started");
+		expect(await t.base.jobs.get("J1")).toMatchObject({ status: "cancelled", scheduled: "open" });
+		expect(t.warnings).toEqual([
+			"flux-import: schedule A: the launch lost its claim; cancelled job J1, which could not be closed: D1 is down",
+		]);
+	});
+
 	it("creates one job from two overlapping launches of one due schedule (spec F19)", async () => {
 		const t = await setup();
 		const row = await t.row();
@@ -574,6 +646,37 @@ describe("cancelLaunched (preflight F6)", () => {
 	});
 });
 
+describe("errorCode (spec Ruling 47)", () => {
+	const coded = (code: unknown) => Object.assign(new Error("x"), { code });
+
+	it.each([
+		["a service error's code", new ServiceError("HTTP_ERROR", "m", 502), "HTTP_ERROR"],
+		["a job error's code in capitals", new JobError("invalid_source", "m"), "INVALID_SOURCE"],
+		["a Node error's code", coded("ECONNRESET"), "ECONNRESET"],
+		["a lowercase code", coded("econnreset"), "INTERNAL_ERROR"],
+		["a code of 65 characters", coded(`E${"X".repeat(64)}`), "INTERNAL_ERROR"],
+		["a code holding a URL", coded("FETCH https://user:pw@feeds.example/x"), "INTERNAL_ERROR"],
+		[
+			"a service error with a free-text code",
+			new ServiceError("bad code: x", "m", 500),
+			"INTERNAL_ERROR",
+		],
+		["a code that is not a string", coded(503), "INTERNAL_ERROR"],
+		["no error at all", "boom", "INTERNAL_ERROR"],
+	] as const)("keeps %s", (_, error, code) => {
+		expect(errorCode(error)).toBe(code);
+	});
+
+	it("stores no free-text code on the schedule", async () => {
+		const t = await setup();
+		t.fake.answer = async () => {
+			throw coded("connect https://feeds.example/S1.csv");
+		};
+		expect(await launch(t.deps, await t.row())).toBe("failed");
+		expect((await t.row()).lastLaunch).toMatchObject({ errorCode: "INTERNAL_ERROR" });
+	});
+});
+
 describe("userRoleOf (spec Ruling 43)", () => {
 	it("answers the user's role, null for a missing user or without ctx.users", async () => {
 		const warnings: string[] = [];
@@ -598,34 +701,82 @@ describe('markDue (spec "Due marks")', () => {
 		expect((await t.row()).due).toEqual({ at });
 	});
 
-	it("writes nothing when a launch claimed the schedule between the read and the write", async () => {
-		const t = await setup({ due: undefined });
-		const get = t.base.schedules.get.bind(t.base.schedules);
-		t.base.schedules.get = async (id) => {
-			const read = await get(id);
-			// The claim lands right after markDue's read.
-			await t.base.schedules.put("A", {
-				...(read as ScheduleRow),
-				current: { jobId: "J9", claimedAt: AT },
-			});
+	/** Runs `race` on the stored row once, right after markDue's first read. */
+	function afterFirstRead(
+		t: Awaited<ReturnType<typeof setup>>,
+		race: (row: ScheduleRow) => Promise<unknown>,
+	) {
+		const getVersioned = t.base.schedules.getVersioned.bind(t.base.schedules);
+		let raced = false;
+		t.base.schedules.getVersioned = async (id) => {
+			const read = await getVersioned(id);
+			if (!raced && read) {
+				raced = true;
+				await race(read.value);
+			}
 			return read;
 		};
+	}
+
+	it("writes nothing when a launch claimed the schedule between the read and the write", async () => {
+		const t = await setup({ due: undefined });
+		afterFirstRead(t, (row) =>
+			t.base.schedules.put("A", { ...row, current: { jobId: "J9", claimedAt: AT } }),
+		);
 		expect(await markDue(t.deps, "A", AT)).toBe("kept");
-		expect(await get("A")).not.toHaveProperty("due");
+		expect(await t.row()).not.toHaveProperty("due");
 		expect(t.base.cron.tasks.has(PUMP_TASK)).toBe(true);
 	});
 
 	it("keeps a mark that landed between its read and its write", async () => {
 		const t = await setup({ due: undefined });
-		const get = t.base.schedules.get.bind(t.base.schedules);
 		const older = { at: "2026-11-17T02:00:00.000Z" };
-		t.base.schedules.get = async (id) => {
-			const read = await get(id);
-			await t.base.schedules.put("A", { ...(read as ScheduleRow), due: older });
-			return read;
-		};
+		afterFirstRead(t, (row) => t.base.schedules.put("A", { ...row, due: older }));
 		expect(await markDue(t.deps, "A", AT)).toBe("kept");
-		expect((await get("A"))?.due).toEqual(older);
+		expect((await t.row()).due).toEqual(older);
+	});
+
+	it("retries a write lost to another change and marks the newest row", async () => {
+		const t = await setup({ due: undefined });
+		afterFirstRead(t, (row) => t.base.schedules.put("A", { ...row, name: "renamed" }));
+		expect(await markDue(t.deps, "A", AT)).toBe("marked");
+		expect(await t.row()).toMatchObject({ name: "renamed", due: { at: AT } });
+	});
+
+	it.each([
+		[
+			"disabled",
+			(t: Awaited<ReturnType<typeof setup>>, row: ScheduleRow) =>
+				t.base.schedules.put("A", { ...row, enabled: false }),
+		],
+		["deleted", (t: Awaited<ReturnType<typeof setup>>) => t.base.schedules.delete("A")],
+	] as const)(
+		"cancels its task when the schedule is %s between the read and the write",
+		async (_, race) => {
+			const t = await setup({ due: undefined });
+			await t.base.cron.schedule("schedule-A", { schedule: "0 3 * * *" });
+			afterFirstRead(t, (row) => race(t, row));
+			expect(await markDue(t.deps, "A", AT)).toBe("cancelled");
+			expect([...t.base.cron.tasks.keys()]).toEqual([]);
+			expect((await t.base.schedules.get("A"))?.due).toBeUndefined();
+		},
+	);
+
+	it('reads the row once and writes it once: four D1 queries with the pump (spec "Due marks")', async () => {
+		const t = await setup({ due: undefined });
+		const calls: string[] = [];
+		const kv = t.base.schedules;
+		for (const name of ["get", "getVersioned", "compareAndSet", "put", "query"] as const) {
+			const original = kv[name].bind(kv) as (...args: unknown[]) => Promise<unknown>;
+			(kv as unknown as Record<string, unknown>)[name] = (...args: unknown[]) => {
+				calls.push(name);
+				return original(...args);
+			};
+		}
+		t.base.cron.calls.length = 0;
+		expect(await markDue(t.deps, "A", AT)).toBe("marked");
+		expect(calls).toEqual(["getVersioned", "compareAndSet"]);
+		expect(t.base.cron.calls).toEqual([`schedule ${PUMP_TASK} ${PUMP_SCHEDULE}`]);
 	});
 
 	it("cancels the task of a missing or disabled schedule", async () => {
