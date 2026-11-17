@@ -724,6 +724,41 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 		]);
 	});
 
+	it("runs each revert step and schedule() without an actor when it has none (spec Ruling 5)", async () => {
+		const runtime = new FakeRuntime();
+		const lockUsers: string[] = [];
+		const content = new EmDashContent(runtime, null, async (_c, _id, user) => {
+			lockUsers.push(user);
+			return false;
+		});
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		const base = { collection: "products", locale: "en", id: "e1" };
+		const at = "2026-12-01T00:00:00.000Z";
+		const steps = [
+			{ rev: "rev-1", step: "update", data: { title: "B" } },
+			{ rev: "rev-2", step: "publish" },
+			{ rev: "rev-3", step: "unpublish" },
+			{ rev: "rev-4", step: "schedule", scheduledAt: at },
+		] as const;
+		for (const step of steps) {
+			expect(await content.revertStep({ ...base, ...step })).toMatchObject({ ok: true });
+		}
+		expect(await content.schedule({ ...base, rev: "rev-5", scheduledAt: at })).toEqual({
+			ok: true,
+			rev: "rev-6",
+		});
+		expect(runtime.calls.map((c) => (c as string[])[0])).toEqual([
+			"create",
+			"update",
+			"publish",
+			"unpublish",
+			"schedule",
+			"schedule",
+		]);
+		for (const call of runtime.calls) expect(JSON.stringify(call)).not.toMatch(/actor|authorId/);
+		expect(lockUsers).toEqual([NO_USER, NO_USER, NO_USER, NO_USER, NO_USER]);
+	});
+
 	it("checks the lock before every step and writes a null slug through", async () => {
 		const locked = new Set<string>();
 		const { runtime, content, lockCalls } = setup((_c, id) => locked.has(id));
