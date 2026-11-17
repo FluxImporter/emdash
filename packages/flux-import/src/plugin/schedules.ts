@@ -4,7 +4,7 @@ import { kvCollection } from "../emdash/storage.js";
 import { fingerprint } from "../engine/fingerprints.js";
 import type { KvCollection } from "../engine/ports.js";
 import type { Template } from "../engine/template.js";
-import { type Job, MISSING_MAX_PERCENT_DEFAULT } from "../engine/types.js";
+import { type Job, type JobStatus, MISSING_MAX_PERCENT_DEFAULT } from "../engine/types.js";
 import { CRON_RULE, cronProblem } from "./cron-syntax.js";
 import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
 import { type Page, page, ServiceError } from "./service.js";
@@ -155,8 +155,11 @@ export interface UpdateScheduleInput {
 
 const TASK_PREFIX = "schedule-";
 const PAGE = 20;
-const UNFINISHED = ["created", "running", "paused"];
-const iso = (ms: number) => new Date(ms).toISOString();
+/** Pages of unfinished jobs on a source `busyJob` reads before it fails closed (preflight F13). */
+export const BUSY_SCAN_PAGES = 5;
+/** The statuses of a job that has not finished (shared by the scheduler's modules, F17). */
+export const UNFINISHED: readonly JobStatus[] = ["created", "running", "paused"];
+export const iso = (ms: number): string => new Date(ms).toISOString();
 
 export const scheduleTask = (id: string): string => `${TASK_PREFIX}${id}`;
 
@@ -218,10 +221,13 @@ function assertScheduleRevision(row: ScheduleRow, revision: number): void {
 /**
  * The unfinished real import or rollback that reads `sourceId`'s data, if any (spec Ruling 33).
  * Dry runs never make a schedule busy; they are skipped here, not in the query (plan Ruling 2).
+ * Bounded (preflight F13): past `BUSY_SCAN_PAGES` pages of unfinished dry runs the source counts
+ * as busy, with the last dry run read standing in for the busy job.
  */
 export async function busyJob(jobs: KvCollection<Job>, sourceId: string): Promise<Job | null> {
 	let cursor: string | undefined;
-	do {
+	let last: Job | undefined;
+	for (let pages = 0; pages < BUSY_SCAN_PAGES; pages++) {
 		const result = await jobs.query({
 			where: { feedSourceId: sourceId, status: { in: UNFINISHED } },
 			limit: PAGE,
@@ -229,9 +235,11 @@ export async function busyJob(jobs: KvCollection<Job>, sourceId: string): Promis
 		});
 		const real = result.items.find((i) => !i.data.dryRun);
 		if (real) return real.data;
+		last = result.items.at(-1)?.data ?? last;
 		cursor = result.hasMore ? result.cursor : undefined;
-	} while (cursor);
-	return null;
+		if (!cursor) return null;
+	}
+	return last ?? null;
 }
 
 /** A job the schedule launched that the pump has not finalized yet. */
