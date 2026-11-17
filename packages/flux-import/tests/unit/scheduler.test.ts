@@ -3,6 +3,7 @@ import { EmDashUploads } from "../../src/emdash/uploads.js";
 import type { EngineDeps, Job } from "../../src/engine/types.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import {
+	RETENTION_CURSOR_KEY,
 	RETENTION_QUERY_TARGET,
 	RETENTION_SCHEDULE,
 	RETENTION_TASK,
@@ -100,6 +101,8 @@ let schedules: MemoryKv<ScheduleRow>;
 let sources: MemoryKv<SourceRow>;
 let templates: MemoryKv<SavedTemplate>;
 let engine: EngineDeps & { jobs: MemoryKv<Job> };
+/** Plugin KV (`ctx.kv`) over a MemoryKv, so a test sees the retention cursor. */
+let kvRows: MemoryKv<unknown>;
 const logs: string[] = [];
 const logData: { message: string; data: unknown }[] = [];
 
@@ -120,6 +123,7 @@ beforeEach(() => {
 	schedules = new MemoryKv(STORAGE.schedules.indexes);
 	sources = new MemoryKv(STORAGE.sources.indexes);
 	templates = new MemoryKv(STORAGE.templates.indexes);
+	kvRows = new MemoryKv();
 	logs.length = 0;
 	logData.length = 0;
 });
@@ -132,7 +136,11 @@ function context(role: number | null = null) {
 	return {
 		storage: { schedules, sources, templates },
 		cron,
-		kv: { get: async () => null, set: async () => {}, delete: async () => false },
+		kv: {
+			get: (key: string) => kvRows.get(key),
+			set: (key: string, value: unknown) => kvRows.put(key, value),
+			delete: (key: string) => kvRows.delete(key),
+		},
 		settings: { get: async () => undefined },
 		taxonomies: {},
 		bylines: {},
@@ -216,6 +224,10 @@ describe('cronHook (spec "Cron tasks and the hook")', () => {
 		expect(result.more).toBe(true);
 		expect(result.queries).toBeLessThanOrEqual(RETENTION_QUERY_TARGET + 1);
 		expect(engine.jobs.rows.size).toBeGreaterThan(0);
+		// The job it stopped at is saved for the next run, which starts there.
+		const cursor = await kvRows.get(RETENTION_CURSOR_KEY);
+		expect(typeof cursor).toBe("string");
+		expect(engine.jobs.rows.has(cursor as string)).toBe(true);
 		const files = [...storage.files.keys()].join(" ");
 		expect(files).toContain(kept.uploadId);
 		expect(files).not.toContain(dropped.uploadId);
@@ -313,6 +325,72 @@ describe('cronHook (spec "Cron tasks and the hook")', () => {
 		expect(dataOf("Pump tick")).toMatchObject({ batch: jobId });
 	});
 
+	it("reconciles even when the purge throws, then rethrows its error redacted", async () => {
+		await schedules.put("A", scheduleRow("A"));
+		await cron.schedule(RETENTION_TASK, { schedule: "0 3 * * *" });
+		const ctx = context() as unknown as Record<string, unknown>;
+		const kv = {
+			get: async () => {
+				throw new Error(`kv read failed for ${UPLOAD}`);
+			},
+			set: async () => {},
+			delete: async () => false,
+		};
+		await expect(cronHook(event(RETENTION_TASK), { ...ctx, kv } as never)).rejects.toThrow(
+			/^kv read failed for \[staged file\]$/,
+		);
+		expect(cron.tasks.get(RETENTION_TASK)).toEqual({ schedule: RETENTION_SCHEDULE });
+		expect(cron.tasks.has("schedule-A")).toBe(true);
+		expect(logs).toContain("info: Repaired the schedule tasks");
+		expect(logs).toContain("error: flux-import: cron task retention failed");
+		expect(JSON.stringify(logData)).not.toContain(UPLOAD);
+	});
+
+	it("throws a reconcile failure after a purge that succeeded", async () => {
+		cron.list = async () => {
+			throw new Error(`list failed for ${UPLOAD}`);
+		};
+		await expect(cronHook(event(RETENTION_TASK), context())).rejects.toThrow(
+			/^list failed for \[staged file\]$/,
+		);
+		expect(logs).toEqual([
+			"info: Removed expired import data",
+			"error: flux-import: cron task retention failed",
+		]);
+	});
+
+	it("when both fail, throws the purge's error and logs the reconcile's, redacted", async () => {
+		cron.list = async () => {
+			throw new Error(`list failed for ${UPLOAD}`);
+		};
+		const ctx = context() as unknown as Record<string, unknown>;
+		const kv = {
+			get: async () => {
+				throw new Error("kv read failed");
+			},
+			set: async () => {},
+			delete: async () => false,
+		};
+		await expect(cronHook(event(RETENTION_TASK), { ...ctx, kv } as never)).rejects.toThrow(
+			/^kv read failed$/,
+		);
+		expect(logs).toEqual([
+			"error: flux-import: retention could not repair the schedule tasks: list failed for [staged file]",
+			"error: flux-import: cron task retention failed",
+		]);
+	});
+
+	it("reconciles even when the services cannot be built (NOT_CONFIGURED)", async () => {
+		state.storage = undefined;
+		await schedules.put("A", scheduleRow("A"));
+		await expect(cronHook(event(RETENTION_TASK), context())).rejects.toThrow(
+			"EmDash storage is not configured",
+		);
+		expect(cron.tasks.get(RETENTION_TASK)).toEqual({ schedule: RETENTION_SCHEDULE });
+		expect(cron.tasks.has("schedule-A")).toBe(true);
+		expect(logs).not.toContain("info: Removed expired import data");
+	});
+
 	it("logs a pump tick that only closed a job no schedule launched", async () => {
 		await cron.schedule(PUMP_TASK, { schedule: PUMP_SCHEDULE });
 		await engine.jobs.put("J1", jobRow("J1", { status: "completed", scheduled: "open" }));
@@ -339,7 +417,15 @@ describe('cronHook (spec "Cron tasks and the hook")', () => {
 			},
 		};
 		const ctx = { ...(context() as object), storage: { schedules: failing } } as never;
-		await expect(cronHook(event("schedule-A"), ctx)).rejects.toThrow(UPLOAD);
+		const thrown = await cronHook(event("schedule-A"), ctx).then(
+			() => null,
+			(e: unknown) => e as Error,
+		);
+		// EmDash's executor prints what the hook throws: the message redacted, no cause, no stack
+		// from the original error.
+		expect(thrown?.message).toBe("read [staged file] failed");
+		expect(thrown?.cause).toBeUndefined();
+		expect(String(thrown?.stack)).not.toContain(UPLOAD);
 		expect(logData[0]?.data).toEqual({ error: "read [staged file] failed" });
 		expect(JSON.stringify(logData)).not.toContain(UPLOAD);
 	});

@@ -25,14 +25,18 @@ export interface CronEvent {
 	scheduledAt: string;
 }
 
-/** `retention`: the bounded purge, then the reconciliation of the tasks (spec "Reconciliation"). */
-async function retention(ctx: PluginContext): Promise<void> {
+/** An error's message for the log and the rethrow, redacted (preflight F12). */
+function messageOf(e: unknown): string {
+	return redact(e instanceof Error ? e.message : String(e));
+}
+
+/** The bounded purge, over the scheduled services. */
+async function purge(ctx: PluginContext): Promise<void> {
 	const days = (await ctx.settings.get<number>("retentionDays")) ?? RETENTION_DAYS_DEFAULT;
 	await withScheduledServices(ctx, async ({ deps, uploads }) => {
-		const schedules = schedulesCollection(ctx.storage);
 		const keep = await latestSourceUploads(sourcesCollection(ctx.storage));
 		const result = await purgeExpired(deps, uploads, days, keep, {
-			schedules,
+			schedules: schedulesCollection(ctx.storage),
 			kv: ctx.kv,
 			target: RETENTION_QUERY_TARGET,
 		});
@@ -44,22 +48,52 @@ async function retention(ctx: PluginContext): Promise<void> {
 				result,
 			);
 		}
-		const repaired = await reconcile({ schedules, jobs: deps.jobs, cron: cronOf(ctx) });
-		const changed =
-			repaired.scheduled.length > 0 ||
-			repaired.cancelled.length > 0 ||
-			repaired.failed.length > 0 ||
-			repaired.pump ||
-			repaired.retention;
-		// IDs and task names only: reconcile keeps no message (spec Ruling 47).
-		if (changed) ctx.log.info("Repaired the schedule tasks", repaired);
 	});
+}
+
+/** The reconciliation of the tasks (spec "Reconciliation"); it needs no runtime. */
+async function repair(ctx: PluginContext): Promise<void> {
+	const repaired = await reconcile({
+		schedules: schedulesCollection(ctx.storage),
+		jobs: pluginCollections(ctx.storage).jobs,
+		cron: cronOf(ctx),
+	});
+	const changed =
+		repaired.scheduled.length > 0 ||
+		repaired.cancelled.length > 0 ||
+		repaired.failed.length > 0 ||
+		repaired.pump ||
+		repaired.retention;
+	// IDs and task names only: reconcile keeps no message (spec Ruling 47).
+	if (changed) ctx.log.info("Repaired the schedule tasks", repaired);
+}
+
+/**
+ * `retention`: the bounded purge, then the reconciliation. The reconciliation runs whatever the
+ * purge did, even when the runtime could not be built: activation relies on this hourly repair.
+ * The purge's error is thrown after it; when both fail, the reconciliation's is logged here.
+ */
+async function retention(ctx: PluginContext): Promise<void> {
+	let failure: { error: unknown } | undefined;
+	try {
+		await purge(ctx);
+	} catch (error) {
+		failure = { error };
+	}
+	try {
+		await repair(ctx);
+	} catch (e) {
+		if (failure === undefined) throw e;
+		ctx.log.error(`flux-import: retention could not repair the schedule tasks: ${messageOf(e)}`);
+	}
+	if (failure !== undefined) throw failure.error;
 }
 
 /**
  * The plugin's cron hook: `retention`, `pump` and each `schedule-<id>`. An expected failure is
- * recorded on its schedule and never thrown; an unexpected one is logged, redacted, and rethrown,
- * which EmDash logs, leaving a recurring task for its next run (spec F4, preflight F12).
+ * recorded on its schedule and never thrown; an unexpected one is logged and rethrown as a new
+ * error with the redacted message only, which EmDash logs, leaving a recurring task for its next
+ * run (spec F4, preflight F12).
  */
 export async function cronHook(event: CronEvent, ctx: PluginContext): Promise<void> {
 	try {
@@ -86,10 +120,11 @@ export async function cronHook(event: CronEvent, ctx: PluginContext): Promise<vo
 			await markDue(deps, id, event.scheduledAt);
 		}
 	} catch (e) {
-		ctx.log.error(`flux-import: cron task ${event.name} failed`, {
-			error: redact(e instanceof Error ? e.message : String(e)),
-		});
-		throw e;
+		const message = messageOf(e);
+		ctx.log.error(`flux-import: cron task ${event.name} failed`, { error: message });
+		// EmDash's executor prints what a hook throws, stack and cause included: a new error with
+		// the redacted message only.
+		throw new Error(message);
 	}
 }
 
@@ -116,7 +151,6 @@ export async function activate(ctx: PluginContext): Promise<void> {
 			});
 		}
 	} catch (e) {
-		const message = redact(e instanceof Error ? e.message : String(e));
-		ctx.log.error(`flux-import: activation could not repair the schedule tasks: ${message}`);
+		ctx.log.error(`flux-import: activation could not repair the schedule tasks: ${messageOf(e)}`);
 	}
 }
