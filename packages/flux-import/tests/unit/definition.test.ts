@@ -160,7 +160,11 @@ describe("createPlugin", () => {
 		});
 		expect(plugin.admin.settingsSchema?.credentials).toMatchObject({ type: "secret" });
 		expect(plugin.hooks["plugin:activate"]).toBeDefined();
-		expect(plugin.hooks.cron?.timeout).toBe(60_000);
+		expect(plugin.hooks.cron?.timeout).toBe(180_000);
+		expect(plugin.admin.settingsSchema?.retentionDays).toMatchObject({
+			description:
+				"Job records and staged source files older than this are deleted hourly. 0 deletes them at the next hourly run.",
+		});
 		expect(plugin.capabilities).toEqual([
 			"content:read",
 			"content:write",

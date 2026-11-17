@@ -1,18 +1,10 @@
 import type { PluginStorageConfig } from "emdash";
 import { definePlugin } from "emdash";
-import { pluginCollections } from "../emdash/storage.js";
-import { EmDashUploads } from "../emdash/uploads.js";
 import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "../meta.js";
 import { MCP_TOOLS } from "./mcp.js";
-import {
-	ensureRetentionScheduled,
-	purgeExpired,
-	RETENTION_DAYS_DEFAULT,
-	RETENTION_TASK,
-} from "./retention.js";
+import { RETENTION_DAYS_DEFAULT } from "./retention.js";
 import { routes } from "./routes.js";
-import { withRuntime } from "./runtime.js";
-import { latestSourceUploads, sourcesCollection } from "./sources.js";
+import { activate, CRON_HOOK_TIMEOUT_MS, cronHook } from "./scheduler.js";
 
 export type FluxImportOptions = Record<string, never>;
 
@@ -113,7 +105,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 					type: "number",
 					label: "Keep import logs for (days)",
 					description:
-						"Job records and staged source files older than this are deleted daily. 0 deletes them at the next daily run.",
+						"Job records and staged source files older than this are deleted hourly. 0 deletes them at the next hourly run.",
 					default: RETENTION_DAYS_DEFAULT,
 					min: 0,
 					max: 3650,
@@ -122,25 +114,11 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		},
 		hooks: {
 			"plugin:activate": async (_event, ctx) => {
-				await ensureRetentionScheduled(ctx);
+				await activate(ctx);
 			},
 			cron: {
-				timeout: 60_000,
-				handler: async (event, ctx) => {
-					if (event.name !== RETENTION_TASK) return;
-					const days = (await ctx.settings.get<number>("retentionDays")) ?? RETENTION_DAYS_DEFAULT;
-					const result = await withRuntime(async (runtime) => {
-						if (!runtime.storage) throw new Error("flux-import: EmDash storage is not configured");
-						const { jobs, records, journal, journalMedia } = pluginCollections(ctx.storage);
-						return purgeExpired(
-							{ jobs, records, journal, journalMedia, now: Date.now },
-							new EmDashUploads(runtime.storage),
-							days,
-							await latestSourceUploads(sourcesCollection(ctx.storage)),
-						);
-					});
-					ctx.log.info("Removed expired import data", result);
-				},
+				timeout: CRON_HOOK_TIMEOUT_MS,
+				handler: (event, ctx) => cronHook(event, ctx),
 			},
 		},
 	});
