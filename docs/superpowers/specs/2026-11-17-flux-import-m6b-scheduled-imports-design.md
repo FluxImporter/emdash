@@ -1377,7 +1377,8 @@ From the final review:
       `uploadId`, which is indexed. So before an original's purge the run reads one page of 20 jobs
       with its `uploadId`: a rollback naming it that this run has not purged keeps it, and so does
       a full page (more jobs share the upload than one page shows). One query per original, only
-      past the cap. A dry-run rollback created between that read and the mark is the race the full
+      past the cap, and none for a dry run or a job without a journal, which `rollbackRefusal`
+      refuses (agent dry runs on an unchanged source all share one upload). A dry-run rollback created between that read and the mark is the race the full
       scan already accepts; `originalProblem` refuses its batch.
     Lowering `retentionDays` helps only when it brings the kept jobs under 1,000 (Open issues).
 87. **A launch is busy while the schedule's own job is unfinalized** (final review). `busyJob` sees
@@ -1448,12 +1449,14 @@ From the final review:
 - **Retention over 1,000 jobs** (Rulings 39, 86): past `RETENTION_SCAN_MAX` job rows a run sees only
   the oldest 1,000. It purges the expired jobs among them, so a site over the cap only because old
   jobs had piled up (an upgraded 0.3.0 site, or a run of missed purges) works its way back under it,
-  at most about 13 jobs a run (fewer when they have many record rows). While over the cap it purges no staged file, and it keeps an original whose
-  upload more than 20 jobs share. A site that keeps more than 1,000 unexpired jobs (many schedules
+  at most about 13 jobs a run (fewer when they have many record rows). While over the cap it
+  purges no staged file, and it keeps a journaled real job whose upload more than 20 jobs share
+  (dry runs and jobs without a journal can never be rolled back, so they are never looked up). A site that keeps more than 1,000 unexpired jobs (many schedules
   and a long `retentionDays`) stays over the cap, and its staged files grow until fewer jobs are
   kept. Lowering `retentionDays` helps only when it brings the kept jobs under 1,000: unfinished
-  jobs, jobs a rollback holds and jobs on a shared upload stay whatever the setting. Summary rows
-  (the M6a `jobs/list` issue) would lift the cap.
+  jobs, jobs a rollback holds and jobs on a shared upload stay whatever the setting. Such old rows
+  also take slots among the 1,000 the run scans, so 1,000 of them would stop it purging newer
+  expired jobs. Summary rows (the M6a `jobs/list` issue) would lift the cap.
 - **More than 100 unfinished dry runs on one source make it busy** (Ruling 54, preflight F13).
   `busyJob` reads at most 5 pages of 20 and fails closed: every launch and `schedules/run` on that
   source answers busy, naming a dry run as the busy job, until the dry runs finish or are

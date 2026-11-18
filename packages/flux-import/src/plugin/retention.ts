@@ -77,6 +77,8 @@ type Scanned = Pick<
 	| "rollbackOf"
 	| "uploadId"
 	| "sourceUploadId"
+	| "dryRun"
+	| "journal"
 >;
 const SCANNED = [
 	"id",
@@ -89,6 +91,8 @@ const SCANNED = [
 	"rollbackOf",
 	"uploadId",
 	"sourceUploadId",
+	"dryRun",
+	"journal",
 ] as const satisfies readonly (keyof Scanned)[];
 
 function slim(job: Job): Scanned {
@@ -255,10 +259,13 @@ export async function purgeExpired(
 	/**
 	 * Spec Ruling 86: past the cap, a rollback (a dry run marks no `rolledBackBy`) may sit on a page
 	 * the scan never read. A rollback job carries its original's `uploadId`, which is indexed, so one
-	 * page of the upload's jobs finds it; a fuller upload than one page keeps the original.
+	 * page of the upload's jobs finds it; a fuller upload than one page keeps the original. A dry
+	 * run or a job without a journal is never looked up: `rollbackRefusal` refuses both, so nothing
+	 * can hold them, and agent dry runs on an unchanged source all share one upload.
 	 */
 	const unseenHolder = async (job: Scanned): Promise<boolean> => {
 		if (!partial || job.kind === "rollback") return false;
+		if (job.dryRun || job.journal !== true) return false;
 		const page = await jobs.query({
 			where: { uploadId: job.uploadId },
 			limit: RETENTION_SCAN_PAGE,

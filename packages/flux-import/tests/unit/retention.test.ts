@@ -419,6 +419,54 @@ describe("bounded retention (M6b, spec Ruling 39, plan Ruling 16)", () => {
 		expect(await deps.jobs.get("R")).not.toBeNull();
 	});
 
+	it("past RETENTION_SCAN_MAX rows looks up no holder for a job that can never be rolled back", async () => {
+		const { deps, ids, kv, bounds } = await expired(1);
+		const base = (await deps.jobs.get(ids[0] as string)) as Job;
+		await deps.jobs.delete(ids[0] as string);
+		// Agent dry runs on an unchanged URL source share one upload, more than one holders page;
+		// rollbackRefusal refuses a dry run and a job without a journal, so none can be held. The
+		// last five are real jobs from before M5a, with no journal.
+		const dry: string[] = [];
+		for (let i = 0; i < 25; i++) {
+			const id = `D${String(i).padStart(2, "0")}`;
+			const { journal: _journal, ...rest } = base;
+			await deps.jobs.put(id, { ...rest, id, dryRun: i < 20, uploadId: "u-dry" });
+			dry.push(id);
+		}
+		for (let i = 0; i < 1000; i++) {
+			await deps.jobs.put(`F${i}`, {
+				...base,
+				id: `F${i}`,
+				status: "running",
+				uploadId: `u-F${i}`,
+			});
+		}
+		// 52 to start, 6 a job with no holders query: fifteen leave 8 < RETENTION_PRUNE_MIN, then
+		// the cursor write.
+		const first = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		expect(first).toEqual({
+			jobs: 15,
+			records: 0,
+			journal: 0,
+			uploads: 0,
+			skipped: "uploads",
+			more: true,
+			queries: 143,
+		});
+		// Still over the cap: the other ten, then the cursor delete.
+		const second = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		expect(second).toEqual({
+			jobs: 10,
+			records: 0,
+			journal: 0,
+			uploads: 0,
+			skipped: "uploads",
+			queries: 113,
+		});
+		for (const id of dry) expect(await deps.jobs.get(id)).toBeNull();
+		expect(kv.values.has(RETENTION_CURSOR_KEY)).toBe(false);
+	});
+
 	it("still deletes at exactly RETENTION_SCAN_MAX rows", async () => {
 		const { deps, ids, bounds } = await expired(1);
 		const job = (await deps.jobs.get(ids[0] as string)) as Job;
