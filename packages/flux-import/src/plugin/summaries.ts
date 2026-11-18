@@ -42,7 +42,7 @@ export interface JobSummary {
 	status: JobStatus;
 	dryRun: boolean;
 	phase: Job["phase"];
-	origin?: "agent";
+	origin?: "agent" | "schedule";
 	collection: string;
 	locale: string;
 	templateId?: string;

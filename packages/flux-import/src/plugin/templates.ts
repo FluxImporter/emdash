@@ -316,10 +316,23 @@ export async function assertNameFree(
 	name: string,
 	self?: string,
 ): Promise<void> {
-	const { items } = await deps.templates.query({ where: { name }, limit: 2 });
+	await assertNameFreeIn(deps.templates, "template", name, self);
+}
+
+/**
+ * `assertNameFree` for any collection with a `name` index: templates, and schedules, whose names
+ * follow M6a "Names" (M6b spec "Behaviour", Ruling 49).
+ */
+export async function assertNameFreeIn(
+	rows: Pick<KvCollection<unknown>, "query">,
+	kind: "template" | "schedule",
+	name: string,
+	self?: string,
+): Promise<void> {
+	const { items } = await rows.query({ where: { name }, limit: 2 });
 	const other = items.find((i) => i.id !== self);
 	if (other) {
-		throw new ServiceError("NAME_TAKEN", `A template named "${name}" already exists`, 409, {
+		throw new ServiceError("NAME_TAKEN", `A ${kind} named "${name}" already exists`, 409, {
 			id: other.id,
 		});
 	}

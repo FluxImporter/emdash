@@ -1,24 +1,14 @@
 import { z } from "astro/zod";
-import type { ActorInfo, PluginContext, PluginRoute, RouteContext } from "emdash";
+import type { ActorInfo, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
-import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/config.js";
-import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js";
-import { isEntryLocked } from "../emdash/locks.js";
-import { EmDashLookups } from "../emdash/lookups.js";
-import { EmDashMedia } from "../emdash/media.js";
-import { listSchemaFields, readPublishAtCollection } from "../emdash/schema.js";
-import { pluginCollections } from "../emdash/storage.js";
-import { needsSiteTimezone, readSiteTimezone } from "../emdash/timezone.js";
-import { EmDashUploads, isUploadId, type UploadStorage } from "../emdash/uploads.js";
-import { onWorkers } from "../emdash/workers.js";
+import { listSchemaFields } from "../emdash/schema.js";
+import { readSiteTimezone } from "../emdash/timezone.js";
+import { isUploadId } from "../emdash/uploads.js";
 import { JobError, withoutPlannedTerms } from "../engine/jobs.js";
 import { createRollback } from "../engine/rollback.js";
 import { OWNER_PATTERN, OWNER_RULE } from "../engine/template.js";
-import type { EngineDeps, Job, JobStatus, RecordStatus } from "../engine/types.js";
-import { FETCH_LIMITS } from "../sources/fetcher.js";
-import { createMediaFetcher } from "../sources/media-fetch.js";
-import { defaultResolver, type NetOptions } from "../sources/net.js";
+import type { JobStatus, RecordStatus } from "../engine/types.js";
 import { SOURCE_FORMATS, XLSX_MAX_ROWS } from "../sources/reader.js";
 import {
 	type AgentDeps,
@@ -38,14 +28,29 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
+import { resolveJobTemplate } from "./job-templates.js";
+import { withRuntime } from "./runtime.js";
 import {
-	type JobRequest,
-	jobTemplateRef,
-	type ResolvedTemplate,
-	resolveJobTemplate,
-} from "./job-templates.js";
-import { RETENTION_SCHEDULE, RETENTION_TASK } from "./retention.js";
-import { type EmDashRuntime, withRuntime } from "./runtime.js";
+	createSchedule,
+	cronOf,
+	deleteSchedule,
+	inUse,
+	listSchedules,
+	MAX_SCHEDULES,
+	pauseSchedule,
+	reconcile,
+	reopenScheduled,
+	runSchedule,
+	type ScheduleDeps,
+	type ScheduleRow,
+	schedulesCollection,
+	schedulesUsing,
+	sourcePinOf,
+	sourceWarnings,
+	templateWarnings,
+	updateSchedule,
+	withRollback,
+} from "./schedules.js";
 import { APPLY_FIELD_TYPES, applySchema, MAX_APPLY_FIELDS } from "./schema-apply.js";
 import {
 	changeJob,
@@ -53,36 +58,30 @@ import {
 	jobLogCsv,
 	listJobs,
 	listRecords,
-	mediaMaxBytes,
 	nextBatch,
 	PASTE_MAX_BYTES,
 	SAMPLE_MAX,
 	ServiceError,
-	type StartJobInput,
 	stagePaste,
-	type UploadKeeper,
 } from "./service.js";
+import { buildServices, createJobFrom, type Services } from "./services.js";
 import {
 	clearLastImport,
 	createSource,
 	deleteSource,
 	fetchSource,
 	getSource,
-	jobFromSource,
-	latestSourceUploads,
 	listSources,
-	type SkippedJob,
-	type SourceDeps,
-	sourcesCollection,
 	updateSource,
 } from "./sources.js";
-import { step, summarize } from "./summaries.js";
+import { redact, step, summarize } from "./summaries.js";
 import { exportTemplate, importTemplate } from "./template-files.js";
 import {
 	createTemplate,
 	deleteTemplate,
 	getTemplate,
 	listTemplates,
+	siteCheck,
 	TEMPLATE_DESCRIPTION_MAX,
 	TEMPLATE_NAME_RULE,
 	type TemplateDeps,
@@ -90,13 +89,7 @@ import {
 	templatesCollection,
 	updateTemplate,
 } from "./templates.js";
-import {
-	fetchLimitsFor,
-	sampleImport,
-	startImport,
-	XLSX_WORKERS_BUFFER,
-	type XlsxStaging,
-} from "./xlsx.js";
+import { sampleImport } from "./xlsx.js";
 
 /** Every route requires Admin (`import:execute` is level 50 in @emdash-cms/auth). */
 const PERMISSION = "import:execute";
@@ -146,6 +139,12 @@ const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template I
 const templateName = z
 	.string()
 	.refine((name) => templateNameProblem(name) === null, TEMPLATE_NAME_RULE);
+/** A schedule's name: the rule of a template's name (M6a "Names"), in schedule wording. */
+const SCHEDULE_NAME_RULE =
+	"A schedule name is 1-100 characters, with no leading or trailing whitespace and no control or format characters";
+const scheduleName = z
+	.string()
+	.refine((name) => templateNameProblem(name) === null, SCHEDULE_NAME_RULE);
 const templateDescription = z.string().max(TEMPLATE_DESCRIPTION_MAX);
 /** Required on update and delete (spec Rulings 6, 37): the service accepts none at runtime. */
 const templateRevision = z.number().int().min(1);
@@ -165,29 +164,11 @@ const source = z
 	})
 	.strict();
 
-export async function ensureRetentionScheduled(ctx: Pick<PluginContext, "cron">): Promise<void> {
-	if (!ctx.cron) return;
-	const tasks = await ctx.cron.list();
-	if (!tasks.some((t) => t.name === RETENTION_TASK)) {
-		await ctx.cron.schedule(RETENTION_TASK, { schedule: RETENTION_SCHEDULE });
-	}
-}
-
-interface Services {
-	deps: EngineDeps;
-	uploads: EmDashUploads;
-	storage: UploadStorage;
-	runtime: EmDashRuntime;
-	actor: ActorInfo;
-	sources: SourceDeps;
-	/** Keeps each URL source's latest staged file when a finished job releases its file. */
-	keep: UploadKeeper;
-	/** Where an XLSX sheet is staged once converted, and its limits. */
-	xlsx: XlsxStaging;
-}
+/** A route's services: the caller is always the actor (`withServices` refuses a call without one). */
+type RouteServices = Services & { actor: ActorInfo };
 
 /** The saved-template services' dependencies for one request (M6a). */
-function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): TemplateDeps {
+function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: RouteServices): TemplateDeps {
 	return {
 		templates: templatesCollection(ctx.storage),
 		links: deps.links,
@@ -199,6 +180,47 @@ function templateDeps(ctx: RouteContext<unknown>, { deps, runtime }: Services): 
 		now: Date.now,
 		newId: () => ulid(),
 	};
+}
+
+/** The schedule service's dependencies for one request (M6b). */
+function scheduleDeps(ctx: RouteContext<unknown>, services: RouteServices): ScheduleDeps {
+	const templates = templateDeps(ctx, services);
+	return {
+		schedules: schedulesCollection(ctx.storage),
+		jobs: services.deps.jobs,
+		templates: templates.templates,
+		sources: services.sources.sources,
+		cron: cronOf(ctx),
+		templateProblems: async (template) => (await siteCheck(templates, template)).check.problems,
+		now: Date.now,
+		newId: () => ulid(),
+		warn: (message) => ctx.log.warn(message),
+	};
+}
+
+/** What a route needs to pause a schedule (spec Ruling 32). */
+function scheduleWrites(ctx: RouteContext<unknown>) {
+	return { schedules: schedulesCollection(ctx.storage), cron: cronOf(ctx), now: Date.now };
+}
+
+/**
+ * Runs a side effect that follows a write that already succeeded: whatever it throws, before or
+ * after it returns a promise, is dropped (preflight F11) and logged as `what` failed, its message
+ * redacted (preflight F12). `fallback` is the answer then.
+ */
+async function bestEffort<T>(
+	ctx: Pick<RouteContext<unknown>, "log">,
+	what: string,
+	run: () => Promise<T>,
+	fallback: T,
+): Promise<T> {
+	try {
+		return await run();
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		ctx.log.warn(`flux-import: ${what} failed: ${redact(message)}`);
+		return fallback;
+	}
 }
 
 /** Maps service and job errors to HTTP errors; a source error's code goes in `details.code`. */
@@ -235,66 +257,14 @@ export function toRouteError(e: unknown): unknown {
 /** Builds the engine's dependencies for one request and maps service errors to HTTP errors. */
 async function withServices<T>(
 	ctx: RouteContext<unknown>,
-	run: (services: Services) => Promise<T>,
+	run: (services: RouteServices) => Promise<T>,
 ): Promise<T> {
 	if (!ctx.user) throw PluginRouteError.unauthorized("Importing requires a signed-in user");
 	const actor: ActorInfo = { id: ctx.user.id, role: ctx.user.role, source: "api" };
 	return withRuntime(async (runtime) => {
-		if (!runtime.storage) {
-			throw new PluginRouteError("NOT_CONFIGURED", "EmDash storage is not configured", 500);
-		}
-		const uploads = new EmDashUploads(runtime.storage);
-		const collection = sourcesCollection(ctx.storage);
-		const net: NetOptions = {
-			resolver: defaultResolver(),
-			allowPrivateNetwork: allowPrivateNetwork(),
-			// A plain call: workerd rejects fetch() called as a method of another object.
-			fetch: (input, init) => fetch(input, init),
-		};
-		const sources: SourceDeps = {
-			sources: collection,
-			jobs: pluginCollections(ctx.storage).jobs,
-			settings: ctx.settings,
-			storage: runtime.storage,
-			net,
-			limits: { ...FETCH_LIMITS, maxBytes: maxSourceBytes() },
-			workers: onWorkers(),
-			now: Date.now,
-			newId: () => ulid(),
-		};
-		const keep: UploadKeeper = async (uploadId) =>
-			(await latestSourceUploads(collection)).has(uploadId);
-		const deps: EngineDeps = {
-			...pluginCollections(ctx.storage),
-			content: new EmDashContent(runtime, actor, (collection, entryId, userId) =>
-				isEntryLocked(runtime.db, collection, entryId, userId),
-			),
-			lookups: new EmDashLookups(ctx.taxonomies, ctx.bylines, runtime),
-			// Media is fetched without credentials, behind the same SSRF guard as URL sources.
-			media: new EmDashMedia(runtime, actor.id, runtime.config.maxUploadSize),
-			mediaFetcher: createMediaFetcher(net),
-			source: uploads,
-			now: Date.now,
-			newId: () => ulid(),
-		};
-		const xlsx: XlsxStaging = {
-			storage: runtime.storage,
-			maxXlsxBytes: maxXlsxBytes(),
-			maxSourceBytes: maxSourceBytes(),
-			workers: onWorkers(),
-			bufferBytes: XLSX_WORKERS_BUFFER,
-		};
+		const services = buildServices(ctx, runtime, actor);
 		try {
-			return await run({
-				deps,
-				uploads,
-				storage: runtime.storage,
-				runtime,
-				actor,
-				sources,
-				keep,
-				xlsx,
-			});
+			return await run({ ...services, actor });
 		} catch (e) {
 			throw toRouteError(e);
 		}
@@ -312,6 +282,12 @@ async function withServices<T>(
  * is now 413 `INVALID_PLUGIN_REQUEST`, an accepted change (M6a spec, Amendments).
  */
 export const TEMPLATE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The most bytes of JSON a `schedules/*` route reads (M6b review). Its largest input, an update
+ * with every field, is well under 1 KiB; without a cap EmDash reads a body of any size.
+ */
+export const SCHEDULE_BODY_MAX_BYTES = 16 * 1024;
 
 /** Caps a route's JSON body at `TEMPLATE_BODY_MAX_BYTES`; it stays an MCP-ready JSON POST route. */
 function withTemplateBody<T>(r: PluginRoute<T>): PluginRoute<T> {
@@ -502,17 +478,109 @@ const templateUpdateInput = z
 		{ message: "Change at least one of name, description and template" },
 	);
 
+const scheduleId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid schedule ID");
+const scheduleRevision = z.number().int().min(1);
+/** Spec Ruling 12: `false`, `"template"` or a lower threshold; the service checks it against the template. */
+const scheduleMissing = z.union([
+	z.literal(false),
+	z.literal("template"),
+	z.object({ maxPercent: z.number().int().min(0).max(100) }).strict(),
+]);
+/** The schedule options and their bounds (spec "Bounded work"). */
+const scheduleOptions = {
+	publish: z.boolean().optional(),
+	batchSize: z.number().int().min(1).max(500).optional(),
+	budgetMs: z.number().int().min(500).max(20_000).optional(),
+	enabled: z.boolean().optional(),
+};
+
+/**
+ * `schedules/create` (spec "Routes"). Strict (plan Ruling 15). The name follows M6a "Names"; the
+ * expression is checked by the service, so its refusal is `INVALID_CRON`, not a schema error.
+ */
+export const SCHEDULE_CREATE_INPUT = z
+	.object({
+		name: scheduleName,
+		templateId,
+		templateRevision,
+		sourceId,
+		cron: z.string(),
+		...scheduleOptions,
+		missing: scheduleMissing.optional(),
+	})
+	.strict();
+
+/** `schedules/update`: at least one change; a new `templateId` names its revision. */
+export const SCHEDULE_UPDATE_INPUT = z
+	.object({
+		id: scheduleId,
+		revision: scheduleRevision,
+		name: scheduleName.optional(),
+		templateId: templateId.optional(),
+		templateRevision: templateRevision.optional(),
+		sourceId: sourceId.optional(),
+		cron: z.string().optional(),
+		...scheduleOptions,
+		missing: scheduleMissing.nullable().optional(),
+	})
+	.strict()
+	.refine((input) => Object.keys(input).some((key) => key !== "id" && key !== "revision"), {
+		message: "Change at least one field",
+	})
+	.refine((input) => input.templateId === undefined || input.templateRevision !== undefined, {
+		message: "templateId needs templateRevision",
+	});
+
 function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRoute<{ id: string }> {
 	return route(byId, (ctx) =>
 		withServices(ctx, async ({ deps, uploads, keep, sources }) => {
-			const job = await changeJob(deps, uploads, ctx.input.id, action, keep);
+			let job = await changeJob(deps, uploads, ctx.input.id, action, keep);
 			// A cancelled job no longer makes its source skip the next import of the same content.
 			if (action === "cancel" && job.sourceId !== undefined) {
 				await clearLastImport(sources, job.sourceId, job.id).catch(() => {});
 			}
+			// M6b (spec Ruling 32): cancelling a scheduled job pauses its schedule; best effort, as
+			// the pump's finalization repeats it.
+			const scheduleId = job.scheduleId;
+			if (action === "cancel" && scheduleId !== undefined) {
+				await bestEffort(
+					ctx,
+					"pausing the schedule of a cancelled job",
+					() => pauseSchedule(scheduleWrites(ctx), scheduleId, "cancelled", job.id),
+					false,
+				);
+			}
+			// Plan Ruling 11: a finalized scheduled job that runs again is the pump's again; the
+			// answer is the reopened row (preflight F19).
+			if ((action === "resume" || action === "retry") && job.origin === "schedule") {
+				const id = job.id;
+				const reopen = () => reopenScheduled(deps.jobs, cronOf(ctx), id);
+				job = (await bestEffort(ctx, "reopening a scheduled job", reopen, null)) ?? job;
+			}
 			return withoutPlannedTerms(job);
 		}),
 	);
+}
+
+/**
+ * A `schedules/*` route: the call, then a reconciliation of the cron tasks, whatever the call
+ * answered (spec "Reconciliation"). A reconciliation that fails is left to the next one.
+ */
+function scheduleRoute<T>(
+	input: z.ZodType<T>,
+	run: (ctx: RouteContext<T>, deps: ScheduleDeps, actor: ActorInfo) => Promise<unknown>,
+): PluginRoute<T> {
+	const r = route(input, (ctx) =>
+		withServices(ctx, async (services) => {
+			const deps = scheduleDeps(ctx, services);
+			try {
+				return await run(ctx, deps, services.actor);
+			} finally {
+				await bestEffort(ctx, "reconciling the schedule tasks", () => reconcile(deps), null);
+			}
+		}),
+	);
+	return { ...r, request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES } };
 }
 
 const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
@@ -532,83 +600,6 @@ const logCsv: PluginRoute<{ id: string; status?: RecordStatus | undefined }> = {
 			});
 		}),
 };
-
-/**
- * Creates a job as `jobs/create` always has (M6c: shared with `jobs/plan` and `jobs/start`,
- * which pass the template they resolved themselves, plan Ruling 8). A saved template is read
- * once, here or by the caller; everything below uses it as an inline template, and the job
- * stores a snapshot of it.
- */
-async function createJobFrom(
-	ctx: RouteContext<unknown>,
-	{ deps, runtime, sources, xlsx }: Services,
-	request: JobRequest,
-	given?: ResolvedTemplate,
-): Promise<Job | SkippedJob> {
-	await ensureRetentionScheduled(ctx);
-	const resolved =
-		given ??
-		(request.templateId === undefined
-			? { template: request.template }
-			: await resolveJobTemplate(
-					templatesCollection(ctx.storage),
-					request.templateId,
-					request.templateRevision,
-				));
-	const { template } = resolved;
-	// Read once here and stored on the job, so a resumed or retried job converts the same way.
-	const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-	// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-	// serves the job's schema lookup for that collection.
-	const own = await readPublishAtCollection(runtime.schemaRegistry, template);
-	const revisions = own === null ? undefined : own.revisions;
-	const start = (upload: string, fromSource?: string) => {
-		const options: StartJobInput = {
-			uploadId: upload,
-			template,
-			dryRun: request.dryRun,
-			...(request.id === undefined ? {} : { id: request.id }),
-			...(request.origin === undefined ? {} : { origin: request.origin }),
-			...(request.dryRunOf === undefined ? {} : { dryRunOf: request.dryRunOf }),
-			...(resolved.saved === undefined ? {} : { savedTemplate: resolved.saved }),
-			...(fromSource === undefined ? {} : { sourceId: fromSource }),
-			...(request.journal === undefined ? {} : { journal: request.journal }),
-			...(request.missing === undefined ? {} : { missing: request.missing }),
-			mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
-			...(siteTimezone === undefined ? {} : { siteTimezone }),
-			...(revisions === undefined ? {} : { revisions }),
-			...(request.publish === undefined ? {} : { publish: request.publish }),
-			...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
-			...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
-		};
-		return startImport(
-			deps,
-			xlsx,
-			options,
-			(collection) =>
-				own !== null && collection === own.collection
-					? Promise.resolve(own.fields)
-					: listSchemaFields(runtime.schemaRegistry, collection),
-			(locale) => resolveSiteLocale(locale),
-			(sourceLocale, locale) => resolveTranslationLocale(sourceLocale, locale),
-		);
-	};
-	if (request.sourceId !== undefined) {
-		const options = {
-			force: request.force ?? false,
-			dryRun: request.dryRun,
-			// The unchanged-content skip also compares the template (spec Ruling 29).
-			template: await jobTemplateRef(resolved),
-		};
-		// A workbook is fetched only up to the XLSX file limit.
-		const limits = fetchLimitsFor(template, sources.limits, xlsx.maxXlsxBytes);
-		return jobFromSource({ ...sources, limits }, request.sourceId, options, start);
-	}
-	if (request.uploadId === undefined) {
-		throw new PluginRouteError("VALIDATION_ERROR", "Set exactly one of uploadId and sourceId", 400);
-	}
-	return start(request.uploadId);
-}
 
 /** The agent rules' dependencies for one request (plan Ruling 7). */
 function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
@@ -639,7 +630,7 @@ function agentDeps(ctx: RouteContext<unknown>, services: Services): AgentDeps {
  */
 function agentRoute<T>(
 	input: z.ZodType<T>,
-	run: (ctx: RouteContext<T>, services: Services) => Promise<unknown>,
+	run: (ctx: RouteContext<T>, services: RouteServices) => Promise<unknown>,
 	missing?: string,
 ): PluginRoute<T> {
 	// try/await rather than .catch, so a run that throws before returning a promise is redacted too.
@@ -714,11 +705,38 @@ export const routes: Record<string, PluginRoute> = {
 			url: sourceUrl.optional(),
 			credential: credentialName.nullable().optional(),
 		}),
-		(ctx) => withServices(ctx, ({ sources }) => updateSource(sources, ctx.input)),
+		(ctx) =>
+			withServices(ctx, async ({ sources }) => {
+				const row = await updateSource(sources, ctx.input);
+				// M6b (spec Ruling 40, plan Ruling 14): `warnings` only when a schedule pins another
+				// URL or credential, so the response is unchanged otherwise. Best effort: the source is
+				// already saved (preflight F11).
+				const warnings = await bestEffort(
+					ctx,
+					"reading the schedules of a source",
+					async () => {
+						const using = await schedulesUsing(
+							schedulesCollection(ctx.storage),
+							{ sourceId: row.id },
+							MAX_SCHEDULES,
+						);
+						return sourceWarnings(using, await sourcePinOf(row));
+					},
+					[],
+				);
+				return warnings.length === 0 ? row : { ...row, warnings };
+			}),
 	),
 
 	"sources/delete": route(z.object({ id: sourceId }), (ctx) =>
-		withServices(ctx, ({ sources }) => deleteSource(sources, ctx.input.id)),
+		withServices(ctx, async ({ sources }) => {
+			// M6b (spec Ruling 10): never delete a source a schedule reads.
+			const using = await schedulesUsing(schedulesCollection(ctx.storage), {
+				sourceId: ctx.input.id,
+			});
+			if (using.length > 0) throw inUse("Source", ctx.input.id, using);
+			return deleteSource(sources, ctx.input.id);
+		}),
 	),
 
 	"sources/get": route(z.object({ id: sourceId }), (ctx) =>
@@ -742,12 +760,15 @@ export const routes: Record<string, PluginRoute> = {
 	),
 
 	"jobs/next": route(byId, (ctx) =>
-		withServices(ctx, ({ deps, uploads, actor, keep }) =>
+		withServices(ctx, async (services) => {
+			// Spec Ruling 5: a scheduled job's writes carry no user, whoever drives its batch.
+			const job = await getJob(services.deps, ctx.input.id);
+			const { deps, uploads, keep } =
+				job.origin === "schedule" ? buildServices(ctx, services.runtime, null) : services;
 			// A unique holder per call: two concurrent calls never share a lease.
-			nextBatch(deps, uploads, ctx.input.id, `${actor.id}:${ulid()}`, keep).then(
-				withoutPlannedTerms,
-			),
-		),
+			const holder = `${services.actor.id}:${ulid()}`;
+			return withoutPlannedTerms(await nextBatch(deps, uploads, ctx.input.id, holder, keep));
+		}),
 	),
 
 	"jobs/get": route(byId, (ctx) =>
@@ -789,6 +810,20 @@ export const routes: Record<string, PluginRoute> = {
 				});
 				if (!rollback.dryRun && original.sourceId !== undefined) {
 					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
+				}
+				// M6b (spec Ruling 32, plan Ruling 12): a real rollback of a scheduled job pauses its
+				// schedule and marks its run; the pump's finalization repeats both. Best effort, as
+				// the rollback is already created (preflight F11).
+				const scheduleId = original.scheduleId;
+				if (!rollback.dryRun && scheduleId !== undefined) {
+					const mark = (row: ScheduleRow) =>
+						withRollback(row, original.id, rollback.id, rollback.createdAt);
+					await bestEffort(
+						ctx,
+						"pausing the schedule of a rolled back job",
+						() => pauseSchedule(scheduleWrites(ctx), scheduleId, "rolled_back", original.id, mark),
+						false,
+					);
 				}
 				return rollback;
 			}),
@@ -893,21 +928,48 @@ export const routes: Record<string, PluginRoute> = {
 
 	"templates/update": withTemplateBody(
 		route(templateUpdateInput, (ctx) =>
-			withServices(ctx, (services) => {
+			withServices(ctx, async (services) => {
 				const { id, revision, name, description, template } = ctx.input;
-				return updateTemplate(templateDeps(ctx, services), services.actor.id, {
+				const saved = await updateTemplate(templateDeps(ctx, services), services.actor.id, {
 					id,
 					revision,
 					...(name === undefined ? {} : { name }),
 					...(description === undefined ? {} : { description }),
 					...(template === undefined ? {} : { template }),
 				});
+				// M6b (spec Ruling 11): the schedules still pinned to another revision. Best effort:
+				// the template is already saved (preflight F11).
+				const pinned = await bestEffort(
+					ctx,
+					"reading the schedules of a template",
+					async () => {
+						const using = await schedulesUsing(
+							schedulesCollection(ctx.storage),
+							{ templateId: id },
+							MAX_SCHEDULES,
+						);
+						return templateWarnings(using, saved.template.revision);
+					},
+					[],
+				);
+				if (pinned.length === 0) return saved;
+				return {
+					...saved,
+					check: { ...saved.check, warnings: [...saved.check.warnings, ...pinned] },
+				};
 			}),
 		),
 	),
 
 	"templates/delete": route(z.object({ id: templateId, revision: templateRevision }), (ctx) =>
-		withServices(ctx, (services) => deleteTemplate(templateDeps(ctx, services), ctx.input)),
+		withServices(ctx, async (services) => {
+			// M6b (spec Ruling 10): never delete a template a schedule runs.
+			const using = await schedulesUsing(schedulesCollection(ctx.storage), {
+				templateId: ctx.input.id,
+			});
+			if (using.length > 0) throw inUse("Template", ctx.input.id, using);
+			return deleteTemplate(templateDeps(ctx, services), ctx.input);
+		}),
 	),
 
 	"templates/export": route(z.object({ id: templateId }), (ctx) =>
@@ -933,5 +995,29 @@ export const routes: Record<string, PluginRoute> = {
 					});
 				}),
 		),
+	),
+
+	// Schedules (M6b). Admin routes only: no schedule route is an MCP tool (spec Ruling 50).
+	"schedules/create": scheduleRoute(SCHEDULE_CREATE_INPUT, async (ctx, deps, actor) => ({
+		schedule: await createSchedule(deps, actor.id, ctx.input),
+	})),
+
+	"schedules/list": scheduleRoute(z.object({ cursor }).strict(), (ctx, deps) =>
+		listSchedules(deps, ctx.input.cursor),
+	),
+
+	"schedules/update": scheduleRoute(SCHEDULE_UPDATE_INPUT, async (ctx, deps, actor) => ({
+		schedule: await updateSchedule(deps, actor.id, ctx.input),
+	})),
+
+	"schedules/delete": scheduleRoute(
+		z.object({ id: scheduleId, revision: scheduleRevision }).strict(),
+		(ctx, deps) => deleteSchedule(deps, ctx.input),
+	),
+
+	// Spec Ruling 51: queues a due mark; the pump launches at its next tick.
+	"schedules/run": scheduleRoute(
+		z.object({ id: scheduleId, force: z.boolean().optional() }).strict(),
+		async (ctx, deps) => ({ queued: true, schedule: await runSchedule(deps, ctx.input) }),
 	),
 };

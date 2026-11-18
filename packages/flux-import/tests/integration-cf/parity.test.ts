@@ -4,7 +4,7 @@ import { describe, expect, inject, it } from "vitest";
 import type { Job } from "../../src/engine/types.js";
 import { TEMPLATE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
 import type { ApplyResult } from "../../src/plugin/schema-apply.js";
-import { WORKERS_BATCH_CAP } from "../../src/plugin/service.js";
+import { TICK_BATCH_CAP, WORKERS_BATCH_CAP } from "../../src/plugin/service.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
 import { type SavedResult, TEMPLATE_MAX_BYTES } from "../../src/plugin/templates.js";
 import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
@@ -63,6 +63,12 @@ import {
 	tool,
 	UPLOAD_ID_PATTERN,
 } from "../integration/mcp-client.js";
+import {
+	dueSql,
+	type ScheduleView,
+	stopCronTimer,
+	taskNames,
+} from "../integration/schedules-client.js";
 import { CF_SITE_DIR } from "./global-setup.js";
 
 const client = new Client(inject("cfBaseUrl"), inject("cfToken"));
@@ -1101,6 +1107,119 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await agent.close();
 			await revokeToken(client, minted.id);
+		}
+	});
+
+	it("runs M6b schedules on D1 only in step with scheduled events, one unit per event", async () => {
+		// The stop route refuses a request without the CSRF header (plan Ruling 1).
+		const unheadered = await fetch(`${client.baseUrl}/test/stop-cron-timer`, { method: "POST" });
+		expect(unheadered.status).toBe(403);
+		await stopCronTimer(client.baseUrl);
+		const scheduled = async (names: string[]) => {
+			d1(dueSql(names));
+			const res = await fetch(`${client.baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
+			expect(res.status).toBe(200);
+		};
+		const scheduleOf = async (id: string) => {
+			const page = await client.plugin<{ items: ScheduleView[] }>("schedules/list", {});
+			return page.items.find((s) => s.id === id) as ScheduleView;
+		};
+		/** What a unit moves: the schedule's last launch and run count, and its job's position. */
+		const progress = async (id: string) => {
+			const s = await scheduleOf(id);
+			const jobId = s.lastLaunch?.jobId;
+			const job = jobId === undefined ? null : await client.plugin<Job>("jobs/get", { id: jobId });
+			return {
+				launch: s.lastLaunch?.at ?? null,
+				runs: s.runs.length,
+				job: job === null ? null : { id: job.id, status: job.status, seq: job.cursor.seq },
+			};
+		};
+		const feeds = new FeedServer();
+		await feeds.start();
+		try {
+			await client.createProducts("cf_m6b");
+			feeds.feeds.set("/m6b.csv", { body: productsCsv(20), etag: true });
+			const source = await client.plugin<SourceRow>("sources/create", {
+				name: "M6b feed",
+				url: feeds.url("/m6b.csv"),
+			});
+			const saved = await client.plugin<SavedResult>("templates/create", {
+				name: "CF M6b",
+				template: template("cf_m6b"),
+			});
+			const { schedule } = await client.plugin<{ schedule: ScheduleView }>("schedules/create", {
+				name: "CF M6b",
+				templateId: saved.template.id,
+				templateRevision: 1,
+				sourceId: source.id,
+				cron: "0 0 1 1 *",
+			});
+			// The acceptance sequence: one due mark, then pump events only. Each event moves the
+			// schedule by at most one unit, and nothing moves in the 15 s between events.
+			let names = taskNames(schedule.id);
+			let before = await progress(schedule.id);
+			for (let i = 0; i < 12 && before.runs === 0; i++) {
+				await scheduled(names);
+				names = ["pump"];
+				const after = await progress(schedule.id);
+				const launched = after.launch !== before.launch;
+				const moved = after.job === null ? 0 : after.job.seq - (before.job?.seq ?? 0);
+				// A launch is the unit of its tick: no batch ran beside it.
+				if (launched) expect(moved).toBe(0);
+				else expect(moved).toBeLessThanOrEqual(TICK_BATCH_CAP);
+				await sleep(15_000);
+				expect(await progress(schedule.id)).toEqual(after);
+				before = after;
+			}
+			const done = await scheduleOf(schedule.id);
+			expect(done.runs[0]).toMatchObject({ outcome: "completed", counters: { created: 20 } });
+			expect(await client.listAll("cf_m6b")).toHaveLength(20);
+
+			// The missing-entries refusal (spec step 4), events only.
+			await client.createProducts("cf_m6b_owned");
+			const owned = {
+				...template("cf_m6b_owned"),
+				rules: { owner: "cf-m6b", missing: { action: "trash", maxPercent: 10 } },
+			};
+			feeds.feeds.set("/owned.csv", { body: productsCsv(20), etag: true });
+			const ownedSource = await client.plugin<SourceRow>("sources/create", {
+				name: "M6b owned feed",
+				url: feeds.url("/owned.csv"),
+			});
+			const ownedTemplate = await client.plugin<SavedResult>("templates/create", {
+				name: "CF M6b owned",
+				template: owned,
+			});
+			const { schedule: b } = await client.plugin<{ schedule: ScheduleView }>("schedules/create", {
+				name: "CF M6b owned",
+				templateId: ownedTemplate.template.id,
+				templateRevision: 1,
+				sourceId: ownedSource.id,
+				cron: "0 0 1 1 *",
+				missing: "template",
+			});
+			const drive = async (done: (s: ScheduleView) => boolean) => {
+				await scheduled(taskNames(b.id));
+				for (let i = 0; i < 60; i++) {
+					const s = await scheduleOf(b.id);
+					if (done(s)) return s;
+					await scheduled(["pump"]);
+				}
+				throw new Error(
+					`Schedule ${b.id} did not settle: ${JSON.stringify(await scheduleOf(b.id))}`,
+				);
+			};
+			await drive((s) => s.runs.length === 1);
+			feeds.feeds.set("/owned.csv", { body: productsCsv(14), etag: true });
+			const refused = await drive((s) => s.pause?.reason === "missing_refused");
+			expect(refused.runs[0]).toMatchObject({
+				outcome: "missing_refused",
+				counters: { removed: 0 },
+			});
+			expect(await client.listAll("cf_m6b_owned")).toHaveLength(20);
+		} finally {
+			await feeds.stop();
 		}
 	});
 });

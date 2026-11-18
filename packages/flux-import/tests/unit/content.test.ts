@@ -3,6 +3,7 @@ import {
 	type ContentRuntime,
 	EmDashContent,
 	type HandlerResult,
+	NO_USER,
 } from "../../src/emdash/content.js";
 import type { SchemaRegistryLike } from "../../src/emdash/schema.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
@@ -217,6 +218,28 @@ function setup(locked: (c: string, id: string, user: string) => boolean = () => 
 }
 
 describe("EmDashContent", () => {
+	it("writes without an actor: no actor or authorId, and the lock reader gets NO_USER (spec Ruling 5)", async () => {
+		const runtime = new FakeRuntime();
+		const lockCalls: string[] = [];
+		const content = new EmDashContent(runtime, null, async (c, id, user) => {
+			lockCalls.push(`${c}/${id}/${user}`);
+			return false;
+		});
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		await content.update({
+			collection: "products",
+			locale: "en",
+			id: "e1",
+			rev: "rev-1",
+			data: { title: "B" },
+		});
+		await content.publish({ collection: "products", locale: "en", id: "e1", rev: "rev-2" });
+		expect(await content.isLocked("products", "en", "e1")).toBe(false);
+		for (const call of runtime.calls) expect(JSON.stringify(call)).not.toMatch(/actor|authorId/);
+		expect(NO_USER).toBe("");
+		expect(lockCalls).toEqual(["products/e1/", "products/e1/"]);
+	});
+
 	it("creates, updates and publishes with the returned revisions and the actor", async () => {
 		const { runtime, content } = setup();
 		const created = await content.create({
@@ -699,6 +722,41 @@ describe("EmDashContent for rollbacks (M5a)", () => {
 			at,
 			{ _rev: "rev-5", actor },
 		]);
+	});
+
+	it("runs each revert step and schedule() without an actor when it has none (spec Ruling 5)", async () => {
+		const runtime = new FakeRuntime();
+		const lockUsers: string[] = [];
+		const content = new EmDashContent(runtime, null, async (_c, _id, user) => {
+			lockUsers.push(user);
+			return false;
+		});
+		await content.create({ collection: "products", locale: "en", data: { title: "A" } });
+		const base = { collection: "products", locale: "en", id: "e1" };
+		const at = "2026-12-01T00:00:00.000Z";
+		const steps = [
+			{ rev: "rev-1", step: "update", data: { title: "B" } },
+			{ rev: "rev-2", step: "publish" },
+			{ rev: "rev-3", step: "unpublish" },
+			{ rev: "rev-4", step: "schedule", scheduledAt: at },
+		] as const;
+		for (const step of steps) {
+			expect(await content.revertStep({ ...base, ...step })).toMatchObject({ ok: true });
+		}
+		expect(await content.schedule({ ...base, rev: "rev-5", scheduledAt: at })).toEqual({
+			ok: true,
+			rev: "rev-6",
+		});
+		expect(runtime.calls.map((c) => (c as string[])[0])).toEqual([
+			"create",
+			"update",
+			"publish",
+			"unpublish",
+			"schedule",
+			"schedule",
+		]);
+		for (const call of runtime.calls) expect(JSON.stringify(call)).not.toMatch(/actor|authorId/);
+		expect(lockUsers).toEqual([NO_USER, NO_USER, NO_USER, NO_USER, NO_USER]);
 	});
 
 	it("checks the lock before every step and writes a null slug through", async () => {

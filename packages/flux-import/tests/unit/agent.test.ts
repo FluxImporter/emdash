@@ -241,6 +241,14 @@ describe("planJob (M6c)", () => {
 });
 
 describe("startFromDryRun (M6c)", () => {
+	it("carries a URL-source dry run's source as feedSourceId only (M6b, spec Ruling 33)", async () => {
+		const { deps, jobs, requests } = await setup();
+		await jobs.put("D1", agentDryRun({ sourceId: "S1" }));
+		await startFromDryRun(deps, { dryRunId: "D1" });
+		expect(requests[0]).toMatchObject({ feedSourceId: "S1" });
+		expect(requests[0]).not.toHaveProperty("sourceId");
+	});
+
 	it("runs a completed agent dry run with its upload, template revision and publish", async () => {
 		const { deps, jobs, requests } = await setup();
 		await jobs.put("D1", agentDryRun());

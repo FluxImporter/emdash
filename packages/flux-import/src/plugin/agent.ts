@@ -152,6 +152,9 @@ function realRequest(
 	input: StartInput,
 	resolved: ResolvedTemplate,
 ): JobRequest {
+	// M6b (spec Ruling 33): the real job reads the dry run's URL source; a dry run saved before
+	// 0.4.0 names it only as `sourceId`. The real job still gets no `sourceId` (M6c Ruling 9).
+	const feed = dryRun.feedSourceId ?? dryRun.sourceId;
 	return {
 		id,
 		// The workbook for XLSX: startImport converts it again (spec P7).
@@ -163,6 +166,7 @@ function realRequest(
 		publish: dryRun.publish,
 		batchSize: input.batchSize ?? dryRun.batchSize,
 		budgetMs: input.budgetMs ?? dryRun.budgetMs,
+		...(feed === undefined ? {} : { feedSourceId: feed }),
 	};
 }
 

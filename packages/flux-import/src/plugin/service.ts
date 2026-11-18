@@ -116,15 +116,80 @@ export function mediaMaxBytes(maxUploadSize: number | undefined, workers: boolea
 	return Math.max(3, Math.floor(limit / 3) * 3);
 }
 
+/** The records one batch may process, by the kind of work (M6b preflight F17: one helper). */
+export interface BatchCaps {
+	plain: number;
+	linked: number;
+	missingScan: number;
+	missingAct: number;
+	rollback: number;
+}
+
+/** The cap in `caps` for this job's next batch. */
+export function batchCap(job: Job, caps: BatchCaps): number {
+	if (job.kind === "rollback") return caps.rollback;
+	if (job.phase === "missing") {
+		return job.missing?.stage === "count" ? caps.missingScan : caps.missingAct;
+	}
+	return usesLinks(job.template) || usesMedia(job.template) ? caps.linked : caps.plain;
+}
+
+const WORKERS_CAPS: BatchCaps = {
+	plain: WORKERS_BATCH_CAP,
+	linked: WORKERS_LINKED_BATCH_CAP,
+	missingScan: WORKERS_MISSING_SCAN_CAP,
+	missingAct: WORKERS_MISSING_BATCH_CAP,
+	rollback: WORKERS_ROLLBACK_BATCH_CAP,
+};
+
 /** The records one jobs/next call processes on Workers for this job. */
 export function workersBatchCap(job: Job): number {
-	if (job.kind === "rollback") return WORKERS_ROLLBACK_BATCH_CAP;
-	if (job.phase === "missing") {
-		return job.missing?.stage === "count" ? WORKERS_MISSING_SCAN_CAP : WORKERS_MISSING_BATCH_CAP;
-	}
-	return usesLinks(job.template) || usesMedia(job.template)
-		? WORKERS_LINKED_BATCH_CAP
-		: WORKERS_BATCH_CAP;
+	return batchCap(job, WORKERS_CAPS);
+}
+
+/**
+ * A pump tick's batch on Workers (M6b spec "Bounded work"): the tick also finalizes, reads the
+ * fence and may be one of ten tasks in one scheduled event, so its batch stays under
+ * `PUMP_QUERY_TARGET` (550 D1 queries; Fact V5 measured at most 506 at these caps). The pump
+ * never drives a rollback (a rollback job has no `origin`), so its cap is the Workers one.
+ */
+export const TICK_BATCH_CAP = 6;
+export const TICK_LINKED_BATCH_CAP = 3;
+export const TICK_MISSING_SCAN_CAP = 20;
+export const TICK_MISSING_BATCH_CAP = 5;
+export const TICK_LOOKUP_BUDGET = 350;
+
+const TICK_CAPS: BatchCaps = {
+	plain: TICK_BATCH_CAP,
+	linked: TICK_LINKED_BATCH_CAP,
+	missingScan: TICK_MISSING_SCAN_CAP,
+	missingAct: TICK_MISSING_BATCH_CAP,
+	rollback: WORKERS_ROLLBACK_BATCH_CAP,
+};
+
+/** The records one pump tick processes on Workers for this job. */
+export function tickBatchCap(job: Job): number {
+	return batchCap(job, TICK_CAPS);
+}
+
+/** The records and lookups one batch may spend: `maxRecords` and `lookupBudget` of `runBatch`. */
+export interface BatchLimits {
+	maxRecords: number | ((job: Job) => number);
+	lookupBudget: number;
+}
+
+/** `jobs/next`'s limits: the Workers caps on Workers; on Node the job's own `batchSize`. */
+export function routeLimits(workers: boolean): BatchLimits {
+	return workers
+		? { maxRecords: workersBatchCap, lookupBudget: WORKERS_LOOKUP_BUDGET }
+		: { maxRecords: Number.POSITIVE_INFINITY, lookupBudget: Number.POSITIVE_INFINITY };
+}
+
+/** A pump tick's limits: the tick caps on Workers; on Node the job's own `batchSize` (spec Ruling 35). */
+export function tickLimits(workers: boolean): BatchLimits {
+	return workers
+		? { maxRecords: tickBatchCap, lookupBudget: TICK_LOOKUP_BUDGET }
+		: routeLimits(false);
 }
 
 /** A failure the route layer turns into an HTTP error with this code and status. */
@@ -420,14 +485,9 @@ export async function nextBatch(
 	id: string,
 	holder: string,
 	keep: UploadKeeper = keepNone,
+	limits: BatchLimits = routeLimits(onWorkers()),
 ): Promise<Job> {
-	const job = await runBatch(
-		deps,
-		id,
-		holder,
-		onWorkers() ? workersBatchCap : Number.POSITIVE_INFINITY,
-		onWorkers() ? WORKERS_LOOKUP_BUDGET : Number.POSITIVE_INFINITY,
-	);
+	const job = await runBatch(deps, id, holder, limits.maxRecords, limits.lookupBudget);
 	await releaseQuietly(deps, uploads, job, keep);
 	return job;
 }

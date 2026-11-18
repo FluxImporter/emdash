@@ -6,9 +6,7 @@ import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
 import { FLUX_IMPORT_VERSION } from "../../src/meta.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
-import { RETENTION_SCHEDULE, RETENTION_TASK } from "../../src/plugin/retention.js";
 import {
-	ensureRetentionScheduled,
 	PLAN_BODY_MAX_BYTES,
 	TEMPLATE_BODY_MAX_BYTES,
 	toRouteError,
@@ -50,6 +48,11 @@ const ROUTES = [
 	"templates/delete",
 	"templates/export",
 	"templates/import",
+	"schedules/create",
+	"schedules/list",
+	"schedules/update",
+	"schedules/delete",
+	"schedules/run",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -118,8 +121,8 @@ describe("createPlugin", () => {
 		});
 	});
 
-	it("sets FLUX_IMPORT_VERSION to 0.3.0", () => {
-		expect(FLUX_IMPORT_VERSION).toBe("0.3.0");
+	it("sets FLUX_IMPORT_VERSION to 0.4.0", () => {
+		expect(FLUX_IMPORT_VERSION).toBe("0.4.0");
 	});
 
 	it("declares the storage indexes the queries use", () => {
@@ -137,7 +140,10 @@ describe("createPlugin", () => {
 			"uploadId",
 			"sourceUploadId",
 			["templateId", "createdAt"],
+			["scheduled", "status", "createdAt"],
+			["feedSourceId", "status"],
 		]);
+		expect(STORAGE.schedules.indexes).toEqual(["name", "templateId", "sourceId"]);
 		expect(STORAGE.templates.indexes).toEqual(["name", "collection", "owner"]);
 		expect(STORAGE.links.indexes).toEqual(["entryId", ["owner", "collection", "locale"]]);
 		expect(STORAGE.sources.indexes).toEqual(["name", "createdAt"]);
@@ -154,7 +160,11 @@ describe("createPlugin", () => {
 		});
 		expect(plugin.admin.settingsSchema?.credentials).toMatchObject({ type: "secret" });
 		expect(plugin.hooks["plugin:activate"]).toBeDefined();
-		expect(plugin.hooks.cron?.timeout).toBe(60_000);
+		expect(plugin.hooks.cron?.timeout).toBe(180_000);
+		expect(plugin.admin.settingsSchema?.retentionDays).toMatchObject({
+			description:
+				"Job records and staged source files older than this are deleted hourly. 0 deletes them at the next hourly run.",
+		});
 		expect(plugin.capabilities).toEqual([
 			"content:read",
 			"content:write",
@@ -164,6 +174,7 @@ describe("createPlugin", () => {
 			"taxonomies:write",
 			"bylines:read",
 			"media:write",
+			"users:read",
 			// definePlugin adds the read capabilities that taxonomies:write and media:write imply.
 			"taxonomies:read",
 			"media:read",
@@ -542,7 +553,7 @@ describe("createPlugin", () => {
 		expect(toRouteError(other)).toBe(other);
 	});
 
-	it("strips origin, id and dryRunOf from jobs/create's input (M6c, spec Ruling 31)", () => {
+	it("strips origin, id, dryRunOf and the schedule markers from jobs/create's input (M6c, spec Ruling 31; M6b)", () => {
 		const create = plugin.routes["jobs/create"]!.input!;
 		const parsed = create.parse({
 			uploadId: UPLOAD_ID,
@@ -551,28 +562,13 @@ describe("createPlugin", () => {
 			origin: "agent",
 			id: "R1",
 			dryRunOf: "D1",
+			scheduleId: "SCH1",
+			scheduled: "open",
+			feedSourceId: "S1",
 		}) as Record<string, unknown>;
 		expect(parsed).toEqual({ uploadId: UPLOAD_ID, template: {}, dryRun: false });
-		for (const key of ["origin", "id", "dryRunOf"]) expect(key in parsed).toBe(false);
-	});
-});
-
-describe("ensureRetentionScheduled", () => {
-	it("schedules the daily task once", async () => {
-		const scheduled: string[] = [];
-		const tasks: { name: string }[] = [];
-		const cron = {
-			list: async () =>
-				tasks.map((t) => ({ ...t, schedule: RETENTION_SCHEDULE, nextRunAt: "", lastRunAt: null })),
-			schedule: async (name: string, opts: { schedule: string }) => {
-				scheduled.push(`${name}@${opts.schedule}`);
-				tasks.push({ name });
-			},
-			cancel: async () => {},
-		};
-		await ensureRetentionScheduled({ cron });
-		await ensureRetentionScheduled({ cron });
-		expect(scheduled).toEqual([`${RETENTION_TASK}@0 3 * * *`]);
-		await expect(ensureRetentionScheduled({})).resolves.toBeUndefined();
+		for (const key of ["origin", "id", "dryRunOf", "scheduleId", "scheduled", "feedSourceId"]) {
+			expect(key in parsed).toBe(false);
+		}
 	});
 });

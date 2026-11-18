@@ -1,13 +1,10 @@
 import type { PluginStorageConfig } from "emdash";
 import { definePlugin } from "emdash";
-import { pluginCollections } from "../emdash/storage.js";
-import { EmDashUploads } from "../emdash/uploads.js";
 import { FLUX_IMPORT_ID, FLUX_IMPORT_VERSION } from "../meta.js";
 import { MCP_TOOLS } from "./mcp.js";
-import { purgeExpired, RETENTION_DAYS_DEFAULT, RETENTION_TASK } from "./retention.js";
-import { ensureRetentionScheduled, routes } from "./routes.js";
-import { withRuntime } from "./runtime.js";
-import { latestSourceUploads, sourcesCollection } from "./sources.js";
+import { RETENTION_DAYS_DEFAULT } from "./retention.js";
+import { routes } from "./routes.js";
+import { activate, CRON_HOOK_TIMEOUT_MS, cronHook } from "./scheduler.js";
 
 export type FluxImportOptions = Record<string, never>;
 
@@ -21,11 +18,23 @@ export type FluxImportOptions = Record<string, never>;
  * rollback (`["jobId", "seq"]`); `journalMedia` the media items each job's uploads created (M5a).
  * `templates` holds saved templates (M6a): `name` serves the uniqueness check, `collection` the
  * listing filter, `owner` with `collection` the shared-owner warning; `jobs`
- * `["templateId", "createdAt"]` lists a template's jobs newest first.
+ * `["templateId", "createdAt"]` lists a template's jobs newest first. `schedules` holds the
+ * schedules (M6b): `name` serves the uniqueness check, `templateId` and `sourceId` the in-use
+ * checks of `templates/delete` and `sources/delete`; `jobs` `["scheduled", "status", "createdAt"]`
+ * serves the pump's finalization and batch queries, `["feedSourceId", "status"]` the busy check
+ * (plan Ruling 2).
  */
 export const STORAGE = {
 	jobs: {
-		indexes: ["status", "createdAt", "uploadId", "sourceUploadId", ["templateId", "createdAt"]],
+		indexes: [
+			"status",
+			"createdAt",
+			"uploadId",
+			"sourceUploadId",
+			["templateId", "createdAt"],
+			["scheduled", "status", "createdAt"],
+			["feedSourceId", "status"],
+		],
 	},
 	templates: { indexes: ["name", "collection", "owner"] },
 	records: {
@@ -43,6 +52,7 @@ export const STORAGE = {
 	media: { indexes: ["jobId", "mediaId"] },
 	journal: { indexes: ["jobId", ["jobId", "seq"]] },
 	journalMedia: { indexes: ["jobId", ["jobId", "seq"]] },
+	schedules: { indexes: ["name", "templateId", "sourceId"] },
 } satisfies PluginStorageConfig;
 
 export function createPlugin(_options: FluxImportOptions = {}) {
@@ -64,6 +74,9 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// so no network capability is declared. content:restore (M5c) is declared for disclosure
 		// too: a rollback of the missing phase restores trashed entries through the runtime's
 		// handleContentRestore, not ctx.content (emdash src/plugins/manifest-schema.ts:37).
+		// users:read (M6b) gates ctx.users, used for one check only: before each scheduled launch,
+		// the user who armed the schedule must still exist and hold import:execute (spec Ruling
+		// 43). It cannot see whether a user is disabled (spec F13).
 		capabilities: [
 			"content:read",
 			"content:write",
@@ -73,6 +86,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 			"taxonomies:write",
 			"bylines:read",
 			"media:write",
+			"users:read",
 		],
 		storage: STORAGE,
 		routes,
@@ -91,7 +105,7 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 					type: "number",
 					label: "Keep import logs for (days)",
 					description:
-						"Job records and staged source files older than this are deleted daily. 0 deletes them at the next daily run.",
+						"Job records and staged source files older than this are deleted hourly. 0 deletes them at the next hourly run.",
 					default: RETENTION_DAYS_DEFAULT,
 					min: 0,
 					max: 3650,
@@ -100,25 +114,11 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		},
 		hooks: {
 			"plugin:activate": async (_event, ctx) => {
-				await ensureRetentionScheduled(ctx);
+				await activate(ctx);
 			},
 			cron: {
-				timeout: 60_000,
-				handler: async (event, ctx) => {
-					if (event.name !== RETENTION_TASK) return;
-					const days = (await ctx.settings.get<number>("retentionDays")) ?? RETENTION_DAYS_DEFAULT;
-					const result = await withRuntime(async (runtime) => {
-						if (!runtime.storage) throw new Error("flux-import: EmDash storage is not configured");
-						const { jobs, records, journal, journalMedia } = pluginCollections(ctx.storage);
-						return purgeExpired(
-							{ jobs, records, journal, journalMedia, now: Date.now },
-							new EmDashUploads(runtime.storage),
-							days,
-							await latestSourceUploads(sourcesCollection(ctx.storage)),
-						);
-					});
-					ctx.log.info("Removed expired import data", result);
-				},
+				timeout: CRON_HOOK_TIMEOUT_MS,
+				handler: (event, ctx) => cronHook(event, ctx),
 			},
 		},
 	});
