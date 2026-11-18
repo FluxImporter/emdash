@@ -1111,6 +1111,9 @@ describe("workerd parity (D1, R2)", () => {
 	});
 
 	it("runs M6b schedules on D1 only in step with scheduled events, one unit per event", async () => {
+		// The stop route refuses a request without the CSRF header (plan Ruling 1).
+		const unheadered = await fetch(`${client.baseUrl}/test/stop-cron-timer`, { method: "POST" });
+		expect(unheadered.status).toBe(403);
 		await stopCronTimer(client.baseUrl);
 		const scheduled = async (names: string[]) => {
 			d1(dueSql(names));
