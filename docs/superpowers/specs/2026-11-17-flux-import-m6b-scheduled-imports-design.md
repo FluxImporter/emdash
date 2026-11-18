@@ -340,7 +340,8 @@ All routes are plugin routes under `/_emdash/api/plugins/flux-import/`, built by
   2. `MAX_SCHEDULES` (`SCHEDULE_LIMIT`, 409);
   3. the template exists (`TEMPLATE_NOT_FOUND`) at `templateRevision` (`TEMPLATE_CHANGED`), passes
      the shape checks and has no site problem (M6a "Site checks": a problem is
-     `TEMPLATE_PROBLEMS`, 409, with `details.problems`), and has a key (`key.from`);
+     `TEMPLATE_PROBLEMS`, 409, with `details.problems`), and has a key (`key.from`; *amended by
+     Ruling 69*: the shape check's key, which may be an expression);
   4. the source exists (`SOURCE_NOT_FOUND`); its `url` and `credential` give `sourcePin`;
   5. the expression (Ruling 7; `INVALID_CRON`);
   6. the options (`batchSize`, `budgetMs` bounds; `missing` as Ruling 12: `MISSING_REQUIRED` when
@@ -360,9 +361,12 @@ All routes are plugin routes under `/_emdash/api/plugins/flux-import/`, built by
   pump drives every open scheduled job (Ruling 38); the Admin cancels the job, which per Ruling 32
   pauses the schedule anyway (Ruling 48). Changing `cron` re-schedules the task. Changing the
   template or source of a schedule with an open job is `SCHEDULE_BUSY` (409, `details.jobId`).
+  *Amended by Rulings 64 and 74*: a change of `missing` is refused too, and a launch in flight (a
+  claim younger than `LAUNCH_CLAIM_STALE_MS`) is busy as an open job is.
 - **`schedules/delete`** refuses while an open job names the schedule (`SCHEDULE_BUSY`; cancel the
   job or let it finish and be finalized), deletes the row at `revision` (compare-and-delete),
-  cancels `schedule-<id>`, and leaves `pump` to cancel itself (Ruling 36).
+  cancels `schedule-<id>`, and leaves `pump` to cancel itself (Ruling 36). *Amended by Ruling 64*:
+  a launch in flight is busy too.
 - **`schedules/run`** refuses a disabled or paused schedule (`SCHEDULE_DISABLED`, 409: enable it
   first, which is the deliberate step) and a busy one (`SCHEDULE_BUSY`, 409, with the job that
   makes it busy, by the busy check of Ruling 33). Otherwise it sets `due: { at, force? }` and
@@ -372,6 +376,10 @@ All routes are plugin routes under `/_emdash/api/plugins/flux-import/`, built by
   `nextRunAt` by task name (`null` for a disabled schedule). It returns **codes only**:
   `pause.reason`, `lastLaunch.errorCode` and run outcomes, never a message (Ruling 47). A
   message stays in the job (`jobs/get`) and in the server log.
+- **After a write that applied** (Ruling 89), each route's cron calls (the task list for the
+  answer's `nextRunAt`, a task cancel, arming `pump`) are best effort: a failure is logged redacted,
+  the answer is the written row with `nextRunAt: null` when the list failed, and reconciliation
+  repairs the task.
 - **Existing routes:**
   - `templates/delete` refuses `TEMPLATE_IN_USE` (409, `details.scheduleIds`) when a schedule names
     the template (`schedules.query({ where: { templateId }, limit: 5 })`); `sources/delete` refuses
@@ -387,6 +395,8 @@ All routes are plugin routes under `/_emdash/api/plugins/flux-import/`, built by
   - `jobs/next`, `jobs/pause`, `resume` and `retry` work on scheduled jobs as on any job
     (Ruling 22). A batch run through `jobs/next` on a scheduled job writes unattributed (Ruling 5).
     A resumed or retried scheduled job stays `scheduled: "open"`, so the pump drives it (Ruling 38).
+    *Amended by Ruling 65*: one already finalized is reopened (`scheduled: "open"` again, `pump`
+    armed).
   - `jobs/step` keeps refusing every non-agent job, scheduled jobs included (`JOB_NOT_AGENT`), and
     summaries show `next: "not_agent"` and `origin: "schedule"` for them.
   - `jobs/create` is unchanged; its `missing: { maxPercent }` override stays the Admin's way to
@@ -409,7 +419,7 @@ All routes are plugin routes under `/_emdash/api/plugins/flux-import/`, built by
 | `TEMPLATE_CHANGED` | 409 | The template is not at `templateRevision` |
 | `TEMPLATE_PROBLEMS` | 409 | The template has site problems; `details.problems` |
 | `SCHEDULE_CHANGED` | 409 | `revision` is not the current one (Ruling 46: never for a tick's write) |
-| `SCHEDULE_BUSY` | 409 | Delete, a template or source change, or `schedules/run`, while a job keeps the schedule busy; `details.jobId` |
+| `SCHEDULE_BUSY` | 409 | Delete, a template, source or `missing` change, or `schedules/run`, while a job or a launch in flight keeps the schedule busy (Rulings 64, 74); `details.jobId` |
 | `SCHEDULE_DISABLED` | 409 | `schedules/run` on a disabled or paused schedule |
 | `TEMPLATE_IN_USE`, `SOURCE_IN_USE` | 409 | The template or source is named by a schedule; `details.scheduleIds` |
 | `INVALID_CURSOR` | 400 | As every route (M6c Ruling 45) |
@@ -465,7 +475,8 @@ builds, from the cron hook's `PluginContext` instead of a `RouteContext`, with *
 `due: { at: event.scheduledAt }` on that row, conditional on the `current?.jobId` it read; then it
 arms `pump` (`ctx.cron.schedule`, an upsert). A schedule that is already due keeps its older mark
 (one launch, not two). A missing or disabled schedule cancels its own task. That is three or four
-D1 queries and no network.
+D1 queries and no network. *Amended by Rulings 83 and 85*: measured at 5 each, EmDash's finish
+update included.
 
 ### The pump
 
@@ -482,12 +493,15 @@ Each tick, on both runtimes, in this order (Ruling 35):
    on Workers and the job's own `batchSize` on Node, then release the staged file when the job
    finishes (as `nextBatch`). A batch that ran is the tick's unit. A held lease (an Admin's
    `jobs/next`) returns the job unchanged and counts as no batch. An unexpected batch error is
-   caught (the engine has already noted it, P3), logged, and counts as the unit.
+   caught (the engine has already noted it, P3), logged, and counts as the unit. *Amended by
+   Ruling 80*: a job no schedule launched (`origin` other than `"schedule"`) is closed with no run
+   and no batch, and closing it is the unit.
 4. **At most one launch**, only if no batch ran: the enabled schedule with the oldest `due.at`
    (see "Launch").
 5. **Idle check**, only if steps 2-4 did nothing: when no schedule is due and no job is
    `scheduled: "open"` (`limit: 1`), cancel `pump`, then read the schedules once more and re-arm
-   `pump` if one became due meanwhile (Ruling 36).
+   `pump` if one became due meanwhile (Ruling 36). *Amended by Ruling 88*: it also re-arms when a
+   job became `scheduled: "open"` meanwhile (one more `limit: 1` query).
 
 A paused open job is neither finalized nor batched; it keeps the schedule busy (Ruling 33) until an
 Admin resumes or cancels it.
@@ -500,7 +514,8 @@ Admin resumes or cancels it.
    status: { in: ["created", "running", "paused"] } }, limit: 1 })`. A match (any origin: an
    Admin's import, an agent's real import, another schedule's job, a rollback of any of them)
    records `lastLaunch.outcome: "busy"`, clears `due`, and stops. *Amended by Ruling 54*
-   (`dryRun` is filtered in code, at most 5 pages).
+   (`dryRun` is filtered in code, at most 5 pages) *and Ruling 87* (the schedule's own job that the
+   pump has not finalized, whatever its status, is busy too).
 2. **Claim.** When `current` is set: no job with its ID and a claim younger than
    `LAUNCH_CLAIM_STALE_MS` (10 minutes) is another launch in flight: stop without clearing `due`; an
    older claim with no job is cleared. Then generate the job ID and compare-and-set
@@ -570,11 +585,11 @@ the job. A rollback of a finalized job is handled by `jobs/rollback` itself (Rul
   template's, Ruling 13). Its threshold and owner checks are M5c's, and a scheduled job carries the
   schedule's `sourceId`, so links created from another source refuse the phase (P6). Links with no
   source (P17) are not refused; see Open issues.
-- **An empty feed removes nothing** (Ruling 45). A scheduled job whose first pass ends with
-  `cursor.seq === 0` skips the missing phase (`missing.verdict: "skipped"`, with a warning), and
-  finalization pauses the schedule `empty_feed`. This is an engine change for jobs with
-  `origin: "schedule"`: the threshold would refuse an empty feed only when the template's
-  `maxPercent` is under 100.
+- **An empty feed removes nothing** (Ruling 45). A scheduled job whose first pass reads no keyed
+  record skips the missing phase (`missing.verdict: "skipped"`, with a warning), and finalization
+  pauses the schedule `empty_feed`, reading `(missing?.fromSeq ?? cursor.seq) === 0` on a completed
+  job. *Amended by Ruling 53*: no engine change; the engine already skips the phase for every job
+  whose first pass read no keyed record, so the threshold, 100 % included, is never reached.
 - **A refused verdict pauses the schedule.** The run imported the feed but removed nothing. The
   Admin checks the feed, then either fixes it and re-enables the schedule, or applies the removals
   once with `jobs/create { sourceId, templateId, missing: { maxPercent: p }, force: true }` (M5c's
@@ -691,9 +706,9 @@ more than ten due, the pump may wait for the next tick.
 | --- | --- | --- | --- |
 | EmDash: claim, a finish update per task, stale-lock recovery, publishing sweep with nothing due, heartbeat | per tick | 10-40 | 10 a tick; 91 on the first event after a start |
 | Due marks | at most 8 beside the pump and `retention` | 4 each (get, compare-and-set, pump upsert, EmDash's finish): ≤ 32 | 40 for eight, 12 for one (each event re-created `pump`) |
-| Retention | one run, hourly (Ruling 39) | ≤ `RETENTION_QUERY_TARGET` 150 | 156 over 995 job rows: 150 metered and about 6 the hook makes outside the meter |
-| Pump, fixed part | fence (1), schedules read (1), finalize query (1), two finalizations (job get and compare-and-set, schedule get and compare-and-set, `clearLastImport` up to 2: ≤ 6 each), batch query (1), idle check (≤ 3) | ≤ 19 | 16 when idle; 27 with two finalizations, one of them a failed, rolled-back job (about 9 statements) |
-| Pump unit: **one** of | a batch at the tick caps (`PUMP_QUERY_TARGET`), or a launch (busy query 1, schedule get and claim 2, template 1, source 1, user 1, fetch's source get and compare-and-sets ≤ 3, `jobs/create`'s reads and write ≤ 9, `lastImport` ≤ 3, result 2: about 25) | ≤ 550 | whole pump events: launches 35-45, 6 plain creates 429-453, 6 plain published updates 506-508, 3 linked updates 498-511 |
+| Retention | one run, hourly (Ruling 39); past 1,000 job rows each purged job costs one more query (Ruling 86), inside the same target | ≤ `RETENTION_QUERY_TARGET` 150 | 156 over 995 job rows: 150 metered and about 6 the hook makes outside the meter |
+| Pump, fixed part | fence (1), schedules read (1), finalize query (1), two finalizations (job get and compare-and-set, schedule get and compare-and-set, `clearLastImport` up to 2: ≤ 6 each), batch query (1), idle check (≤ 4, Ruling 88) | ≤ 19 | 16 when idle, before Ruling 88's query (17 after); 27 with two finalizations, one of them a failed, rolled-back job (about 9 statements) |
+| Pump unit: **one** of | a batch at the tick caps (`PUMP_QUERY_TARGET`), or a launch (busy queries 2 with Ruling 87's open-job query, schedule get and claim 2, template 1, source 1, user 1, fetch's source get and compare-and-sets ≤ 3, `jobs/create`'s reads and write ≤ 9, `lastImport` ≤ 3, result 2: about 26) | ≤ 550 | whole pump events: launches 35-45 before Ruling 87's query (36-46 after), 6 plain creates 429-453, 6 plain published updates 506-508, 3 linked updates 498-511 |
 | **Worst flux-import tick** | | **about 790**, under the 900 V5 must show | **691** (eight marks, two finalizations, a linked batch of three updates, retention at its budget) |
 
 The tick caps, projected from M6c's measurements (a batch costs about 240 queries plus 57 per plain
@@ -771,7 +786,7 @@ hold up publishing; the overlapping work is kept safe by leases and conditional 
 | `LAUNCH_FAILURES_TO_PAUSE` | 3 | Transient fetch failures in a row before a pause (Ruling 14) |
 | `RUN_LOG_SIZE` | 20 entries | A few KB per schedule row (Ruling 42) |
 | `RETENTION_SCHEDULE` | `17 * * * *` | Hourly, off EmDash's hourly cleanup at minute 0 (F7) |
-| Retention scan | pages of `RETENTION_SCAN_PAGE` (20) job rows, at most `RETENTION_SCAN_MAX` (1,000) rows | The full scan behind the keep and held sets (Ruling 39) |
+| Retention scan | pages of `RETENTION_SCAN_PAGE` (20) job rows, at most `RETENTION_SCAN_MAX` (1,000) rows | The scan behind the keep and held sets (Ruling 39); past the cap the run purges among the scanned rows only (Ruling 86) |
 | Retention per run | `RETENTION_QUERY_TARGET` 150 queries, scan pages included | Ruling 39 |
 
 ## Testing
@@ -788,6 +803,8 @@ hold up publishing; the overlapping work is kept safe by leases and conditional 
     change with an open job; `enabled` true clears the pause and failures, re-pins the source, sets
     `armedBy` and schedules, false cancels and leaves the open job running; a new `cron`
     re-schedules;
+  - create, update, delete and run answer the written row (`nextRunAt: null` when the list failed)
+    when a cron call after the write fails, and log it redacted (Ruling 89);
   - delete: busy, stale claim; `run`: disabled, busy (an Admin's import, an agent's real import and
     a rollback on the same source each), queued with `force`;
   - `templates/delete` and `sources/delete` refuse `TEMPLATE_IN_USE` and `SOURCE_IN_USE`;
@@ -806,9 +823,10 @@ hold up publishing; the overlapping work is kept safe by leases and conditional 
   `current` names and a job of a disabled schedule), at the tick caps on Workers (the `onWorkers`
   seam) and the job's `batchSize` on Node; launches only when no batch ran; treats a held lease as
   no batch; leaves a paused job and an agent job alone; cancels itself when idle and re-arms when a
-  mark lands between its read and its cancel; the holder is `schedule:<id>:<ulid>`.
+  mark lands, or a job is reopened (Ruling 88), between its read and its cancel; the holder is `schedule:<id>:<ulid>`.
 - **Unit, launch:** every row of the launch table, including: `busy` for each kind of unfinished job
-  on the source and not for a dry run; a younger claim keeps `due`, an older one is cleared; a lost
+  on the source and not for a dry run, and for the schedule's own unfinalized job in any status
+  (Ruling 87); a younger claim keeps `due`, an older one is cleared; a lost
   claim compare-and-set retried; `template_gone`, `template_changed`, `source_gone`,
   `source_changed` (URL changed; credential renamed), `creator_gone` (user deleted; user demoted to
   Editor), and a disabled user passing (F13, pinned so the gap is visible); `unchanged` with the
@@ -827,7 +845,8 @@ hold up publishing; the overlapping work is kept safe by leases and conditional 
   budget; a run deletes until the budget and resumes from the saved cursor; a job a schedule's
   `current` names and a `scheduled: "open"` job are never purged, whatever their status; finished
   jobs still go, unfinished ones never (M6c Ruling 41); a collection over `RETENTION_SCAN_MAX` rows
-  skips the run's deletes with a warning; reconciliation re-schedules a missing `schedule-<id>`,
+  purges the expired jobs it scanned within the budget, keeps an original a rollback it did not
+  scan may hold, and purges no staged file, with a warning (Ruling 86); reconciliation re-schedules a missing `schedule-<id>`,
   arms `pump` for a due schedule, cancels an orphan task, and moves `retention` to hourly.
 - **Unit, definition:** `STORAGE.schedules` and the new `jobs` indexes; `users:read` in the
   capabilities with its comment; the hook's timeout; the retention setting's description says
@@ -1095,7 +1114,8 @@ Tasks 4 and 5 can run in parallel after 3.
     stamps link ownership and is absent from rollbacks and agent jobs (P16). Dry runs never make a
     schedule busy: they write nothing, and an abandoned agent dry run is kept unfinished forever
     (M6c Ruling 41), which would block the schedule forever. `schedules/run` answers
-    `SCHEDULE_BUSY` by the same check. Amends Rulings 9 and 22.
+    `SCHEDULE_BUSY` by the same check. Amends Rulings 9 and 22. *Amended by Rulings 54 and 87*
+    (the index, and the schedule's own unfinalized job).
 34. **Every cron write is conditional on `current?.jobId`, and nothing relies on tasks running in
     order.** The "one after another" premise holds only within one tick: on Node a hook that
     schedules or cancels a task makes `reschedule()` re-arm the timer, so a second tick starts while
@@ -1119,6 +1139,7 @@ Tasks 4 and 5 can run in parallel after 3.
     is followed by a second read of the schedules, which re-arms it if a mark landed meanwhile:
     since a due mark writes the mark before it arms the pump, either the second read sees the mark
     or the arm comes after the cancel. Hourly reconciliation repairs anything left. Amends Ruling 2.
+    *Amended by Ruling 88* (the second read also looks for an open job).
 37. **The tick arithmetic is redone for the one-unit model.** A tick holds EmDash's work, due marks
     (at most eight beside the pump and retention, since a tick claims ten), one retention run, the
     pump's fixed part (fence, schedules read, two finalizations, the job queries, the idle check)
@@ -1131,7 +1152,8 @@ Tasks 4 and 5 can run in parallel after 3.
     driven again instead of being orphaned, and a job of a disabled or deleted schedule still
     finishes and is finalized. `current` is set before the fetch and cleared when the launch ends,
     whatever its result; Ruling 33's busy check stops a second launch beside an open job. Amends
-    Ruling 9, "Storage" and "Pump".
+    Ruling 9, "Storage" and "Pump". *Amended by Ruling 80* (only `origin: "schedule"` jobs are
+    driven; any other open job is closed).
 39. **Retention keeps its bounded purge, with a full scan for the keep and held sets, and never
     purges a scheduled job before it is finalized.** A page-by-page purge with sets built from the
     current page alone could delete a staged file that a job on a later page still reads, or an
@@ -1141,12 +1163,15 @@ Tasks 4 and 5 can run in parallel after 3.
     rest; each page is one query, counted against `RETENTION_QUERY_TARGET` (150). A raw projected
     read of `_plugin_storage` was considered and rejected: it is an internal table, and its JSON
     functions differ between SQLite and PostgreSQL. A collection over `RETENTION_SCAN_MAX` (1,000)
-    rows makes the run skip its deletes with a warning (Open issues). The purge never takes a job
+    rows was to make the run skip its deletes with a warning; *reversed by Ruling 86*, since a run
+    that deletes nothing never brings the count down: past the cap the run purges the expired jobs
+    among the rows it scanned and no staged file. The purge never takes a job
     that a schedule's `current` names (one schedules read) or a `scheduled: "open"` job, whatever
     its status, so the pump always finalizes it first. The settings description in
     `definition.ts` (P18) changes from "deleted daily" to "deleted hourly"; that edit ships with the
     retention change (Task 5), since the current code still runs daily. Amends Ruling 25.
-    *Amended by Rulings 72 and 82* (pages of 50; the label shipped with the hook wiring).
+    *Amended by Rulings 72, 82 and 86* (pages of 50; the label shipped with the hook wiring; the
+    run past `RETENTION_SCAN_MAX`).
 40. **The source is pinned.** Arming a schedule stores `sourcePin`, a fingerprint of the source's
     URL and credential name (`fingerprint`, `src/engine/fingerprints.ts:24-42`). A launch whose source has
     another URL or credential name pauses `source_changed`, and re-enabling takes the pin again.
@@ -1321,17 +1346,56 @@ text point here.
     change, since the definition files were busy in that wave (preflight F14; amends Ruling 39).
 83. **The tick budget is re-measured on the final code** ("The tick budget on Workers", V5 in the
     review): a worst-case finalization (a failed, rolled-back job) is about 9 statements, so the
-    pump's fixed part is about 21-22; the retention hook adds about 6 calls the meter does not count
-    (settings, latest uploads, and reconciliation's `cron.list`, schedules read and open-job check);
-    the worst event measured 691.
+    pump's fixed part measured 27 with two of them (16 idle), above the projected 19; due marks
+    measured 5 each, above the projected 4; the retention hook adds about 6 calls the meter does not
+    count (settings, latest uploads, and reconciliation's `cron.list`, schedules read and open-job
+    check); the worst event measured 691, under 900.
 84. **On the free plan, retention can exceed the 50-query cap on its own** ("The free plan").
 85. **Smaller behaviours fixed by the reviews:** a due mark is one read and one compare-and-set, then
-    the pump (4 queries), and cancels the task of a schedule disabled or deleted meanwhile; a stored
+    the pump (5 D1 queries measured, EmDash's finish update included; Ruling 83), and cancels the task of a schedule disabled or deleted meanwhile; a stored
     `errorCode` is a well-formed code or `INTERNAL_ERROR`; the busy record is conditional on a due
     mark; `schedules/run` maps a lost write to `SCHEDULE_DISABLED` or `SCHEDULE_BUSY` when the
     re-read shows why, and a row deleted meanwhile answers `CONFLICT`; reconciliation reports
     failures in `ReconcileResult.failed`; `schedules/list` projects the row's known fields; a
     rolled-back run's log entry has the rollback's time in `at` (the original's `updatedAt`).
+
+From the final review:
+
+86. **Past `RETENTION_SCAN_MAX` job rows, retention still purges; it reverses Ruling 39's skip.** A
+    run that deleted nothing past the cap never brought the count back down, since no route
+    deletes jobs, so retention stopped for good, on a site with schedules within weeks and on an
+    upgraded site that already kept more than 1,000 jobs. The scan pages the oldest rows first
+    (EmDash pages a query without `orderBy` by `created_at`, then ID), so it stops after 1,000 and
+    the run purges the expired jobs among them, with the same guards, query budget and cursor.
+    Two things it cannot see in that run decide the rest:
+    - **Staged files.** The keep set misses the newer jobs' uploads, so the run skips
+      `uploads.purgeBefore` and reports `skipped: "uploads"`; the warning says files are purged
+      again once at most 1,000 jobs are kept.
+    - **Rollback holders.** A real rollback marks its original `rolledBackBy`, which the mark
+      re-checks, but a dry-run rollback marks nothing and may sit on a page the scan never read.
+      There is no index on `rollbackOf`, and none is added; a rollback job carries its original's
+      `uploadId`, which is indexed. So before an original's purge the run reads one page of 20 jobs
+      with its `uploadId`: a rollback naming it that this run has not purged keeps it, and so does
+      a full page (more jobs share the upload than one page shows). One query per original, only
+      past the cap. A dry-run rollback created between that read and the mark is the race the full
+      scan already accepts; `originalProblem` refuses its batch.
+    Lowering `retentionDays` helps only when it brings the kept jobs under 1,000 (Open issues).
+87. **A launch is busy while the schedule's own job is unfinalized** (final review). `busyJob` sees
+    only unfinished jobs on the source; a failed or cancelled job still `scheduled: "open"` passed
+    it, so a launch could start beside a job the pump had yet to finalize. Step 1 also runs
+    `openJobOf(scheduleId)` (the `scheduled: "open"` index, normally one query) when the source is
+    not busy, and records `busy` with that job. Amends "Launch" step 1 and Ruling 33.
+88. **The pump's idle check re-checks open jobs after its cancel** (final review). A resume or retry
+    that reopens a finalized job between the idle check's open-job read and its cancel arms the pump
+    just before the cancel removes it. After the cancel the pump re-reads the schedules and, when
+    none is due, runs `anyOpenJob` (one `limit: 1` query), re-arming on either. Amends "The pump"
+    step 5 and Ruling 36.
+89. **A route's cron calls after a schedule write that applied are best effort** (final review).
+    `schedules/create`, `update`, `delete` and `run` read `cron.list()` for the answer's `nextRunAt`,
+    and `update`, `delete` and `run` cancel a task or arm `pump` after their write. A failure there
+    answered 500 although the change was made, and a retried create then answered `NAME_TAKEN`. Each
+    is now logged redacted through a `warn` the routes pass in (as the launch's and the pump's), the
+    answer carries `nextRunAt: null` when the list failed, and reconciliation repairs the task.
 
 ## Out of scope
 
@@ -1363,6 +1427,11 @@ text point here.
   cannot be stopped (Ruling 41).
 - **The fence read depends on EmDash internals** (Ruling 19): two internal tables, pinned by a test.
   An EmDash release that exports a fence function should replace it.
+- **A fenced site stops schedules silently** (Ruling 19, final review). While EmDash fences the site
+  (for example an import that failed with `mutation_started_at` set, which stays until the transfer
+  is resolved), every pump tick stands down: nothing is logged and nothing shows in
+  `schedules/list`, while due marks keep landing. M7's admin UI should show the fence. A log line
+  would need transition state (to log once rather than every tick), at one more query a tick.
 - **Disabled users are not detected** (Ruling 43). A disabled Admin's schedule keeps running until
   the user is deleted or demoted, or another Admin disables it. If EmDash exposes the flag to
   `users:read`, the creator check should use it. M7's schedule list should show `armedBy`.
@@ -1376,9 +1445,15 @@ text point here.
 - **Jobs saved before 0.4.0 have no `feedSourceId`** (Ruling 33), so an import left unfinished
   across the upgrade does not make a schedule busy. Schedules are new in 0.4.0, so only a job
   started before the upgrade and still running when a schedule is created on its source is missed.
-- **Retention over 1,000 jobs** (Ruling 39): a site that keeps more than `RETENTION_SCAN_MAX` job
-  rows (a long retention period with many runs) skips its deletes with a warning until
-  `retentionDays` is lowered. Summary rows (the M6a `jobs/list` issue) would lift it.
+- **Retention over 1,000 jobs** (Rulings 39, 86): past `RETENTION_SCAN_MAX` job rows a run sees only
+  the oldest 1,000. It purges the expired jobs among them, so a site over the cap only because old
+  jobs had piled up (an upgraded 0.3.0 site, or a run of missed purges) works its way back under it,
+  at most about 13 jobs a run (fewer when they have many record rows). While over the cap it purges no staged file, and it keeps an original whose
+  upload more than 20 jobs share. A site that keeps more than 1,000 unexpired jobs (many schedules
+  and a long `retentionDays`) stays over the cap, and its staged files grow until fewer jobs are
+  kept. Lowering `retentionDays` helps only when it brings the kept jobs under 1,000: unfinished
+  jobs, jobs a rollback holds and jobs on a shared upload stay whatever the setting. Summary rows
+  (the M6a `jobs/list` issue) would lift the cap.
 - **More than 100 unfinished dry runs on one source make it busy** (Ruling 54, preflight F13).
   `busyJob` reads at most 5 pages of 20 and fails closed: every launch and `schedules/run` on that
   source answers busy, naming a dry run as the busy job, until the dry runs finish or are
