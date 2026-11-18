@@ -6,6 +6,7 @@ import type { KvCollection } from "../engine/ports.js";
 import type { Job, JobStatus } from "../engine/types.js";
 import { type LaunchDeps, type LaunchOutcome, launch, launchDeps } from "./launch.js";
 import {
+	anyOpenJob,
 	armPump,
 	iso,
 	MAX_SCHEDULES,
@@ -265,7 +266,8 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 		tick.launch = { scheduleId: due.id, outcome: await launch(deps, due) };
 		return tick;
 	}
-	// 5. Idle: cancel, then re-arm if a schedule became due meanwhile (spec Ruling 36).
+	// 5. Idle: cancel, then re-arm if a schedule became due or a job was reopened meanwhile (spec
+	// Rulings 36, 88).
 	if (tick.finalized.length > 0) return tick;
 	const open = (await deps.jobs.query({ where: { scheduled: "open" }, limit: 1 })).items[0]?.data;
 	if (open !== undefined && open.origin !== "schedule") {
@@ -276,7 +278,7 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 	if (open === undefined) {
 		await deps.cron.cancel(PUMP_TASK);
 		tick.idle = "cancelled";
-		if ((await dueSchedules(deps.schedules)).length > 0) {
+		if ((await dueSchedules(deps.schedules)).length > 0 || (await anyOpenJob(deps.jobs))) {
 			await armPump(deps.cron);
 			tick.idle = "rearmed";
 		}

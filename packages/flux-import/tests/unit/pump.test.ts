@@ -322,6 +322,24 @@ describe('pumpTick (spec "The pump")', () => {
 		expect(t.base.cron.tasks.get(PUMP_TASK)).toEqual({ schedule: PUMP_SCHEDULE });
 	});
 
+	it("re-arms when a job was reopened between its open-job read and its cancel (spec Ruling 88)", async () => {
+		const t = await setup();
+		await t.base.cron.schedule(PUMP_TASK, { schedule: PUMP_SCHEDULE });
+		const cancel = t.base.cron.cancel.bind(t.base.cron);
+		t.base.cron.cancel = async (name) => {
+			// jobs/resume of a finalized scheduled job: open again, and the pump armed, before the
+			// idle tick's cancel lands.
+			await t.base.jobs.put(
+				"J1",
+				jobRow("J1", { status: "running", origin: "schedule", scheduleId: "A", scheduled: "open" }),
+			);
+			await t.base.cron.schedule(PUMP_TASK, { schedule: PUMP_SCHEDULE });
+			await cancel(name);
+		};
+		expect((await pumpTick(t.deps)).idle).toBe("rearmed");
+		expect(t.base.cron.tasks.get(PUMP_TASK)).toEqual({ schedule: PUMP_SCHEDULE });
+	});
+
 	it("ignores a disabled schedule's due mark (plan Ruling 6)", async () => {
 		const t = await setup({ enabled: false, due: { at: AT } });
 		const tick = await pumpTick(t.deps);

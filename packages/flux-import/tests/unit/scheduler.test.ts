@@ -266,19 +266,25 @@ describe('cronHook (spec "Cron tasks and the hook")', () => {
 		expect(logs).toEqual(["info: Removed expired import data"]);
 	});
 
-	it("warns when retention skips its deletes, and still reconciles", async () => {
+	it("warns when the scan passes the cap, purges the oldest expired jobs, and still reconciles (Ruling 86)", async () => {
 		for (let i = 0; i < 1_001; i++) {
 			const id = `J${String(i).padStart(4, "0")}`;
 			await engine.jobs.put(
 				id,
-				jobRow(id, { status: "completed", createdAt: "2020-01-01", uploadId: UPLOAD }),
+				jobRow(id, { status: "completed", createdAt: "2020-01-01", uploadId: `${UPLOAD}-${i}` }),
 			);
 		}
+		// An expired staged file no job keeps: a full run would purge it.
+		const storage = state.storage as FakeStorage;
+		storage.now = () => new Date("2020-01-01T00:00:00.000Z");
+		const stale = await stagePaste(storage, "sku\nA\n");
 		await cronHook(event(RETENTION_TASK), context());
-		expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([
-			"warn: flux-import: retention deleted nothing: more than 1000 jobs are kept; lower retentionDays",
-		]);
-		expect(await engine.jobs.get("J0000")).not.toBeNull();
+		const warning =
+			"flux-import: retention scanned only the oldest 1000 jobs: it purged expired jobs among them and no staged file; staged files are purged again once at most 1000 jobs are kept";
+		expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([`warn: ${warning}`]);
+		expect(dataOf(warning)).toMatchObject({ skipped: "uploads", jobs: expect.any(Number) });
+		expect(await engine.jobs.get("J0000")).toBeNull();
+		expect([...storage.files.keys()].join(" ")).toContain(stale.uploadId);
 		expect(cron.tasks.get(RETENTION_TASK)).toEqual({ schedule: RETENTION_SCHEDULE });
 	});
 

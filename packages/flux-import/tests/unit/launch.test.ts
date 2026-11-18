@@ -189,6 +189,36 @@ describe('launch (spec "Launch")', () => {
 		expect(t.requests).toEqual([]);
 	});
 
+	it("is busy while the schedule's own job waits for finalization, whatever its status", async () => {
+		const t = await setup();
+		// Failed, so busyJob passes it, but still open: the pump has not finalized it yet.
+		await t.base.jobs.put(
+			"F1",
+			jobRow("F1", { status: "failed", feedSourceId: "S1", scheduleId: "A", scheduled: "open" }),
+		);
+		// Another schedule's open job does not make this one busy.
+		await t.base.jobs.put(
+			"F2",
+			jobRow("F2", { status: "failed", feedSourceId: "S2", scheduleId: "B", scheduled: "open" }),
+		);
+		let queries = 0;
+		const query = t.base.jobs.query.bind(t.base.jobs);
+		t.base.jobs.query = (opts) => {
+			queries++;
+			return query(opts);
+		};
+		expect(await launch(t.deps, await t.row())).toBe("busy");
+		// The busy scan and one indexed query of the open jobs.
+		expect(queries).toBe(2);
+		const row = await t.row();
+		expect(row.lastLaunch).toEqual({ at: AT, outcome: "busy", jobId: "F1" });
+		expect(row).not.toHaveProperty("due");
+		expect(t.requests).toEqual([]);
+		await t.base.jobs.put("F1", { ...((await t.base.jobs.get("F1")) as Job), scheduled: "closed" });
+		await t.markAgain();
+		expect(await launch(t.deps, await t.row())).toBe("started");
+	});
+
 	it("is not busy for unfinished dry runs, and fails closed past the busy scan's cap (preflight F13)", async () => {
 		const t = await setup();
 		const dryRuns = BUSY_SCAN_PAGES * 20;

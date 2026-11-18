@@ -13,6 +13,7 @@ import {
 	cronOf,
 	iso,
 	LAUNCH_CLAIM_STALE_MS,
+	openJobOf,
 	type PauseReason,
 	pausedKeeping,
 	type ScheduleRow,
@@ -229,8 +230,9 @@ function logFailure(deps: LaunchDeps, id: string, code: string, e: unknown): voi
 
 /** One launch of a due schedule (spec "Launch"), the pump's step 4. Never throws for an expected failure. */
 export async function launch(deps: LaunchDeps, due: ScheduleRow): Promise<LaunchOutcome> {
-	// 1. Busy: any unfinished real import or rollback reading the source (spec Ruling 33).
-	const busy = await busyJob(deps.jobs, due.sourceId);
+	// 1. Busy: any unfinished real import or rollback reading the source (spec Ruling 33), or the
+	// schedule's own job until the pump finalizes it, whatever its status (spec Ruling 87).
+	const busy = (await busyJob(deps.jobs, due.sourceId)) ?? (await openJobOf(deps.jobs, due.id));
 	if (busy !== null) {
 		const lastLaunch = { at: iso(deps.now()), outcome: "busy" as const, jobId: busy.id };
 		// Only over the mark this launch was for: a launch that consumed it keeps its record.

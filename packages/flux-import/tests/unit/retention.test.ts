@@ -6,6 +6,7 @@ import {
 	ensureRetentionScheduled,
 	purgeExpired,
 	RETENTION_CURSOR_KEY,
+	RETENTION_SCAN_PAGE,
 	RETENTION_SCHEDULE,
 	RETENTION_TASK,
 } from "../../src/plugin/retention.js";
@@ -328,22 +329,94 @@ describe("bounded retention (M6b, spec Ruling 39, plan Ruling 16)", () => {
 		expect(kv.values.get(RETENTION_CURSOR_KEY)).toBe(ids[1]);
 	});
 
-	it("skips its deletes when the scan passes RETENTION_SCAN_MAX rows", async () => {
-		const { deps, ids, bounds } = await expired(1);
+	it("past RETENTION_SCAN_MAX rows purges the expired jobs it scanned, within its budget, and skips the staged files (Ruling 86)", async () => {
+		const { deps, ids, kv, bounds } = await expired(1);
 		const job = (await deps.jobs.get(ids[0] as string)) as Job;
-		for (let i = 0; i < 1000; i++) await deps.jobs.put(`X${i}`, { ...job, id: `X${i}` });
+		const made = [ids[0] as string];
+		for (let i = 0; i < 1000; i++) {
+			await deps.jobs.put(`X${i}`, { ...job, id: `X${i}`, uploadId: `u-X${i}` });
+			made.push(`X${i}`);
+		}
 		const purger = new Purger();
 		const result = await purgeExpired(deps, purger, 0, new Set(), bounds(150));
+		// 50 scan pages, the schedules and the cursor: 52. Each job: its holders query, the mark
+		// (2), three row queries and the delete: 7. Thirteen leave 7 < RETENTION_PRUNE_MIN, then
+		// the cursor write.
 		expect(result).toEqual({
-			jobs: 0,
+			jobs: 13,
 			records: 0,
 			journal: 0,
 			uploads: 0,
-			skipped: 1000,
-			queries: 50,
+			skipped: "uploads",
+			more: true,
+			queries: 144,
 		});
+		// The scan is oldest first, so the oldest go.
+		for (const id of made.slice(0, 13)) expect(await deps.jobs.get(id)).toBeNull();
+		expect(kv.values.get(RETENTION_CURSOR_KEY)).toBe(made[13]);
+		// The keep set is incomplete past the cap: no staged file is purged.
 		expect(purger.cutoffs).toEqual([]);
-		expect(deps.jobs.rows.size).toBe(1001);
+		// The next run goes on from the cursor; under the cap again, it scans everything, needs no
+		// holders queries (6 a job) and purges staged files again.
+		const next = await purgeExpired(deps, purger, 0, new Set(), bounds(150));
+		expect(next).toMatchObject({ jobs: 15, uploads: 2, more: true });
+		expect(next.skipped).toBeUndefined();
+		for (const id of made.slice(13, 28)) expect(await deps.jobs.get(id)).toBeNull();
+		expect(await deps.jobs.get(made[28] as string)).not.toBeNull();
+	});
+
+	it("past RETENTION_SCAN_MAX rows never purges an original that a rollback it did not scan may hold (Ruling 86)", async () => {
+		const { deps, ids, bounds } = await expired(4);
+		const [held, shared, plain, sibling] = ids as [string, string, string, string];
+		const base = (await deps.jobs.get(plain)) as Job;
+		await deps.jobs.put(held, { ...((await deps.jobs.get(held)) as Job), uploadId: "u-held" });
+		await deps.jobs.put(plain, { ...base, uploadId: "u-plain" });
+		// Another job on held's upload: the rollback names held, not it.
+		await deps.jobs.put(sibling, {
+			...((await deps.jobs.get(sibling)) as Job),
+			uploadId: "u-held",
+		});
+		await deps.jobs.put(shared, {
+			...((await deps.jobs.get(shared)) as Job),
+			uploadId: "u-shared",
+		});
+		// An expired dry-run rollback of `plain` that the scan sees: it goes first, which frees
+		// `plain` in the same run.
+		await deps.jobs.put("RS", {
+			...base,
+			id: "RS",
+			kind: "rollback",
+			rollbackOf: plain,
+			dryRun: true,
+			uploadId: "u-plain",
+		});
+		// Unfinished fillers fill the scan; 21 of them share an upload with `shared`, more than one
+		// holders page.
+		for (let i = 0; i < 1000; i++) {
+			const uploadId = i < RETENTION_SCAN_PAGE + 1 ? "u-shared" : `u-F${i}`;
+			await deps.jobs.put(`F${i}`, { ...base, id: `F${i}`, status: "running", uploadId });
+		}
+		// A dry-run rollback of `held`, newer than every scanned row and expired itself: a dry run
+		// does not mark its original rolledBackBy.
+		await deps.jobs.put("R", {
+			...base,
+			id: "R",
+			kind: "rollback",
+			rollbackOf: held,
+			dryRun: true,
+			uploadId: "u-held",
+		});
+		const result = await purgeExpired(deps, new Purger(), 0, new Set(), bounds(150));
+		// 52 to start; the rollback 6 (it needs no holders query); held and shared one holders query
+		// each; plain and sibling 7 each.
+		expect(result).toMatchObject({ jobs: 3, skipped: "uploads", queries: 74 });
+		expect(await deps.jobs.get("RS")).toBeNull();
+		expect(await deps.jobs.get(plain)).toBeNull();
+		expect(await deps.jobs.get(sibling)).toBeNull();
+		expect(await deps.jobs.get(held)).toMatchObject({ status: "completed" });
+		expect((await deps.jobs.get(held))?.purging).toBeUndefined();
+		expect(await deps.jobs.get(shared)).not.toBeNull();
+		expect(await deps.jobs.get("R")).not.toBeNull();
 	});
 
 	it("still deletes at exactly RETENTION_SCAN_MAX rows", async () => {

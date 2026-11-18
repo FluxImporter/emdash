@@ -9,6 +9,7 @@ import { CRON_RULE, cronProblem } from "./cron-syntax.js";
 import { syncRetentionTask } from "./retention.js";
 import { type Page, page, ServiceError } from "./service.js";
 import type { SourceRow } from "./sources.js";
+import { redact } from "./summaries.js";
 import { assertRevision, staleRevision, templateNotFound } from "./template-errors.js";
 import {
 	assertNameFreeIn,
@@ -122,6 +123,8 @@ export interface ScheduleDeps {
 	templateProblems: (template: Template) => Promise<string[]>;
 	now: () => number;
 	newId: () => string;
+	/** `ctx.log.warn`: a side effect that failed after a write applied (spec Ruling 89). */
+	warn: (message: string) => void;
 }
 
 export interface CreateScheduleInput {
@@ -518,6 +521,38 @@ async function resyncTask(deps: ScheduleDeps, id: string): Promise<void> {
 	}
 }
 
+/**
+ * A side effect after a schedule write that applied (spec Ruling 89): a failure is logged redacted
+ * and `fallback` stands in, so the caller learns the write happened. Reconciliation repairs a task.
+ */
+async function afterWrite<T>(
+	deps: Pick<ScheduleDeps, "warn">,
+	what: string,
+	run: () => Promise<T>,
+	fallback: T,
+): Promise<T> {
+	try {
+		return await run();
+	} catch (e) {
+		deps.warn(`flux-import: ${what} failed: ${redact(e instanceof Error ? e.message : String(e))}`);
+		return fallback;
+	}
+}
+
+/** The view of a row just written; `nextRunAt` is null when the task list cannot be read. */
+async function writtenView(
+	deps: Pick<ScheduleDeps, "cron" | "warn">,
+	row: ScheduleRow,
+): Promise<ScheduleView> {
+	return viewOf(row, await afterWrite(deps, "listing the cron tasks", () => deps.cron.list(), []));
+}
+
+/** Cancels a schedule's task after a write that applied; a failure is logged, never thrown. */
+function cancelAfterWrite(deps: Pick<ScheduleDeps, "cron" | "warn">, id: string): Promise<void> {
+	const cancel = () => deps.cron.cancel(scheduleTask(id));
+	return afterWrite(deps, "cancelling the schedule's task", cancel, undefined);
+}
+
 /** `schedules/create` (spec "Behaviour"): every check before any write, in the spec's order. */
 export async function createSchedule(
 	deps: ScheduleDeps,
@@ -569,7 +604,7 @@ export async function createSchedule(
 			throw e;
 		}
 	}
-	return viewOf(row, await deps.cron.list());
+	return writtenView(deps, row);
 }
 
 /**
@@ -646,8 +681,8 @@ export async function updateSchedule(
 				updatedBy: user,
 			};
 			if ((await deps.schedules.compareAndSet(row.id, read.revision, next)).applied) {
-				if (!next.enabled) await deps.cron.cancel(scheduleTask(row.id));
-				return viewOf(next, await deps.cron.list());
+				if (!next.enabled) await cancelAfterWrite(deps, row.id);
+				return writtenView(deps, next);
 			}
 			read = await deps.schedules.getVersioned(input.id);
 		}
@@ -672,7 +707,7 @@ export async function deleteSchedule(
 		await assertNotBusy(deps, read.value);
 		if ((await deps.schedules.compareAndDelete(input.id, read.revision)).applied) {
 			// The pump cancels itself once nothing is due or open (spec Ruling 36).
-			await deps.cron.cancel(scheduleTask(input.id));
+			await cancelAfterWrite(deps, input.id);
 			return { deleted: true };
 		}
 		read = await deps.schedules.getVersioned(input.id);
@@ -711,8 +746,8 @@ export async function runSchedule(
 		if (newest) await assertNotBusy(deps, newest);
 		throw keptChanging();
 	}
-	await armPump(deps.cron);
-	return viewOf(written, await deps.cron.list());
+	await afterWrite(deps, "arming the pump", () => armPump(deps.cron), undefined);
+	return writtenView(deps, written);
 }
 
 /** `schedules/list`: rows and next runs; rows hold codes only (spec Ruling 47). */

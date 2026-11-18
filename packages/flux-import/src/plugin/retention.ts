@@ -13,7 +13,10 @@ export const RETENTION_SCHEDULE = "17 * * * *";
 export const RETENTION_DAYS_DEFAULT = 30;
 /** Job rows per scan page (spec "Bounded work"): rows are read whole, so pages stay small. */
 export const RETENTION_SCAN_PAGE = 20;
-/** Over this many job rows a run deletes nothing and warns (spec Ruling 39, Open issues). */
+/**
+ * The scan stops after this many job rows (spec Ruling 86, Open issues): the run purges the expired
+ * jobs among them, oldest first, and keeps every staged file, since its keep set is incomplete.
+ */
 export const RETENTION_SCAN_MAX = 1_000;
 /** Storage calls one run may make, scan pages included (plan Ruling 16). */
 export const RETENTION_QUERY_TARGET = 150;
@@ -35,8 +38,11 @@ export interface PurgeResult {
 	/** Journal and journalMedia rows (M5a). */
 	journal: number;
 	uploads: number;
-	/** M6b: job rows seen when the scan passed `RETENTION_SCAN_MAX`; the run deleted nothing. */
-	skipped?: number;
+	/**
+	 * M6b (spec Ruling 86): the scan stopped at `RETENTION_SCAN_MAX` rows, so the run purged expired
+	 * jobs among those but no staged file (`uploads` is 0).
+	 */
+	skipped?: "uploads";
 	/** M6b: the run stopped at its budget; the next run starts at the saved cursor. */
 	more?: true;
 	/** M6b: storage calls the run made, when it ran with bounds. */
@@ -146,9 +152,11 @@ const FINISHED: ReadonlySet<JobStatus> = new Set(["completed", "cancelled", "fai
  * marked purging is finished whatever its status. Links are kept: they map source keys to entries
  * across runs.
  *
- * M6b: the scan reads `RETENTION_SCAN_PAGE` rows a page and keeps only the fields it needs; over
- * `RETENTION_SCAN_MAX` rows the run deletes nothing (`skipped`). An open scheduled job and a job a
- * schedule's launch claim names are never purged. With `bounds`, every storage call counts against
+ * M6b: the scan reads `RETENTION_SCAN_PAGE` rows a page and keeps only the fields it needs. It
+ * stops after `RETENTION_SCAN_MAX` rows (spec Ruling 86): the run then purges expired jobs among
+ * them, an original only when one indexed page of its upload's jobs shows no rollback the scan
+ * missed, and no staged file (`skipped`). An open scheduled job and a job a schedule's launch
+ * claim names are never purged. With `bounds`, every storage call counts against
  * `bounds.target`: a job's purge starts only with `RETENTION_PRUNE_MIN` calls left, and a run that
  * stops saves the job it stopped at under `RETENTION_CURSOR_KEY`, where the next run starts.
  */
@@ -173,9 +181,12 @@ export async function purgeExpired(
 	const result = (r: PurgeResult): PurgeResult =>
 		bounds === undefined ? r : { ...r, queries: meter.used };
 
-	// The full scan behind the keep and held sets (spec Ruling 39).
+	// The scan behind the keep and held sets (spec Ruling 39), oldest first: EmDash pages a query
+	// without orderBy by (created_at, id) (emdash 1.2.0 `dist/context-CvhgHgSH.mjs:564`), and a
+	// rewrite keeps created_at. Past `RETENTION_SCAN_MAX` rows it stops: newer rows go unseen.
 	const all: Scanned[] = [];
 	let cursor: string | undefined;
+	let partial = false;
 	do {
 		const page = await jobs.query({
 			limit: RETENTION_SCAN_PAGE,
@@ -183,10 +194,8 @@ export async function purgeExpired(
 		});
 		all.push(...page.items.map((i) => slim(i.data)));
 		cursor = page.hasMore ? page.cursor : undefined;
-		if (cursor && all.length >= RETENTION_SCAN_MAX) {
-			return result({ jobs: 0, records: 0, journal: 0, uploads: 0, skipped: all.length });
-		}
-	} while (cursor);
+		if (cursor && all.length >= RETENTION_SCAN_MAX) partial = true;
+	} while (cursor && !partial);
 
 	// A launch claim's job waits for its launch, an open job for the pump's finalization.
 	const claimed = new Set<string>();
@@ -243,6 +252,21 @@ export async function purgeExpired(
 		pruned.add(id);
 		return true;
 	};
+	/**
+	 * Spec Ruling 86: past the cap, a rollback (a dry run marks no `rolledBackBy`) may sit on a page
+	 * the scan never read. A rollback job carries its original's `uploadId`, which is indexed, so one
+	 * page of the upload's jobs finds it; a fuller upload than one page keeps the original.
+	 */
+	const unseenHolder = async (job: Scanned): Promise<boolean> => {
+		if (!partial || job.kind === "rollback") return false;
+		const page = await jobs.query({
+			where: { uploadId: job.uploadId },
+			limit: RETENTION_SCAN_PAGE,
+		});
+		if (page.hasMore) return true;
+		// A rollback this run purged is already gone from storage.
+		return page.items.some(({ data }) => data.kind === "rollback" && data.rollbackOf === job.id);
+	};
 	let stopped: string | undefined;
 	for (const job of queue) {
 		if (left() < RETENTION_PRUNE_MIN) {
@@ -251,6 +275,7 @@ export async function purgeExpired(
 		}
 		// An original stays while a rollback that names it stays.
 		if ((holders.get(job.id) ?? []).some((rollback) => !pruned.has(rollback))) continue;
+		if (await unseenHolder(job)) continue;
 		if (!(await prune(job.id))) {
 			stopped = job.id;
 			break;
@@ -261,6 +286,15 @@ export async function purgeExpired(
 		else if (saved !== null) await kv.delete(RETENTION_CURSOR_KEY);
 	}
 
+	const done = {
+		jobs: pruned.size,
+		records: counts.records.n,
+		journal: counts.journal.n,
+		...(stopped === undefined ? {} : { more: true as const }),
+	};
+	// Past the cap the keep set would miss the unscanned jobs' files: none is purged this run.
+	if (partial) return result({ ...done, uploads: 0, skipped: "uploads" });
+
 	// Surviving jobs still read their source file (and an XLSX job's workbook), however old it is.
 	const keep = new Set<string>(keepUploads);
 	for (const job of all) {
@@ -270,13 +304,7 @@ export async function purgeExpired(
 		keep.add(job.uploadId);
 		if (job.sourceUploadId !== undefined) keep.add(job.sourceUploadId);
 	}
-	return result({
-		jobs: pruned.size,
-		records: counts.records.n,
-		journal: counts.journal.n,
-		uploads: await uploads.purgeBefore(new Date(cutoff), keep),
-		...(stopped === undefined ? {} : { more: true as const }),
-	});
+	return result({ ...done, uploads: await uploads.purgeBefore(new Date(cutoff), keep) });
 }
 
 /**

@@ -30,6 +30,7 @@ import {
 	writeSchedule,
 } from "../../src/plugin/schedules.js";
 import { ServiceError } from "../../src/plugin/service.js";
+import { redact } from "../../src/plugin/summaries.js";
 import type { MemoryKv } from "./fakes.js";
 import {
 	jobRow,
@@ -607,6 +608,72 @@ describe("runSchedule", () => {
 		expect(forced).toMatchObject({ due: { at: AT, force: true }, revision: 1 });
 		// A later run without force keeps the queued force.
 		expect((await runSchedule(deps, { id: "A" })).due).toEqual({ at: AT, force: true });
+	});
+});
+
+describe("route side effects after a write that applied (spec Ruling 89)", () => {
+	// A message naming a staged file, which the log must not show (preflight F12).
+	const upload = `01JZ5V6Q8X0000000000000000${"ab".repeat(16)}`;
+	const failing = (what: string) => async () => {
+		throw new Error(`${what} failed on ${upload}`);
+	};
+	const redacted = (what: string, step: string) => {
+		const message = `flux-import: ${what} failed: ${redact(`${step} failed on ${upload}`)}`;
+		expect(message).not.toContain(upload);
+		return message;
+	};
+
+	it("createSchedule answers the created row with nextRunAt null when the task list fails", async () => {
+		const { deps, warnings } = await scheduleDeps();
+		deps.cron.list = failing("list");
+		const view = await createSchedule(deps, "admin", base);
+		expect(view).toMatchObject({ id: "SCH1", enabled: true, nextRunAt: null });
+		expect(await deps.schedules.get("SCH1")).not.toBeNull();
+		expect(deps.cron.tasks.has("schedule-SCH1")).toBe(true);
+		expect(warnings).toEqual([redacted("listing the cron tasks", "list")]);
+		// A retry is NAME_TAKEN, which is right now that the first call answered the row.
+		expect(await codeOf(createSchedule(deps, "admin", base))).toBe("NAME_TAKEN");
+	});
+
+	it("updateSchedule answers the written row when the cancel or the list fails", async () => {
+		const { deps, warnings } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		deps.cron.cancel = failing("cancel");
+		const off = await updateSchedule(deps, "admin", { id: "A", revision: 1, enabled: false });
+		expect(off).toMatchObject({ enabled: false, revision: 2, nextRunAt: null });
+		expect(await deps.schedules.get("A")).toMatchObject({ enabled: false, revision: 2 });
+		expect(warnings).toEqual([redacted("cancelling the schedule's task", "cancel")]);
+		warnings.length = 0;
+		deps.cron.list = failing("list");
+		const renamed = await updateSchedule(deps, "admin", { id: "A", revision: 2, name: "Other" });
+		expect(renamed).toMatchObject({ name: "Other", revision: 3, nextRunAt: null });
+		expect(warnings).toEqual([
+			redacted("cancelling the schedule's task", "cancel"),
+			redacted("listing the cron tasks", "list"),
+		]);
+	});
+
+	it("deleteSchedule answers deleted when the cancel fails", async () => {
+		const { deps, warnings } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		deps.cron.cancel = failing("cancel");
+		expect(await deleteSchedule(deps, { id: "A", revision: 1 })).toEqual({ deleted: true });
+		expect(await deps.schedules.get("A")).toBeNull();
+		expect(warnings).toEqual([redacted("cancelling the schedule's task", "cancel")]);
+	});
+
+	it("runSchedule answers the due row when arming the pump or the list fails", async () => {
+		const { deps, warnings } = await scheduleDeps();
+		await deps.schedules.put("A", scheduleRow("A"));
+		deps.cron.schedule = failing("schedule");
+		deps.cron.list = failing("list");
+		const view = await runSchedule(deps, { id: "A" });
+		expect(view).toMatchObject({ due: { at: AT }, nextRunAt: null });
+		expect((await deps.schedules.get("A"))?.due).toEqual({ at: AT });
+		expect(warnings).toEqual([
+			redacted("arming the pump", "schedule"),
+			redacted("listing the cron tasks", "list"),
+		]);
 	});
 });
 

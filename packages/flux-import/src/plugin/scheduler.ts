@@ -43,8 +43,9 @@ async function purge(ctx: PluginContext): Promise<void> {
 		if (result.skipped === undefined) {
 			ctx.log.info("Removed expired import data", result);
 		} else {
+			// Spec Ruling 86: the scan stopped at the cap, so no staged file was purged this run.
 			ctx.log.warn(
-				`flux-import: retention deleted nothing: more than ${RETENTION_SCAN_MAX} jobs are kept; lower retentionDays`,
+				`flux-import: retention scanned only the oldest ${RETENTION_SCAN_MAX} jobs: it purged expired jobs among them and no staged file; staged files are purged again once at most ${RETENTION_SCAN_MAX} jobs are kept`,
 				result,
 			);
 		}

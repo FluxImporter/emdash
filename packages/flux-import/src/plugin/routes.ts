@@ -194,6 +194,7 @@ function scheduleDeps(ctx: RouteContext<unknown>, services: RouteServices): Sche
 		templateProblems: async (template) => (await siteCheck(templates, template)).check.problems,
 		now: Date.now,
 		newId: () => ulid(),
+		warn: (message) => ctx.log.warn(message),
 	};
 }
 

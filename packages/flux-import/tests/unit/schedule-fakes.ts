@@ -147,6 +147,7 @@ export function jobRow(id: string, extra: Partial<Job> = {}): Job {
 export async function scheduleDeps() {
 	const clock = { t: NOW };
 	const problems: string[] = [];
+	const warnings: string[] = [];
 	let ids = 0;
 	const deps = {
 		schedules: new MemoryKv<ScheduleRow>(STORAGE.schedules.indexes),
@@ -157,9 +158,12 @@ export async function scheduleDeps() {
 		templateProblems: async () => [...problems],
 		now: () => clock.t,
 		newId: () => `SCH${++ids}`,
+		warn: (message: string) => {
+			warnings.push(message);
+		},
 	} satisfies ScheduleDeps;
 	await deps.templates.put("T1", savedTemplate("T1"));
 	await deps.templates.put("T2", savedTemplate("T2", OWNED));
 	await deps.sources.put("S1", sourceRow("S1"));
-	return { deps, clock, problems };
+	return { deps, clock, problems, warnings };
 }
