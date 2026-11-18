@@ -2,9 +2,11 @@
 
 Status: drafted 2026-11-17 (the user approved all remaining milestones up front on 2026-10-27;
 design decisions are the implementer's rulings), and revised the same day after the spec review
-(Rulings 31-52; amended rulings and sections are marked). Third of four parts of Milestone 6
-(Automation) of [the roadmap](./2026-10-07-flux-import-roadmap-design.md#milestone-6-split), in the
-order M6a, M6c, M6b, M6d (M6a spec, Ruling 35). Builds on M6c
+(Rulings 31-52; amended rulings and sections are marked), then amended after implementation and
+the review on 2026-11-18 (Rulings 53-85, [review](../notes/2026-11-17-m6b-review.md)). Third of four
+parts of Milestone 6 (Automation) of
+[the roadmap](./2026-10-07-flux-import-roadmap-design.md#milestone-6-split), in the order M6a, M6c,
+M6b, M6d (M6a spec, Ruling 35). Builds on M6c
 ([spec](./2026-11-16-flux-import-m6c-mcp-tools-design.md),
 [review](../notes/2026-11-16-m6c-review.md)), merged at `1a96d4a`, and on M6a
 ([spec](./2026-11-16-flux-import-m6a-templates-design.md),
@@ -98,7 +100,7 @@ unconfirmed ones are listed under "To verify in Task 0".
 | F2 | **Schedule syntax.** A task name is 1-128 characters matching `^[a-zA-Z][a-zA-Z0-9_-]*$`. A schedule is 1-256 characters: a cron expression parsed by `croner` (5 fields, 6 with seconds, or an alias such as `@daily`), or an ISO 8601 datetime, which makes a one-shot. Cron expressions are evaluated in UTC on every host ("Matches the Workers runtime"). An invalid schedule makes `schedule()` throw `Invalid schedule "…": must be a valid cron expression or ISO 8601 datetime`. None of `nextCronTime`, `validateSchedule` or `isOneShot` is exported from `emdash` | `src/plugins/cron.ts:18-19`, `:345-394`, `:396-436`; `dist/index.d.mts` (exports `NodeCronScheduler` only); [hooks reference](https://docs.emdashcms.com/reference/hooks/#cron) |
 | F3 | **Upsert and cancel.** `schedule()` upserts per (plugin, name): it sets the expression, data and next run, re-enables the task, and keeps a task that is `running` as `running`. `cancel()` deletes the row whatever its status. Both call the scheduler's `reschedule()` | `src/plugins/cron.ts:259-296` |
 | F4 | **A tick.** One `UPDATE … RETURNING` claims at most 10 due, idle, enabled tasks, oldest `next_run_at` first; the executor runs their hooks one after another **within that tick**, and a hook's error is caught and logged. A recurring task's next run is computed from the **claimed** expression and the **tick's** time, so missed runs are not caught up (one late run, then the next slot). A one-shot that fails is retried up to 5 times with backoff (1-16 minutes); one that succeeds is deleted by row ID, so a one-shot that re-schedules itself from its own hook deletes its own new schedule. Invalid task data or an unsatisfiable expression disables the task. *Amended by F19*: ticks themselves can overlap | `src/plugins/cron.ts:78-211` (`:84-104`, `:131-137`, `:173-177`, `:181-204`) |
-| F5 | **Hook dispatch and timeout.** The cron hook goes only to the plugin that owns the task. It runs under the hook's `timeout` through `Promise.race`, which rejects at the timeout but **does not stop the handler**: it keeps running while the executor moves on to the next task. flux-import's cron hook declares 60 s | `src/plugins/hooks.ts:443-454`, `:1029-1061`; `src/emdash-runtime.ts:2187-2192`; `packages/flux-import/src/plugin/definition.ts:105-107` |
+| F5 | **Hook dispatch and timeout.** The cron hook goes only to the plugin that owns the task. It runs under the hook's `timeout` through `Promise.race`, which rejects at the timeout but **does not stop the handler**: it keeps running while the executor moves on to the next task. flux-import's cron hook declares 60 s. *Amended by Ruling 57*: on workerd the handler is abandoned when the invocation ends (Fact V7), and the hook declares 180 s (Ruling 16) | `src/plugins/hooks.ts:443-454`, `:1029-1061`; `src/emdash-runtime.ts:2187-2192`; `packages/flux-import/src/plugin/definition.ts:105-107` |
 | F6 | **Stale locks.** A task left `running` for 10 minutes is set back to idle. Recovery runs after every tick and once at runtime start | `src/plugins/cron.ts:21-22`, `:217-228`; `src/emdash-runtime.ts:960-964`, `:2216-2234` |
 | F7 | **Drivers.** The generated scheduler module gives every runtime a `NodeCronScheduler` timer **except a Cloudflare production build**: `astro dev` under the Cloudflare adapter gets the timer too. The timer wakes at the next due task, 1-60 s apart, and runs the tick, stale-lock recovery and the maintenance pass side by side. On a Cloudflare build the Worker's `scheduled()` handler (`createScheduledHandler`) runs `runScheduledTasks()` inside one `ctx.waitUntil`: the tick (all claimed tasks in sequence), stale-lock recovery, then the scheduled-publishing sweep, the hourly cleanup, the one-time storage index sync, the scheduled backup check and the heartbeat. `runtime.stopCron()` is public and stops the timer for the life of the isolate (`reschedule()` is a no-op once stopped) | `src/astro/integration/virtual-modules.ts:542-561`; `src/plugins/scheduler/node.ts:15-26`, `:44-60`, `:62-128`; `@emdash-cms/cloudflare` `src/worker.ts:84-120`; `src/astro/middleware.ts:300-309`; `src/emdash-runtime.ts:944-1007`, `:1047-1051` |
 | F8 | **What a Cloudflare site configures.** A Cron Trigger in `triggers.crons` of `wrangler.jsonc` (the templates use `* * * * *`) and the `scheduled` handler from `@emdash-cms/cloudflare/worker` exported from the entry point `main` names. Without either, plugin cron tasks never run on Cloudflare. A trigger other than every minute needs `createScheduledHandler({ generalCron })` with the same expression. `emdash doctor` checks the wiring; a new or changed trigger can take 15 minutes to start; preview deployments run no Cron Triggers. *Amended by F23*: the docs describe a newer handler than 1.2.0's | [Cloudflare deployment](https://docs.emdashcms.com/deployment/cloudflare/) ("Configure bindings", "Add the Worker entry point", "Scheduled publishing", previews); `sites/dev-cf/wrangler.jsonc:9`; `sites/dev-cf/src/worker.ts:1-9` |
@@ -109,7 +111,7 @@ unconfirmed ones are listed under "To verify in Task 0".
 | F13 | **`users:read`.** The capability exists and gives `ctx.users.get`, `getByEmail` and `list`. `get(id)` is one `users` row read by ID and returns `{ id, email, name, role, createdAt }`, or `null` for a user that does not exist. The user's `disabled` flag is not among them, while EmDash refuses a disabled user at session and token authentication. So the capability tells whether a user exists and their role, **not whether they are disabled**. `routeCtx.user` is separate and needs no capability | `src/plugins/manifest-schema.ts:53`; `src/plugins/types.ts:978-1003`; `src/plugins/context.ts:1444-1497`, `:1818-1820`; `src/database/repositories/user.ts:79-87`; `src/astro/middleware/auth.ts:688`, `:738-742`; [capabilities](https://docs.emdashcms.com/plugins/creating-plugins/capabilities/); [API routes](https://docs.emdashcms.com/plugins/creating-plugins/api-routes/#the-authenticated-caller) |
 | F14 | **The site write fence does not cover cron.** *Corrected by the spec review (Ruling 31).* `readSiteWriteFence` answers, in one query: an **import** fence for an import that is `running` or `verifying`, or `failed` **or `cancelled`** after its mutation started; a **media** fence while media-usage activation is `activating`; and whether an **export** is running. When the transfer tables are missing it falls back to the media fence alone; a read error is `TRANSFER_FENCE_CHECK_FAILED`. **An export is not a fence:** EmDash lets the write run and, through the `recordWrite` that `assertSiteWriteAllowed` returns, bumps every running export's `write_epoch`, so the export restarts. The middleware applies this to every API write path that is not exempt, plugin routes included; EmDash's scheduled publishing and plugin `ctx.content` writes apply it themselves. The cron tick and direct calls of the runtime's content handlers do not. The fence functions are not exported from `emdash` | `src/transfer/fence.ts:63-133` (`:79-104`), `:148-182`; `src/astro/middleware/media-usage-write-fence.ts:18-38`; `src/emdash-runtime.ts:898-914`, `:2132`, `:3455-3647`; `package.json` `exports` |
 | F15 | **A disabled plugin's tasks.** Disabling a plugin disables all its cron tasks; enabling it re-enables them, and a task whose `next_run_at` passed meanwhile is due at once and runs once (F4) | `src/plugins/cron.ts:327-341`; `src/emdash-runtime.ts:1188` |
-| F16 | **A real `scheduled()` event in the workerd harness.** `@astrojs/cloudflare` 14.3.4 keeps the site's `main` (`./src/worker.ts`) in `astro dev`, and the Cloudflare Vite plugin forwards `/cdn-cgi/handler/scheduled` to Miniflare's scheduled trigger. Observed 2026-11-17 on `sites/dev-cf` (astro dev, port 4478, a throwaway local D1): before any trigger EmDash's heartbeat option (`system:scheduler:last_completed_at`) was absent; three `GET /cdn-cgi/handler/scheduled?cron=*+*+*+*+*` at 10:20:28, 10:20:44 and 10:20:50 UTC each answered 200 and moved it to 10:20:28.435, 10:20:44.196 and 10:20:50.461. So the site's own `scheduled()` handler ran `runScheduledTasks()` as a scheduled event. In the same harness the timer of F7 also ticks | `vite-plugin` `dist/index.mjs:90355-90390`; `@astrojs/cloudflare` `dist/wrangler.js:36`; run log `.superpowers/wt/scratch-m6b/astro-dev.log` |
+| F16 | **A real `scheduled()` event in the workerd harness.** `@astrojs/cloudflare` 14.3.4 keeps the site's `main` (`./src/worker.ts`) in `astro dev`, and the Cloudflare Vite plugin forwards `/cdn-cgi/handler/scheduled` to Miniflare's scheduled trigger. Observed 2026-11-17 on `sites/dev-cf` (astro dev, port 4478, a throwaway local D1): before any trigger EmDash's heartbeat option (`system:scheduler:last_completed_at`) was absent; three `GET /cdn-cgi/handler/scheduled?cron=*+*+*+*+*` at 10:20:28, 10:20:44 and 10:20:50 UTC each answered 200 and moved it to 10:20:28.435, 10:20:44.196 and 10:20:50.461. So the site's own `scheduled()` handler ran `runScheduledTasks()` as a scheduled event. In the same harness the timer of F7 also ticks. *Amended by Ruling 58*: not reproduced (Fact V9) | `vite-plugin` `dist/index.mjs:90355-90390`; `@astrojs/cloudflare` `dist/wrangler.js:36`; run log `.superpowers/wt/scratch-m6b/astro-dev.log` |
 | F17 | **The production build blocker still stands.** Reproduced 2026-11-17: `astro build` of `sites/dev-cf` succeeds; `wrangler dev -c dist/server/wrangler.json --test-scheduled` starts; `/_emdash/api/health` and `/__scheduled` answer 500, and `/cdn-cgi/handler/scheduled` logs `[scheduled] runScheduledTasks failed: TypeError: Class extends value undefined is not a constructor or null` at `dist/server/chunks/kysely_*.mjs:1848`, the M2 error | `docs/superpowers/notes/2026-10-08-m2-review.md:33`; run logs `.superpowers/wt/scratch-m6b/build.log`, `wrangler-dev.log` |
 | F18 | **Content-cache invalidation.** EmDash purges edge-cache tags after plugin content actions (`runPluginContentAction`, with the invalidator `runScheduledTasks` or the plugin route passes), not after direct calls of the runtime's content handlers, which flux-import makes in requests and in cron alike | `src/emdash-runtime.ts:4214-4255`; `src/astro/routes/api/plugins/[pluginId]/[...path].ts:36`; `@emdash-cms/cloudflare` `src/worker.ts:107-110` |
 | F19 | **Ticks overlap.** *Added by the spec review.* On Node, `schedule()` and `cancel()` call `reschedule()`, which clears the timer and re-arms it at least 1 s out, and `executeTick` keeps no in-progress flag, so a hook that schedules or cancels a task starts a **second tick while the first still runs**; a claimed task is never claimed twice (F4), but different tasks run side by side. On Workers, a tick that outlasts the trigger interval overlaps the next invocation. So nothing may rely on tasks running one after another | `src/plugins/scheduler/node.ts:52-60`, `:62-128`; F4; [Cloudflare deployment](https://docs.emdashcms.com/deployment/cloudflare/#scheduled-publishing) ("consecutive runs can overlap") |
@@ -215,6 +217,7 @@ If V3, V5 or V9's timer stop fail, the plan stops and this spec is amended befor
 //   schedules: { indexes: ["name", "templateId", "sourceId"] },
 //   jobs: { indexes: [...as today, ["scheduled", "status", "createdAt"],
 //                     ["feedSourceId", "dryRun", "status"]] },
+//   Amended by Ruling 54: the index is ["feedSourceId", "status"], dry runs filtered in code.
 
 type ScheduleMissing = false | "template" | { maxPercent: number };
 
@@ -304,6 +307,8 @@ type ScheduleView = ScheduleRow & { nextRunAt: string | null };
   the route side effects of Ruling 32 are compare-and-set loops of at most 5 attempts on the
   newest row, each **conditional on `current?.jobId`** being what the writer decided on (Ruling
   34), and leave `revision` alone, so an Admin's update is refused only by another Admin's update.
+  *Amended by Ruling 79*: a route pause (cancel, rollback) is not conditional on `current?.jobId`
+  and always wins; the scheduler's own pauses never replace one.
 - **Retention.** Schedules and their run logs are never purged. A run log entry's `jobId` may name
   a purged job. Retention keeps its own cursor between runs in plugin KV (`retention:cursor`, M6a
   F9: internal state belongs in KV).
@@ -494,12 +499,15 @@ Admin resumes or cancels it.
 1. **Busy** (Ruling 33): `jobs.query({ where: { feedSourceId: schedule.sourceId, dryRun: false,
    status: { in: ["created", "running", "paused"] } }, limit: 1 })`. A match (any origin: an
    Admin's import, an agent's real import, another schedule's job, a rollback of any of them)
-   records `lastLaunch.outcome: "busy"`, clears `due`, and stops.
+   records `lastLaunch.outcome: "busy"`, clears `due`, and stops. *Amended by Ruling 54*
+   (`dryRun` is filtered in code, at most 5 pages).
 2. **Claim.** When `current` is set: no job with its ID and a claim younger than
    `LAUNCH_CLAIM_STALE_MS` (10 minutes) is another launch in flight: stop without clearing `due`; an
    older claim with no job is cleared. Then generate the job ID and compare-and-set
    `current: { jobId, claimedAt }`, conditional on `current?.jobId` being what step 2 read
    (Ruling 34). A lost compare-and-set re-reads and repeats this step, at most 5 times.
+   *Amended by Ruling 77* (a claim whose job finished is replaced; one whose job is unfinished is
+   in flight however old) *and Ruling 78* (a launch whose claim was lost cancels its job).
 3. **Pins and creator**, each a pause on failure (the pause also clears `current` and `due`):
    - `resolveJobTemplate(templateId, templateRevision)`: `TEMPLATE_NOT_FOUND` pauses
      `template_gone`, `TEMPLATE_CHANGED` pauses `template_changed` (Ruling 11);
@@ -537,7 +545,7 @@ For each `scheduled: "open"` job that is finished (pump step 2), in one pass:
 
 | Job | Run log outcome | Effect on the schedule |
 | --- | --- | --- |
-| `completed`, first pass read no record (`cursor.seq === 0`) | `empty_feed` | pause `empty_feed` (Ruling 45) |
+| `completed`, first pass read no record (`(missing?.fromSeq ?? cursor.seq) === 0`, Ruling 53) | `empty_feed` | pause `empty_feed` (Ruling 45) |
 | `completed` with `missing.verdict: "refused"` | `missing_refused` | pause `missing_refused` (Ruling 13) |
 | `completed` otherwise | `completed` | none |
 | `failed` | `failed` | pause `job_failed`; `clearLastImport(sourceId, jobId)` so the same content runs again once the cause is fixed (Ruling 15) |
@@ -643,6 +651,21 @@ that changes them fails a test, not a site.
   - **Never beside another import or rollback of the same source** (Ruling 33), and a failed job
     stops the schedule.
   - **Nothing during a site import, export or media-usage activation** (Rulings 19, 31).
+- **Writes outlive what was armed** (preflight F9, Ruling 74). The bounds above are checked at
+  each launch, not during a job:
+  - an open scheduled job keeps running after its schedule is disabled or deleted, and after the
+    Admin who armed it is demoted or deleted (Ruling 48); the creator check runs only before the
+    next launch;
+  - `jobs/resume` and `jobs/retry` reopen a closed scheduled job (Ruling 65) whatever the
+    schedule's state and whatever `armedBy`'s role now; the Admin who resumes it is the one who
+    chose to, but its writes stay unattributed;
+  - an open job keeps the `missingLimit` it was created with after the schedule's `missing`
+    changes. A change of the template, the source or `missing` on an enabled schedule re-arms it
+    to the Admin making the change (`armedBy`), and a change of `missing` is refused while the
+    schedule is busy.
+- **The cron hook's errors reach EmDash's log redacted** (Ruling 81). EmDash's executor logs a
+  hook's thrown error with its stack (`console.error`), so the hook rethrows a new `Error` with the
+  redacted message and no `cause`.
 - **Untrusted data.** Launch and job errors can quote the feed and the fetcher's text. Schedules
   store and return codes only (Ruling 47); messages stay on the job and in the server log,
   redacted of upload IDs.
@@ -664,14 +687,14 @@ flux-import's worst tick is the sum below. The pump is one of the at most 10 tas
 (F4), so when it runs, at most nine other tasks (due marks and `retention`) share the tick; with
 more than ten due, the pump may wait for the next tick.
 
-| Work in one tick | Bound | Projected D1 queries (V5 measures) |
-| --- | --- | --- |
-| EmDash: claim, a finish update per task, stale-lock recovery, publishing sweep with nothing due, heartbeat | per tick | 10-40 |
-| Due marks | at most 8 beside the pump and `retention` | 4 each (get, compare-and-set, pump upsert, EmDash's finish): ≤ 32 |
-| Retention | one run, hourly (Ruling 39) | ≤ `RETENTION_QUERY_TARGET` 150 |
-| Pump, fixed part | fence (1), schedules read (1), finalize query (1), two finalizations (job get and compare-and-set, schedule get and compare-and-set, `clearLastImport` up to 2: ≤ 6 each), batch query (1), idle check (≤ 3) | ≤ 19 |
-| Pump unit: **one** of | a batch at the tick caps (`PUMP_QUERY_TARGET`), or a launch (busy query 1, schedule get and claim 2, template 1, source 1, user 1, fetch's source get and compare-and-sets ≤ 3, `jobs/create`'s reads and write ≤ 9, `lastImport` ≤ 3, result 2: about 25) | ≤ 550 |
-| **Worst flux-import tick** | | **about 790**, under the 900 V5 must show |
+| Work in one tick | Bound | Projected D1 queries (V5 measures) | Measured on the final code (Ruling 83) |
+| --- | --- | --- | --- |
+| EmDash: claim, a finish update per task, stale-lock recovery, publishing sweep with nothing due, heartbeat | per tick | 10-40 | 10 a tick; 91 on the first event after a start |
+| Due marks | at most 8 beside the pump and `retention` | 4 each (get, compare-and-set, pump upsert, EmDash's finish): ≤ 32 | 40 for eight, 12 for one (each event re-created `pump`) |
+| Retention | one run, hourly (Ruling 39) | ≤ `RETENTION_QUERY_TARGET` 150 | 156 over 995 job rows: 150 metered and about 6 the hook makes outside the meter |
+| Pump, fixed part | fence (1), schedules read (1), finalize query (1), two finalizations (job get and compare-and-set, schedule get and compare-and-set, `clearLastImport` up to 2: ≤ 6 each), batch query (1), idle check (≤ 3) | ≤ 19 | 16 when idle; 27 with two finalizations, one of them a failed, rolled-back job (about 9 statements) |
+| Pump unit: **one** of | a batch at the tick caps (`PUMP_QUERY_TARGET`), or a launch (busy query 1, schedule get and claim 2, template 1, source 1, user 1, fetch's source get and compare-and-sets ≤ 3, `jobs/create`'s reads and write ≤ 9, `lastImport` ≤ 3, result 2: about 25) | ≤ 550 | whole pump events: launches 35-45, 6 plain creates 429-453, 6 plain published updates 506-508, 3 linked updates 498-511 |
+| **Worst flux-import tick** | | **about 790**, under the 900 V5 must show | **691** (eight marks, two finalizations, a linked batch of three updates, retention at its budget) |
 
 The tick caps, projected from M6c's measurements (a batch costs about 240 queries plus 57 per plain
 published update, about 130 plus 120 per linked update) and fixed by V5:
@@ -694,6 +717,12 @@ spending to the limit.
 The free plan allows 50 D1 queries per invocation and 10 ms of CPU per Cron Trigger (F9). One
 batch costs hundreds of queries (P4), as `jobs/next` already did since M2. Scheduled imports need
 the paid plan.
+
+*Amended by Ruling 84.* Retention alone can exceed the free plan's cap. Its hourly run scans 20
+job rows a query and deletes in statements of 50 rows, so a run that purges more than about 6 jobs,
+or scans more than about 900 job rows, passes 50 queries on its own. The tick then fails (F11),
+and once the scan alone is over the cap, retention never deletes again. On the free plan even an
+unscheduled site's retention stops working as jobs accumulate.
 
 ### CPU and wall time
 
@@ -918,7 +947,8 @@ Tasks 4 and 5 can run in parallel after 3.
    `schedules/run` already gives. flux-import checks the grammar itself, so that EmDash's broader
    parser (F2) never turns a typo into a one-shot, and EmDash's `schedule()` then validates the
    expression. Time zones are not offered: EmDash evaluates every expression in UTC on every host
-   (F2), and the list shows `nextRunAt` so the Admin sees what UTC means.
+   (F2), and the list shows `nextRunAt` so the Admin sees what UTC means. *Amended by Rulings 55
+   and 56* (flux-import's field grammar; croner's day rules).
 8. **A launch is `jobs/create { sourceId, templateId }`, through the same code.** The fetch, the
    template-aware skip, job creation and `lastImport` are M3c's and M6a's, unchanged, so a scheduled
    job is exactly a job an Admin could have created, with `origin`, `scheduleId` and the claimed ID
@@ -1116,6 +1146,7 @@ Tasks 4 and 5 can run in parallel after 3.
     its status, so the pump always finalizes it first. The settings description in
     `definition.ts` (P18) changes from "deleted daily" to "deleted hourly"; that edit ships with the
     retention change (Task 5), since the current code still runs daily. Amends Ruling 25.
+    *Amended by Rulings 72 and 82* (pages of 50; the label shipped with the hook wiring).
 40. **The source is pinned.** Arming a schedule stores `sourcePin`, a fingerprint of the source's
     URL and credential name (`fingerprint`, `src/engine/fingerprints.ts:24-42`). A launch whose source has
     another URL or credential name pauses `source_changed`, and re-enabling takes the pin again.
@@ -1152,7 +1183,8 @@ Tasks 4 and 5 can run in parallel after 3.
     pass reads no record (a feed that answered with a header only, or nothing) would otherwise make
     every owned entry missing; with a threshold of 100 % it would remove them all. The engine skips
     the phase for such a job (`origin: "schedule"`, `cursor.seq === 0`), and finalization pauses
-    `empty_feed`. An empty feed needs a person whatever the template allows.
+    `empty_feed`. An empty feed needs a person whatever the template allows. *Amended by Ruling 53*
+    (the engine already skips the phase for every job; finalization detects the empty feed).
 46. **Routes retry a compare-and-set lost to a tick.** Ticks write schedule rows without changing
     `revision` (due marks, launches, finalization), so a route whose compare-and-set loses to one,
     while the caller's `revision` is still the current one, re-reads and retries (at most 5 times)
@@ -1186,6 +1218,120 @@ Tasks 4 and 5 can run in parallel after 3.
     their entry point exports room classes; 1.2.0 has none of it (F22). A future handler that waits
     in the same invocation would add wall time to every tick, not D1 queries. V10 records what the
     installed packages do, and the M8 docs follow the installed version.
+
+### Amendments from the plan and review
+
+Recorded by the review (`../notes/2026-11-17-m6b-review.md`); each names the plan ruling, fact or
+review finding behind it. They override the text above where they differ; markers at the amended
+text point here.
+
+53. **Ruling 45 needs no engine change** (Fact E2, plan Ruling 8). The engine already skips the
+    missing phase when the first pass read no keyed record. Finalization reads an empty feed as
+    `(job.missing?.fromSeq ?? job.cursor.seq) === 0` on a completed job, before the refused verdict.
+54. **The busy index is `["feedSourceId", "status"]`, with dry runs filtered in code** (Fact E4,
+    plan Ruling 2): a boolean `where` value is bound as it is. `busyJob` reads at most 5 pages of
+    20 (`BUSY_SCAN_PAGES`) and fails closed beyond them (preflight F13; Open issues).
+55. **flux-import checks each cron field itself** (Fact E1, plan Ruling 3): `schedule()` takes typos
+    as one-shots in the past. Five fields of `*`, `*/n`, `a`, `a-b` or `a-b/n` within each field's
+    range (names in month and day of week), or the five aliases, at most 256 characters. The grammar
+    also refuses a day of month that none of the listed months has (`0 3 31 2 *`,
+    `0 0 31 4,6,9,11 *`), item by item, because such a schedule never fires or crashes croner; this
+    is stricter than EmDash (each listed day is checked, `1,31` with April included, and the day of
+    week is not considered). A stepped day item is refused only when every value in it is such a
+    day, month steps are expanded to exact sets, and a `RangeError` from EmDash's cron library is
+    `INVALID_CRON` with its message (Task 2 rulings).
+56. **Croner's behaviour is EmDash's, and differs from Vixie cron.** A stepped day of month with a
+    day of week ORs the two (`0 0 */24 * mon` runs every Monday and on days 1 and 25), and croner
+    10.0.1 can skip early-March runs after a February run when the day list holds a day February
+    lacks (`0 0 1,31 * *` from 2027-02-10 next runs on March 31, not March 1). flux-import does not
+    work around either; the M8 docs should state them, and the second is an upstream report candidate.
+57. **F5 differs on workerd** (Fact V7): a timed-out hook's handler is abandoned when the invocation
+    ends instead of running on. The hook's timeout is `CRON_HOOK_TIMEOUT_MS` 180 s (Ruling 16), not
+    F5's 60 s.
+58. **F16's "the timer also ticks" was not reproduced** (Fact V9): a fresh workerd isolate's timer
+    did not tick in 60 s. The parity test stops it anyway (Ruling 41).
+59. **V5 measured eight due marks, not nine**: nine marks, the pump and retention are eleven tasks,
+    and a tick claims at most ten (F4).
+60. **`POST /test/stop-cron-timer` lives in the test sites, never in the plugin** (plan Ruling 1):
+    403 unless `import.meta.env.DEV`, 403 without `X-EmDash-Request: 1`; both sites' files are
+    identical, and both integration tests check the 403 without the header.
+61. **The pump's held-lease test reads the lease from its own query** (Fact E3, plan Ruling 4): a
+    live lease means no batch, and the launch may run; any other job gets a batch, which is the
+    tick's unit even if its claim is refused.
+62. **`schedules/update` schedules the task before it writes the row** (plan Ruling 5), so EmDash's
+    refusal changes nothing. Any failure after that re-synchronises the task from the newest row
+    (scheduled if enabled, cancelled if disabled or gone; Task 2 review).
+63. **A disabled schedule is never due** (plan Ruling 6): a pause, `enabled: false` and a disabled
+    schedule's due-mark task drop `due`; the pump, the idle check and reconciliation consider only
+    rows with `enabled && due`.
+64. **A launch in flight makes a schedule busy for the routes** (plan Ruling 7): `schedules/delete`,
+    `schedules/run` and a template or source change answer `SCHEDULE_BUSY` with the claimed ID
+    while `current` is younger than `LAUNCH_CLAIM_STALE_MS`.
+65. **A resumed or retried scheduled job that was already finalized is reopened** (plan Ruling 11):
+    `scheduled: "open"` again and the pump armed, whatever the schedule's state ("Security").
+    Finalization then replaces the job's run log entry when its outcome changed, and writes nothing
+    when the same entry is there.
+66. **Finalization repeats a rollback's pause, as a cancel's** (plan Ruling 12), and marks the run
+    `rolledBack`. It works only when the rollback comes before finalization (preflight F20), and a
+    repeated cancel or rollback pause is skipped once a route changed the schedule after the job
+    (`row.updatedAt > job.updatedAt`, preflight F10). Any route edit, even a rename, therefore stops
+    the repeat; that matters only when the route's own best-effort pause was lost too.
+67. **`createJobFrom` and the services builders move to `src/plugin/services.ts`** (plan Ruling 9);
+    `ensureRetentionScheduled` moves to `retention.ts`.
+68. **`jobs/next` reads the job before it builds its services** (plan Ruling 10): one `get` more per
+    call, so a scheduled job's batch is unattributed whoever calls. `jobs/step` is unchanged.
+69. **"Has a key" is the template's shape check** (plan Ruling 13): `templateSchema` requires `key`,
+    and a key may be an expression, not only `from`. Amends "Behaviour" step 3's `key.from` rule.
+70. **`sources/update` returns `warnings` only when there are some** (plan Ruling 14), so REST callers
+    see no change otherwise.
+71. **The schedule inputs are strict** (plan Ruling 15): a misspelt key is `VALIDATION_ERROR`. Their
+    bodies are capped at 16 KiB (`SCHEDULE_BODY_MAX_BYTES`), and a schedule name refusal has its own
+    wording ("A schedule name is 1-100 characters, …"; Task 3 review).
+72. **Retention counts one unit per storage call, and deletes in pages of 50** (plan Ruling 16, Task 6
+    review): EmDash's `deleteMany` runs one statement per 50 IDs (`SQL_BATCH_SIZE`), so a page of 50
+    keeps each metered call one D1 statement. A run may pass its target by one call (the cursor
+    write).
+73. **The cron hook's dispatch lives in `src/plugin/scheduler.ts`, and `plugin:activate` runs
+    `reconcile`** (plan Ruling 17), without the runtime (preflight F5: a runtime inside activation
+    waits for the init lock on a fresh database), and never throws: a failed activation would make
+    EmDash disable the plugin, so it logs a redacted error and hourly retention repairs the tasks.
+74. **An update that changes the template, the source or `missing` of an enabled schedule re-arms it
+    to the caller, and a change of `missing` is refused while the schedule is busy** (preflight F9).
+    Writes outliving what was armed are stated in "Security".
+75. **The integration tests drive ticks deterministically after the acceptance** (plan Ruling 18).
+    Their failing feed answers 404, not 500 (Fact E7): the fetcher reports both as `HTTP_ERROR`, a
+    transient launch failure.
+76. **The creator check compares the stored role with `Permissions["import:execute"]`** (plan
+    Ruling 19, F20); a missing `ctx.users` or a non-numeric role fails closed (`creator_gone`).
+77. **A launch replaces a claim whose job has finished** (plan Ruling 20; amends "Launch" step 2). A
+    claim younger than `LAUNCH_CLAIM_STALE_MS` with no job, or one whose job is unfinished however
+    old, is a launch in flight; a stale claim with no job, or one whose job has finished, is replaced.
+78. **A launch whose claim was lost cancels and closes the job it created** (preflight F6), so a pause
+    or a rollback is never beaten by a launch already in flight; a cancelled orphan reaching
+    finalization is closed with no run entry and no pause.
+79. **A route pause always wins and drops the claim; an automatic pause never replaces one**
+    (preflight F7, Task 5 ruling). `pauseSchedule` (cancel, rollback) is not conditional on
+    `current?.jobId` and overwrites any pause; the launch's record and finalization keep a pause
+    already on the row (`pausedKeeping`). Amends "Storage > Writes" for route pauses.
+80. **The pump drives only `origin: "schedule"` jobs** (preflight F8, Ruling 22): any other open job
+    is closed with no run and no batch, and closing it is the tick's unit.
+81. **The cron hook rethrows a new `Error` with the redacted message and no `cause`** (Task 7 review,
+    preflight F12), because EmDash's executor logs a thrown error with its stack.
+82. **The "hourly" settings label shipped with the hook wiring (Task 7)**, not with the retention
+    change, since the definition files were busy in that wave (preflight F14; amends Ruling 39).
+83. **The tick budget is re-measured on the final code** ("The tick budget on Workers", V5 in the
+    review): a worst-case finalization (a failed, rolled-back job) is about 9 statements, so the
+    pump's fixed part is about 21-22; the retention hook adds about 6 calls the meter does not count
+    (settings, latest uploads, and reconciliation's `cron.list`, schedules read and open-job check);
+    the worst event measured 691.
+84. **On the free plan, retention can exceed the 50-query cap on its own** ("The free plan").
+85. **Smaller behaviours fixed by the reviews:** a due mark is one read and one compare-and-set, then
+    the pump (4 queries), and cancels the task of a schedule disabled or deleted meanwhile; a stored
+    `errorCode` is a well-formed code or `INTERNAL_ERROR`; the busy record is conditional on a due
+    mark; `schedules/run` maps a lost write to `SCHEDULE_DISABLED` or `SCHEDULE_BUSY` when the
+    re-read shows why, and a row deleted meanwhile answers `CONFLICT`; reconciliation reports
+    failures in `ReconcileResult.failed`; `schedules/list` projects the row's known fields; a
+    rolled-back run's log entry has the rollback's time in `at` (the original's `updatedAt`).
 
 ## Out of scope
 
@@ -1233,6 +1379,23 @@ Tasks 4 and 5 can run in parallel after 3.
 - **Retention over 1,000 jobs** (Ruling 39): a site that keeps more than `RETENTION_SCAN_MAX` job
   rows (a long retention period with many runs) skips its deletes with a warning until
   `retentionDays` is lowered. Summary rows (the M6a `jobs/list` issue) would lift it.
+- **More than 100 unfinished dry runs on one source make it busy** (Ruling 54, preflight F13).
+  `busyJob` reads at most 5 pages of 20 and fails closed: every launch and `schedules/run` on that
+  source answers busy, naming a dry run as the busy job, until the dry runs finish or are
+  cancelled. M6c keeps abandoned agent dry runs; M7's dry-run clean-up should remove the case.
+- **Retention on the free plan** (Ruling 84): above about 6 purged jobs or 900 scanned job rows a
+  run exceeds 50 queries on its own, and once the scan alone does, retention never deletes again.
+  M8 documents it beside "imports need the paid plan".
+- **Croner's early-month skip** (Ruling 56): `0 0 1,31 * *` after a February run next fires on
+  March 31. EmDash's (croner 10.0.1), not flux-import's; an upstream report candidate.
+- **A rolled-back run's log entry shows the rollback's time** (Ruling 85), not the job's end:
+  `createRollback` moves the original's `updatedAt`. Nothing reads it today; M7's run list should
+  show `rolledBack.at` instead.
+- **The finalization repeat of a lost route pause is fragile** (Ruling 66): any route edit after the
+  job, a rename included, stops it. It matters only when the route's best-effort pause was lost too.
+- **`sourcePin` can confirm a guessed URL** (Task 2 review). It is a fingerprint of the URL and
+  credential name, so an Admin who can read a schedule can test a guess against it. Only Admins
+  read it today; M6d's MCP view of schedules leaves `sourcePin` out.
 - **Throughput on Workers** ("The honest ceiling"): about 6 plain or 3 linked records a minute.
   Feeds larger than a few thousand changed rows a day need Node or an external `jobs/next` trigger.
 - **Edge-cache invalidation** (F18): imported entries, scheduled or not, are written through the
