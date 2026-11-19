@@ -29,6 +29,7 @@ import {
 	setCredential,
 } from "./credentials.js";
 import { resolveJobTemplate } from "./job-templates.js";
+import { schedulesOverview, sourcesOverview } from "./overviews.js";
 import { withRuntime } from "./runtime.js";
 import {
 	createSchedule,
@@ -398,6 +399,16 @@ export const TEMPLATE_GET_INPUT = z.object({
 	id: templateId.describe("The template's id, from list_templates"),
 });
 
+/** `sources/overview`'s input, which list_sources shares (M6d). Strict, every field described. */
+export const SOURCES_OVERVIEW_INPUT = z
+	.object({ cursor: cursor.describe("From the previous list_sources call") })
+	.strict();
+
+/** `schedules/overview`'s input, which list_schedules shares (M6d). */
+export const SCHEDULES_OVERVIEW_INPUT = z
+	.object({ cursor: cursor.describe("From the previous list_schedules call") })
+	.strict();
+
 const createInput = z
 	.object({
 		uploadId: uploadId.optional(),
@@ -753,6 +764,14 @@ export const routes: Record<string, PluginRoute> = {
 		),
 	),
 
+	// M6d: the agent's view of URL sources: hosts and codes only (spec Ruling 38).
+	"sources/overview": {
+		...route(SOURCES_OVERVIEW_INPUT, (ctx) =>
+			withServices(ctx, ({ sources }) => sourcesOverview(sources, ctx.input.cursor)),
+		),
+		request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES },
+	},
+
 	"jobs/create": withTemplateBody(
 		route(createInput, (ctx) =>
 			withServices(ctx, (services) => createJobFrom(ctx, services, ctx.input)),
@@ -997,7 +1016,8 @@ export const routes: Record<string, PluginRoute> = {
 		),
 	),
 
-	// Schedules (M6b). Admin routes only: no schedule route is an MCP tool (spec Ruling 50).
+	// Schedules (M6b). Admin routes only: no schedule route is an MCP tool (spec Ruling 50), but
+	// for M6d's read-only schedules/overview.
 	"schedules/create": scheduleRoute(SCHEDULE_CREATE_INPUT, async (ctx, deps, actor) => ({
 		schedule: await createSchedule(deps, actor.id, ctx.input),
 	})),
@@ -1020,4 +1040,17 @@ export const routes: Record<string, PluginRoute> = {
 		z.object({ id: scheduleId, force: z.boolean().optional() }).strict(),
 		async (ctx, deps) => ({ queued: true, schedule: await runSchedule(deps, ctx.input) }),
 	),
+
+	// M6d: the agent's view of schedules: codes only, no reconciliation (spec Ruling 39).
+	"schedules/overview": {
+		...route(SCHEDULES_OVERVIEW_INPUT, (ctx) =>
+			withServices(ctx, () =>
+				schedulesOverview(
+					{ schedules: schedulesCollection(ctx.storage), cron: cronOf(ctx) },
+					ctx.input.cursor,
+				),
+			),
+		),
+		request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES },
+	},
 };

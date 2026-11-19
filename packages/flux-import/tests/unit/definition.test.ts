@@ -22,6 +22,7 @@ const ROUTES = [
 	"sources/get",
 	"sources/list",
 	"sources/fetch",
+	"sources/overview",
 	"credentials/set",
 	"credentials/delete",
 	"credentials/list",
@@ -53,11 +54,23 @@ const ROUTES = [
 	"schedules/update",
 	"schedules/delete",
 	"schedules/run",
+	"schedules/overview",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
 describe("createPlugin", () => {
 	const plugin = createPlugin();
+
+	it('caps the overview routes\' bodies at 16 KiB (spec "The deferred read tools")', () => {
+		for (const name of ["sources/overview", "schedules/overview"]) {
+			expect(plugin.routes[name], name).toMatchObject({
+				methods: ["POST"],
+				request: { body: "json", maxBytes: 16 * 1024 },
+			});
+			expect(plugin.routes[name]?.input?.safeParse({ cursor: "x", extra: 1 }).success).toBe(false);
+			expect(plugin.routes[name]?.input?.safeParse({}).success).toBe(true);
+		}
+	});
 
 	it("declares the M6c routes as strict JSON POST routes, with a 2 MiB body for jobs/plan", () => {
 		expect(PLAN_BODY_MAX_BYTES).toBe(2 * 1024 * 1024);
