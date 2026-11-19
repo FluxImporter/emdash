@@ -290,6 +290,80 @@ export async function guardedFetch(
 	}
 }
 
+/** What a provider call sends (M6d): always a POST with a string body. */
+export interface PostInit {
+	method: "POST";
+	headers: Record<string, string>;
+	body: string;
+	signal?: AbortSignal | undefined;
+}
+
+/** Statuses whose `Response` must have a null body. */
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+
+/** Reads a reply whole, refusing it as soon as more than `max` bytes have arrived. */
+async function readCapped(response: Response, max: number): Promise<Uint8Array<ArrayBuffer>> {
+	const reader = response.body?.getReader();
+	if (!reader) return new Uint8Array(0);
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > max) {
+			await reader.cancel().catch(() => {});
+			throw new UrlSourceError("TOO_LARGE", `The reply is over ${max} bytes`);
+		}
+		chunks.push(value);
+	}
+	const bytes = new Uint8Array(total);
+	let at = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	return bytes;
+}
+
+/**
+ * One POST to a model provider (M6d spec Ruling 48). The URL, its host and every address it
+ * resolves to are checked once, as `guardedFetch` checks a source (skipped only under
+ * `allowPrivateNetwork`); then the runtime's fetch is called once with `redirect: "manual"`,
+ * whatever the caller passed, so a credential header never follows a redirect (spec Ruling 9). A
+ * 3xx is returned, not followed. The reply is read to its end inside this call, refused once it
+ * passes `maxResponseBytes`, and returned as a new `Response` over its bytes: a caller's timer
+ * that stops when the fetch resolves (the Anthropic SDK's) then covers the whole reply (plan
+ * Ruling 1, Fact V1c). Rejections of the fetch and of the body read, aborts and timeouts
+ * included, and the signal's reason during DNS, are re-thrown as raised, never wrapped, so the
+ * caller classifies them (Fact D8).
+ */
+export async function guardedRequest(
+	url: string,
+	init: PostInit,
+	net: NetOptions,
+	opts: { maxResponseBytes: number },
+): Promise<Response> {
+	const target = parseSourceUrl(url);
+	const checked = checkAddresses(target, net);
+	// The race reports a refusal; this keeps one that arrives after an abort from going unhandled.
+	checked.catch(() => {});
+	await (init.signal === undefined ? checked : Promise.race([checked, whenAborted(init.signal)]));
+	const response = await net.fetch(target.href, {
+		method: "POST",
+		headers: init.headers,
+		body: init.body,
+		redirect: "manual",
+		...(init.signal === undefined ? {} : { signal: init.signal }),
+	});
+	const bytes = await readCapped(response, opts.maxResponseBytes);
+	return new Response(NULL_BODY_STATUSES.has(response.status) ? null : bytes, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
+}
+
 /** Node: the system resolver, every address (`node:dns` `lookup(…, { all: true })`). */
 export const nodeResolver: Resolver = async (hostname) => {
 	const { lookup } = await import("node:dns/promises");
