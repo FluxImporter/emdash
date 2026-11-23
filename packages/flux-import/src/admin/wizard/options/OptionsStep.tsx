@@ -125,6 +125,7 @@ export function OptionsStep() {
 		format: feedAt?.format ?? "",
 		tz: feedAt?.tz ?? "",
 	});
+	const pickedDate = dateOf(fixed.day);
 	const fixedSchedule = (f: typeof fixed): Options["schedule"] =>
 		f.day !== "" && TIME.test(f.time) ? { kind: "fixed", at: `${f.day}T${f.time}` } : null;
 	const feedSchedule = (f: typeof feed): Options["schedule"] =>
@@ -257,11 +258,11 @@ export function OptionsStep() {
 
 	return (
 		<div className="space-y-6">
-			<Radio.Group
+			<Radio.Group<Options["mode"]>
 				legend={t(M.records)}
 				description={t(M.recordsHelp)}
 				value={options.mode}
-				onValueChange={(mode: string) => set({ mode: mode as Options["mode"] })}
+				onValueChange={(mode: Options["mode"]) => set({ mode })}
 			>
 				<Radio.Item label={t(M.modeUpsert)} value="upsert" />
 				<Radio.Item label={t(M.modeCreate)} value="create" />
@@ -301,11 +302,11 @@ export function OptionsStep() {
 				</div>
 			)}
 
-			<Radio.Group
+			<Radio.Group<Options["status"]>
 				legend={t(M.status)}
 				description={t(M.statusHelp)}
 				value={options.status}
-				onValueChange={(status: string) => set({ status: status as Options["status"] })}
+				onValueChange={(status: Options["status"]) => set({ status })}
 			>
 				<Radio.Item label={t(M.statusPublish)} value="publish" />
 				<Radio.Item label={t(M.statusDraft)} value="draft" />
@@ -314,11 +315,13 @@ export function OptionsStep() {
 
 			{options.status === "schedule" ? (
 				<div className="space-y-4">
-					<Radio.Group
+					<Radio.Group<ScheduleKind | null>
 						legend={t(M.schedule)}
 						description={t(M.scheduleHelp)}
 						value={scheduleKind}
-						onValueChange={(kind: string) => chooseSchedule(kind as ScheduleKind)}
+						onValueChange={(kind: ScheduleKind | null) => {
+							if (kind !== null) chooseSchedule(kind);
+						}}
 					>
 						{kept === null ? null : <Radio.Item label={t(M.scheduleKept)} value="kept" />}
 						<Radio.Item label={t(M.scheduleFixed)} value="fixed" />
@@ -329,8 +332,9 @@ export function OptionsStep() {
 							<legend className="text-sm font-medium">{t(M.fixedDate)}</legend>
 							<DatePicker
 								mode="single"
-								selected={dateOf(fixed.day)}
-								defaultMonth={dateOf(fixed.day)}
+								{...(pickedDate === undefined
+									? {}
+									: { selected: pickedDate, defaultMonth: pickedDate })}
 								onChange={(d: Date | undefined) =>
 									changeFixed({ day: d === undefined ? "" : dayOf(d) })
 								}
@@ -414,11 +418,11 @@ export function OptionsStep() {
 				</div>
 			) : null}
 			{edited ? (
-				<Radio.Group
+				<Radio.Group<SaveChoice>
 					legend={t(M.edited)}
 					description={t(M.editedHelp, { name: base.name })}
 					value={save.kind}
-					onValueChange={(kind: string) => chooseSave(kind as SaveChoice)}
+					onValueChange={(kind: SaveChoice) => chooseSave(kind)}
 				>
 					<Radio.Item label={t(M.runUnsaved)} value="none" />
 					<Radio.Item label={t(M.saveUpdate, { name: base.name })} value="update" />
