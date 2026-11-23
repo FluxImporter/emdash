@@ -324,6 +324,32 @@ describe("the Source step", () => {
 		expect(screen.queryByText(/fetches a different address/i)).toBeNull();
 	});
 
+	it("shows a Loader, not a stale answer, while the sources list refetches on a clash", async () => {
+		const list = deferred<unknown>();
+		let reads = 0;
+		routes({
+			"credentials/list": () => [],
+			"sources/create": () => fail("CONFLICT", "A source named … already exists", 409),
+			// The first read (the Saved source tab) predates the source with this name.
+			"sources/list": () => (++reads === 1 ? { items: [], hasMore: false } : list.promise),
+			"sources/fetch": () => ({ changed: false, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Saved source" }));
+		expect(await screen.findByText("No saved sources")).toBeVisible();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Address" }),
+			"https://example.com/feeds/products.json",
+		);
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		expect(await screen.findByRole("status", { name: "Loading saved sources" })).toBeVisible();
+		expect(screen.queryByText(/can no longer be found/i)).toBeNull();
+		list.resolve({ items: [SOURCE_ROW], hasMore: false });
+		expect(await screen.findByRole("button", { name: "Use the saved source" })).toBeEnabled();
+		expect(screen.queryByText(/can no longer be found/i)).toBeNull();
+	});
+
 	it("says so when the taken name's saved source cannot be found", async () => {
 		routes({
 			"credentials/list": () => [],
@@ -823,55 +849,47 @@ describe("the Source step", () => {
 		await user.click(next());
 		expect(readState().step).toBe("target");
 	});
-	it("keeps only the latest sample when settings change faster than the samples answer", async () => {
+	it("disables the source settings while a template loads", async () => {
+		const loading = deferred<unknown>();
+		routes({
+			"templates/list": () => ({ items: [JSON_SUMMARY], hasMore: false }),
+			"templates/get": () => loading.promise,
+			"sources/sample": () => ({ records: [{ a: 1 }], paths: ["a"] }),
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["a"]));
+		const format = screen.getByRole("combobox", { name: "Format" });
+		const records = screen.getByRole("textbox", { name: "Records path" });
+		const filter = screen.getByRole("textbox", { name: "Row filter" });
+		expect(format).toBeEnabled();
+		await loadTemplate(user);
+		await waitFor(() => expect(format).toBeDisabled());
+		expect(records).toBeDisabled();
+		expect(filter).toBeDisabled();
+		loading.resolve(JSON_TEMPLATE);
+		await waitFor(() => expect(readState().step).toBe("preview"));
+	});
+
+	it("disables the source settings while a sample runs", async () => {
 		const slow = deferred<unknown>();
 		routes({
-			"sources/sample": (body) => {
-				const records = (body as { source: { records?: string } }).source.records;
-				if (records === "a") return slow.promise;
-				if (records === "b") return { records: [{ b: 1 }], paths: ["b"] };
-				return { records: [{ x: 1 }], paths: ["x"] };
-			},
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "a"
+					? slow.promise
+					: { records: [{ x: 1 }], paths: ["x"] },
 		});
 		const { user } = renderSource();
 		chooseFile("feed.json", "{}");
 		await waitFor(() => expect(readState().keys).toEqual(["x"]));
-		const path = screen.getByRole("textbox", { name: "Records path" });
-		await user.type(path, "a{Enter}");
-		await user.clear(path);
-		await user.type(path, "b{Enter}");
-		await waitFor(() => expect(readState().keys).toEqual(["b"]));
-		slow.resolve({ records: [{ a: 1 }], paths: ["a"] });
-		await new Promise((r) => setTimeout(r, 0));
-		expect(readState().keys).toEqual(["b"]);
-		expect(readState().sourceBlock).toEqual({ format: "json", records: "b" });
-	});
-
-	it("ignores a replaced sample's failure", async () => {
-		const slow = deferred<unknown>();
-		routes({
-			"sources/sample": async (body) => {
-				const records = (body as { source: { records?: string } }).source.records;
-				if (records === "a") {
-					await slow.promise;
-					return fail("INVALID_SOURCE", "late failure", 400);
-				}
-				return { records: [{ b: 1 }], paths: ["b"] };
-			},
-		});
-		const { user } = renderSource();
-		chooseFile("feed.json", "{}");
-		await waitFor(() => expect(readState().keys).toEqual(["b"]));
-		const path = screen.getByRole("textbox", { name: "Records path" });
-		await user.type(path, "a{Enter}");
-		await user.clear(path);
-		await user.type(path, "b{Enter}");
-		await waitFor(() => expect(readState().sourceBlock).toMatchObject({ records: "b" }));
-		slow.resolve(undefined);
-		// The step stays busy until every request it sent has answered.
-		await waitFor(() => expect(next()).toBeEnabled());
-		expect(screen.queryByRole("alert")).toBeNull();
-		expect(readState().keys).toEqual(["b"]);
+		const records = screen.getByRole("textbox", { name: "Records path" });
+		await user.type(records, "a{Enter}");
+		await waitFor(() => expect(records).toBeDisabled());
+		expect(screen.getByRole("combobox", { name: "Format" })).toBeDisabled();
+		expect(screen.getByRole("textbox", { name: "Row filter" })).toBeDisabled();
+		slow.resolve({ records: [{ y: 1 }], paths: ["y"] });
+		await waitFor(() => expect(records).toBeEnabled());
+		expect(readState().keys).toEqual(["y"]);
 	});
 
 	it("shows at most 200 keys in the sample, and says how many there are", async () => {

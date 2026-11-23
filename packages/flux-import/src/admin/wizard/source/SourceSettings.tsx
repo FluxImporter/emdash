@@ -90,6 +90,7 @@ function TextSetting(props: {
 	description: string;
 	value: string;
 	type?: "text" | "number";
+	disabled: boolean;
 	onCommit(value: string): void;
 }) {
 	const [draft, setDraft] = useState(props.value);
@@ -105,6 +106,7 @@ function TextSetting(props: {
 			type={props.type ?? "text"}
 			{...(props.type === "number" ? { min: 1 } : {})}
 			value={draft}
+			disabled={props.disabled}
 			onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
 			onBlur={commit}
 			onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
@@ -123,6 +125,11 @@ export function SourceSettings(props: {
 	block: SourceBlock;
 	/** The address named no format, so CSV was assumed. */
 	assumed: boolean;
+	/**
+	 * A request is running: nothing can change until it answers, so no sample starts that could
+	 * answer after (and overwrite) a template's settings.
+	 */
+	busy: boolean;
 	onChange(block: SourceBlock): void;
 }) {
 	const t = useT();
@@ -135,6 +142,7 @@ export function SourceSettings(props: {
 			<div className="grid gap-4 md:grid-cols-2">
 				<Select
 					label={t(M.format)}
+					disabled={props.busy}
 					{...(props.assumed ? { description: t(M.formatAssumed) } : {})}
 					value={block.format}
 					onValueChange={(v: unknown) => {
@@ -151,6 +159,7 @@ export function SourceSettings(props: {
 				</Select>
 				{block.format === "json" || block.format === "xml" ? (
 					<TextSetting
+						disabled={props.busy}
 						label={t(M.records)}
 						description={t(block.format === "json" ? M.recordsJsonHint : M.recordsXmlHint)}
 						value={block.records ?? ""}
@@ -160,12 +169,14 @@ export function SourceSettings(props: {
 				{block.format === "xlsx" ? (
 					<>
 						<TextSetting
+							disabled={props.busy}
 							label={t(M.sheet)}
 							description={t(M.sheetHint)}
 							value={block.sheet === undefined ? "" : String(block.sheet)}
 							onCommit={(text) => set({ sheet: text === "" ? undefined : sheetOf(text) })}
 						/>
 						<TextSetting
+							disabled={props.busy}
 							label={t(M.headerRow)}
 							description={t(M.headerRowHint)}
 							type="number"
@@ -175,6 +186,7 @@ export function SourceSettings(props: {
 					</>
 				) : null}
 				<TextSetting
+					disabled={props.busy}
 					label={t(M.filter)}
 					description={t(M.filterHint)}
 					value={block.filter ?? ""}

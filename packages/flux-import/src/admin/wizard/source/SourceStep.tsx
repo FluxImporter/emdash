@@ -94,24 +94,23 @@ export function SourceStep() {
 	const [pending, setPending] = useState(0);
 	const [error, setError] = useState<Described | null>(null);
 	const [paste, setPaste] = useState<Paste>({ format: "csv", text: "" });
-	const sampling = useRef(0);
 	const busy = pending > 0;
 
-	/** Samples `c` read as `b`; a sample that a later one replaced changes nothing. */
+	/**
+	 * Samples `c` read as `b`. One at a time: every control that starts a request is disabled
+	 * while one runs, so no reply can answer after a later one.
+	 */
 	const sample = useCallback(
 		async (c: SourceChoice, b: SourceBlock) => {
-			const mine = ++sampling.current;
 			const isSource = () => latest.current.source?.uploadId === c.uploadId;
 			let reply: Awaited<ReturnType<typeof api.sample>>;
 			try {
 				reply = await api.sample({ uploadId: c.uploadId, n: SAMPLE_MAX, source: b });
 			} catch (e) {
-				if (mine !== sampling.current) return;
 				// The wizard's source no longer has a sample that fits its settings.
 				if (isSource()) dispatch({ type: "sourceBlockChanged", sourceBlock: b, columns: null });
 				throw e;
 			}
-			if (mine !== sampling.current) return;
 			const columns = sampleColumns(reply, b.format);
 			dispatch(
 				isSource()
@@ -186,7 +185,13 @@ export function SourceStep() {
 			</div>
 			{error === null ? null : <ErrorNote error={error} />}
 			{choice === null ? null : (
-				<SourceSettings choice={choice} block={block} assumed={assumed} onChange={changeBlock} />
+				<SourceSettings
+					choice={choice}
+					block={block}
+					assumed={assumed}
+					busy={busy}
+					onChange={changeBlock}
+				/>
 			)}
 			{sampled === null ? null : <SamplePreview columns={sampled} format={block.format} />}
 			<TemplatePicker enabled={usable} busy={busy} run={run} />

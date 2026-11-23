@@ -56,7 +56,10 @@ function TakenOffer({
 }: TabProps & { name: string; href: string | null; credential: string | null }) {
 	const t = useT();
 	const sources = useAllSources();
-	if (sources.isPending) return <Loader aria-label={t(M.loadingSources)} />;
+	// While it refetches, a cached list may predate the source with this name.
+	if (sources.isPending || sources.isFetching) {
+		return <Loader aria-label={t(M.loadingSources)} />;
+	}
 	const row = sources.data?.find((s) => s.name === name);
 	if (row === undefined) {
 		return <Banner variant="alert" description={t(M.nameTakenGone, { name })} />;
