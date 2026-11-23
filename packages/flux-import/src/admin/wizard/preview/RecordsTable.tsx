@@ -1,19 +1,23 @@
 import { Banner, Button, Loader, Pagination, Table, Tabs } from "@cloudflare/kumo";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import type { RecordRow, RecordStatus } from "../../../engine/types.js";
+import type { RecordError, RecordRow, RecordStatus } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { isRetryable, redact } from "../../api-error.js";
-import { describeError } from "../../errors.js";
-import { type Msg, useT } from "../../i18n.js";
+import { describeError, describeWarning, WARNING_MESSAGES } from "../../errors.js";
+import { type Msg, useT, type Values } from "../../i18n.js";
 import { M } from "./messages.js";
 
 /** The longest value a change shows; longer ones are cut, with "…" as the last character. */
 const VALUE_MAX = 120;
 
+/**
+ * `jobs/records` filters by status. A dry run's missing-phase rows are `planned` (with action
+ * `trash` or `unpublish`) or `unchanged`, so no status selects them: the counts show them instead.
+ */
 type Filter =
 	| "all"
-	| Extract<RecordStatus, "planned" | "failed" | "conflict" | "locked" | "filtered" | "removed">;
+	| Extract<RecordStatus, "planned" | "failed" | "conflict" | "locked" | "filtered">;
 
 const FILTERS: readonly { value: Filter; msg: Msg }[] = [
 	{ value: "all", msg: M.filterAll },
@@ -22,7 +26,6 @@ const FILTERS: readonly { value: Filter; msg: Msg }[] = [
 	{ value: "conflict", msg: M.filterConflict },
 	{ value: "locked", msg: M.filterLocked },
 	{ value: "filtered", msg: M.filterFiltered },
-	{ value: "removed", msg: M.filterRemoved },
 ];
 
 const isFilter = (value: string): value is Filter => FILTERS.some((f) => f.value === value);
@@ -30,11 +33,29 @@ const isFilter = (value: string): value is Filter => FILTERS.some((f) => f.value
 /** As `queries.ts`: an offline error, a 429 or a 5xx is retried once; anything else is final. */
 const retry = (failureCount: number, error: Error) => isRetryable(error) && failureCount < 1;
 
-/** The action a dry-run row names (Fact D5): what it would do, or why it would not. */
-function actionOf(row: Pick<RecordRow, "status" | "action">): Msg | null {
+/**
+ * The action a dry-run row names (Fact D5; engine `missing.ts`): what it would do, or why it
+ * would not. A missing-phase row is `planned` with `trash` or `unpublish`, or `unchanged`.
+ */
+function actionOf(row: Pick<RecordRow, "status" | "action">): Msg {
 	switch (row.status) {
-		case "removed":
-			return row.action === "trash" ? M.missingTrash : M.missingUnpublish;
+		case "planned":
+			switch (row.action) {
+				case "create":
+					return M.create;
+				case "update":
+					return M.update;
+				case "unchanged":
+					return M.unchanged;
+				case "trash":
+					return M.missingTrash;
+				case "unpublish":
+					return M.missingUnpublish;
+				default:
+					return M.otherAction;
+			}
+		case "unchanged":
+			return M.unchanged;
 		case "failed":
 			return M.failed;
 		case "conflict":
@@ -43,14 +64,15 @@ function actionOf(row: Pick<RecordRow, "status" | "action">): Msg | null {
 			return M.locked;
 		case "filtered":
 			return M.filtered;
-		case "planned":
-			if (row.action === "create") return M.create;
-			if (row.action === "update") return M.update;
-			if (row.action === "unchanged") return M.unchanged;
-			return null;
 		default:
-			return null;
+			return M.otherAction;
 	}
+}
+
+/** A row warning's sentence, when the wizard has one for its code; others are not shown. */
+function warningOf(w: RecordError): { msg: Msg; values: Values } | null {
+	if (!Object.hasOwn(WARNING_MESSAGES, w.code)) return null;
+	return describeWarning({ code: w.code, ...(w.field === undefined ? {} : { fields: [w.field] }) });
 }
 
 /** A value as text, cut to `VALUE_MAX` characters; null when it is empty. */
@@ -108,14 +130,13 @@ export function RecordsTable(p: { jobId: string }) {
 			<Banner
 				variant="error"
 				title={t(e.msg, e.values)}
+				{...(e.detail === undefined ? {} : { description: e.detail })}
 				action={
 					<Button variant="secondary" onClick={() => void query.refetch()}>
 						{t(M.tryAgain)}
 					</Button>
 				}
-			>
-				{e.detail ?? null}
-			</Banner>
+			/>
 		);
 	} else if (query.data.items.length === 0) {
 		body = <p className="text-sm text-kumo-subtle">{t(M.noMatch)}</p>;
@@ -133,13 +154,11 @@ export function RecordsTable(p: { jobId: string }) {
 					</Table.Header>
 					<Table.Body>
 						{query.data.items.map((row) => {
-							const action = actionOf(row);
+							const warnings = (row.warnings ?? []).flatMap((w) => warningOf(w) ?? []);
 							return (
 								<Table.Row key={row.seq}>
 									<Table.Cell className="break-all">{row.sourceKey ?? t(M.noKey)}</Table.Cell>
-									<Table.Cell className="whitespace-nowrap">
-										{action === null ? row.status : t(action)}
-									</Table.Cell>
+									<Table.Cell className="whitespace-nowrap">{t(actionOf(row))}</Table.Cell>
 									<Table.Cell className="break-words">
 										{(row.changes ?? []).map((c) => (
 											<div key={c.field}>
@@ -151,18 +170,22 @@ export function RecordsTable(p: { jobId: string }) {
 											</div>
 										))}
 									</Table.Cell>
-									<Table.Cell className="break-words text-kumo-danger">
+									<Table.Cell className="break-words">
 										{(row.errors ?? []).map((e, i) => {
 											const message = redact(e.message);
 											return (
 												// biome-ignore lint/suspicious/noArrayIndexKey: a row's errors never reorder.
-												<div key={i}>
+												<div key={`e${i}`} className="text-kumo-danger">
 													{e.field === undefined
 														? message
 														: t(M.fieldError, { field: e.field, message })}
 												</div>
 											);
 										})}
+										{warnings.map((w, i) => (
+											// biome-ignore lint/suspicious/noArrayIndexKey: a row's warnings never reorder.
+											<div key={`w${i}`}>{t(w.msg, w.values)}</div>
+										))}
 									</Table.Cell>
 								</Table.Row>
 							);
@@ -175,13 +198,17 @@ export function RecordsTable(p: { jobId: string }) {
 
 	return (
 		<div className="space-y-4">
-			<Tabs
-				variant="segmented"
-				size="sm"
-				tabs={FILTERS.map((f) => ({ value: f.value, label: t(f.msg) }))}
-				value={filter}
-				onValueChange={choose}
-			/>
+			{/* Kumo's Tabs take no label of their own: the fieldset's legend names the filter. */}
+			<fieldset>
+				<legend className="sr-only">{t(M.filters)}</legend>
+				<Tabs
+					variant="segmented"
+					size="sm"
+					tabs={FILTERS.map((f) => ({ value: f.value, label: t(f.msg) }))}
+					value={filter}
+					onValueChange={choose}
+				/>
+			</fieldset>
 			{body}
 			<Pagination
 				page={page}

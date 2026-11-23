@@ -3,28 +3,58 @@ import { useEffect, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { ApiError, redact } from "../../api-error.js";
-import { describeError, describeJobError } from "../../errors.js";
-import { type Msg, useT } from "../../i18n.js";
+import { describeError, describeJobError, ERROR_MESSAGES } from "../../errors.js";
+import { type Msg, useT, type Values } from "../../i18n.js";
 import { useJobDriver } from "../../run-driver.js";
-import { useWizard } from "../context.js";
+import { DRY_RUN_KEY, useWizard } from "../context.js";
 import { StepFooter } from "../StepFooter.js";
 import { jobInput } from "../state.js";
 import { M } from "./messages.js";
 import { RecordsTable } from "./RecordsTable.js";
 
-/** The `once` key of the dry run's `jobs/create` (preflight F14; the provider forgets it). */
-const DRY_RUN_KEY = "dry-run";
+/** Job errors a resume cannot cure: the file is gone, or the template no longer fits. */
+const FINAL_JOB_ERRORS: ReadonlySet<string> = new Set(["source_missing", "invalid_template"]);
 
 /** The records a dry run read: every outcome but the missing phase's `removed`. */
 function totalOf(c: Counters): number {
 	return c.created + c.updated + c.unchanged + c.locked + c.conflict + c.failed + c.filtered;
 }
 
-/** The counts per action; "Missing → <action>" only when the template has a missing phase. */
+/**
+ * Why the missing phase would change nothing (engine `missing.ts`), or null when it applies. It
+ * is refused over the limit (`found × 100 > maxPercent × owned`, a dry run's base) or for another
+ * URL source's entries under the same owner, and skipped when not every record had a readable key.
+ */
+function missingNote(job: Job): { msg: Msg; values?: Values } | null {
+	const m = job.missing;
+	if (m?.verdict === "skipped") {
+		const unkeyed = job.unkeyed ?? 0;
+		return unkeyed > 0
+			? { msg: M.missingUnkeyed, values: { count: unkeyed } }
+			: { msg: M.missingNoKey };
+	}
+	if (m?.verdict !== "refused") return null;
+	const limit = job.missingLimit;
+	const max = limit === undefined || limit === false ? 0 : limit.maxPercent;
+	if (m.found * 100 > max * m.owned) {
+		const percent = Math.ceil((m.found * 100) / m.owned);
+		return {
+			msg: M.missingOverLimit,
+			values: { found: m.found, owned: m.owned, percent, max },
+		};
+	}
+	return { msg: M.missingForeign };
+}
+
+/**
+ * The counts per action; "Missing → <action>" only when the template has a missing phase, marked
+ * "Not applied", with the reason under the counts, when it was refused or skipped.
+ */
 function Counts(p: { job: Job }) {
 	const t = useT();
 	const c = p.job.counters;
 	const missing = p.job.template.rules?.missing?.action;
+	const note = missing === undefined ? null : missingNote(p.job);
 	const items: [Msg, number][] = [
 		[M.create, c.created],
 		[M.update, c.updated],
@@ -34,19 +64,22 @@ function Counts(p: { job: Job }) {
 		[M.locked, c.locked],
 		[M.filtered, c.filtered],
 	];
-	if (missing !== undefined) {
-		items.push([missing === "trash" ? M.missingTrash : M.missingUnpublish, c.removed ?? 0]);
-	}
+	const missingMsg = missing === "trash" ? M.missingTrash : M.missingUnpublish;
+	if (missing !== undefined) items.push([missingMsg, c.removed ?? 0]);
 	return (
-		<section aria-label={t(M.counts)}>
+		<section aria-label={t(M.counts)} className="space-y-2">
 			<dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
 				{items.map(([msg, n]) => (
 					<div key={msg.id} className="rounded-lg border border-kumo-line p-3">
 						<dt className="text-sm text-kumo-subtle">{t(msg)}</dt>
 						<dd className="text-2xl font-semibold tabular-nums">{n}</dd>
+						{note !== null && msg === missingMsg ? (
+							<dd className="text-sm text-kumo-subtle">{t(M.notApplied)}</dd>
+						) : null}
 					</div>
 				))}
 			</dl>
+			{note === null ? null : <p className="text-sm">{t(note.msg, note.values)}</p>}
 		</section>
 	);
 }
@@ -93,6 +126,8 @@ export function PreviewStep() {
 	const t = useT();
 	const { state, dispatch, once } = useWizard();
 	const [createError, setCreateError] = useState<unknown>(null);
+	const [resuming, setResuming] = useState(false);
+	const [resumeError, setResumeError] = useState<unknown>(null);
 	const { dryRun } = state;
 
 	// Created once per draft (F14): a remount while `jobs/create` is in flight sends no second
@@ -136,10 +171,65 @@ export function PreviewStep() {
 			driver.phase === "retrying");
 	const checking = creating || driving;
 	const total = dryRun?.total ?? null;
-	const failed =
-		job?.status === "failed" && job.error !== null ? describeJobError(job.error) : null;
+	const canRun = !checking && total !== null && total > 0;
+	const stopped =
+		!driving &&
+		job !== null &&
+		(job.status === "failed" || job.status === "paused" || job.status === "cancelled")
+			? job
+			: null;
 	const invalid = createError instanceof ApiError && createError.code === "INVALID_TEMPLATE";
 	const warnings = state.saved?.warnings ?? [];
+
+	let reason: Msg | null = null;
+	if (!canRun) {
+		if (checking) reason = M.runWaiting;
+		else if (total === 0) reason = M.nothingToRun;
+		else reason = M.runBlocked;
+	}
+
+	let stoppedMsg: { msg: Msg; detail?: string } | null = null;
+	let retryable = false;
+	if (stopped?.status === "failed") {
+		stoppedMsg =
+			stopped.error === null ? { msg: ERROR_MESSAGES.unknown! } : describeJobError(stopped.error);
+		retryable = stopped.error === null || !FINAL_JOB_ERRORS.has(stopped.error.code);
+	} else if (stopped !== null) {
+		stoppedMsg = { msg: stopped.status === "paused" ? M.paused : M.cancelled };
+		retryable = true;
+	}
+
+	/**
+	 * A failed or paused dry run is resumed (`jobs/resume` allows both), then driven again; a
+	 * cancelled one cannot be, so a new one is created, once for this job.
+	 */
+	const tryAgain = async () => {
+		if (stopped === null || jobId === null) return;
+		setResumeError(null);
+		setResuming(true);
+		try {
+			if (stopped.status === "cancelled") {
+				const draft = state;
+				await once(`${DRY_RUN_KEY}:again:${jobId}`, async () => {
+					const input = jobInput(draft, true);
+					const created = await api.createJob(input);
+					dispatch({
+						type: "dryRunStarted",
+						jobId: created.id,
+						uploadId: input.uploadId,
+						generation: draft.generation,
+					});
+				});
+			} else {
+				await api.resume({ id: jobId });
+				driver.start();
+			}
+		} catch (error) {
+			setResumeError(error);
+		} finally {
+			setResuming(false);
+		}
+	};
 
 	return (
 		<div className="space-y-4">
@@ -165,21 +255,34 @@ export function PreviewStep() {
 			{driver.phase === "error" ? (
 				<ErrorNotice error={driver.error} onRetry={driver.start} />
 			) : null}
-			{failed === null ? null : (
+			{stoppedMsg === null ? null : (
 				<Banner
 					variant="error"
-					title={t(failed.msg)}
-					{...(failed.detail === undefined ? {} : { description: failed.detail })}
+					title={t(stoppedMsg.msg)}
+					{...(stoppedMsg.detail === undefined ? {} : { description: stoppedMsg.detail })}
+					action={
+						retryable ? (
+							<Button variant="secondary" disabled={resuming} onClick={() => void tryAgain()}>
+								{t(M.tryAgain)}
+							</Button>
+						) : undefined
+					}
 				/>
 			)}
-			{checking ? (
-				<div role="status" className="flex items-center gap-2 text-sm text-kumo-subtle">
-					<span aria-hidden="true">
-						<Loader size="sm" />
-					</span>
-					<span>{t(M.checking)}</span>
-				</div>
-			) : null}
+			{resumeError === null || stopped === null ? null : <ErrorNotice error={resumeError} />}
+			{/* One live region throughout, so the end of the dry run is announced. */}
+			<div role="status" className="flex items-center gap-2 text-sm text-kumo-subtle">
+				{checking ? (
+					<>
+						<span aria-hidden="true">
+							<Loader size="sm" />
+						</span>
+						<span>{t(M.checking)}</span>
+					</>
+				) : total === null ? null : (
+					<span>{t(M.finished, { total })}</span>
+				)}
+			</div>
 			{job === null ? null : <Counts job={job} />}
 			{total === 0 ? <Empty title={t(M.noRecords)} description={t(M.noRecordsHint)} /> : null}
 			{total !== null && total > 0 && jobId !== null ? (
@@ -191,8 +294,8 @@ export function PreviewStep() {
 				</Button>
 			</div>
 			<StepFooter
-				canNext={!checking && total !== null && total > 0}
-				{...(total === 0 ? { reason: t(M.nothingToRun) } : {})}
+				canNext={canRun}
+				{...(reason === null ? {} : { reason: t(reason) })}
 				nextLabel={t(M.runImport)}
 				onNext={() => dispatch({ type: "stepChanged", step: "run" })}
 			/>

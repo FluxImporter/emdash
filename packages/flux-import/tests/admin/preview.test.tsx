@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import type { Dispatch } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { api } from "../../src/admin/api.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { PreviewStep } from "../../src/admin/wizard/preview/PreviewStep.js";
 import {
@@ -10,7 +11,7 @@ import {
 	type WizardState,
 } from "../../src/admin/wizard/state.js";
 import { templateSchema } from "../../src/engine/template.js";
-import type { Counters, Job, RecordRow } from "../../src/engine/types.js";
+import type { Counters, Job, MissingState, RecordRow } from "../../src/engine/types.js";
 import { job, UPLOAD_ID } from "./fixtures.js";
 import { fail, mockRoutes, type RouteCall, type RouteHandler, renderAdmin } from "./harness.js";
 
@@ -204,6 +205,7 @@ describe("PreviewStep", () => {
 						sourceKey: "a2",
 						action: "update",
 						changes: [{ field: "excerpt", before: "Old", after: long }],
+						warnings: [{ field: "published", code: "date_format_ambiguous", message: "ambiguous" }],
 					}),
 					row({
 						seq: 3,
@@ -214,9 +216,28 @@ describe("PreviewStep", () => {
 							{ code: "source_missing", message: `Upload ${UPLOAD_ID} not found` },
 						],
 					}),
-					row({ seq: 4, status: "removed", sourceKey: "gone", action: "unpublish" }),
-					row({ seq: 5, status: "removed", sourceKey: "old", action: "trash" }),
-					row({ seq: 6, status: "conflict", sourceKey: null }),
+					// The missing phase's rows (engine missing.ts): planned removals, and one left alone
+					// with a warning no Msg names, which is not shown.
+					row({
+						seq: 4,
+						sourceKey: "gone",
+						action: "unpublish",
+						changes: [{ field: "status", before: "published", after: "draft" }],
+					}),
+					row({
+						seq: 5,
+						sourceKey: "old",
+						action: "trash",
+						changes: [{ field: "status", before: "published", after: "trashed" }],
+					}),
+					row({
+						seq: 6,
+						status: "unchanged",
+						sourceKey: "kept",
+						warnings: [{ code: "missing_edited", message: "Left alone: the entry changed" }],
+					}),
+					row({ seq: 7, status: "conflict", sourceKey: null }),
+					row({ seq: 8, status: "reverted", sourceKey: "odd" }),
 				],
 				hasMore: false,
 			}),
@@ -245,16 +266,24 @@ describe("PreviewStep", () => {
 			"title: (empty) → Helloexcerpt: (empty) → Short",
 			"",
 		]);
-		expect(cells[1]).toEqual(["a2", "Update", `excerpt: Old → ${"x".repeat(119)}…`, ""]);
+		expect(cells[1]).toEqual([
+			"a2",
+			"Update",
+			`excerpt: Old → ${"x".repeat(119)}…`,
+			"The date format is unclear for these fields; check it: published.",
+		]);
 		expect(cells[2]).toEqual([
 			"a3",
 			"Failed",
 			"",
 			"title: The field is requiredUpload the uploaded file not found",
 		]);
-		expect(cells[3]).toEqual(["gone", "Missing → Unpublish", "", ""]);
-		expect(cells[4]).toEqual(["old", "Missing → Trash", "", ""]);
-		expect(cells[5]).toEqual(["(no key)", "Conflict", "", ""]);
+		expect(cells[3]).toEqual(["gone", "Missing → Unpublish", "status: published → draft", ""]);
+		expect(cells[4]).toEqual(["old", "Missing → Trash", "status: published → trashed", ""]);
+		expect(cells[5]).toEqual(["kept", "Unchanged", "", ""]);
+		expect(cells[6]).toEqual(["(no key)", "Conflict", "", ""]);
+		expect(cells[7]).toEqual(["odd", "Other", "", ""]);
+		expect(screen.queryByText("Not applied")).toBeNull();
 		expect(document.body.textContent).not.toContain(UPLOAD_ID);
 	});
 
@@ -281,6 +310,12 @@ describe("PreviewStep", () => {
 		});
 		const { user } = renderPreview();
 		expect(await screen.findByRole("cell", { name: "a1" })).toBeVisible();
+		const filters = screen.getByRole("group", { name: "Show records" });
+		expect(
+			within(filters)
+				.getAllByRole("tab")
+				.map((tab) => tab.textContent),
+		).toEqual(["All", "Would change", "Failed", "Conflicts", "Locked", "Filtered"]);
 		const previous = screen.getByRole("button", { name: "Previous page" });
 		const next = screen.getByRole("button", { name: "Next page" });
 		expect(previous).toBeDisabled();
@@ -303,6 +338,103 @@ describe("PreviewStep", () => {
 			{ id: JOB_ID, cursor: "c2" },
 			{ id: JOB_ID, status: "failed" },
 		]);
+	});
+
+	it.each<[string, Partial<MissingState>, Partial<Job>, string]>([
+		[
+			"refused over the limit",
+			{ verdict: "refused", owned: 3, found: 1, removed: 1 },
+			{},
+			"A real run would leave these entries alone: 1 of 3 (34%) are missing from the source, more than the limit of 20%. Raise the limit in Options to apply it.",
+		],
+		[
+			"refused for another source's entries",
+			// Exactly at the limit (1 of 5 is 20%): not over it, so another source's entries.
+			{ verdict: "refused", owned: 5, found: 1 },
+			{},
+			"Missing entries are left alone: this owner also has entries from another URL source.",
+		],
+		[
+			"skipped for unkeyed records",
+			{ verdict: "skipped" },
+			{ unkeyed: 3 },
+			"Missing entries would not be checked: 3 records have no readable key, so their entries may still be in the source.",
+		],
+		[
+			"skipped for no keyed record",
+			{ verdict: "skipped" },
+			{},
+			"Missing entries would not be checked: no record has a readable key.",
+		],
+	])(
+		"explains a missing phase %s and marks it not applied",
+		async (_name, missing, over, sentence) => {
+			const template = templateSchema.parse({
+				...DRAFT_TEMPLATE,
+				rules: { owner: "wizard-posts-en", missing: { action: "trash" } },
+			});
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () =>
+					completed(
+						{ created: 2, removed: missing.removed ?? 0 },
+						{
+							template,
+							missingLimit: { maxPercent: 20 },
+							missing: {
+								stage: "done",
+								fromSeq: 2,
+								owned: 0,
+								found: 0,
+								rows: 0,
+								removed: 0,
+								...missing,
+							},
+							...over,
+						},
+					),
+				"jobs/records": () => ({ items: [], hasMore: false }),
+			});
+			renderPreview();
+			const counts = await screen.findByRole("region", { name: "What the import would do" });
+			expect(within(counts).getByText(sentence)).toBeVisible();
+			const card = within(counts).getByText("Missing → Trash").parentElement;
+			expect(card).toHaveTextContent("Not applied");
+			expect(within(counts).getAllByText("Not applied")).toHaveLength(1);
+			expect(count("Missing → Trash")).toBe(String(missing.removed ?? 0));
+		},
+	);
+
+	it("says nothing more when the missing phase applies", async () => {
+		const template = templateSchema.parse({
+			...DRAFT_TEMPLATE,
+			rules: { owner: "wizard-posts-en", missing: { action: "trash" } },
+		});
+		mockRoutes({
+			"jobs/create": () => job(),
+			"jobs/next": () =>
+				completed(
+					{ created: 2, removed: 1 },
+					{
+						template,
+						missingLimit: { maxPercent: 25 },
+						missing: {
+							stage: "done",
+							fromSeq: 2,
+							owned: 10,
+							found: 1,
+							rows: 1,
+							removed: 1,
+							verdict: "act",
+						},
+					},
+				),
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		renderPreview();
+		await waitFor(() => expect(count("Missing → Trash")).toBe("1"));
+		expect(screen.queryByText("Not applied")).toBeNull();
+		expect(screen.queryByText(/Missing entries|would leave these entries/)).toBeNull();
 	});
 
 	it("shows No records and disables Run for a dry run with zero records (Review Focus 3)", async () => {
@@ -331,9 +463,15 @@ describe("PreviewStep", () => {
 		expect(
 			await screen.findByText("Checking every record. Nothing is imported yet."),
 		).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
+		const run = screen.getByRole("button", { name: "Run import" });
+		expect(run).toBeDisabled();
+		expect(run).toHaveAccessibleDescription("Wait for the dry run to finish");
+		const status = screen.getByRole("status");
 		reply.resolve(completed({ created: 1 }));
 		await waitFor(() => expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled());
+		// The same live region announces the end.
+		expect(status).toBeInTheDocument();
+		expect(status).toHaveTextContent("Dry run finished. Records checked: 1");
 	});
 
 	it("goes to Run on Run import", async () => {
@@ -415,29 +553,143 @@ describe("PreviewStep", () => {
 		expect(
 			await screen.findByText("The import cannot do that in its current state."),
 		).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Run import" })).toHaveAccessibleDescription(
+			"The dry run did not finish",
+		);
 		await user.click(screen.getByRole("button", { name: "Try again" }));
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
 	});
 
-	it("shows a failed dry run's error in plain words, without the upload ID", async () => {
+	it.each([
+		["source_missing", "The file for this import is no longer available; start a new import."],
+		["invalid_template", "The import settings no longer fit the collection."],
+	])(
+		"shows a failed dry run's %s in plain words, without the upload ID or Try again",
+		async (code, sentence) => {
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () =>
+					job({ status: "failed", error: { code, message: `Upload ${UPLOAD_ID} not found` } }),
+			});
+			renderPreview();
+			expect(await screen.findByText(sentence)).toBeVisible();
+			expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
+			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+			expect(probe.state.dryRun?.total).toBeNull();
+			expect(document.body.textContent).not.toContain(UPLOAD_ID);
+		},
+	);
+
+	it.each<[string, Partial<Job>, string]>([
+		[
+			"failed",
+			{ status: "failed", error: { code: "internal", message: "boom" } },
+			"The import stopped after repeated unexpected errors. Resume it to try again.",
+		],
+		["failed without an error", { status: "failed", error: null }, "Something went wrong."],
+		["paused", { status: "paused" }, "The dry run is paused."],
+	])("resumes a %s dry run with Try again, then drives on", async (_name, stopped, sentence) => {
+		let nexts = 0;
+		const resumed = deferred<Job>();
+		const { calls } = mockRoutes({
+			"jobs/create": () => job(),
+			"jobs/next": () => {
+				nexts += 1;
+				return nexts === 1 ? job(stopped) : resumed.promise;
+			},
+			"jobs/resume": () => job({ status: "running" }),
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderPreview();
+		expect(await screen.findByText(sentence)).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		// Driving again: the stopped job's notice goes before the next reply lands.
+		await waitFor(() => expect(nexts).toBe(2));
+		expect(screen.queryByText(sentence)).toBeNull();
+		expect(screen.getByText("Checking every record. Nothing is imported yet.")).toBeVisible();
+		resumed.resolve(completed({ created: 1 }));
+		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
+		expect(calls.filter((c) => c.route === "jobs/resume").map((c) => c.body)).toEqual([
+			{ id: JOB_ID },
+		]);
+		expect(created(calls)).toHaveLength(1);
+	});
+
+	it("sends one resume while it is in flight, and shows a failed resume in plain words", async () => {
+		const reply = deferred<Response>();
+		const { calls } = mockRoutes({
+			"jobs/create": () => job(),
+			"jobs/next": () => job({ status: "paused" }),
+			"jobs/resume": () => reply.promise,
+		});
+		const { user } = renderPreview();
+		await user.click(await screen.findByRole("button", { name: "Try again" }));
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+		reply.resolve(fail("INVALID_TRANSITION", "Cannot resume a completed job", 409));
+		expect(
+			await screen.findByText("The import cannot do that in its current state."),
+		).toBeVisible();
+		expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+		expect(calls.filter((c) => c.route === "jobs/resume")).toHaveLength(1);
+	});
+
+	it("a remount while the new dry run for a cancelled one is being created sends one jobs/create", async () => {
+		const again = deferred<Job>();
+		const { calls } = mockRoutes({
+			"jobs/create": () => (created(calls).length === 1 ? job() : again.promise),
+			"jobs/next": (body) => {
+				const { id } = body as { id: string };
+				return id === JOB_ID ? job({ status: "cancelled" }) : completed({ created: 1 }, { id });
+			},
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderPreview();
+		await user.click(await screen.findByRole("button", { name: "Try again" }));
+		await waitFor(() => expect(created(calls)).toHaveLength(2));
+		act(() => probe.dispatch({ type: "stepChanged", step: "options" }));
+		act(() => probe.dispatch({ type: "stepChanged", step: "preview" }));
+		await user.click(await screen.findByRole("button", { name: "Try again" }));
+		again.resolve(job({ id: "JOB-AGAIN" }));
+		await waitFor(() => expect(probe.state.dryRun).toMatchObject({ jobId: "JOB-AGAIN", total: 1 }));
+		expect(created(calls)).toHaveLength(2);
+	});
+
+	it("shows a failed records read in plain words, with its detail, and reads it again", async () => {
+		let reads = 0;
 		mockRoutes({
 			"jobs/create": () => job(),
-			"jobs/next": () =>
-				job({
-					status: "failed",
-					error: { code: "source_missing", message: `Upload ${UPLOAD_ID} not found` },
-				}),
+			"jobs/next": () => completed({ created: 1 }),
+			"jobs/records": () => {
+				reads += 1;
+				return reads === 1
+					? fail("ODD_FAILURE", "The odd detail", 400)
+					: { items: [row({ sourceKey: "a1", action: "create" })], hasMore: false };
+			},
 		});
-		renderPreview();
-		expect(
-			await screen.findByText(
-				"The file for this import is no longer available; start a new import.",
-			),
-		).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
-		expect(probe.state.dryRun?.total).toBeNull();
-		expect(document.body.textContent).not.toContain(UPLOAD_ID);
+		const { user } = renderPreview();
+		expect(await screen.findByText("Something went wrong.")).toBeVisible();
+		expect(screen.getByText("The odd detail")).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(await screen.findByRole("cell", { name: "a1" })).toBeVisible();
+	});
+
+	it("starts a new dry run when Try again is pressed on a cancelled one", async () => {
+		const { calls } = mockRoutes({
+			"jobs/create": () => job({ id: created(calls).length === 1 ? JOB_ID : "JOB-AGAIN" }),
+			"jobs/next": (body) => {
+				const { id } = body as { id: string };
+				return id === JOB_ID ? job({ status: "cancelled" }) : completed({ created: 1 }, { id });
+			},
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderPreview();
+		expect(await screen.findByText("The dry run was cancelled.")).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		await waitFor(() => expect(probe.state.dryRun).toMatchObject({ jobId: "JOB-AGAIN", total: 1 }));
+		expect(created(calls)).toHaveLength(2);
+		expect(created(calls)[1]?.body).toEqual(created(calls)[0]?.body);
+		expect(screen.queryByText("The dry run was cancelled.")).toBeNull();
 	});
 
 	it("discards the dry run when the user goes back and changes the mapping", async () => {
@@ -503,6 +755,7 @@ describe("PreviewStep", () => {
 
 	it("drops a dry run created for an older draft and creates one for the new draft", async () => {
 		const first = deferred<Job>();
+		const createJob = vi.spyOn(api, "createJob");
 		const { calls } = mockRoutes({
 			"jobs/create": () => (created(calls).length === 1 ? first.promise : job({ id: "JOB-NEW" })),
 			"jobs/next": (body) => completed({ created: 1 }, { id: (body as { id: string }).id }),
@@ -514,7 +767,10 @@ describe("PreviewStep", () => {
 		await waitFor(() => expect(probe.state.dryRun?.jobId).toBe("JOB-NEW"));
 		first.resolve(job({ id: "JOB-OLD" }));
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
-		await new Promise((r) => setTimeout(r, 20));
+		// The older reply has been handled (and dropped).
+		await waitFor(() =>
+			expect(createJob.mock.settledResults.filter((r) => r.type === "fulfilled")).toHaveLength(2),
+		);
 		expect(probe.state.dryRun?.jobId).toBe("JOB-NEW");
 		expect(calls.filter((c) => c.route === "jobs/next").map((c) => c.body)).not.toContainEqual({
 			id: "JOB-OLD",

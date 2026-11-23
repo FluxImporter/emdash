@@ -11,7 +11,7 @@ import {
 import { initialState, reducer, type WizardAction, type WizardState } from "./state.js";
 
 /** The `once` key of the dry run's job creation, forgotten whenever the draft changes. */
-const DRY_RUN_KEY = "dry-run";
+export const DRY_RUN_KEY = "dry-run";
 
 export interface Once {
 	/** Runs `run` once per key: a second call while it is in flight, or once it is done, gets the same promise. */
