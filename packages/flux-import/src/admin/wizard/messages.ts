@@ -1,4 +1,5 @@
 import type { Msg } from "../i18n.js";
+import type { StepId } from "./state.js";
 
 /** The wizard's shared messages: the step footer and Map's blockers (preflight F11). */
 export const M = {
@@ -27,3 +28,23 @@ export const M = {
 		message: "Choose the source key that names the record each translation belongs to",
 	},
 } satisfies Record<string, Msg>;
+
+/** The wizard shell's messages: the step bar, the step names and the access probe (preflight F11). */
+export const SHELL = {
+	steps: { id: "flux-import.shell.steps", message: "Steps" },
+	checkingAccess: { id: "flux-import.shell.checking-access", message: "Checking access" },
+	tryAgain: { id: "flux-import.shell.try-again", message: "Try again" },
+	step: {
+		source: { id: "flux-import.shell.step-source", message: "Source" },
+		target: { id: "flux-import.shell.step-target", message: "Target" },
+		map: { id: "flux-import.shell.step-map", message: "Map" },
+		options: { id: "flux-import.shell.step-options", message: "Options" },
+		preview: { id: "flux-import.shell.step-preview", message: "Preview" },
+		run: { id: "flux-import.shell.step-run", message: "Run" },
+	},
+} satisfies {
+	steps: Msg;
+	checkingAccess: Msg;
+	tryAgain: Msg;
+	step: Record<StepId, Msg>;
+};
