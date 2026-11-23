@@ -6,6 +6,7 @@ import { TEMPLATE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
 import type { ApplyResult } from "../../src/plugin/schema-apply.js";
 import { TICK_BATCH_CAP, WORKERS_BATCH_CAP } from "../../src/plugin/service.js";
 import type { SourceRow } from "../../src/plugin/sources.js";
+import type { SuggestReply } from "../../src/plugin/suggest.js";
 import { type SavedResult, TEMPLATE_MAX_BYTES } from "../../src/plugin/templates.js";
 import { TYPES_CSV, TYPES_CSV_STORED, typesTemplate } from "../fixtures/field-types.js";
 import { jsonTemplate, productsJson, withSelection } from "../fixtures/formats.js";
@@ -49,6 +50,7 @@ import {
 } from "../fixtures/translations.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
+import { FakeAiServer } from "../integration/fake-ai.js";
 import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import {
@@ -1107,6 +1109,98 @@ describe("workerd parity (D1, R2)", () => {
 		} finally {
 			await agent.close();
 			await revokeToken(client, minted.id);
+		}
+	});
+
+	// A body that stalls waits 20.6 s; without the buffered read it would wait until the 30-minute
+	// suite timeout, so this test has its own.
+	it("suggests M6d mappings on workerd by name and through the pinned SDK, and lists the M6d tools", {
+		timeout: 180_000,
+	}, async () => {
+		const settings = (values: Record<string, unknown>) =>
+			client.api("PUT", "/_emdash/api/admin/plugins/flux-import/settings", { values });
+		const suggest = (input: Record<string, unknown>) =>
+			client.plugin<SuggestReply>("templates/suggest", input);
+		const codes = (r: SuggestReply) => r.warnings.map((w) => w.code);
+		const text = { collection: "cf_m6d", locale: "en", text: productsCsv(20) };
+		const fake = new FakeAiServer();
+		await fake.start();
+		try {
+			await client.createProducts("cf_m6d");
+			// Step 1: name matching; the draft saves and dry-runs on D1.
+			const plain = await suggest({ ...text, ai: false });
+			expect(plain).toMatchObject({ method: "fallback", sent: null, check: { problems: [] } });
+			const saved = await client.plugin<SavedResult>("templates/create", {
+				name: "CF M6d",
+				template: plain.template,
+			});
+			const { uploadId } = await client.paste("csv", productsCsv(20));
+			const dry = await client.plugin<Job>("jobs/create", {
+				uploadId,
+				templateId: saved.template.id,
+				dryRun: true,
+			});
+			expect(await client.runToEnd(dry.id)).toMatchObject({
+				status: "completed",
+				counters: { failed: 0 },
+			});
+
+			// Step 2: the SDK, evaluated on workerd, through guardedRequest to the fake (V7).
+			await settings({
+				aiProvider: "anthropic",
+				aiApiKey: "sk-test-cf",
+				aiModel: "",
+				aiBaseUrl: fake.baseUrl,
+			});
+			const ai = await suggest(text);
+			expect(ai).toMatchObject({
+				method: "ai",
+				ai: { provider: "anthropic", model: "claude-opus-5-5" },
+			});
+			const request = fake.requests.at(-1);
+			// Fact D1 / plan Ruling 2: a bearer token, never x-api-key.
+			expect(request?.headers.authorization).toBe("Bearer sk-test-cf");
+			expect(request?.headers["x-api-key"]).toBeUndefined();
+			expect(request?.headers["anthropic-version"]).toBe("2026-10-21");
+			expect(request?.headers["user-agent"]).toBe("Anthropic/JS 1.5.0");
+			expect(request?.body).toMatchObject({ max_tokens: 16_000, fallbacks: "default" });
+			// guardedRequest's redirect: "manual" on workerd: one request, the 307 not followed.
+			fake.scenario = "redirect";
+			const before = fake.requests.length;
+			expect(codes(await suggest(text))).toContain("ai_provider_error");
+			expect(fake.requests.length).toBe(before + 1);
+			// Review Focus 1 on workerd: a body that stalls after its headers times out. The SDK's
+			// APIConnectionTimeoutError has no cause, so only its class can name it (Fact D5).
+			fake.scenario = "stall";
+			const stalled = await suggest(text);
+			expect(codes(stalled)).toContain("ai_timeout");
+			fake.scenario = "valid";
+			await settings({
+				aiProvider: "openai-compatible",
+				aiModel: "local-model",
+				aiBaseUrl: `${fake.baseUrl}/v1`,
+			});
+			expect(await suggest(text)).toMatchObject({
+				method: "ai",
+				ai: { provider: "openai-compatible" },
+			});
+
+			// Step 8: the two read tools answer on workerd.
+			await enableTools(client);
+			const minted = await mintToken(client, ["mcp:tools:flux-import"]);
+			const agent = await connectMcp(inject("cfBaseUrl"), minted.token);
+			try {
+				expect(await tool(agent, "list_sources", {})).toMatchObject({ isError: false });
+				expect(await tool(agent, "list_schedules", {})).toMatchObject({ isError: false });
+			} finally {
+				await agent.close();
+				await revokeToken(client, minted.id);
+			}
+		} finally {
+			await settings({ aiProvider: "none", aiApiKey: null, aiModel: null, aiBaseUrl: null }).catch(
+				() => {},
+			);
+			await fake.stop();
 		}
 	});
 
