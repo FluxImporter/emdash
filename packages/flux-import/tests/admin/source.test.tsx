@@ -1,0 +1,676 @@
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { PASTE_MAX_BYTES, SAMPLE_MAX } from "../../src/admin/limits.js";
+import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
+import { formatOf, formatOfUrl } from "../../src/admin/wizard/source/SourceSettings.js";
+import { SourceStep } from "../../src/admin/wizard/source/SourceStep.js";
+import { nameFromUrl } from "../../src/admin/wizard/source/UrlTab.js";
+import { templateSchema } from "../../src/engine/template.js";
+import { sampleCsv, UPLOAD_ID } from "./fixtures.js";
+import { fail, mockRoutes, type RouteHandler, renderAdmin } from "./harness.js";
+
+/** A second, well-formed upload ID (never shown). */
+const FETCHED_ID = `01JZ0000000000000000000001${"1".repeat(32)}`;
+
+/** The parts of the wizard's state these tests read, as text. */
+function StateView() {
+	const { state } = useWizard();
+	return (
+		<output data-testid="state">
+			{JSON.stringify({
+				step: state.step,
+				source: state.source,
+				sourceBlock: state.sourceBlock,
+				keys: state.columns?.map((c) => c.key) ?? null,
+				target: state.target,
+				rows: Object.keys(state.rows),
+				base: state.base === null ? null : { id: state.base.id, revision: state.base.revision },
+			})}
+		</output>
+	);
+}
+
+function readState(): {
+	step: string;
+	source: { kind: string; uploadId: string; label: string } | null;
+	sourceBlock: Record<string, unknown>;
+	keys: string[] | null;
+	target: { collection: string; locale: string } | null;
+	rows: string[];
+	base: { id: string; revision: number } | null;
+} {
+	return JSON.parse(screen.getByTestId("state").textContent ?? "null");
+}
+
+function renderSource() {
+	return renderAdmin(
+		<WizardProvider>
+			<SourceStep />
+			<StateView />
+		</WizardProvider>,
+	);
+}
+
+const CSV_SAMPLE = sampleCsv(
+	["id", "title"],
+	[
+		["1", "First"],
+		["2", "Second"],
+	],
+);
+
+/** The routes every test answers, plus `extra`. */
+function routes(extra: Record<string, RouteHandler>) {
+	return mockRoutes({
+		"templates/list": () => ({ items: [], hasMore: false }),
+		upload: () => ({ uploadId: UPLOAD_ID, bytes: 20 }),
+		"sources/sample": () => CSV_SAMPLE,
+		...extra,
+	});
+}
+
+const fileInput = () => screen.getByLabelText<HTMLInputElement>("Choose a file");
+
+/** Chooses `name` in the Upload tab. */
+function chooseFile(name: string, text = "id,title\n1,First\n") {
+	const file = new File([text], name);
+	fireEvent.change(fileInput(), { target: { files: [file] } });
+	return file;
+}
+
+const next = () => screen.getByRole("button", { name: "Next" });
+
+/** Opens the Upload tab; returns its file input. */
+async function openUpload(user: { click(e: Element): Promise<void> }) {
+	await user.click(screen.getByRole("tab", { name: "Upload file" }));
+	return fileInput();
+}
+
+function chooseFileIn(input: HTMLInputElement) {
+	fireEvent.change(input, { target: { files: [new File(["id,title\n1,a\n"], "posts.csv")] } });
+}
+
+/** A promise and the function that settles it. */
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((r) => {
+		resolve = r;
+	});
+	return { promise, resolve };
+}
+
+const SAVED_TEMPLATE = {
+	id: "01JZ000000000000000000TPL1",
+	name: "Posts from CSV",
+	template: templateSchema.parse({
+		version: 1,
+		collection: "posts",
+		locale: "en",
+		key: { from: "id" },
+		fields: { title: { from: "title", type: "text" } },
+	}),
+	revision: 3,
+	collection: "posts",
+	locale: "en",
+	format: "csv",
+	createdAt: "2026-11-23T12:00:00.000Z",
+	updatedAt: "2026-11-23T12:00:00.000Z",
+	createdBy: "u1",
+	updatedBy: "u1",
+};
+const { template: _, ...SUMMARY } = SAVED_TEMPLATE;
+
+const SOURCE_ROW = {
+	id: "01JZ00000000000000000SRC01",
+	name: "example.com/feeds/products.json",
+	url: "https://example.com/feeds/products.json",
+	createdAt: "2026-11-23T12:00:00.000Z",
+	updatedAt: "2026-11-23T12:00:00.000Z",
+};
+
+describe("the Source step", () => {
+	it("uploads a file with its name, the CSRF header and progress, then samples it", async () => {
+		const reply = deferred<unknown>();
+		const { calls } = routes({ upload: () => reply.promise });
+		renderSource();
+		const file = chooseFile("posts.csv");
+		// The harness fires progress at half and at full size before it answers.
+		const meter = await screen.findByRole("meter");
+		await waitFor(() => expect(meter).toHaveAttribute("aria-valuenow", "100"));
+		reply.resolve({ uploadId: UPLOAD_ID, bytes: file.size });
+		await waitFor(() => expect(readState().keys).toEqual(["id", "title"]));
+		expect(screen.queryByRole("meter")).toBeNull();
+		expect(calls.filter((c) => c.route !== "templates/list")).toEqual([
+			{
+				method: "POST",
+				path: "/_emdash/api/flux-import/uploads?filename=posts.csv",
+				route: "upload",
+				body: file,
+			},
+			expect.objectContaining({
+				route: "sources/sample",
+				body: { uploadId: UPLOAD_ID, n: SAMPLE_MAX, source: { format: "csv" } },
+			}),
+		]);
+		expect(readState().source).toEqual({ kind: "upload", uploadId: UPLOAD_ID, label: "posts.csv" });
+		// The sample shows each key and its values.
+		const preview = screen.getByRole("table", { name: "Sample" });
+		expect(within(preview).getByText("title")).toBeInTheDocument();
+		expect(within(preview).getByText("Second")).toBeInTheDocument();
+		expect(next()).toBeEnabled();
+		await screen.findByText(/no saved templates/i);
+	});
+
+	it("detects the format from the extension: .ndjson and .jsonl read as JSON Lines", async () => {
+		const { calls } = routes({ "sources/sample": () => ({ records: [{ a: 1 }], paths: ["a"] }) });
+		renderSource();
+		chooseFile("feed.ndjson", '{"a":1}\n');
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "jsonl" }));
+		expect(calls.find((c) => c.route === "sources/sample")?.body).toMatchObject({
+			source: { format: "jsonl" },
+		});
+		expect(screen.getByRole("combobox", { name: "Format" })).toHaveTextContent("JSON Lines");
+	});
+
+	it("refuses a .txt file before sending it", async () => {
+		const { calls } = routes({});
+		renderSource();
+		chooseFile("notes.txt");
+		expect(
+			await screen.findByText(
+				"This kind of file cannot be imported. Use CSV, JSON, JSON Lines, XML or XLSX.",
+			),
+		).toBeVisible();
+		expect(calls.filter((c) => c.route !== "templates/list")).toEqual([]);
+		expect(fileInput()).toHaveAttribute("accept", ".csv,.json,.jsonl,.ndjson,.xml,.xlsx");
+		expect(next()).toBeDisabled();
+	});
+
+	it("creates and fetches a URL source, then samples the fetched upload", async () => {
+		const { calls } = routes({
+			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
+			"sources/create": () => SOURCE_ROW,
+			"sources/fetch": () => ({ changed: true, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
+			"sources/sample": () => ({ records: [{ sku: "A" }], paths: ["sku"] }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Address" }),
+			"https://example.com/feeds/products.json",
+		);
+		// The name is derived from the host and path, and stays editable.
+		expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(
+			"example.com/feeds/products.json",
+		);
+		await user.click(screen.getByRole("combobox", { name: "Credential" }));
+		await user.click(await screen.findByRole("option", { name: "feed-token" }));
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		await waitFor(() => expect(readState().keys).toEqual(["sku"]));
+		expect(calls.filter((c) => c.route.startsWith("sources/")).map((c) => c.body)).toEqual([
+			{
+				name: "example.com/feeds/products.json",
+				url: "https://example.com/feeds/products.json",
+				credential: "feed-token",
+			},
+			{ id: SOURCE_ROW.id },
+			{ uploadId: FETCHED_ID, n: SAMPLE_MAX, source: { format: "json" } },
+		]);
+		expect(readState().source).toEqual({
+			kind: "url",
+			uploadId: FETCHED_ID,
+			label: "example.com/feeds/products.json",
+		});
+	});
+
+	it("offers the saved source when the name is taken (CONFLICT 409)", async () => {
+		const { calls } = routes({
+			"credentials/list": () => [],
+			"sources/create": () =>
+				fail("CONFLICT", 'A source named "example.com/feeds/products.json" already exists', 409),
+			"sources/list": () => ({ items: [SOURCE_ROW], hasMore: false }),
+			"sources/fetch": () => ({ changed: false, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
+			"sources/sample": () => ({ records: [{ sku: "A" }], paths: ["sku"] }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Address" }),
+			"https://example.com/feeds/products.json",
+		);
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		expect(await screen.findByText(/a saved source is already named/i)).toBeVisible();
+		await user.click(await screen.findByRole("button", { name: "Use the saved source" }));
+		await waitFor(() => expect(readState().keys).toEqual(["sku"]));
+		expect(calls.find((c) => c.route === "sources/fetch")?.body).toEqual({ id: SOURCE_ROW.id });
+		expect(readState().source?.kind).toBe("saved");
+	});
+
+	it("does not offer XLSX for Paste and disables Next past 1 MiB of UTF-8", async () => {
+		const { calls } = routes({
+			"sources/paste": () => ({ uploadId: FETCHED_ID, bytes: 9 }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Paste" }));
+		await user.click(screen.getByRole("combobox", { name: "Format" }));
+		const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+		expect(options).toEqual(["CSV", "JSON", "JSON Lines", "XML"]);
+		await user.keyboard("{Escape}");
+
+		// A sampled source does not let Next past text that is too large to paste.
+		chooseFileIn(await openUpload(user));
+		await waitFor(() => expect(next()).toBeEnabled());
+		await user.click(screen.getByRole("tab", { name: "Paste" }));
+		const area = screen.getByRole("textbox", { name: "Text" });
+		expect(area).toHaveAccessibleDescription("1 KiB of 1,024 KiB");
+		// Under the limit as text, over it once JSON escapes each newline (preflight F18).
+		const text = "\n".repeat(PASTE_MAX_BYTES / 2 + 1);
+		fireEvent.change(area, { target: { value: text } });
+		expect(next()).toBeDisabled();
+		expect(screen.getAllByText(/larger than 1 MiB/i).length).toBeGreaterThan(0);
+		expect(screen.getByRole("button", { name: "Use this text" })).toBeDisabled();
+		// Exactly the limit: the body \`{"format":"csv","text":"…"}\` has 26 bytes besides the text.
+		fireEvent.change(area, { target: { value: "a".repeat(PASTE_MAX_BYTES - 26) } });
+		expect(screen.getByRole("button", { name: "Use this text" })).toBeEnabled();
+		expect(screen.queryByText(/larger than 1 MiB/i)).toBeNull();
+		fireEvent.change(area, { target: { value: "a".repeat(PASTE_MAX_BYTES - 25) } });
+		expect(screen.getByRole("button", { name: "Use this text" })).toBeDisabled();
+
+		fireEvent.change(area, { target: { value: "id,title\n1,First" } });
+		await user.click(screen.getByRole("button", { name: "Use this text" }));
+		await waitFor(() => expect(readState().keys).toEqual(["id", "title"]));
+		expect(calls.find((c) => c.route === "sources/paste")?.body).toEqual({
+			format: "csv",
+			text: "id,title\n1,First",
+		});
+		expect(readState().source).toMatchObject({ kind: "paste", label: "Pasted text" });
+		expect(next()).toBeEnabled();
+	});
+
+	it("maps a 413 from sources/paste to the too-large sentence (preflight F18)", async () => {
+		routes({
+			"sources/paste": () => fail("INVALID_PLUGIN_REQUEST", "Request body too large", 413),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Paste" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Text" }), { target: { value: "a,b" } });
+		await user.click(screen.getByRole("button", { name: "Use this text" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent(/larger than 1 MiB/i);
+	});
+
+	it("shows sheet and header row for XLSX, records path for JSON and XML", async () => {
+		routes({});
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(readState().keys).not.toBeNull());
+		expect(screen.queryByRole("textbox", { name: "Records path" })).toBeNull();
+		expect(screen.getByRole("textbox", { name: "Row filter" })).toBeInTheDocument();
+
+		const pick = async (label: string) => {
+			await user.click(screen.getByRole("combobox", { name: "Format" }));
+			await user.click(await screen.findByRole("option", { name: label }));
+		};
+		await pick("JSON");
+		expect(screen.getByRole("textbox", { name: "Records path" })).toHaveAccessibleDescription(
+			/dot-separated keys, e\.g\. data\.products/,
+		);
+		expect(screen.queryByRole("textbox", { name: "Sheet" })).toBeNull();
+		await pick("XML");
+		expect(screen.getByRole("textbox", { name: "Records path" })).toHaveAccessibleDescription(
+			/element names from the root, e\.g\. feed\/item/,
+		);
+		await pick("XLSX");
+		expect(screen.queryByRole("textbox", { name: "Records path" })).toBeNull();
+		expect(screen.getByRole("textbox", { name: "Sheet" })).toBeInTheDocument();
+		expect(screen.getByRole("spinbutton", { name: "Header row" })).toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Row filter" })).toBeInTheDocument();
+	});
+
+	it("re-samples when the records path changes", async () => {
+		const { calls } = routes({
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "data.items"
+					? { records: [{ sku: "A", price: 2 }], paths: ["price", "sku"] }
+					: { records: [{ data: { items: [] } }], paths: ["data.items"] },
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", '{"data":{"items":[]}}');
+		await waitFor(() => expect(readState().keys).toEqual(["data.items"]));
+		await user.type(screen.getByRole("textbox", { name: "Records path" }), "data.items{Enter}");
+		await waitFor(() => expect(readState().keys).toEqual(["price", "sku"]));
+		expect(readState().sourceBlock).toEqual({ format: "json", records: "data.items" });
+		expect(
+			calls
+				.filter((c) => c.route === "sources/sample")
+				.map((c) => (c.body as { source: unknown }).source),
+		).toEqual([{ format: "json" }, { format: "json", records: "data.items" }]);
+	});
+
+	it("re-samples when the format changes, and drops settings the new format refuses", async () => {
+		const { calls } = routes({});
+		const { user } = renderSource();
+		chooseFile("feed.json", "[]");
+		await waitFor(() => expect(readState().keys).not.toBeNull());
+		await user.type(screen.getByRole("textbox", { name: "Records path" }), "items{Enter}");
+		await waitFor(() => expect(readState().sourceBlock).toMatchObject({ records: "items" }));
+		await user.click(screen.getByRole("combobox", { name: "Format" }));
+		await user.click(await screen.findByRole("option", { name: "CSV" }));
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "csv" }));
+		expect(calls.filter((c) => c.route === "sources/sample")).toHaveLength(3);
+	});
+
+	it("blocks Next with an empty state when the sample has no records (Review Focus 3)", async () => {
+		routes({ "sources/sample": () => ({ records: [], paths: [] }) });
+		renderSource();
+		chooseFile("empty.json", "[]");
+		expect(await screen.findByText(/no records/i)).toBeVisible();
+		expect(screen.getByText(/check the records path/i)).toBeVisible();
+		expect(next()).toBeDisabled();
+	});
+
+	it("blocks Next for a CSV with only a header (preflight F7)", async () => {
+		routes({ "sources/sample": () => sampleCsv(["id", "title"], []) });
+		renderSource();
+		chooseFile("header.csv", "id,title\n");
+		expect(await screen.findByText("The file has a header but no rows")).toBeVisible();
+		expect(next()).toBeDisabled();
+	});
+
+	it("shows INVALID_SOURCE as its sentence, inline, with the route's specifics", async () => {
+		routes({
+			"sources/sample": () => fail("INVALID_SOURCE", "Unexpected token at line 3 column 5", 400),
+		});
+		renderSource();
+		chooseFile("broken.json", "{");
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("The data could not be read. Check its format and settings.");
+		expect(alert).toHaveTextContent("Unexpected token at line 3 column 5");
+		expect(next()).toBeDisabled();
+		// The settings stay, so the format can be corrected.
+		expect(screen.getByRole("combobox", { name: "Format" })).toBeInTheDocument();
+	});
+
+	it("the saved-template picker is disabled until a file is sampled (preflight F10)", async () => {
+		routes({ "templates/list": () => ({ items: [SUMMARY], hasMore: false }) });
+		renderSource();
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		expect(picker).toBeDisabled();
+		expect(screen.getByText("Choose the file to import first")).toBeVisible();
+		expect(picker).toHaveAccessibleDescription("Choose the file to import first");
+		expect(screen.getByRole("button", { name: "Load template" })).toBeDisabled();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(picker).toBeEnabled());
+		expect(screen.queryByText("Choose the file to import first")).toBeNull();
+	});
+
+	it("loads a saved template and opens Preview", async () => {
+		const { calls } = routes({
+			"templates/list": () => ({ items: [SUMMARY], hasMore: false }),
+			"templates/get": () => SAVED_TEMPLATE,
+		});
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		await waitFor(() => expect(picker).toBeEnabled());
+		await user.click(picker);
+		await user.click(await screen.findByRole("option", { name: /Posts from CSV/ }));
+		await user.click(screen.getByRole("button", { name: "Load template" }));
+		await waitFor(() => expect(readState().step).toBe("preview"));
+		expect(calls.find((c) => c.route === "templates/get")?.body).toEqual({
+			id: SAVED_TEMPLATE.id,
+		});
+		const state = readState();
+		expect(state.target).toEqual({ collection: "posts", locale: "en", translationLocale: null });
+		expect(state.rows).toEqual(["key", "field:title"]);
+		expect(state.base).toEqual({ id: SAVED_TEMPLATE.id, revision: 3 });
+	});
+
+	it("uses a saved source: fetches it by ID and samples it", async () => {
+		const keyed = {
+			...SOURCE_ROW,
+			id: "01JZ00000000000000000SRC02",
+			name: "Keyed feed",
+			url: "https://example.com/keyed.xml?api_key=s3cret",
+		};
+		const { calls } = routes({
+			"sources/list": () => ({ items: [SOURCE_ROW, keyed], hasMore: false }),
+			"sources/fetch": () => ({ changed: false, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
+			"sources/sample": () => ({ records: [{ sku: "A" }], paths: ["sku"] }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Saved source" }));
+		// A URL's query may hold a key: only its host and path are shown.
+		expect(await screen.findByText("example.com/keyed.xml")).toBeVisible();
+		expect(document.body.textContent).not.toContain("s3cret");
+		await user.click(
+			await screen.findByRole("button", { name: "Use example.com/feeds/products.json" }),
+		);
+		await waitFor(() => expect(readState().keys).toEqual(["sku"]));
+		expect(calls.filter((c) => c.route.startsWith("sources/")).map((c) => c.body)).toEqual([
+			{},
+			{ id: SOURCE_ROW.id },
+			{ uploadId: FETCHED_ID, n: SAMPLE_MAX, source: { format: "json" } },
+		]);
+		expect(readState().source).toEqual({
+			kind: "saved",
+			uploadId: FETCHED_ID,
+			label: "example.com/feeds/products.json",
+		});
+	});
+
+	it("never shows the upload ID", async () => {
+		routes({});
+		renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(next()).toBeEnabled());
+		const shown = document.body.cloneNode(true) as HTMLElement;
+		shown.querySelector('[data-testid="state"]')?.remove();
+		expect(shown.innerHTML).not.toContain(UPLOAD_ID);
+	});
+
+	it("shows empty states for no saved sources and no saved templates, and a Loader while each list loads", async () => {
+		const sources = deferred<unknown>();
+		const templates = deferred<unknown>();
+		routes({
+			"sources/list": () => sources.promise,
+			"templates/list": () => templates.promise,
+		});
+		const { user } = renderSource();
+		expect(await screen.findByRole("status", { name: "Loading saved templates" })).toBeVisible();
+		templates.resolve({ items: [], hasMore: false });
+		expect(await screen.findByText("No saved templates")).toBeVisible();
+
+		await user.click(screen.getByRole("tab", { name: "Saved source" }));
+		expect(await screen.findByRole("status", { name: "Loading saved sources" })).toBeVisible();
+		sources.resolve({ items: [], hasMore: false });
+		expect(await screen.findByText("No saved sources")).toBeVisible();
+	});
+
+	it("links to EmDash's WordPress importer", async () => {
+		routes({});
+		renderSource();
+		expect(screen.getByRole("link", { name: /WordPress importer/ })).toHaveAttribute(
+			"href",
+			"/_emdash/admin/import/wordpress",
+		);
+		await screen.findByText(/no saved templates/i);
+	});
+
+	it("moves to Target on Next", async () => {
+		routes({});
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(next()).toBeEnabled());
+		await user.click(next());
+		expect(readState().step).toBe("target");
+	});
+	it("keeps only the latest sample when settings change faster than the samples answer", async () => {
+		const slow = deferred<unknown>();
+		routes({
+			"sources/sample": (body) => {
+				const records = (body as { source: { records?: string } }).source.records;
+				if (records === "a") return slow.promise;
+				if (records === "b") return { records: [{ b: 1 }], paths: ["b"] };
+				return { records: [{ x: 1 }], paths: ["x"] };
+			},
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["x"]));
+		const path = screen.getByRole("textbox", { name: "Records path" });
+		await user.type(path, "a{Enter}");
+		await user.clear(path);
+		await user.type(path, "b{Enter}");
+		await waitFor(() => expect(readState().keys).toEqual(["b"]));
+		slow.resolve({ records: [{ a: 1 }], paths: ["a"] });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(readState().keys).toEqual(["b"]);
+		expect(readState().sourceBlock).toEqual({ format: "json", records: "b" });
+	});
+
+	it("ignores a replaced sample's failure", async () => {
+		const slow = deferred<unknown>();
+		routes({
+			"sources/sample": async (body) => {
+				const records = (body as { source: { records?: string } }).source.records;
+				if (records === "a") {
+					await slow.promise;
+					return fail("INVALID_SOURCE", "late failure", 400);
+				}
+				return { records: [{ b: 1 }], paths: ["b"] };
+			},
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["b"]));
+		const path = screen.getByRole("textbox", { name: "Records path" });
+		await user.type(path, "a{Enter}");
+		await user.clear(path);
+		await user.type(path, "b{Enter}");
+		await waitFor(() => expect(readState().sourceBlock).toMatchObject({ records: "b" }));
+		slow.resolve(undefined);
+		// The step stays busy until every request it sent has answered.
+		await waitFor(() => expect(next()).toBeEnabled());
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(readState().keys).toEqual(["b"]);
+	});
+
+	it("shows at most 200 keys in the sample, and says how many there are", async () => {
+		const paths = Array.from({ length: 250 }, (_, i) => `key${i}`);
+		routes({
+			"sources/sample": () => ({
+				records: [Object.fromEntries(paths.map((p) => [p, 1]))],
+				paths,
+			}),
+		});
+		renderSource();
+		chooseFile("wide.json", "{}");
+		expect(await screen.findByText(/Showing 200 of 250 keys/)).toBeVisible();
+		const table = screen.getByRole("table", { name: "Sample" });
+		// The header row and 200 key rows.
+		expect(within(table).getAllByRole("row")).toHaveLength(201);
+	});
+
+	it("disables Next when a new setting cannot be sampled, and keeps the settings", async () => {
+		routes({
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "nope"
+					? fail("INVALID_SOURCE", "source.records: not found", 400)
+					: { records: [{ x: 1 }], paths: ["x"] },
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(next()).toBeEnabled());
+		await user.type(screen.getByRole("textbox", { name: "Records path" }), "nope{Enter}");
+		expect(await screen.findByRole("alert")).toHaveTextContent("source.records: not found");
+		expect(readState().keys).toBeNull();
+		expect(next()).toBeDisabled();
+		expect(screen.queryByRole("table", { name: "Sample" })).toBeNull();
+	});
+
+	it("keeps the wizard's source when a new file cannot be sampled, but blocks Next", async () => {
+		const ids = [UPLOAD_ID, FETCHED_ID];
+		routes({
+			upload: () => ({ uploadId: ids.shift(), bytes: 10 }),
+			"sources/sample": (body) =>
+				(body as { source: { format: string } }).source.format === "xml"
+					? fail("INVALID_SOURCE", "source.records is required for xml", 400)
+					: CSV_SAMPLE,
+		});
+		renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(next()).toBeEnabled());
+		chooseFile("feed.xml", "<feed/>");
+		expect(await screen.findByRole("alert")).toHaveTextContent("required for xml");
+		expect(readState().source).toMatchObject({ uploadId: UPLOAD_ID, label: "posts.csv" });
+		expect(readState().keys).toEqual(["id", "title"]);
+		expect(screen.queryByRole("table", { name: "Sample" })).toBeNull();
+		expect(next()).toBeDisabled();
+		// The new file's settings are shown, to fix it.
+		expect(screen.getByRole("textbox", { name: "Records path" })).toBeInTheDocument();
+	});
+
+	it("reads an XLSX sheet number as a number, a name as text, and the header row", async () => {
+		const { calls } = routes({});
+		const { user } = renderSource();
+		chooseFile("book.xlsx", "PK");
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "xlsx" }));
+		await user.type(screen.getByRole("textbox", { name: "Sheet" }), "2{Enter}");
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "xlsx", sheet: 2 }));
+		const sheet = screen.getByRole("textbox", { name: "Sheet" });
+		await user.clear(sheet);
+		await user.type(sheet, "Products{Enter}");
+		await user.type(screen.getByRole("spinbutton", { name: "Header row" }), "3{Enter}");
+		await waitFor(() =>
+			expect(readState().sourceBlock).toEqual({ format: "xlsx", sheet: "Products", headerRow: 3 }),
+		);
+		expect(calls.filter((c) => c.route === "sources/sample")).toHaveLength(4);
+		// CSV takes neither.
+		await user.click(screen.getByRole("combobox", { name: "Format" }));
+		await user.click(await screen.findByRole("option", { name: "CSV" }));
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "csv" }));
+	});
+
+	it("stops deriving the name from the URL once it is edited", async () => {
+		routes({ "credentials/list": () => [] });
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		const name = screen.getByRole("textbox", { name: "Name" });
+		const fetch = screen.getByRole("button", { name: "Fetch" });
+		expect(fetch).toBeDisabled();
+		await user.type(screen.getByRole("textbox", { name: "Address" }), "https://a.example/x");
+		expect(name).toHaveValue("a.example/x");
+		await user.clear(name);
+		await user.type(name, "Mine");
+		await user.type(screen.getByRole("textbox", { name: "Address" }), "/y");
+		expect(name).toHaveValue("Mine");
+		expect(fetch).toBeEnabled();
+	});
+});
+
+describe("the Source step's helpers", () => {
+	it("detects formats from extensions, and URL sources from their path", () => {
+		expect(formatOf("a.CSV")).toBe("csv");
+		expect(formatOf("a.ndjson")).toBe("jsonl");
+		expect(formatOf("a.jsonl")).toBe("jsonl");
+		expect(formatOf("a.xlsx")).toBe("xlsx");
+		expect(formatOf("a.txt")).toBeNull();
+		expect(formatOf("dir.json/file")).toBeNull();
+		expect(formatOf("noext")).toBeNull();
+		expect(formatOf("csv")).toBeNull();
+		expect(formatOf("a.constructor")).toBeNull();
+		expect(formatOf("a.json/")).toBeNull();
+		expect(formatOfUrl("https://x.example/feed.xml?page=2")).toBe("xml");
+		expect(formatOfUrl("https://x.example/api/products")).toBe("csv");
+	});
+
+	it("names a source after the URL's host and path", () => {
+		expect(nameFromUrl("https://example.com/feeds/products.json?key=secret")).toBe(
+			"example.com/feeds/products.json",
+		);
+		expect(nameFromUrl("https://example.com/")).toBe("example.com");
+		expect(nameFromUrl("ftp://example.com/a")).toBe("");
+		expect(nameFromUrl("not a url")).toBe("");
+		expect(nameFromUrl(`https://example.com/${"a".repeat(200)}`)).toHaveLength(100);
+	});
+});
