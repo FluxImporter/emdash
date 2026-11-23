@@ -343,14 +343,15 @@ describe("PreviewStep", () => {
 	it.each<[string, Partial<MissingState>, Partial<Job>, string]>([
 		[
 			"refused over the limit",
-			{ verdict: "refused", owned: 3, found: 1, removed: 1 },
+			// The phase went on to plan its rows, as a dry run's over-limit refusal does.
+			{ verdict: "refused", owned: 3, found: 1, removed: 1, rows: 1 },
 			{},
 			"A real run would leave these entries alone: 1 of 3 (34%) are missing from the source, more than the limit of 20%. Raise the limit in Options to apply it.",
 		],
 		[
 			"refused for another source's entries",
-			// Exactly at the limit (1 of 5 is 20%): not over it, so another source's entries.
-			{ verdict: "refused", owned: 5, found: 1 },
+			// Stopped by the count stage with no rows; its partial numbers are over the limit.
+			{ verdict: "refused", owned: 3, found: 1, rows: 0 },
 			{},
 			"Missing entries are left alone: this owner also has entries from another URL source.",
 		],

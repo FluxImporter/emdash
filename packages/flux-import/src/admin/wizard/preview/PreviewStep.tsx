@@ -22,8 +22,10 @@ function totalOf(c: Counters): number {
 
 /**
  * Why the missing phase would change nothing (engine `missing.ts`), or null when it applies. It
- * is refused over the limit (`found × 100 > maxPercent × owned`, a dry run's base) or for another
- * URL source's entries under the same owner, and skipped when not every record had a readable key.
+ * is refused for another URL source's entries under the same owner, which ends the count stage
+ * at once, with partial counts and no rows; or over the limit (`found × 100 > maxPercent ×
+ * owned`, a dry run's base), after which a dry run still plans its rows. It is skipped when not
+ * every record had a readable key.
  */
 function missingNote(job: Job): { msg: Msg; values?: Values } | null {
 	const m = job.missing;
@@ -34,16 +36,11 @@ function missingNote(job: Job): { msg: Msg; values?: Values } | null {
 			: { msg: M.missingNoKey };
 	}
 	if (m?.verdict !== "refused") return null;
+	if (m.rows === 0) return { msg: M.missingForeign };
 	const limit = job.missingLimit;
 	const max = limit === undefined || limit === false ? 0 : limit.maxPercent;
-	if (m.found * 100 > max * m.owned) {
-		const percent = Math.ceil((m.found * 100) / m.owned);
-		return {
-			msg: M.missingOverLimit,
-			values: { found: m.found, owned: m.owned, percent, max },
-		};
-	}
-	return { msg: M.missingForeign };
+	const percent = Math.ceil((m.found * 100) / m.owned);
+	return { msg: M.missingOverLimit, values: { found: m.found, owned: m.owned, percent, max } };
 }
 
 /**
