@@ -1,4 +1,5 @@
 import { ContentWriteError } from "../engine/ports.js";
+import type { SchemaFieldWithLabel } from "../engine/suggest.js";
 import {
 	type FieldRules,
 	type SchemaField,
@@ -26,14 +27,20 @@ export interface SchemaRegistryLike {
 		fieldSlug: string,
 		input: { indexed: boolean },
 	): Promise<unknown>;
-	getCollectionWithFields(
-		slug: string,
-	): Promise<{ fields: RegistryField[]; supports?: readonly string[] } | null>;
+	getCollectionWithFields(slug: string): Promise<{
+		label?: string | undefined;
+		fields: RegistryField[];
+		supports?: readonly string[];
+	} | null>;
 }
 
-/** The parts of EmDash's `Field` (src/schema/types.ts:320-344) the importer reads. */
+/**
+ * The parts of EmDash's `Field` (src/schema/types.ts:320-344) the importer reads; `label` is
+ * `Field.label` (:324), as `Collection.label` (:267) is the collection's (M6d).
+ */
 export interface RegistryField {
 	slug: string;
+	label?: string | undefined;
 	type: string;
 	required?: boolean;
 	defaultValue?: unknown;
@@ -186,21 +193,42 @@ export async function readCollection(
 	const found = await registry.getCollectionWithFields(collection);
 	if (!found) return null;
 	const revisions = found.supports?.includes("revisions") ?? false;
-	const fields = found.fields.map((f) => {
-		const relation = f.validation?.relation;
-		return {
-			slug: f.slug,
-			type: f.type,
-			required: f.required === true,
-			hasDefault: f.defaultValue !== undefined,
-			validation: rulesOf(f.validation),
-			...(f.unsupportedType === undefined ? {} : { unsupported: true }),
-			...(f.type === "reference" && typeof relation === "string" && relation !== ""
-				? { storageless: true }
-				: {}),
-			...(f.type === "reference" ? relationOf(f) : {}),
-			...(f.translatable === false ? { translatable: false as const } : {}),
-		};
-	});
-	return { fields, revisions };
+	return { fields: found.fields.map(schemaFieldOf), revisions };
+}
+
+/** One registry field as `checkTemplate` reads it. */
+function schemaFieldOf(f: RegistryField): SchemaField {
+	const relation = f.validation?.relation;
+	return {
+		slug: f.slug,
+		type: f.type,
+		required: f.required === true,
+		hasDefault: f.defaultValue !== undefined,
+		validation: rulesOf(f.validation),
+		...(f.unsupportedType === undefined ? {} : { unsupported: true }),
+		...(f.type === "reference" && typeof relation === "string" && relation !== ""
+			? { storageless: true }
+			: {}),
+		...(f.type === "reference" ? relationOf(f) : {}),
+		...(f.translatable === false ? { translatable: false as const } : {}),
+	};
+}
+
+/** M6d: the collection's fields as `readCollection` gives them, with its label and theirs. */
+export interface SuggestCollection {
+	label: string;
+	fields: SchemaFieldWithLabel[];
+}
+
+/** The suggestion route's collection read (M6d spec step 3): one registry read, labels kept. */
+export async function readSuggestCollection(
+	registry: SchemaRegistryLike,
+	collection: string,
+): Promise<SuggestCollection | null> {
+	const found = await registry.getCollectionWithFields(collection);
+	if (!found) return null;
+	return {
+		label: found.label ?? collection,
+		fields: found.fields.map((f) => ({ ...schemaFieldOf(f), label: f.label ?? f.slug })),
+	};
 }

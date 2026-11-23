@@ -16,6 +16,8 @@ export const TOOL_NAMES = [
 	"dry_run",
 	"get_template",
 	"import_status",
+	"list_schedules",
+	"list_sources",
 	"list_templates",
 	"next_batch",
 	"start_import",

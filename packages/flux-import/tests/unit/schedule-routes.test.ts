@@ -177,7 +177,8 @@ describe("the schedule routes (M6b)", () => {
 	it("caps every schedule route's JSON body at 16 KiB", () => {
 		expect(SCHEDULE_BODY_MAX_BYTES).toBe(16 * 1024);
 		const names = Object.keys(plugin.routes).filter((r) => r.startsWith("schedules/"));
-		expect(names).toHaveLength(5);
+		// Five M6b routes and M6d's schedules/overview.
+		expect(names).toHaveLength(6);
 		for (const name of names) {
 			expect(plugin.routes[name]?.request, name).toEqual({
 				body: "json",
@@ -496,5 +497,43 @@ describe("the schedule routes (M6b)", () => {
 			});
 			expect(await kv.schedules.get("A")).toMatchObject({ missing: "template", revision: 1 });
 		});
+	});
+});
+
+describe("the overview routes (M6d)", () => {
+	it("answers schedules/overview without reconciling the cron tasks (spec Ruling 39)", async () => {
+		await kv.schedules.put("A", scheduleRow("A"));
+		// A stale task and no task for A: a reconciliation would cancel the one and add the other.
+		await cron.schedule("schedule-GONE", { schedule: "0 1 * * *" });
+		cron.calls.length = 0;
+		const reply = await call<{ items: { id: string }[]; hasMore: boolean }>(
+			"schedules/overview",
+			{},
+		);
+		expect(reply).toMatchObject({ items: [{ id: "A" }], hasMore: false });
+		expect(reply.items[0]).not.toHaveProperty("armedBy");
+		expect(cron.calls).toEqual([]);
+		expect([...cron.tasks.keys()]).toEqual(["schedule-GONE"]);
+	});
+
+	it("answers sources/overview with hosts and codes only (spec Ruling 38)", async () => {
+		await kv.sources.put(
+			"S2",
+			sourceRow("S2", {
+				url: "https://feeds.example/s3cr3t-path/feed.csv?token=t0ken",
+				credential: "cred-mark",
+				lastError: { at: "", code: "HTTP_ERROR", message: "msg-mark" },
+			}),
+		);
+		const reply = await call<{ items: { id: string }[] }>("sources/overview", {});
+		expect(reply.items.find((s) => s.id === "S2")).toMatchObject({
+			host: "feeds.example",
+			credential: true,
+			lastError: { code: "HTTP_ERROR" },
+		});
+		const text = JSON.stringify(reply);
+		for (const marker of ["s3cr3t", "t0ken", "cred-mark", "msg-mark", "https:"]) {
+			expect(text, marker).not.toContain(marker);
+		}
 	});
 });

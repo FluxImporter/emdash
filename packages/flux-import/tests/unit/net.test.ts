@@ -4,11 +4,13 @@ import {
 	checkHost,
 	dohResolver,
 	guardedFetch,
+	guardedRequest,
 	isBlockedHostname,
 	isPublicAddress,
 	MAX_REDIRECTS,
 	type NetOptions,
 	nodeResolver,
+	type PostInit,
 	parseSourceUrl,
 	type Resolver,
 	URL_MAX_LENGTH,
@@ -376,6 +378,251 @@ describe("guardedFetch", () => {
 		const reason = new UrlSourceError("FETCH_FAILED", "No response headers within 15 s");
 		controller.abort(reason);
 		expect(await failure(pending)).toBe(reason);
+	});
+});
+
+interface Posted {
+	url: string;
+	init: RequestInit;
+}
+
+/** A runtime fetch for `guardedRequest`: records each call and answers with `answer`. */
+function postNet(
+	answer: (url: string, init: RequestInit) => Response | Promise<Response>,
+	resolver: Resolver = async () => ["93.184.215.14"],
+	allowPrivate = false,
+) {
+	const sent: Posted[] = [];
+	const net: NetOptions = {
+		allowPrivateNetwork: allowPrivate,
+		resolver,
+		fetch: async (input, init) => {
+			sent.push({ url: String(input), init: init ?? {} });
+			return answer(String(input), init ?? {});
+		},
+	};
+	return { net, sent };
+}
+
+const POST = {
+	method: "POST" as const,
+	headers: { authorization: "Bearer k", "content-type": "application/json" },
+	body: '{"a":1}',
+};
+const CAP = { maxResponseBytes: 2_500 };
+
+describe("guardedRequest (M6d spec Ruling 48, plan Ruling 1)", () => {
+	it("refuses a blocked host, a private address and a bad URL before any fetch", async () => {
+		const { net, sent } = postNet(
+			() => new Response("{}"),
+			async (host) => (host === "inside.example" ? ["10.0.0.7"] : ["93.184.215.14"]),
+		);
+		for (const url of [
+			"https://localhost/v1",
+			"https://10.0.0.1/v1",
+			"https://metadata.google.internal/x",
+			"https://inside.example/v1",
+			"ftp://api.example/v1",
+			"https://user:pw@api.example/v1",
+			"not a url",
+			"https://[::ffff:127.0.0.1]/",
+		]) {
+			const error = await failure(guardedRequest(url, POST, net, CAP));
+			expect(error.code, url).toBe("URL_BLOCKED");
+		}
+		expect(sent).toEqual([]);
+	});
+
+	it("posts once with redirect manual, the headers, the body and the caller's signal", async () => {
+		const { net, sent } = postNet(() => Response.json({ ok: true }));
+		const signal = new AbortController().signal;
+		// The caller cannot ask for a redirect: whatever arrives, manual is sent (spec Ruling 9).
+		const init = { ...POST, signal, redirect: "follow" } as PostInit;
+		const res = await guardedRequest("https://api.example/v1/chat/completions", init, net, CAP);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.url).toBe("https://api.example/v1/chat/completions");
+		expect(sent[0]?.init).toMatchObject({ method: "POST", body: '{"a":1}', redirect: "manual" });
+		expect(sent[0]?.init.signal).toBe(signal);
+		expect(sent[0]?.init.headers).toEqual(POST.headers);
+	});
+
+	it("returns a 3xx with its location and follows nothing", async () => {
+		const { net, sent } = postNet(
+			() => new Response(null, { status: 307, headers: { location: "https://evil.example/" } }),
+		);
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect(res.status).toBe(307);
+		expect(res.headers.get("location")).toBe("https://evil.example/");
+		expect(sent).toHaveLength(1);
+	});
+
+	it("refuses a reply over the cap while it streams, before the rest is read", async () => {
+		let pulled = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled++;
+				if (pulled > 100) controller.close();
+				else controller.enqueue(new Uint8Array(1_000));
+			},
+		});
+		const { net } = postNet(() => new Response(body, { status: 200 }));
+		const error = await failure(guardedRequest("https://api.example/v1", POST, net, CAP));
+		expect(error.code).toBe("TOO_LARGE");
+		expect(pulled).toBeLessThanOrEqual(5);
+	});
+
+	it("reads the reply to its end before it resolves, so a stalled body fails inside the fetch", async () => {
+		// Fact V1c: the SDK's timer stops when the fetch resolves; the body must be read inside it.
+		const reason = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('{"id":'));
+				setTimeout(() => controller.error(reason), 20);
+			},
+		});
+		const { net } = postNet(() => new Response(body, { status: 200 }));
+		await expect(guardedRequest("https://api.example/v1", POST, net, CAP)).rejects.toBe(reason);
+	});
+
+	it("re-throws an AbortError and a TimeoutError from the runtime fetch as the same objects", async () => {
+		for (const name of ["AbortError", "TimeoutError"]) {
+			const raised = new DOMException("stopped", name);
+			const { net } = postNet(() => Promise.reject(raised));
+			await expect(guardedRequest("https://api.example/v1", POST, net, CAP)).rejects.toBe(raised);
+		}
+		const network = new TypeError("fetch failed");
+		const { net } = postNet(() => Promise.reject(network));
+		await expect(guardedRequest("https://api.example/v1", POST, net, CAP)).rejects.toBe(network);
+	});
+
+	it("rejects with the signal's reason when it aborts during DNS", async () => {
+		const reason = new DOMException("stopped", "TimeoutError");
+		const { net, sent } = postNet(
+			() => new Response("{}"),
+			() => new Promise(() => {}),
+		);
+		const init = { ...POST, signal: AbortSignal.abort(reason) };
+		await expect(guardedRequest("https://api.example/v1", init, net, CAP)).rejects.toBe(reason);
+		expect(sent).toEqual([]);
+	});
+
+	it("skips the host and address checks only under allowPrivateNetwork", async () => {
+		const { net, sent } = postNet(() => Response.json({}), undefined, true);
+		await guardedRequest("http://127.0.0.1:4580/v1/messages", POST, net, CAP);
+		expect(sent).toHaveLength(1);
+		const strict = postNet(() => Response.json({}));
+		const error = await failure(
+			guardedRequest("http://127.0.0.1:4580/v1/messages", POST, strict.net, CAP),
+		);
+		expect(error.code).toBe("URL_BLOCKED");
+	});
+
+	it("keeps the status, status text and headers of the reply", async () => {
+		const { net } = postNet(
+			() => new Response("nope", { status: 429, statusText: "Too Many", headers: { "x-a": "1" } }),
+		);
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect([res.status, res.statusText, res.headers.get("x-a"), await res.text()]).toEqual([
+			429,
+			"Too Many",
+			"1",
+			"nope",
+		]);
+	});
+
+	it("cancels the reply's stream when it passes the cap", async () => {
+		let cancelled = false;
+		let pulled = 0;
+		// Ends after 100 KB, so a guard without its cap finishes instead of reading forever.
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled++;
+				if (pulled > 100) controller.close();
+				else controller.enqueue(new Uint8Array(1_000));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const { net } = postNet(() => new Response(body, { status: 200 }));
+		const error = await failure(guardedRequest("https://api.example/v1", POST, net, CAP));
+		expect(error.code).toBe("TOO_LARGE");
+		expect(cancelled).toBe(true);
+	});
+
+	it("accepts a reply of exactly the cap and refuses one byte more", async () => {
+		const exact = postNet(() => new Response(new Uint8Array(CAP.maxResponseBytes)));
+		const res = await guardedRequest("https://api.example/v1", POST, exact.net, CAP);
+		expect((await res.arrayBuffer()).byteLength).toBe(CAP.maxResponseBytes);
+		const over = postNet(() => new Response(new Uint8Array(CAP.maxResponseBytes + 1)));
+		const error = await failure(guardedRequest("https://api.example/v1", POST, over.net, CAP));
+		expect(error.code).toBe("TOO_LARGE");
+	});
+
+	it("refuses an opaque redirect and a status 0 reply with FETCH_FAILED, naming no host", async () => {
+		const opaque = {
+			type: "opaqueredirect",
+			status: 0,
+			statusText: "",
+			headers: new Headers(),
+			body: null,
+		} as unknown as Response;
+		for (const answer of [() => opaque, () => Response.error()]) {
+			const { net } = postNet(answer);
+			const error = await failure(guardedRequest("https://api.example/v1", POST, net, CAP));
+			expect(error.code).toBe("FETCH_FAILED");
+			expect(error.message).not.toContain("api.example");
+		}
+	});
+
+	it("drops content-encoding and content-length, which describe the wire body", async () => {
+		const { net } = postNet(
+			() =>
+				new Response('{"a":1}', {
+					headers: {
+						"content-encoding": "gzip",
+						"content-length": "27",
+						"content-type": "application/json",
+					},
+				}),
+		);
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect(res.headers.get("content-encoding")).toBeNull();
+		expect(res.headers.get("content-length")).toBeNull();
+		expect(res.headers.get("content-type")).toBe("application/json");
+		expect(await res.text()).toBe('{"a":1}');
+	});
+
+	it.each([204, 205, 304])("returns a %i reply with a null body", async (status) => {
+		const { net } = postNet(() => new Response(null, { status }));
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect(res.status).toBe(status);
+		expect(res.body).toBeNull();
+		expect(await res.text()).toBe("");
+	});
+
+	it("leaves no unhandled rejection when the address is refused after the signal aborted", async () => {
+		const errors: unknown[] = [];
+		const record = (e: unknown) => {
+			errors.push(e);
+		};
+		process.on("unhandledRejection", record);
+		try {
+			const reason = new DOMException("stopped", "TimeoutError");
+			const { net, sent } = postNet(
+				() => new Response("{}"),
+				() => new Promise((resolve) => setTimeout(() => resolve(["10.0.0.7"]), 10)),
+			);
+			const init = { ...POST, signal: AbortSignal.abort(reason) };
+			await expect(guardedRequest("https://api.example/v1", init, net, CAP)).rejects.toBe(reason);
+			// Let the resolver answer and the check refuse the private address after the abort.
+			await new Promise((r) => setTimeout(r, 40));
+			expect(errors).toEqual([]);
+			expect(sent).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", record);
+		}
 	});
 });
 

@@ -105,7 +105,7 @@ afterAll(async () => {
 });
 
 describe("M6c MCP tools on sites/dev", () => {
-	it("lists no tool before consent, and the six after it, two destructive (V1, V4)", async () => {
+	it("lists no tool before consent, and the eight after it, two destructive (V1, V4)", async () => {
 		const before = await connect(admin.token);
 		expect(await listed(before)).toEqual([]);
 		const early = await tool(before, "list_templates", {});
@@ -229,6 +229,13 @@ describe("M6c MCP tools on sites/dev", () => {
 			isError: true,
 			code: "INSUFFICIENT_PERMISSIONS",
 		});
+		// M6d's read tools need import:execute too (spec "Security").
+		for (const name of ["list_sources", "list_schedules"]) {
+			expect(await tool(editor, name, {}), name).toMatchObject({
+				isError: true,
+				code: "INSUFFICIENT_PERMISSIONS",
+			});
+		}
 
 		const templateId = await saveTemplate("Refusals", template("it_mcp_no"));
 		const audits = toolAudits().length;
@@ -300,7 +307,81 @@ describe("M6c MCP tools on sites/dev", () => {
 		// The stale switch (spec F3): the admin still reports the tools enabled.
 		expect(plugins.items.find((p) => p.id === "flux-import")?.mcpToolsEnabled).toBe(true);
 		await enableTools(admin);
-		expect(await listed(agent)).toHaveLength(6);
+		expect(await listed(agent)).toHaveLength(8);
+	});
+
+	it("keeps the tools off on a site upgraded from the six M6c tools until it consents again (M6d V6)", async () => {
+		const fixture = await readFile(CONSENT_FIXTURE, "utf8");
+		const m6c = [
+			"dry_run",
+			"get_template",
+			"import_status",
+			"list_templates",
+			"next_batch",
+			"start_import",
+		];
+		// The six rows are unchanged (spec Ruling 40), so this is 0.4.0's stored snapshot (plan Ruling 15).
+		const six = JSON.stringify(
+			(JSON.parse(fixture) as { name: string }[]).filter((row) => m6c.includes(row.name)),
+		);
+		withDb(server.dbPath, (db) =>
+			db
+				.prepare("UPDATE _plugin_state SET mcp_tools_consent = ? WHERE plugin_id = ?")
+				.run(six, "flux-import"),
+		);
+		expect(await listed(agent)).toEqual([]);
+		const early = await tool(agent, "list_sources", {});
+		expect(early.isError).toBe(true);
+		expect(early.text).toContain("Tool flux-import__list_sources not found");
+		await enableTools(admin);
+		expect(storedConsent()?.consent).toBe(fixture);
+		expect(await listed(agent)).toHaveLength(8);
+	});
+
+	it("answers list_sources and list_schedules with hosts and codes only (spec Rulings 38, 39)", async () => {
+		await admin.plugin("credentials/set", {
+			name: "m6d-cred",
+			header: "Authorization",
+			value: "Bearer s3cr3t-value",
+		});
+		feeds.feeds.set("/m6d/s3cr3t-path.csv", { body: productsCsv(2) });
+		const source = await admin.plugin<SourceRow>("sources/create", {
+			name: "M6d feed",
+			url: `${feeds.url("/m6d/s3cr3t-path.csv")}?token=t0ken`,
+			credential: "m6d-cred",
+		});
+		const templateId = await saveTemplate("M6d schedule", template("it_mcp_url"));
+		const { schedule } = await admin.plugin<{
+			schedule: { id: string; armedBy: string; revision: number };
+		}>("schedules/create", {
+			name: "M6d",
+			templateId,
+			templateRevision: 1,
+			sourceId: source.id,
+			cron: "0 0 1 1 *",
+		});
+		try {
+			const sources = await tool(agent, "list_sources", {});
+			expect(sources.isError).toBe(false);
+			const listedSource = (JSON.parse(sources.text) as { items: { id: string }[] }).items.find(
+				(s) => s.id === source.id,
+			);
+			expect(listedSource).toMatchObject({ host: "127.0.0.1", credential: true });
+			for (const marker of ["s3cr3t", "t0ken", "m6d-cred", "/m6d/"]) {
+				expect(sources.text, marker).not.toContain(marker);
+			}
+			const schedules = await tool(agent, "list_schedules", {});
+			expect(schedules.isError).toBe(false);
+			const listedSchedule = (JSON.parse(schedules.text) as { items: { id: string }[] }).items.find(
+				(s) => s.id === schedule.id,
+			);
+			expect(listedSchedule).toMatchObject({ templateId, sourceId: source.id, runCount: 0 });
+			for (const marker of [schedule.armedBy, "sourcePin", "armedBy", "createdBy", "claimedAt"]) {
+				expect(schedules.text, marker).not.toContain(marker);
+			}
+		} finally {
+			await admin.plugin("schedules/delete", { id: schedule.id, revision: schedule.revision });
+		}
 	});
 
 	it("redacts the upload ID of a dry run whose staged file is gone (spec Ruling 33)", async () => {

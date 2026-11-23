@@ -296,6 +296,37 @@ describe("publishAt: publish now or schedule (M5b)", () => {
 		expect(entryOf(deps, "A1")).toMatchObject({ status: "scheduled", scheduledAt: at(HOUR) });
 	});
 
+	it("reports schedule_unverified and schedules nothing after a stop before the create's revision was saved", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const job = await start(deps, csv([desk]), scheduleAt(at(HOUR)));
+		// The create landed, but its revision never reached the record row (as publish_unverified).
+		deps.content.afterWrite = () => {
+			throw new Error("crash");
+		};
+		await expect(runBatch(deps, job.id, "w1")).rejects.toThrow("crash");
+		deps.content.afterWrite = () => {};
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "writing", entryId: null });
+		expect((await records(deps, job.id))[0]).not.toHaveProperty("writtenRev");
+		const leased = (await deps.jobs.get(job.id)) as NonNullable<
+			Awaited<ReturnType<Deps["jobs"]["get"]>>
+		>;
+		await deps.jobs.put(job.id, { ...leased, lease: null });
+		const done = await runToEnd(deps, job.id);
+		expect(done.counters).toMatchObject({ created: 0, conflict: 1 });
+		const e = entryOf(deps, "A1");
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "conflict",
+			action: "create",
+			entryId: e.id,
+			errors: [{ code: "schedule_unverified" }],
+		});
+		expect(deps.content.entries.size).toBe(1);
+		expect(e).toMatchObject({ status: "draft", scheduledAt: null });
+		expect(later(deps)).toEqual([]);
+		expect(await linkOf(deps)).not.toHaveProperty("writtenRev");
+	});
+
 	it("plans the same in a dry run and writes nothing", async () => {
 		const { deps } = setup();
 		await importRows(deps, [desk], { publish: false });
