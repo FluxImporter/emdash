@@ -209,18 +209,51 @@ interface Scored {
 	rationale: string;
 }
 
-function scoreAgainst(key: NameTokens, fieldTokens: readonly string[]): Scored | null {
-	const k = joined(key.tokens);
-	const f = joined(fieldTokens);
-	if (k === f) return { score: 1, rationale: EXACT };
-	if (canon(k) === canon(f)) return { score: 0.8, rationale: SYNONYM };
-	const K = new Set(key.pathTokens.map(canon));
-	const F = new Set(fieldTokens.map(canon));
+/** A name prepared for scoring: joined, its canonical, and the set of its tokens' canonicals. */
+interface PreparedName {
+	joined: string;
+	canon: string;
+	canonTokens: ReadonlySet<string>;
+}
+
+function prepare(tokens: readonly string[], overlapTokens: readonly string[]): PreparedName {
+	const name = joined(tokens);
+	return { joined: name, canon: canon(name), canonTokens: new Set(overlapTokens.map(canon)) };
+}
+
+/** A key's name, or null when it is empty and so never scores (Ruling 58). */
+function prepareKey(key: NameTokens): PreparedName | null {
+	return joined(key.tokens) === "" ? null : prepare(key.tokens, key.pathTokens);
+}
+
+/** A field's slug and label, those with an empty name left out, the slug first. */
+function prepareField(field: SuggestField): PreparedName[] {
+	const out: PreparedName[] = [];
+	for (const name of [field.slug, field.label]) {
+		const tokens = norm(name).tokens;
+		if (joined(tokens) !== "") out.push(prepare(tokens, tokens));
+	}
+	return out;
+}
+
+function scoreAgainst(key: PreparedName, field: PreparedName): Scored | null {
+	if (key.joined === field.joined) return { score: 1, rationale: EXACT };
+	if (key.canon === field.canon) return { score: 0.8, rationale: SYNONYM };
 	let shared = 0;
-	for (const t of K) if (F.has(t)) shared++;
-	const union = K.size + F.size - shared;
+	for (const t of key.canonTokens) if (field.canonTokens.has(t)) shared++;
+	const union = key.canonTokens.size + field.canonTokens.size - shared;
 	const j = union === 0 ? 0 : shared / union;
 	return j >= 0.5 ? { score: 0.6 * j, rationale: OVERLAP } : null;
+}
+
+function bestScore(key: PreparedName | null, names: readonly PreparedName[]): Scored | null {
+	if (key === null) return null;
+	let best: Scored | null = null;
+	for (const name of names) {
+		const scored = scoreAgainst(key, name);
+		if (scored !== null && (best === null || scored.score > best.score)) best = scored;
+	}
+	return best;
 }
 
 /**
@@ -228,15 +261,7 @@ function scoreAgainst(key: NameTokens, fieldTokens: readonly string[]): Scored |
  * An empty name never scores (Ruling 58).
  */
 export function nameScore(key: NameTokens, field: SuggestField): Scored | null {
-	if (joined(key.tokens) === "") return null;
-	let best: Scored | null = null;
-	for (const name of [field.slug, field.label]) {
-		const tokens = norm(name).tokens;
-		if (joined(tokens) === "") continue;
-		const scored = scoreAgainst(key, tokens);
-		if (scored !== null && (best === null || scored.score > best.score)) best = scored;
-	}
-	return best;
+	return bestScore(prepareKey(key), prepareField(field));
 }
 
 // --- 4. Values and type checks (spec step 4, Rulings 57, 63, 68) ---
@@ -582,14 +607,22 @@ function distinct(sample: Sample, key: string): boolean | null {
 	return true;
 }
 
+/** A sample key with its position and its name, normalised once per call. */
+interface SampleKey {
+	name: string;
+	position: number;
+	tokens: NameTokens;
+	prepared: PreparedName | null;
+}
+
 function keyColumn(
 	sample: Sample,
-	tokens: readonly NameTokens[],
+	keys: readonly SampleKey[],
 	warnings: SuggestWarning[],
 ): KeyPick {
 	const first = sample.keys[0];
 	if (first === undefined) throw new Error("suggestByName needs at least one key");
-	const names = tokens.map((t) => joined(t.tokens));
+	const names = keys.map((k) => joined(k.tokens.tokens));
 	for (const name of KEY_NAMES) {
 		const index = names.indexOf(name);
 		const from = sample.keys[index];
@@ -618,53 +651,58 @@ export function suggestByName(
 	sample: Sample,
 	options: SuggestOptions = {},
 ): NameSuggestion {
-	const tokens = sample.keys.map((k) => norm(k, sample.format));
+	const keys = sample.keys.map((name, position): SampleKey => {
+		const tokens = norm(name, sample.format);
+		return { name, position, tokens, prepared: prepareKey(tokens) };
+	});
 	const excluded = options.excludedKeys ?? new Set<string>();
 	const mapper = options.mapper ?? createMapper(sample);
 	const warnings: SuggestWarning[] = [];
 	if (sample.rows.length === 0 && sample.keys.length > 0) warnings.push({ code: "sample_empty" });
 
-	const key = options.base === undefined ? keyColumn(sample, tokens, warnings) : null;
+	const key = options.base === undefined ? keyColumn(sample, keys, warnings) : null;
 
 	let slug: KeyPick | null = null;
 	if (options.base?.hasSlug !== true) {
-		const index = sample.keys.findIndex(
-			(k, i) =>
-				k !== key?.from &&
-				!excluded.has(k) &&
-				canon(joined(tokens[i]?.tokens ?? [])) === SLUG_GROUP,
+		const found = keys.find(
+			(k) =>
+				k.name !== key?.from &&
+				!excluded.has(k.name) &&
+				canon(joined(k.tokens.tokens)) === SLUG_GROUP,
 		);
-		const from = sample.keys[index];
-		if (from !== undefined) slug = { from, hundredths: 80, rationale: SLUG_RATIONALE };
+		if (found !== undefined) slug = { from: found.name, hundredths: 80, rationale: SLUG_RATIONALE };
 	}
 
+	// Each name is normalised once per call, not once per (field, key) pair.
+	const offered = keys.filter((k) => !excluded.has(k.name) && k.name !== slug?.from);
 	const candidates: Candidate[] = [];
 	fields.forEach((field, fieldPosition) => {
-		sample.keys.forEach((k, keyPosition) => {
-			if (excluded.has(k) || k === slug?.from) return;
-			const named = nameScore(tokens[keyPosition] ?? norm(k, sample.format), field);
-			if (named === null) return;
+		const names = prepareField(field);
+		for (const { name: k, position: keyPosition, prepared } of offered) {
+			const named = bestScore(prepared, names);
+			if (named === null) continue;
 			const checked = mapper(field, k);
-			if (checked === null) return;
+			if (checked === null) continue;
 			let { score, rationale } = named;
 			if (checked.failures * 2 > checked.checked) {
 				score /= 2;
 				rationale = `${rationale}; the sample values do not look like ${checked.mapping.type}`;
 			}
 			const hundredths = Math.round(score * 100);
-			if (hundredths < CANDIDATE_MIN_HUNDREDTHS) return;
+			if (hundredths < CANDIDATE_MIN_HUNDREDTHS) continue;
 			candidates.push({
 				field: field.slug,
 				key: k,
 				hundredths,
 				rationale,
-				mapping: checked.mapping,
+				// A copy: the memoised check is shared by every field mapped from the same key.
+				mapping: { ...checked.mapping },
 				...(checked.ambiguous === undefined ? {} : { ambiguous: checked.ambiguous }),
 				required: field.required,
 				fieldPosition,
 				keyPosition,
 			});
-		});
+		}
 	});
 	candidates.sort(compareCandidates);
 

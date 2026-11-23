@@ -284,6 +284,21 @@ describe("assignment (spec step 5, Ruling 62)", () => {
 		]);
 	});
 
+	it("orders a tie across fields by schema order before key order", () => {
+		const out = suggestByName([field("title"), field("summary")], only(["Teaser", "Name"]));
+		expect(out.candidates.map((c) => [c.field, c.key, c.hundredths])).toEqual([
+			["title", "Name", 80],
+			["summary", "Teaser", 80],
+		]);
+	});
+
+	it("gives each candidate its own mapping object", () => {
+		const out = suggestByName([field("title"), field("headline")], only(["Name"]));
+		const [a, b] = out.candidates;
+		expect(a?.mapping).toEqual(b?.mapping);
+		expect(a?.mapping).not.toBe(b?.mapping);
+	});
+
 	it("maps each key to one field and each field to one key, and explains an unmatched field", () => {
 		const out = suggestByName([field("title"), field("subject")], only(["Name"]));
 		expect(out.fields.get("title")?.from).toBe("Name");
@@ -457,6 +472,26 @@ describe("eligibility (spec Ruling 31)", () => {
 			{ code: "reference_not_suggested", fields: ["author"] },
 			{ code: "fields_not_eligible", fields: ["gallery", "body", "legacy", "colour"] },
 		]);
+	});
+});
+
+describe("bounded work", () => {
+	it("normalises each field's names once per call, not once per key", () => {
+		let labelReads = 0;
+		const fields = Array.from({ length: 50 }, (_, i): SuggestField => {
+			const f = field(`alpha_${i}`);
+			Object.defineProperty(f, "label", {
+				get: () => {
+					labelReads++;
+					return `Alpha ${i}`;
+				},
+			});
+			return f;
+		});
+		const keys = Array.from({ length: 80 }, (_, i) => `Beta ${i}`);
+		const out = suggestByName(fields, only(keys));
+		expect(out.candidates).toEqual([]);
+		expect(labelReads).toBeLessThanOrEqual(fields.length);
 	});
 });
 
