@@ -375,9 +375,9 @@ interface SuggestWarning {
    - `uploadId`: `sampleImport` on the staged file (`UPLOAD_NOT_FOUND`).
    - `sourceId`: the source's latest staged copy (`lastFetch.uploadId`) when it is still stored;
      otherwise one `fetchSource(sources, id, false)` and its copy. `SOURCE_NOT_FOUND` and the M3c
-     fetch codes as for `jobs/create`.
+     fetch codes as for `jobs/create`. (Amended by Ruling 76: `force: true` when the copy is gone.)
 
-   Keys: CSV headers (blank ones dropped), or `paths` (P3). No key at all is `NO_SOURCE_KEYS`
+   Keys: CSV headers (blank ones dropped; amended by Ruling 77: kept as `column_<n>`), or `paths` (P3). No key at all is `NO_SOURCE_KEYS`
    (400). A parse error is `INVALID_SOURCE`, as `sources/sample`.
 5. **Deterministic draft.** Run the fallback suggester (Rulings 29-31) over the eligible fields
    not kept from the base template, the keys **not used by the base template's kept mappings**
@@ -824,7 +824,7 @@ Warnings, in `warnings` (`count` where it says so):
 | `ai_key_unavailable` | The stored key cannot be decrypted (F6) |
 | `ai_url_blocked` | The base URL fails Ruling 8, or the guard refused the host or one of its addresses (`UrlSourceError` `URL_BLOCKED`, for the SDK as the `cause` of its `APIConnectionError`) (amended by Ruling 48) |
 | `ai_payload_too_large` | The payload does not fit 48 KiB after every reduction; no call was made (Ruling 50) |
-| `ai_rate_limited` | The hourly limit is reached (Ruling 34) |
+| `ai_rate_limited` | The hourly limit is reached or could not be read (Ruling 34, amended by Ruling 92) |
 | `ai_timeout` | No reply within the timeout of Ruling 52 (`APIConnectionTimeoutError`, status 408, an `AbortError` or a `TimeoutError`) |
 | `ai_auth_failed` | 401 or 403 from the provider |
 | `ai_billing` | 402 from the provider: payment or credit (Ruling 55) |
@@ -1006,7 +1006,8 @@ The suggestion route is REST only. Reasons, in order:
 - **Who.** The route and both overview routes require `import:execute` (Admin). The settings form
   requires `plugins:manage` (Admin). The tools need the M6c scopes and Agent access.
 - **The key.** `aiApiKey` is a declared secret, encrypted at rest (F5); the route reads it only
-  when it will call a provider (Settings, step 2), passes it to the SDK as `apiKey` or to the
+  when it will call a provider (Settings, step 2; amended by Ruling 93: whenever a provider is
+  configured, and sent only when a call is made), passes it to the SDK as `apiKey` or to the
   request as a header, and never returns, logs, stores elsewhere or puts it in an error message.
   Provider errors are mapped to codes before anything reaches a response or a log, so an error
   body echoing the key cannot leak it (Ruling 35). The SDK's own logging is off (Ruling 36).
@@ -1019,8 +1020,8 @@ The suggestion route is REST only. Reasons, in order:
   Admin's `aiBaseUrl`, checked by flux-import's rules before use (https, no user info, no query or
   fragment, `checkHost`) and by `guardedRequest`'s address check on every call, the same checks
   that already guard URL sources (P2, Ruling 8). Redirects are never followed: `redirect:
-  "manual"` is forced inside `guardedRequest`, whatever the caller passes, so `x-api-key` cannot
-  follow a cross-origin redirect (Ruling 9). Only an Admin sets the URL; the route's input cannot
+  "manual"` is forced inside `guardedRequest`, whatever the caller passes, so the key's header
+  (`authorization`, Ruling 73) cannot follow a cross-origin redirect (Ruling 9). Only an Admin sets the URL; the route's input cannot
   name a host. Development sites with `allowPrivateNetwork` skip the private-address checks only
   under `import.meta.env.DEV` (P2). Nothing is lost by not using `ctx.http`: for a native plugin it
   "is not a security boundary" (F4).
@@ -1167,7 +1168,8 @@ No test calls a real provider; CI holds no key. The fakes are deterministic.
   - Anthropic through the real SDK: the request body has the model, `max_tokens` 16000,
     `output_config` (`format`, `effort: "low"` only on the default model), the beta header and
     `fallbacks: "default"` only on the default model, the system prompt and the escaped user
-    message; the `x-api-key` header carries the key; the SDK's `timeout` follows Ruling 52 for 10
+    message; the `x-api-key` header carries the key (amended by Ruling 73: `authorization:
+    Bearer`, and no `x-api-key`); the SDK's `timeout` follows Ruling 52 for 10
     and 100 fields;
   - the environment (amended by Ruling 56): with `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
     `ANTHROPIC_BASE_URL` and `ANTHROPIC_LOG` set to markers, none is used; with
@@ -1323,6 +1325,7 @@ Tasks 1 and 5 can run in parallel with 2 and 3.
    and a 3xx is `ai_provider_error`. A generic redirect-following client would carry `x-api-key`,
    Anthropic's header, to the new origin (EmDash's `ctx.http` strips `authorization` but not
    `x-api-key`, F3); provider APIs do not redirect, so following one could only leak the key.
+   (Amended by Ruling 73: SDK 1.5.0 sends the key as `authorization: Bearer`; the rule stands.)
 10. **Four settings: `aiProvider`, `aiApiKey`, `aiModel`, `aiBaseUrl`**, with the types, labels and
     defaults of "Settings". Declared settings give the generated form and encryption for the key
     with no admin code (F5, F7). Defaults are applied at read, because EmDash stores none (F5).
@@ -1691,6 +1694,144 @@ review").
 
 Finding 24's text fixes (V1's adapter, Ruling 47's "refused early", Ruling 5's downside, P5, the
 `fields` comment, and `cut()` keeping 200 code points before the `…`) are applied in place.
+
+### Amendments from the plan and review
+
+Recorded by the review (`../notes/2026-11-19-m6d-review.md`); each names the plan ruling, fact or
+review finding behind it. They override the text above where they differ; markers at the amended
+text point here.
+
+72. **`guardedRequest` reads the reply to its end, under the cap, before it resolves** (plan
+    Ruling 1, Fact V1c; amends "The transport" and Ruling 48's "capped while it streams"). The
+    SDK's timer covers its inner fetch only until that fetch resolves, so a returned stream would
+    leave a body that stalls after its headers untimed. The body is read chunk by chunk, cancelled
+    with `UrlSourceError("TOO_LARGE")` as soon as more than 256 KiB arrive, and returned as a new
+    `Response` over the bytes with the status, status text and headers, minus `content-encoding`
+    and `content-length`. An opaque redirect or a status-0 reply is refused as `FETCH_FAILED`
+    with a host-free message (Task 2 review). Memory stays bounded by the cap.
+73. **The Anthropic key travels as `authorization: Bearer <key>`, never `x-api-key`** (plan
+    Ruling 2, Fact D1; amends Ruling 9's example, Security and the Testing bullets). SDK 1.5.0
+    sends the `apiKey` option as a bearer token. Ruling 9 stands for the reason it gives: a
+    redirect-following client would carry the credential header to another origin, so no
+    redirect is followed. The tests assert `authorization` and the absence of `x-api-key`, on
+    Node and on workerd.
+74. **Provider errors are mapped by `instanceof` and `status`, never by class name, in this
+    order** (plan Ruling 3, Fact D5; refines Ruling 55): `UrlSourceError` `URL_BLOCKED`, itself or
+    anywhere in a `cause` chain of at most 5 links → `ai_url_blocked`; `TOO_LARGE` in the same
+    chain → `ai_invalid_output`; the SDK's `APIConnectionTimeoutError`, or an error in the chain
+    named `AbortError` or `TimeoutError` → `ai_timeout`; a numeric `status` → by status; anything
+    else → `ai_provider_error`. The SDK reads any rejection whose text matches `/timed? ?out/i` as
+    a timeout, and guard messages name the host, so the SDK's `fetch` adapter re-throws a guard
+    failure as a code-only `UrlSourceError` with no cause (`guardFailure`), or the runtime's own
+    abort found in the chain (Task 2 review ruling, Task 6). `ai_timeout` means only flux-import's
+    own timeout: an undici connect timeout (`TypeError("fetch failed")` with a timeout cause) is
+    `ai_provider_error` (Task 6 review; Ruling 55's wording needs no change). A unit test renames
+    the SDK's class to `Rr` and still expects `ai_timeout`; the production build of `sites/dev-cf`
+    does not minify class names today (review, V2).
+75. **The span-recording test is replaced** (plan Ruling 4; amends Ruling 56's test). Registering
+    a tracer provider needs `@opentelemetry/api`, a transitive dependency that may not be added.
+    The test pins `openTelemetry: { traces: false, propagation: false }` and that no
+    `traceparent` is sent with `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content` set.
+76. **A `sourceId` sample uses the stored copy, else `fetchSource` with `force: true` when a
+    `lastFetch` names a copy that is gone** (plan Ruling 6, Fact D9; refines step 4): a
+    conditional fetch would answer 304 with the missing upload ID. `force` is `false` for a source
+    never fetched. An unknown source is `SOURCE_NOT_FOUND` (404), read by the route before any
+    fetch; a `NOT_FOUND` from a fetch (the source deleted meanwhile) is mapped to it too.
+77. **CSV keys keep `normalizeHeaders`' names** (plan Ruling 7, Fact D9; amends step 4's "blank
+    ones dropped"). A blank header is `column_<n>`, the name a template must use to read that
+    column, so it stays a key: it can be the key column, and it matches no field by name.
+78. **`select` and `multiSelect` mappings get `ignoreCase: true` when a sample value matches an
+    option only ignoring case** (plan Ruling 8; refines Ruling 24 for the suggester). The model
+    cannot set it: it follows from the values.
+79. **A base template's `key`, `slug` and fields are kept whole; the provider's `key` and `slug`
+    are then ignored** (plan Ruling 9; refines Ruling 25). The suggestion adds only the field
+    mappings the base template lacks, and an entry slug only when the base template has none. A
+    base template's slug is never dropped, even on its own key column (Task 8, accepted).
+80. **The base template's keys are its mapped paths** (plan Ruling 20, Task 9 review; refines
+    Ruling 59): every string `from` that `templatePaths` reports outside the `key` and `source`
+    blocks (field mappings with `alt`, `slug`, `translationOf`, taxonomies, bylines, `publishAt`),
+    never a select `map` entry's text. The key column stays excluded only when a base field or the
+    slug maps it. Pasted text is checked by `pasteBytes` (factored out of `stagePaste`) and parsed
+    through an in-memory `SourcePort`, so the suggestion service has no storage port and cannot
+    stage (Ruling 32).
+81. **No reply item may take a settled field's key, a key a base-template field maps, or the
+    kept slug's key; such an item is ignored and counted in `ai_duplicate_key`** (pre-flight F1,
+    F2, Task 8 review; amends Ruling 59 and "Validating a reply" step 2). The field keeps its own
+    pick or moves to its next free candidate. The merge reports the ignored items, and the route
+    adds them to the reply's own `ai_duplicate_key` count, so the code appears once.
+82. **The slug key never equals the key column or any field's key** (Task 8 review; amends step 7
+    and Ruling 59). A provider slug on a reserved key, or on the key column, gives way to name
+    matching's slug or to none; a suggested slug (provider or name matching) equal to the chosen
+    key is dropped. The provider's `key` and `slug` carry confidence 0.6 and the rationale
+    "Suggested by the model" (plan Ruling 17).
+83. **`method` is `"fallback"` when no draft is produced, and `ai_draft_invalid` fires only when
+    the failing draft used provider output** (Task 8 review; refines Ruling 64 and "Errors and
+    warnings"). A failing draft with no provider output gives `no_field_matched` alone.
+84. **A model's `dateFormat` or `decimalComma` is kept only when the key has at least one
+    non-empty sampled value**, and only when every such value parses; otherwise it is dropped and
+    counted in `ai_option_dropped` (Task 5 review; amends Ruling 63, which an empty column
+    satisfied vacuously, letting free text into the draft).
+85. **A duplicate-key item keeps its field with `from: null`, confidence 0 and "No column or path
+    matches this field"; a field is answered by its first item, even one then dropped for its
+    key** (plan Ruling 19; refines "Validating a reply" step 2). `validateReply` pairs only sent
+    fields that have a mapping type; any other field named is `ai_unknown_field` (Task 5).
+86. **`fields_not_sent` carries `count` and the first 20 slugs; `keys_not_sent` carries `count`
+    only** (plan Ruling 11; refines the warning table): slugs are the site's own, key names come
+    from the feed (Ruling 26).
+87. **Rationales are cut to 199 code points plus `…`** (plan Ruling 12), so a cut rationale is at
+    most 200 code points with the ellipsis.
+88. **`sample_trimmed` reports only a payload that was sent** (plan Ruling 16; refines "The byte
+    cap"). A payload that cannot fit after reduction 7 reports `keys_not_sent` and
+    `fields_not_sent` where they apply, and `ai_payload_too_large`, but no `sample_trimmed`.
+89. **`unmapped.keys` leaves out the key column and the entry slug's key** (plan Ruling 18;
+    refines "Output"): it lists the sample keys that no field mapping, the key or the slug uses.
+90. **The keys sent are the sample's keys without the base template's and the settled fields'
+    keys, always with the key column, and with the entry slug's key** (plan Ruling 21; refines
+    step 6.1): the slug key maps no field, and the provider may name it as `slug`.
+91. **No provider text reaches a reply or a log unchecked, and settings warnings need a call to
+    be due** (plan Ruling 22; refines "Errors and warnings" and Ruling 64). `ai.model` and the
+    log line's model are the answering model only when it matches `MODEL_RE` (which refuses
+    `""`), else the configured one. `ai_not_configured`, `ai_key_unavailable` and the base URL's
+    `ai_url_blocked` are added only when a call would otherwise be made (`ai !== false` and an
+    unsettled field). For Anthropic, `aiBaseUrl` is read only under `allowPrivateNetwork`, so a
+    production request reads three settings.
+92. **`ai_rate_limited` means "the hourly limit is reached or could not be read"** (Task 9
+    review; amends the warning table). A KV error in the limit's compare-and-set loop fails
+    closed with that code, no call and `sent: null`; the log line adds `rate=kv_error`, with no
+    error text.
+93. **The key is decrypted whenever a provider is configured, and sent only when a call is
+    made** (pre-flight F8; amends Security's "reads it only when it will call a provider").
+    `ai.available` needs the key, so every request with a provider selected and `ai !== false`
+    reads it; with `ai: false` only `aiProvider` is read.
+94. **An empty secret is stored** (Fact D6). `PUT { aiApiKey: "" }` stores an encrypted envelope
+    of `""` and the form shows the key as set; "Reading the settings" already reads an empty or
+    whitespace key as `no_key`. Only `null` clears it.
+95. **The workerd parity harness writes `sites/dev-cf/.dev.vars` with a generated
+    `EMDASH_ENCRYPTION_KEY`** (plan Ruling 13, Fact D7: the Worker reads the key only from its
+    vars there). The file starts with a marker line, is created new under mode 0600, and is
+    removed at teardown. A developer's own file is renamed to the git-ignored
+    `sites/dev-cf/.wrangler/flux-import-dev-vars.backup` for the run and renamed back at teardown
+    or, after a run killed by Ctrl-C, at the next setup; setup refuses when a backup and another
+    unmarked file both exist (Task 11 review).
+96. **The integration test reaches `ai_url_blocked` on the shared server** (plan Ruling 14, V7),
+    which runs without `allowPrivateNetwork`: an OpenAI-compatible base URL on a private address
+    is refused by the base URL rules before any connection. Anthropic is never configured there.
+    Both the Node and the workerd tests first prove that an OpenAI-compatible call reaches the
+    local fake before Anthropic is configured, so no request can reach a real provider (Task 10
+    and 11 reviews).
+97. **The request's timeout is chosen by the caller** (plan Ruling 5): the route passes
+    `aiTimeoutMs(fieldsSent)`. The SDK reports it in `x-stainless-timeout` in whole seconds,
+    rounded down (20 for 20,600 ms).
+98. **The six M6c tools' consent snapshot is derived** (plan Ruling 15, V6): the M6c upgrade test
+    filters the regenerated fixture to the six M6c rows, which are byte-identical to 0.4.0's.
+99. **The measured costs** (review, V2 and V5). On local workerd and D1, whole requests including
+    the 4 queries of PAT authentication: `templates/suggest` 9 queries with name matching, 10-12
+    for a `sourceId` (12 and one subrequest when it fetches), 14 and one subrequest with either
+    provider; `sources/overview` over 50 sources 5; `schedules/overview` over 20 schedules 6.
+    The SDK adds 1,064,525 bytes, unminified, to `sites/dev-cf`'s server build in a chunk of its
+    own that only the provider's `await import()` loads (plus a 108,743-byte chunk the SDK itself
+    imports lazily); the server output grows by 1,251,045 bytes in all. Name matching at Ruling
+    68's bound costs about 100-150 ms of CPU, over the free plan's 10 ms (Open issues).
 
 ## Out of scope
 
