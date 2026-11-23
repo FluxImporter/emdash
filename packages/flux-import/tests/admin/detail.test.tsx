@@ -142,12 +142,28 @@ describe("DetailPanel", () => {
 		const { user, onChange } = setup(fieldRow("string"), { type: "text", from: "Name" });
 		await user.click(screen.getByRole("radio", { name: "Expression" }));
 		expect(onChange).not.toHaveBeenCalled();
+		// Until an expression is written, the panel says which key the row still uses.
+		const KEEPS = "Until an expression is written, this row keeps the key Name";
+		expect(screen.getByText(KEEPS)).toBeVisible();
 		const input = screen.getByRole("textbox", { name: "JSONata expression" });
 		await user.type(input, "$uppercase(Name)");
 		await user.tab();
 		expect(onChange).toHaveBeenCalledTimes(1);
 		expect(last(onChange)).toStrictEqual({ type: "text", expr: "$uppercase(Name)" });
 		expect(screen.queryByRole("combobox", { name: "Source key" })).toBeNull();
+		expect(screen.queryByText(/^Until an expression is written/)).toBeNull();
+	});
+
+	it("says the expression stays until a key is picked", async () => {
+		const { user, onChange } = setup(fieldRow("string"), { type: "text", expr: "Name" });
+		const KEEPS = "Until a key is picked, this row keeps its expression";
+		expect(screen.queryByText(KEEPS)).toBeNull();
+		await user.click(screen.getByRole("radio", { name: "Source key" }));
+		expect(screen.getByText(KEEPS)).toBeVisible();
+		await user.click(screen.getByRole("combobox", { name: "Source key" }));
+		await user.click(screen.getByRole("option", { name: "Price" }));
+		expect(last(onChange)).toStrictEqual({ type: "text", from: "Price" });
+		expect(screen.queryByText(KEEPS)).toBeNull();
 	});
 
 	it("keeps the mapping when an expression is left empty", async () => {
@@ -259,6 +275,13 @@ describe("DetailPanel", () => {
 		expect(last(number.onChange)).toStrictEqual({ type: "number", from: "Price", decimal: "," });
 	});
 
+	it("writes a text setting when another control is clicked", async () => {
+		const { user, onChange } = setup(fieldRow("datetime"), { type: "date", from: "Released" });
+		await user.type(screen.getByRole("textbox", { name: "Source date format" }), "dd/MM/yyyy");
+		await user.click(screen.getByRole("combobox", { name: "Timezone" }));
+		expect(last(onChange)).toStrictEqual({ type: "date", from: "Released", format: "dd/MM/yyyy" });
+	});
+
 	it("offers the date output format only for string and text fields (preflight F27)", () => {
 		const text = setup(fieldRow("text"), { type: "date", from: "Released" });
 		expect(screen.getByRole("textbox", { name: "Output format" })).toBeInTheDocument();
@@ -314,6 +337,87 @@ describe("DetailPanel", () => {
 		});
 	});
 
+	it("refuses a token in both lists, counting an unset list as the usual tokens", async () => {
+		const { user, onChange } = setup(fieldRow("boolean"), { type: "boolean", from: "Status" });
+		const yes = screen.getByRole("textbox", { name: "Values read as yes" });
+		const no = screen.getByRole("textbox", { name: "Values read as no" });
+		// "no" is one of the usual no values.
+		await user.type(yes, "ja, no");
+		await user.tab();
+		expect(onChange).not.toHaveBeenCalled();
+		expect(screen.getByText('"no" is both a yes and a no value')).toBeVisible();
+		await user.type(no, "off");
+		await user.tab();
+		expect(last(onChange)).toStrictEqual({ type: "boolean", from: "Status", false: ["off"] });
+		// With its own no values, "no" is free; the match ignores case and spaces.
+		await user.clear(yes);
+		await user.type(yes, "ja, no");
+		await user.tab();
+		expect(last(onChange)).toStrictEqual({
+			type: "boolean",
+			from: "Status",
+			true: ["ja", "no"],
+			false: ["off"],
+		});
+		expect(screen.queryByText('"no" is both a yes and a no value')).toBeNull();
+		await user.clear(no);
+		await user.type(no, " JA ");
+		await user.tab();
+		expect(screen.getByText('"ja" is both a yes and a no value')).toBeVisible();
+		expect(last(onChange)).toStrictEqual({
+			type: "boolean",
+			from: "Status",
+			true: ["ja", "no"],
+			false: ["off"],
+		});
+	});
+
+	it("counts an unset yes list as the usual yes values", async () => {
+		const { user, onChange } = setup(fieldRow("boolean"), { type: "boolean", from: "Status" });
+		const yes = screen.getByRole("textbox", { name: "Values read as yes" });
+		const no = screen.getByRole("textbox", { name: "Values read as no" });
+		await user.type(no, "nope, Yes");
+		await user.tab();
+		expect(screen.getByText('"yes" is both a yes and a no value')).toBeVisible();
+		expect(onChange).not.toHaveBeenCalled();
+		// Emptying a list brings the usual values back, which may clash with the other list.
+		await user.type(yes, "ja");
+		await user.tab();
+		await user.tab();
+		expect(last(onChange)).toStrictEqual({
+			type: "boolean",
+			from: "Status",
+			true: ["ja"],
+			false: ["nope", "Yes"],
+		});
+		onChange.mockClear();
+		await user.clear(yes);
+		await user.tab();
+		expect(screen.getAllByText('"yes" is both a yes and a no value')).toHaveLength(1);
+		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses more than 50 tokens, or one longer than 100 characters", async () => {
+		const CAP = "At most 50 values, each up to 100 characters";
+		const { user, onChange } = setup(fieldRow("boolean"), { type: "boolean", from: "Status" });
+		const yes = screen.getByRole("textbox", { name: "Values read as yes" });
+		const many = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`).join(",");
+		await user.click(yes);
+		await user.paste(many(51));
+		await user.tab();
+		expect(screen.getByText(CAP)).toBeVisible();
+		await user.clear(yes);
+		await user.paste("x".repeat(101));
+		await user.tab();
+		expect(screen.getByText(CAP)).toBeVisible();
+		expect(onChange).not.toHaveBeenCalled();
+		await user.clear(yes);
+		await user.paste(`${many(49)},${"x".repeat(100)}`);
+		await user.tab();
+		expect(screen.queryByText(CAP)).toBeNull();
+		expect(last(onChange)?.true).toHaveLength(50);
+	});
+
 	it("maps select values onto the field's options", async () => {
 		const { user, onChange } = setup(fieldRow("select", { options: ["Draft", "Published"] }), {
 			type: "select",
@@ -336,6 +440,41 @@ describe("DetailPanel", () => {
 		});
 		await choose(user, "live", "As it is");
 		expect(last(onChange)).toStrictEqual({ type: "select", from: "Status", ignoreCase: false });
+	});
+
+	it("adds a source value the sample lacks, up to 200 characters", async () => {
+		const { user, onChange } = setup(fieldRow("select", { options: ["Draft", "Published"] }), {
+			type: "select",
+			from: "Status",
+		});
+		const add = screen.getByRole("textbox", { name: "Add a value" });
+		// Nothing typed adds nothing.
+		await user.click(screen.getByRole("button", { name: "Add" }));
+		expect(
+			within(screen.getByRole("group", { name: "Source values" })).getAllByRole("combobox"),
+		).toHaveLength(2);
+		await user.click(add);
+		await user.paste("x".repeat(201));
+		await user.click(screen.getByRole("button", { name: "Add" }));
+		expect(screen.getByText("A source value is at most 200 characters")).toBeVisible();
+		const values = screen.getByRole("group", { name: "Source values" });
+		expect(within(values).getAllByRole("combobox")).toHaveLength(2);
+		await user.clear(add);
+		await user.type(add, " archived ");
+		await user.click(screen.getByRole("button", { name: "Add" }));
+		expect(screen.queryByText("A source value is at most 200 characters")).toBeNull();
+		expect(add).toHaveValue("");
+		expect(onChange).not.toHaveBeenCalled();
+		await choose(user, "archived", "Published");
+		expect(last(onChange)).toStrictEqual({
+			type: "select",
+			from: "Status",
+			map: { archived: "Published" },
+		});
+		// A value already listed is not added twice.
+		await user.type(add, "live");
+		await user.click(screen.getByRole("button", { name: "Add" }));
+		expect(within(values).getAllByRole("combobox")).toHaveLength(3);
 	});
 
 	it("splits multi-select values by the separator", async () => {
@@ -475,6 +614,77 @@ describe("DetailPanel", () => {
 		const bylines = setup({ id: "bylines", label: "Bylines", kind: "bylines" }, { from: "Name" });
 		await choose(bylines.user, "Match bylines by", "Name");
 		expect(last(bylines.onChange)).toStrictEqual({ from: "Name", match: "name" });
+	});
+
+	it("refuses a term separator equal to the path separator, flat taxonomies too", async () => {
+		const flat: TaxonomyInfo = {
+			name: "tag",
+			label: "Tags",
+			hierarchical: false,
+			collections: ["posts"],
+		};
+		const tag = setup(
+			{ id: "taxonomy:tag", label: "Tags", kind: "taxonomy", taxonomy: flat },
+			{
+				from: "Tags",
+			},
+		);
+		const term = screen.getByRole("textbox", { name: "Term separator" });
+		await tag.user.type(term, "/");
+		await tag.user.tab();
+		expect(screen.getByText("The term separator cannot be /, the path character")).toBeVisible();
+		expect(tag.onChange).not.toHaveBeenCalled();
+		await tag.user.clear(term);
+		await tag.user.type(term, "|");
+		await tag.user.tab();
+		expect(last(tag.onChange)).toStrictEqual({ from: "Tags", separator: "|" });
+		expect(screen.queryByText("The term separator cannot be /, the path character")).toBeNull();
+		tag.unmount();
+
+		const tree: TaxonomyInfo = { ...flat, name: "category", hierarchical: true };
+		const cat = setup(
+			{ id: "taxonomy:category", label: "Categories", kind: "taxonomy", taxonomy: tree },
+			{ from: "Cats" },
+		);
+		const path = screen.getByRole("textbox", { name: "Path separator" });
+		// The term separator is a comma when unset.
+		await cat.user.type(path, ",");
+		await cat.user.tab();
+		expect(
+			screen.getByText("The path separator must differ from the term separator"),
+		).toBeVisible();
+		expect(cat.onChange).not.toHaveBeenCalled();
+		await cat.user.clear(path);
+		await cat.user.type(path, ">");
+		await cat.user.tab();
+		expect(last(cat.onChange)).toStrictEqual({ from: "Cats", hierarchy: ">" });
+		await cat.user.type(screen.getByRole("textbox", { name: "Term separator" }), ">");
+		await cat.user.tab();
+		expect(
+			screen.getByText("The term separator must differ from the path separator"),
+		).toBeVisible();
+		expect(last(cat.onChange)).toStrictEqual({ from: "Cats", hierarchy: ">" });
+		// An emptied setting counts as its default: "/" for the path, "," for terms.
+		const catTerm = screen.getByRole("textbox", { name: "Term separator" });
+		await cat.user.clear(catTerm);
+		await cat.user.type(catTerm, "/");
+		await cat.user.tab();
+		expect(last(cat.onChange)).toStrictEqual({ from: "Cats", hierarchy: ">", separator: "/" });
+		await cat.user.clear(path);
+		await cat.user.tab();
+		expect(
+			screen.getByText("The path separator must differ from the term separator"),
+		).toBeVisible();
+		await cat.user.type(path, ",");
+		await cat.user.tab();
+		expect(last(cat.onChange)).toStrictEqual({ from: "Cats", hierarchy: ",", separator: "/" });
+		cat.onChange.mockClear();
+		await cat.user.clear(catTerm);
+		await cat.user.tab();
+		expect(
+			screen.getByText("The term separator must differ from the path separator"),
+		).toBeVisible();
+		expect(cat.onChange).not.toHaveBeenCalled();
 	});
 
 	it("shows raw sample values and says conversions show in Preview", () => {

@@ -97,5 +97,22 @@ export const RESERVED_FIELD_SLUGS: readonly string[] = [
 	"byline",
 ];
 
+/** `src/engine/values.ts`: the tokens a boolean mapping reads as true when its list is unset. */
+export const TRUE_TOKENS: readonly string[] = ["true", "yes", "y", "1", "on"];
+/** `src/engine/values.ts`: the tokens a boolean mapping reads as false when its list is unset. */
+export const FALSE_TOKENS: readonly string[] = ["false", "no", "n", "0", "off"];
+/** `src/engine/links.ts`: the separator between a field's terms, references or bylines. */
+export const DEFAULT_SEPARATOR = ",";
+/** `src/engine/links.ts`: the separator between a hierarchical term's path segments. */
+export const DEFAULT_HIERARCHY = "/";
+
+/**
+ * `src/engine/template.ts`, inline in its `tokens` and `optionMap` schemas: a boolean list holds
+ * at most 50 tokens of 1-100 characters; a select map's keys are 1-200 characters.
+ */
+export const TOKENS_MAX = 50;
+export const TOKEN_LENGTH_MAX = 100;
+export const MAP_KEY_MAX = 200;
+
 /** The most source keys the Keys pane renders at once (Review Focus 4). */
 export const KEYS_SHOWN = 200;

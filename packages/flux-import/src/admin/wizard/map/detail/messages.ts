@@ -7,6 +7,14 @@ export const M = {
 	expression: { id: "flux-import.detail.expression", message: "Expression" },
 	expressionInput: { id: "flux-import.detail.expression-input", message: "JSONata expression" },
 	none: { id: "flux-import.detail.none", message: "None" },
+	keepsKey: {
+		id: "flux-import.detail.keeps-key",
+		message: "Until an expression is written, this row keeps the key {key}",
+	},
+	keepsExpression: {
+		id: "flux-import.detail.keeps-expression",
+		message: "Until a key is picked, this row keeps its expression",
+	},
 
 	keyPlaceholder: { id: "flux-import.detail.key-placeholder", message: "Find a key" },
 	showKeys: { id: "flux-import.detail.show-keys", message: "Show all keys" },
@@ -63,6 +71,14 @@ export const M = {
 
 	trueTokens: { id: "flux-import.detail.true-tokens", message: "Values read as yes" },
 	falseTokens: { id: "flux-import.detail.false-tokens", message: "Values read as no" },
+	sharedToken: {
+		id: "flux-import.detail.shared-token",
+		message: '"{token}" is both a yes and a no value',
+	},
+	tooManyTokens: {
+		id: "flux-import.detail.too-many-tokens",
+		message: "At most {count} values, each up to {length} characters",
+	},
 	tokensHint: {
 		id: "flux-import.detail.tokens-hint",
 		message: "Separate values with commas. Empty keeps the usual ones.",
@@ -70,6 +86,12 @@ export const M = {
 
 	sourceValues: { id: "flux-import.detail.source-values", message: "Source values" },
 	asIs: { id: "flux-import.detail.as-is", message: "As it is" },
+	addValue: { id: "flux-import.detail.add-value", message: "Add a value" },
+	add: { id: "flux-import.detail.add", message: "Add" },
+	valueTooLong: {
+		id: "flux-import.detail.value-too-long",
+		message: "A source value is at most {length} characters",
+	},
 	ignoreCase: { id: "flux-import.detail.ignore-case", message: "Ignore case" },
 	separator: { id: "flux-import.detail.separator", message: "Separator" },
 	separatorHint: {
@@ -123,6 +145,18 @@ export const M = {
 	pathSeparatorHint: {
 		id: "flux-import.detail.path-separator-hint",
 		message: "Splits a term into its parents, as in Kitchen/Mugs. Empty uses /.",
+	},
+	termIsPath: {
+		id: "flux-import.detail.term-is-path",
+		message: "The term separator cannot be {char}, the path character",
+	},
+	termSameAsPath: {
+		id: "flux-import.detail.term-same-as-path",
+		message: "The term separator must differ from the path separator",
+	},
+	pathSameAsTerm: {
+		id: "flux-import.detail.path-same-as-term",
+		message: "The path separator must differ from the term separator",
 	},
 	createTerms: { id: "flux-import.detail.create-terms", message: "Create missing terms" },
 	matchBylinesBy: { id: "flux-import.detail.match-bylines-by", message: "Match bylines by" },

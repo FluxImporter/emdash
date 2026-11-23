@@ -1,7 +1,16 @@
-import { Checkbox, Input, Radio, Select } from "@cloudflare/kumo";
+import { Button, Checkbox, Input, Radio, Select } from "@cloudflare/kumo";
 import { type ChangeEvent, useEffect, useState } from "react";
 import { useT } from "../../../i18n.js";
-import type { MappingType } from "../../../limits.js";
+import {
+	DEFAULT_HIERARCHY,
+	DEFAULT_SEPARATOR,
+	FALSE_TOKENS,
+	MAP_KEY_MAX,
+	type MappingType,
+	TOKEN_LENGTH_MAX,
+	TOKENS_MAX,
+	TRUE_TOKENS,
+} from "../../../limits.js";
 import type { SampleColumn, SchemaField, TaxonomyInfo } from "../../../types.js";
 import type { RowMapping, ValueSource } from "../../state.js";
 import { KeyPicker } from "./KeyPicker.js";
@@ -20,18 +29,20 @@ export type Setter = (key: string, value: unknown) => void;
 
 /**
  * A text setting, written when the input loses focus. With `required`, an emptied input goes
- * back to the saved value instead of removing it.
+ * back to the saved value instead of removing it. `check` names what the grammar would refuse:
+ * the input then keeps the text, shows why and writes nothing.
  */
 function TextSetting(p: {
 	label: string;
 	value: string | undefined;
 	onCommit(value: string | undefined): void;
+	check?(value: string | undefined): string | null;
 	description?: string;
-	error?: string;
 	maxLength?: number;
 	required?: boolean;
 }) {
 	const [draft, setDraft] = useState(p.value ?? "");
+	const [refusal, setRefusal] = useState<string | null>(null);
 	useEffect(() => setDraft(p.value ?? ""), [p.value]);
 	return (
 		<Input
@@ -39,7 +50,7 @@ function TextSetting(p: {
 			value={draft}
 			maxLength={p.maxLength}
 			{...(p.description === undefined ? {} : { description: p.description })}
-			{...(p.error === undefined ? {} : { error: p.error })}
+			{...(refusal === null ? {} : { error: refusal })}
 			onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
 			onBlur={() => {
 				if (draft.trim() === "" && p.required) {
@@ -47,7 +58,9 @@ function TextSetting(p: {
 					return;
 				}
 				const next = draft === "" ? undefined : draft;
-				if (next !== p.value) p.onCommit(next);
+				const problem = p.check?.(next) ?? null;
+				setRefusal(problem);
+				if (problem === null && next !== p.value) p.onCommit(next);
 			}}
 		/>
 	);
@@ -98,7 +111,13 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
 
 /** A separator setting (1-10 characters, `separator` in the grammar). */
-function SeparatorSetting(p: { label: string; mapping: RowMapping; name: string; set: Setter }) {
+function SeparatorSetting(p: {
+	label: string;
+	mapping: RowMapping;
+	name: string;
+	set: Setter;
+	check?(value: string | undefined): string | null;
+}) {
 	const t = useT();
 	return (
 		<TextSetting
@@ -106,6 +125,7 @@ function SeparatorSetting(p: { label: string; mapping: RowMapping; name: string;
 			value={str(p.mapping[p.name])}
 			maxLength={10}
 			description={p.name === "hierarchy" ? t(M.pathSeparatorHint) : t(M.separatorHint)}
+			{...(p.check === undefined ? {} : { check: p.check })}
 			onCommit={(v) => p.set(p.name, v)}
 		/>
 	);
@@ -175,6 +195,13 @@ export function SourceInput(p: {
 						if (v !== undefined) p.onChange({ expr: v });
 					}}
 				/>
+			) : null}
+			{/* The value changes only when the new kind is given, so say what the row still uses. */}
+			{mode === "expr" && from !== null ? (
+				<p className="text-sm text-kumo-subtle">{t(M.keepsKey, { key: from })}</p>
+			) : null}
+			{mode === "key" && expr !== undefined ? (
+				<p className="text-sm text-kumo-subtle">{t(M.keepsExpression)}</p>
 			) : null}
 		</div>
 	);
@@ -273,9 +300,6 @@ function DateSettings(p: { mapping: RowMapping; set: Setter; output: boolean }) 
 	);
 }
 
-const tokensOf = (v: unknown): string | undefined =>
-	Array.isArray(v) ? v.filter((x) => typeof x === "string").join(", ") : undefined;
-
 /** Comma-separated tokens; blank ones are dropped, and none at all removes the list. */
 function parseTokens(text: string | undefined): string[] | undefined {
 	const tokens = (text ?? "")
@@ -285,20 +309,46 @@ function parseTokens(text: string | undefined): string[] | undefined {
 	return tokens.length === 0 ? undefined : tokens;
 }
 
+const listOf = (v: unknown): string[] | undefined =>
+	Array.isArray(v) ? v.filter((x) => typeof x === "string") : undefined;
+
+/** How the engine compares tokens (`token` in `template.ts`). */
+const normal = (token: string) => token.trim().toLowerCase();
+
 function BooleanSettings(p: { mapping: RowMapping; set: Setter }) {
 	const t = useT();
+	/**
+	 * What the grammar refuses of a list (`tokens`, `sharedToken`): too many or too long tokens,
+	 * or one the other list holds, an unset list counting as the engine's usual tokens.
+	 */
+	const check = (text: string | undefined, usual: readonly string[], other: readonly string[]) => {
+		const tokens = parseTokens(text);
+		if (
+			tokens !== undefined &&
+			(tokens.length > TOKENS_MAX || tokens.some((s) => s.length > TOKEN_LENGTH_MAX))
+		) {
+			return t(M.tooManyTokens, { count: TOKENS_MAX, length: TOKEN_LENGTH_MAX });
+		}
+		const others = new Set(other.map(normal));
+		const shared = (tokens ?? usual).map(normal).find((s) => others.has(s));
+		return shared === undefined ? null : t(M.sharedToken, { token: shared });
+	};
+	const trues = listOf(p.mapping.true);
+	const falses = listOf(p.mapping.false);
 	return (
 		<>
 			<TextSetting
 				label={t(M.trueTokens)}
-				value={tokensOf(p.mapping.true)}
+				value={trues?.join(", ")}
 				description={t(M.tokensHint)}
+				check={(v) => check(v, TRUE_TOKENS, falses ?? FALSE_TOKENS)}
 				onCommit={(v) => p.set("true", parseTokens(v))}
 			/>
 			<TextSetting
 				label={t(M.falseTokens)}
-				value={tokensOf(p.mapping.false)}
+				value={falses?.join(", ")}
 				description={t(M.tokensHint)}
+				check={(v) => check(v, FALSE_TOKENS, trues ?? TRUE_TOKENS)}
 				onCommit={(v) => p.set("false", parseTokens(v))}
 			/>
 		</>
@@ -311,9 +361,6 @@ function textOf(v: unknown): string | null {
 	const text = String(v).trim();
 	return text === "" ? null : text;
 }
-
-/** The longest source value a `map` entry takes (`optionMap` in the grammar). */
-const MAP_KEY_MAX = 200;
 
 /** The distinct values of the chosen key's samples, split by `separator` when given. */
 function sampleTexts(column: SampleColumn | undefined, separator: string | null): string[] {
@@ -347,7 +394,21 @@ function ValueMap(p: {
 }) {
 	const t = useT();
 	const map = isStringRecord(p.mapping.map) ? p.mapping.map : {};
-	const rows = [...new Set([...p.values, ...Object.keys(map)])];
+	// Values the user added: a source may hold values the sample lacks.
+	const [added, setAdded] = useState<string[]>([]);
+	const [draft, setDraft] = useState("");
+	const [tooLong, setTooLong] = useState(false);
+	const rows = [...new Set([...p.values, ...Object.keys(map), ...added])];
+	const add = () => {
+		const value = draft.trim();
+		if (value === "") return;
+		const long = value.length > MAP_KEY_MAX;
+		setTooLong(long);
+		if (long) return;
+		// A value already listed adds no row: `rows` drops repeats.
+		setAdded([...added, value]);
+		setDraft("");
+	};
 	const choices = [
 		{ value: AS_IS, label: t(M.asIs) },
 		...p.options.map((o) => ({ value: o, label: o })),
@@ -370,6 +431,17 @@ function ValueMap(p: {
 					onChange={(option) => write(value, option)}
 				/>
 			))}
+			<div className="flex items-end gap-2">
+				<Input
+					label={t(M.addValue)}
+					value={draft}
+					{...(tooLong ? { error: t(M.valueTooLong, { length: MAP_KEY_MAX }) } : {})}
+					onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
+				/>
+				<Button variant="secondary" onClick={add}>
+					{t(M.add)}
+				</Button>
+			</div>
 		</fieldset>
 	);
 }
@@ -458,7 +530,6 @@ type PtFormat = "html" | "markdown" | "text";
 
 function PortableTextSettings(p: { mapping: RowMapping; set: Setter }) {
 	const t = useT();
-	const [badUrl, setBadUrl] = useState(false);
 	const format = str(p.mapping.format) as PtFormat | undefined;
 	return (
 		<>
@@ -478,12 +549,8 @@ function PortableTextSettings(p: { mapping: RowMapping; set: Setter }) {
 			<TextSetting
 				label={t(M.baseUrl)}
 				value={str(p.mapping.baseUrl)}
-				{...(badUrl ? { error: t(M.baseUrlInvalid) } : {})}
-				onCommit={(v) => {
-					const bad = v !== undefined && !isBaseUrl(v);
-					setBadUrl(bad);
-					if (!bad) p.set("baseUrl", v);
-				}}
+				check={(v) => (v === undefined || isBaseUrl(v) ? null : t(M.baseUrlInvalid))}
+				onCommit={(v) => p.set("baseUrl", v)}
 			/>
 			<ChoiceSetting
 				label={t(M.images)}
@@ -593,6 +660,9 @@ export function FieldSettings(p: {
 export function TaxonomySettings(p: { taxonomy: TaxonomyInfo; mapping: RowMapping; set: Setter }) {
 	const t = useT();
 	const { mapping, set } = p;
+	// The grammar refuses equal separators, for flat taxonomies too (`template.ts:249`).
+	const separator = str(mapping.separator) ?? DEFAULT_SEPARATOR;
+	const hierarchy = str(mapping.hierarchy) ?? DEFAULT_HIERARCHY;
 	return (
 		<>
 			<ChoiceSetting
@@ -604,9 +674,26 @@ export function TaxonomySettings(p: { taxonomy: TaxonomyInfo; mapping: RowMappin
 				]}
 				onChange={(v) => set("match", v)}
 			/>
-			<SeparatorSetting label={t(M.termSeparator)} mapping={mapping} name="separator" set={set} />
+			<SeparatorSetting
+				label={t(M.termSeparator)}
+				mapping={mapping}
+				name="separator"
+				set={set}
+				check={(v) => {
+					if ((v ?? DEFAULT_SEPARATOR) !== hierarchy) return null;
+					return p.taxonomy.hierarchical
+						? t(M.termSameAsPath)
+						: t(M.termIsPath, { char: hierarchy });
+				}}
+			/>
 			{p.taxonomy.hierarchical ? (
-				<SeparatorSetting label={t(M.pathSeparator)} mapping={mapping} name="hierarchy" set={set} />
+				<SeparatorSetting
+					label={t(M.pathSeparator)}
+					mapping={mapping}
+					name="hierarchy"
+					set={set}
+					check={(v) => ((v ?? DEFAULT_HIERARCHY) === separator ? t(M.pathSameAsTerm) : null)}
+				/>
 			) : null}
 			<FlagSetting
 				label={t(M.createTerms)}
