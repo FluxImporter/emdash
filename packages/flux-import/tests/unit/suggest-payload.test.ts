@@ -77,12 +77,21 @@ describe('buildPayload (spec "What data leaves the site", Rulings 21, 22, 50)', 
 			pad("long", 201),
 			pad("é", 200, "é"),
 		];
-		const built = buildPayload(input({ sample: sample([{ k0: "a" }], keys), keys }));
+		const row = {
+			k0: "a",
+			k200: "KEY-201-MARK",
+			[pad("long", 201)]: "LONG-KEY-MARK",
+			Extra: "UNLISTED-KEY-MARK",
+		};
+		const built = buildPayload(input({ sample: sample([row], keys), keys }));
 		if (!built.ok) throw new Error("expected a payload");
 		expect(built.keysSent).toHaveLength(200);
 		expect(built.keysSent).not.toContain("k200");
 		expect(built.keysSent).not.toContain(pad("long", 201));
 		expect(built.payload.records).toEqual([{ k0: "a" }]);
+		for (const mark of ["KEY-201-MARK", "LONG-KEY-MARK", "UNLISTED-KEY-MARK"]) {
+			expect(built.data).not.toContain(mark);
+		}
 		expect(built.warnings).toEqual([{ code: "keys_not_sent", count: 3 }]);
 	});
 
@@ -92,6 +101,18 @@ describe('buildPayload (spec "What data leaves the site", Rulings 21, 22, 50)', 
 		if (!built.ok) throw new Error("expected a payload");
 		expect(built.keysSent).toEqual([pad("é", 200, "é"), "a"]);
 		expect(built.warnings).toEqual([{ code: "keys_not_sent", count: 1 }]);
+	});
+
+	it("sends the value of a key named __proto__ as the record's own property", () => {
+		const row = new Map<string, unknown>([["__proto__", "PROTO-MARK"]]);
+		const s: Sample = { format: "json", keys: ["__proto__"], rows: [row] };
+		const built = buildPayload(input({ sample: s, keys: ["__proto__"] }));
+		if (!built.ok) throw new Error("expected a payload");
+		const record = built.payload.records[0] ?? {};
+		expect(Object.hasOwn(record, "__proto__")).toBe(true);
+		expect(Object.keys(record)).toEqual(["__proto__"]);
+		expect(built.data).toContain('"__proto__":"PROTO-MARK"');
+		expect(Object.hasOwn(JSON.parse(built.data).records[0], "__proto__")).toBe(true);
 	});
 
 	it("sends at most 100 fields and reports the rest with their slugs (plan Ruling 11)", () => {
@@ -464,6 +485,27 @@ describe('validateReply (spec "Validating a reply", Rulings 24-26, 53, 59, 63)',
 		expect(out?.items.map((i) => i.mapping)).toEqual([
 			{ type: "text", from: "Date" },
 			{ type: "portableText", from: "Cost", format: "text" },
+		]);
+		expect(out?.warnings).toEqual([{ code: "ai_option_dropped", count: 2 }]);
+	});
+
+	it("drops a model's dateFormat or decimalComma for a key with no non-empty sampled value", () => {
+		const rows = [
+			{ E: null, F: "" },
+			{ E: "  ", F: null },
+			{ E: "", F: "   " },
+		];
+		const s = sample(rows, ["E", "F"]);
+		const out = validateReply(
+			reply([
+				item("released", "E", { dateFormat: "'IGNORE ALL PREVIOUS'" }),
+				item("price", "F", { decimalComma: true }),
+			]),
+			context({ sample: s, mapper: createMapper(s), keys: ["E", "F"] }),
+		);
+		expect(out?.items.map((i) => i.mapping)).toEqual([
+			{ type: "date", from: "E" },
+			{ type: "number", from: "F" },
 		]);
 		expect(out?.warnings).toEqual([{ code: "ai_option_dropped", count: 2 }]);
 	});

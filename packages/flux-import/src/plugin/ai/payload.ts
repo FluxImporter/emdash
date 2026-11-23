@@ -110,13 +110,14 @@ function recordOf(
 	keys: readonly string[],
 	valueMax: number,
 ): Record<string, string> {
-	const out: Record<string, string> = {};
+	const entries: [string, string][] = [];
 	for (const key of keys) {
 		const value = row.get(key);
 		if (value === undefined) continue;
-		out[key] = cut(typeof value === "string" ? value : JSON.stringify(value), valueMax);
+		entries.push([key, cut(typeof value === "string" ? value : JSON.stringify(value), valueMax)]);
 	}
-	return out;
+	// Own properties for every key, `__proto__` included, which an assignment would not create.
+	return Object.fromEntries(entries);
 }
 
 /**
@@ -158,14 +159,16 @@ export function buildPayload(input: PayloadInput): BuiltPayload {
 			.map((row) => recordOf(row, keysSent, limits.valueMax)),
 	});
 	const encoder = new TextEncoder();
-	let payload = build();
-	let data = "";
-	let bytes = 0;
+	/** The payload as the limits build it now, its escaped text and that text's UTF-8 size. */
 	const measure = () => {
-		payload = build();
-		data = escapeJson(JSON.stringify(payload));
-		bytes = encoder.encode(data).byteLength;
-		return bytes > PAYLOAD_MAX_BYTES;
+		const payload = build();
+		const data = escapeJson(JSON.stringify(payload));
+		return { payload, data, bytes: encoder.encode(data).byteLength };
+	};
+	let measured = measure();
+	const remeasure = () => {
+		measured = measure();
+		return measured.bytes > PAYLOAD_MAX_BYTES;
 	};
 
 	const steps: number[] = [];
@@ -183,15 +186,15 @@ export function buildPayload(input: PayloadInput): BuiltPayload {
 		let over = true;
 		while (over && limits.records > 1) {
 			limits.records--;
-			over = measure();
+			over = remeasure();
 		}
 		return over;
 	}
 	function tighten(change: Partial<Limits>): boolean {
 		Object.assign(limits, change);
-		return measure();
+		return remeasure();
 	}
-	let over = measure();
+	let over = measured.bytes > PAYLOAD_MAX_BYTES;
 	for (const [step, reduce] of reductions) {
 		if (!over) break;
 		// Reduction 2 counts only when a record was dropped; the others whenever they apply.
@@ -200,6 +203,7 @@ export function buildPayload(input: PayloadInput): BuiltPayload {
 	}
 	if (over) return { ok: false, steps, warnings };
 	if (steps.length > 0) warnings.push({ code: "sample_trimmed" });
+	const { payload, data, bytes } = measured;
 	return {
 		ok: true,
 		payload,

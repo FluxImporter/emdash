@@ -167,7 +167,7 @@ export function validateReply(value: unknown, ctx: ReplyContext): ValidatedReply
 	const counts = new Map<Counted, number>(WARNING_ORDER.map((c) => [c, 0]));
 	const count = (code: Counted) => counts.set(code, (counts.get(code) ?? 0) + 1);
 
-	// Only fields with a mapping type can be paired; the route sends no other (spec Ruling 29).
+	// Only fields with a mapping type can be paired; the route sends no other (spec Ruling 31).
 	const sent = new Map(
 		ctx.fields.filter((f) => mappingTypeOf(f.type) !== null).map((f) => [f.slug, f]),
 	);
@@ -182,9 +182,12 @@ export function validateReply(value: unknown, ctx: ReplyContext): ValidatedReply
 		const type = mapping.type;
 		const values = nonEmptyValues(ctx.sample, from);
 		const { dateFormat, decimalComma, portableTextFormat } = entry;
+		// A model's format needs a value to read: with none, the suggester's own candidate stands.
+		const read = values.length > 0;
 		if (dateFormat !== null) {
 			if (
 				type === "date" &&
+				read &&
 				dateFormat.length <= DATE_FORMAT_MAX &&
 				dateFailures(values, dateFormat) === 0
 			) {
@@ -195,7 +198,7 @@ export function validateReply(value: unknown, ctx: ReplyContext): ValidatedReply
 			const opts: NumberOptions = values.some((v) => textOf(v)?.includes(".") === true)
 				? { decimal: ",", thousands: "." }
 				: { decimal: "," };
-			if (type === "number" && numberFailures(values, opts) === 0) {
+			if (type === "number" && read && numberFailures(values, opts) === 0) {
 				const { decimal: _decimal, thousands: _thousands, ...rest } = mapping;
 				mapping = { ...rest, ...opts };
 			} else count("ai_option_dropped");
