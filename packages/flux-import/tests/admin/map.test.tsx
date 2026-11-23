@@ -320,6 +320,11 @@ describe("MapStep", () => {
 			await user.keyboard(" ");
 			// The key moves in an overlay above the panes; its row stays in the scrolling list.
 			expect(screen.getByTestId("drag-overlay")).toHaveTextContent("Name");
+			// The instructions lead with the picker, the path that needs no drag.
+			const key = within(keysPane()).getByRole("button", { name: /^Name/ });
+			expect(key).toHaveAccessibleDescription(
+				/^To map a key, select a field, then choose its key in the details panel\./,
+			);
 			expect(within(keysPane()).getByRole("list")).toHaveClass("max-h-96", "overflow-y-auto");
 			await user.keyboard("{ArrowDown}{ArrowDown} ");
 			expect(screen.queryByTestId("drag-overlay")).toBeNull();

@@ -68,7 +68,7 @@ export const M = {
 	instructions: {
 		id: "flux-import.map.instructions",
 		message:
-			"To map a key, press Space to pick it up, move it over a field with the arrow keys, and press Space again to drop it, or Escape to cancel. Selecting a field also lets you choose its key.",
+			"To map a key, select a field, then choose its key in the details panel. You can also drag a key: press Space to pick it up, move it over a field with the arrow keys, and press Space to drop it or Escape to cancel.",
 	},
 	pickedUp: { id: "flux-import.map.picked-up", message: "Picked up the key {key}." },
 	over: { id: "flux-import.map.over", message: "The key {key} is over {field}." },
