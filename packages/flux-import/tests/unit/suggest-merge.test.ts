@@ -366,6 +366,83 @@ describe("mergeSuggestions (spec step 6.5, Rulings 25, 59, 64)", () => {
 	});
 });
 
+/** A settled `sku` (also the key column), an open `headline`, and a slug-named `Handle`. */
+const PROBE_FIELDS = [field("sku"), field("headline")];
+const PROBE = sample(
+	[
+		{ sku: "1", Name: "A", Handle: "a", Heading: "H" },
+		{ sku: "2", Name: "B", Handle: "b", Heading: "I" },
+	],
+	["sku", "Name", "Handle", "Heading"],
+);
+
+describe("the merge's reserved keys (task 8 review)", () => {
+	it("counts a reply item it ignores for a settled field's key in ignored", () => {
+		const input = setup(PROBE_FIELDS, PROBE, {
+			key: null,
+			slug: null,
+			fields: [item("headline", "sku")],
+		});
+		expect(input.names.fields.get("sku")?.settled).toBe(true);
+		// The validator sees one item and no duplicate: only the merge knows the key is settled.
+		expect(input.reply?.warnings).toEqual([]);
+		const merged = mergeSuggestions(input);
+		expect(merged.ignored).toBe(1);
+		expect(merged.fields[1]).toMatchObject({ field: "headline", from: "Name", origin: "fallback" });
+		expect(merged.method).toBe("fallback");
+		expect(mergeAndDraft(input, DRAFT).ignored).toBe(1);
+		expect(mergeSuggestions(setup(PROBE_FIELDS, PROBE)).ignored).toBe(0);
+	});
+
+	it("ignores a provider slug on a settled field's key, falling back to name matching's", () => {
+		const merged = mergeSuggestions(
+			setup(PROBE_FIELDS, PROBE, { key: "Name", slug: "sku", fields: [] }),
+		);
+		expect(merged.key).toMatchObject({ from: "Name", origin: "ai" });
+		expect(merged.slug).toMatchObject({ from: "Handle", origin: "fallback" });
+	});
+
+	it("ignores a provider slug on the key column, falling back to name matching's", () => {
+		// The validator refuses this pair; a hand-made reply proves the merge's own guard.
+		const input = setup(PROBE_FIELDS, PROBE);
+		const merged = mergeSuggestions({
+			...input,
+			reply: { items: [], key: "Name", slug: "Name", warnings: [] },
+		});
+		expect(merged.key).toMatchObject({ from: "Name", origin: "ai" });
+		expect(merged.slug).toMatchObject({ from: "Handle", origin: "fallback" });
+	});
+
+	it("drops a suggested slug on the key column, never a base template's", () => {
+		const input = setup(PROBE_FIELDS, PROBE, { key: "Handle", slug: null, fields: [] });
+		expect(input.names.slug?.from).toBe("Handle");
+		const merged = mergeSuggestions(input);
+		expect(merged.key).toMatchObject({ from: "Handle", origin: "ai" });
+		expect(merged.slug).toBeUndefined();
+		expect(mergeAndDraft(input, DRAFT).template?.slug).toBeUndefined();
+		const base = shapeChecked({
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			slug: { from: "sku" },
+			fields: { sku: { from: "sku", type: "text" } },
+		});
+		if (!base) throw new Error("the base template must pass");
+		const kept = mergeSuggestions(setup(PROBE_FIELDS, PROBE, undefined, base));
+		expect(kept.slug).toMatchObject({ from: "sku", origin: "template" });
+	});
+
+	it("ignores and counts a reply item on name matching's slug key (plan Ruling 21)", () => {
+		const merged = mergeSuggestions(
+			setup(PROBE_FIELDS, PROBE, { key: null, slug: null, fields: [item("headline", "Handle")] }),
+		);
+		expect(merged.slug).toMatchObject({ from: "Handle", origin: "fallback" });
+		expect(merged.ignored).toBe(1);
+		expect(merged.fields[1]).toMatchObject({ field: "headline", from: "Name", origin: "fallback" });
+	});
+});
+
 describe("mergeAndDraft (spec step 7, Ruling 27)", () => {
 	it("builds a shape-valid draft with the input's source and locale", () => {
 		const { template, warnings } = mergeAndDraft(setup(FIELDS, sample(ROWS, KEYS)), DRAFT);
@@ -406,6 +483,53 @@ describe("mergeAndDraft (spec step 7, Ruling 27)", () => {
 		expect(template).toBeNull();
 		expect(warnings).toEqual([{ code: "ai_draft_invalid" }, { code: "no_field_matched" }]);
 		expect(merged.fields).toEqual([expect.objectContaining({ field: "note", from: null })]);
+	});
+
+	it("keeps the reply merge's ignored count when the draft is rebuilt", () => {
+		const s = sample([{ sku: "1" }], ["sku", "a..b"], "json");
+		const { merged, template, warnings, ignored } = mergeAndDraft(
+			setup([field("sku"), field("note"), field("other")], s, {
+				key: null,
+				slug: null,
+				fields: [item("note", "a..b"), item("other", "sku")],
+			}),
+			{ ...DRAFT, source: { format: "json" } },
+		);
+		expect(warnings).toEqual([{ code: "ai_draft_invalid" }]);
+		expect(template?.fields).toEqual({ sku: { type: "text", from: "sku" } });
+		expect(ignored).toBe(1);
+		expect(merged.ignored).toBe(0);
+	});
+
+	it("reports fallback when the provider's key is all it gave and no draft is built", () => {
+		const input = setup([field("colour")], sample(ROWS, KEYS), {
+			key: "Name",
+			slug: null,
+			fields: [],
+		});
+		expect(mergeSuggestions(input).method).toBe("ai");
+		const { merged, template, warnings } = mergeAndDraft(input, DRAFT);
+		expect(template).toBeNull();
+		expect(warnings).toEqual([{ code: "no_field_matched" }]);
+		expect(merged.method).toBe("fallback");
+	});
+
+	it("warns ai_draft_invalid only for a failing draft that holds provider output", () => {
+		// b settles on a..b, an invalid JSON path; the reply only says "no key fits" for note.
+		const s = sample([{ id: "1", "a..b": "v" }], ["id", "a..b"], "json");
+		const input = setup([field("b"), field("note")], s, {
+			key: null,
+			slug: null,
+			fields: [item("note", null)],
+		});
+		expect(input.names.fields.get("b")).toMatchObject({ from: "a..b", settled: true });
+		const { merged, template, warnings } = mergeAndDraft(input, {
+			...DRAFT,
+			source: { format: "json" },
+		});
+		expect(template).toBeNull();
+		expect(warnings).toEqual([{ code: "no_field_matched" }]);
+		expect(merged.method).toBe("fallback");
 	});
 
 	it("answers null and no_field_matched when no field is mapped", () => {

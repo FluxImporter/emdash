@@ -4,11 +4,15 @@
  *
  * Merge order: the base template's key, slug and field mappings are kept whole; then a provider
  * item is authoritative for its field, `null` included; every other field keeps its name-matching
- * pick unless a provider item or the provider's slug took its key, and then drops to its next free
- * candidate, or to none. Settled fields (an exact name, Ruling 51) are never replaced, and no reply
- * item may take a settled field's key or a key a base-template field maps (pre-flight F1): such an
- * item is ignored, silently, as if the provider had skipped the field. After the merge no key maps
- * two fields. The draft always passes the shape check, or is `null` (Ruling 27).
+ * pick unless a provider item took its key, and then drops to its next free candidate, or to none.
+ * Settled fields (an exact name, Ruling 51) are never replaced. The slug is decided before any item
+ * claims a key: a provider slug on a reserved key or on the key column gives way to name
+ * matching's, and a suggested slug on the key column is dropped. No reply item may take a settled
+ * field's key, a key the base template maps or the slug's key (pre-flight F1, plan Ruling 21): such
+ * an item is ignored, as if the provider had skipped the field, and counted in `ignored`, which the
+ * route adds to the reply's `ai_duplicate_key` count. After the merge no key maps two fields, and
+ * the slug shares no key with a field or the key column. The draft always passes the shape check,
+ * or is `null` (Ruling 27).
  */
 import { shapeProblems, templateShapeProblems } from "../../engine/shape.js";
 import {
@@ -57,6 +61,8 @@ export interface Merged {
 	/** The mappings the suggestion adds, by field slug, in schema order; never a base template's. */
 	mappings: Map<string, SuggestedMapping>;
 	method: "ai" | "fallback";
+	/** Reply items ignored because their key was reserved (pre-flight F1); 0 without a reply. */
+	ignored: number;
 }
 
 export interface DraftInput {
@@ -116,39 +122,49 @@ export function mergeSuggestions({ fields, base, names, reply }: MergeInput): Me
 	else if (names.key !== null) key = fallback(names.key);
 	else key = { ...NONE.suggestion };
 
-	let slug: Suggestion | undefined;
-	if (base?.slug !== undefined) slug = template(base.slug.from);
-	else if (reply !== null && reply.slug !== null) slug = provider(reply.slug);
-	else if (names.slug !== null) slug = fallback(names.slug);
-
-	const answers = new Map<string, Answer>();
 	const baseFields = base?.fields ?? {};
 	const open = fields.filter((f) => !Object.hasOwn(baseFields, f.slug));
 	const picks = new Map(open.map((f) => [f.slug, names.fields.get(f.slug)]));
-	const settled = open.filter((f) => picks.get(f.slug)?.settled === true);
 
-	// Keys no reply item may take: the settled picks' and the base template's (pre-flight F1).
+	// Keys the slug and every reply item leave alone: the settled picks' and the base fields'.
 	const reserved = new Set<string>();
-	for (const f of settled) {
-		const from = picks.get(f.slug)?.from ?? null;
-		if (from !== null) reserved.add(from);
+	for (const pick of picks.values()) {
+		if (pick?.settled === true && pick.from !== null) reserved.add(pick.from);
 	}
 	for (const mapping of Object.values(baseFields)) {
 		if (mapping.from !== undefined) reserved.add(mapping.from);
 	}
-	if (base?.slug?.from !== undefined) reserved.add(base.slug.from);
 
+	// The slug, decided before any item claims a key.
+	let slug: Suggestion | undefined;
+	if (base?.slug !== undefined) slug = template(base.slug.from);
+	else if (
+		reply !== null &&
+		reply.slug !== null &&
+		!reserved.has(reply.slug) &&
+		reply.slug !== key.from
+	) {
+		slug = provider(reply.slug);
+	} else if (names.slug !== null) slug = fallback(names.slug);
+	if (slug !== undefined && slug.origin !== "template" && slug.from === key.from) slug = undefined;
+	// The slug's key maps no field (plan Ruling 21), whatever its origin.
+	if (slug !== undefined && slug.from !== null) reserved.add(slug.from);
+
+	let ignored = 0;
 	const items = new Map<string, ReplyItem>();
 	for (const i of reply?.items ?? []) {
-		const field = picks.get(i.field);
-		if (field === undefined || field.settled) continue;
-		if (i.from !== null && reserved.has(i.from)) continue;
+		const pick = picks.get(i.field);
+		if (pick === undefined || pick.settled) continue;
+		if (i.from !== null && reserved.has(i.from)) {
+			ignored++;
+			continue;
+		}
 		items.set(i.field, i);
 	}
 
+	const answers = new Map<string, Answer>();
 	const taken = new Set(reserved);
 	for (const i of items.values()) if (i.from !== null) taken.add(i.from);
-	if (slug?.origin === "ai" && slug.from !== null) taken.add(slug.from);
 
 	const displaced = new Set<string>();
 	for (const f of open) {
@@ -198,6 +214,7 @@ export function mergeSuggestions({ fields, base, names, reply }: MergeInput): Me
 		fields: out,
 		mappings,
 		method: usedReply ? "ai" : "fallback",
+		ignored,
 	};
 }
 
@@ -236,27 +253,30 @@ export function shapeChecked(draft: unknown): Template | null {
 }
 
 /**
- * The merge and its shape-checked draft (spec step 7, Ruling 27): a draft that used the reply and
- * fails is rebuilt from name matching alone (`ai_draft_invalid`); no passing draft is `null`
- * (`no_field_matched`). `merged` is the merge the template was built from.
+ * The merge and its shape-checked draft (spec step 7, Rulings 27, 64): a draft that used the
+ * provider's output and fails is rebuilt from name matching alone (`ai_draft_invalid`); no passing
+ * draft is `null` (`no_field_matched`) with `method: "fallback"`. `merged` is the merge the
+ * template was built from; `ignored` is the reply merge's, rebuilt or not.
  */
 export function mergeAndDraft(
 	input: MergeInput,
 	draft: DraftInput,
-): { merged: Merged; template: Template | null; warnings: SuggestWarning[] } {
+): { merged: Merged; template: Template | null; warnings: SuggestWarning[]; ignored: number } {
 	const merged = mergeSuggestions(input);
+	const { ignored } = merged;
 	const built = buildDraft(input, draft, merged);
-	if (built === null) return { merged, template: null, warnings: [{ code: "no_field_matched" }] };
-	const checked = shapeChecked(built);
-	if (checked !== null) return { merged, template: checked, warnings: [] };
-	if (input.reply === null) {
-		return { merged, template: null, warnings: [{ code: "no_field_matched" }] };
+	const checked = built === null ? null : shapeChecked(built);
+	if (checked !== null) return { merged, template: checked, warnings: [], ignored };
+	const none: SuggestWarning = { code: "no_field_matched" };
+	// Nothing of the provider's is in a draft that is null (Ruling 64).
+	if (built === null || merged.method !== "ai") {
+		return { merged: { ...merged, method: "fallback" }, template: null, warnings: [none], ignored };
 	}
 	const plainInput = { ...input, reply: null };
 	const plain = mergeSuggestions(plainInput);
 	const rebuilt = buildDraft(plainInput, draft, plain);
-	const template = rebuilt === null ? null : shapeChecked(rebuilt);
+	const plainTemplate = rebuilt === null ? null : shapeChecked(rebuilt);
 	const warnings: SuggestWarning[] = [{ code: "ai_draft_invalid" }];
-	if (template === null) warnings.push({ code: "no_field_matched" });
-	return { merged: plain, template, warnings };
+	if (plainTemplate === null) warnings.push(none);
+	return { merged: plain, template: plainTemplate, warnings, ignored };
 }
