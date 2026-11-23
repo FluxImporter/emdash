@@ -49,6 +49,7 @@ const ROUTES = [
 	"templates/delete",
 	"templates/export",
 	"templates/import",
+	"templates/suggest",
 	"schedules/create",
 	"schedules/list",
 	"schedules/update",
@@ -134,8 +135,8 @@ describe("createPlugin", () => {
 		});
 	});
 
-	it("sets FLUX_IMPORT_VERSION to 0.4.0", () => {
-		expect(FLUX_IMPORT_VERSION).toBe("0.4.0");
+	it("sets FLUX_IMPORT_VERSION to 0.5.0", () => {
+		expect(FLUX_IMPORT_VERSION).toBe("0.5.0");
 	});
 
 	it("declares the storage indexes the queries use", () => {
@@ -188,10 +189,85 @@ describe("createPlugin", () => {
 			"bylines:read",
 			"media:write",
 			"users:read",
-			// definePlugin adds the read capabilities that taxonomies:write and media:write imply.
+			// M6d: disclosure only; provider calls, URL sources and media use net.ts, not ctx.http.
+			"network:request:unrestricted",
+			// definePlugin adds the read capabilities that taxonomies:write and media:write imply,
+			// and network:request for the unrestricted one (emdash src/plugins/types.ts:94).
 			"taxonomies:read",
 			"media:read",
+			"network:request",
 		]);
+	});
+
+	it("declares the four AI settings after the existing two, with the spec's texts (M6d)", () => {
+		const schema = plugin.admin.settingsSchema ?? {};
+		expect(Object.keys(schema)).toEqual([
+			"credentials",
+			"retentionDays",
+			"aiProvider",
+			"aiApiKey",
+			"aiModel",
+			"aiBaseUrl",
+		]);
+		expect(schema.aiProvider).toEqual({
+			type: "select",
+			label: "Mapping suggestions",
+			description:
+				"When set, Suggest mapping sends to this provider: the target collection's name and label; the names, labels, types, required flags and short option lists of the fields name matching did not settle; the column or path names of the sample; and up to 5 sample records, each value cut to 200 characters, fewer when the data is large. With Anthropic, the SDK also sends its client details (SDK version, OS, runtime). It never sends IDs, source URLs, credentials or user details. The provider's own data policy applies. At most 30 suggestions an hour use the provider; name matching is always available.",
+			options: [
+				{ value: "none", label: "None (name matching only)" },
+				{ value: "anthropic", label: "Anthropic (Claude)" },
+				{ value: "openai-compatible", label: "OpenAI-compatible endpoint" },
+			],
+			default: "none",
+		});
+		expect(schema.aiApiKey).toEqual({
+			type: "secret",
+			label: "Provider API key",
+			description:
+				"The key for the provider above. Stored encrypted; needs EMDASH_ENCRYPTION_KEY. Clear it here to remove it. Use a key you can revoke, with a spending limit: with claude-opus-5-5 one suggestion can cost up to about $0.40, billed even when it times out.",
+		});
+		expect(schema.aiModel).toEqual({
+			type: "string",
+			label: "Model",
+			description:
+				"Leave empty to use claude-opus-5-5 with Anthropic. Required for an OpenAI-compatible endpoint, as that endpoint names it.",
+			default: "",
+		});
+		expect(schema.aiBaseUrl).toEqual({
+			type: "url",
+			label: "OpenAI-compatible base URL",
+			description:
+				"Only for an OpenAI-compatible endpoint: the URL before /chat/completions. Must be https on a public host. The endpoint must support JSON-schema response formats.",
+			placeholder: "https://api.example.com/v1",
+		});
+	});
+
+	it("caps templates/suggest at 2 MiB and refuses what SUGGEST_INPUT refuses", () => {
+		expect(plugin.routes["templates/suggest"]).toMatchObject({
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 2 * 1024 * 1024 },
+		});
+		const input = plugin.routes["templates/suggest"]!.input!;
+		const ok = { collection: "products", locale: "en", text: "a\n1" };
+		expect(input.safeParse(ok).success).toBe(true);
+		expect(
+			input.safeParse({ collection: "products", templateId: "T1", uploadId: UPLOAD_ID }).success,
+		).toBe(true);
+		for (const bad of [
+			{ ...ok, uploadId: UPLOAD_ID },
+			{ collection: "products", locale: "en" },
+			{ ...ok, collection: "Products" },
+			{ ...ok, templateRevision: 1 },
+			{ collection: "products", text: "a", templateId: "T1", template: {} },
+			{ collection: "products", text: "a", template: {}, source: { format: "csv" } },
+			{ collection: "products", text: "a" },
+			{ ...ok, extra: 1 },
+			{ ...ok, text: "" },
+			{ ...ok, ai: "no" },
+		]) {
+			expect(input.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+		}
 	});
 
 	it("validates route input with Zod", () => {
@@ -405,7 +481,7 @@ describe("createPlugin", () => {
 	});
 
 	it("declares the M6a routes as JSON POST routes that pass definePlugin's MCP route checks (spec F10)", () => {
-		const names = ROUTES.filter((r) => r.startsWith("templates/"));
+		const names = ROUTES.filter((r) => r.startsWith("templates/") && r !== "templates/suggest");
 		expect(names).toHaveLength(7);
 		for (const name of names) {
 			expect(plugin.routes[name], name).toMatchObject({

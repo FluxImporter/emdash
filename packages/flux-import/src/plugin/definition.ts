@@ -8,6 +8,13 @@ import { activate, CRON_HOOK_TIMEOUT_MS, cronHook } from "./scheduler.js";
 
 export type FluxImportOptions = Record<string, never>;
 
+/** The `aiProvider` description: what a suggestion sends (M6d spec "Disclosure text"). */
+const AI_DISCLOSURE =
+	"When set, Suggest mapping sends to this provider: the target collection's name and label; the names, labels, types, required flags and short option lists of the fields name matching did not settle; the column or path names of the sample; and up to 5 sample records, each value cut to 200 characters, fewer when the data is large. With Anthropic, the SDK also sends its client details (SDK version, OS, runtime). It never sends IDs, source URLs, credentials or user details. The provider's own data policy applies. At most 30 suggestions an hour use the provider; name matching is always available.";
+/** The `aiApiKey` description (spec Ruling 67). */
+const AI_KEY_DESCRIPTION =
+	"The key for the provider above. Stored encrypted; needs EMDASH_ENCRYPTION_KEY. Clear it here to remove it. Use a key you can revoke, with a spending limit: with claude-opus-5-5 one suggestion can cost up to about $0.40, billed even when it times out.";
+
 /**
  * Every field a query filters or sorts on is indexed (plugin storage rejects others,
  * `emdash` src/plugins/storage-query.ts:113-127). `jobs.uploadId` and `jobs.sourceUploadId` let a
@@ -69,9 +76,12 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// ctx.bylines, whose list is the only way to look bylines up. Entries are assigned their
 		// terms, references and bylines through the runtime's content writes. media:write is
 		// declared for disclosure too: image and file fields are uploaded through the runtime's
-		// handleMediaUpload, not ctx.media. URL sources and media are fetched with the runtime's
-		// own fetch() behind the plugin's SSRF guard (src/sources/net.ts), not through ctx.http,
-		// so no network capability is declared. content:restore (M5c) is declared for disclosure
+		// handleMediaUpload, not ctx.media. network:request:unrestricted (M6d) is declared for
+		// disclosure: flux-import fetches Admin-supplied URLs on any public host (URL sources,
+		// media, and the AI provider's base URL), all with the runtime's own fetch() behind the
+		// plugin's SSRF guard in src/sources/net.ts. ctx.http is not used, so the capability gates
+		// nothing here (M6d spec Rulings 42, 48, 49). It also lets plugin admin pages load images
+		// from any host. content:restore (M5c) is declared for disclosure
 		// too: a rollback of the missing phase restores trashed entries through the runtime's
 		// handleContentRestore, not ctx.content (emdash src/plugins/manifest-schema.ts:37).
 		// users:read (M6b) gates ctx.users, used for one check only: before each scheduled launch,
@@ -87,11 +97,13 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 			"bylines:read",
 			"media:write",
 			"users:read",
+			"network:request:unrestricted",
 		],
 		storage: STORAGE,
 		routes,
-		// M6c: six routes as MCP tools. An Administrator enables them once ("Agent access");
-		// tokens need mcp:tools:flux-import or mcp:tools, and the routes still need Admin.
+		// Eight routes as MCP tools: M6c's six and M6d's list_sources and list_schedules. An
+		// Administrator enables them once ("Agent access"); tokens need mcp:tools:flux-import or
+		// mcp:tools, and the routes still need Admin.
 		mcp: { tools: MCP_TOOLS },
 		admin: {
 			settingsSchema: {
@@ -109,6 +121,37 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 					default: RETENTION_DAYS_DEFAULT,
 					min: 0,
 					max: 3650,
+				},
+				// M6d: mapping suggestions (spec "Settings"); the defaults are applied at read.
+				aiProvider: {
+					type: "select",
+					label: "Mapping suggestions",
+					description: AI_DISCLOSURE,
+					options: [
+						{ value: "none", label: "None (name matching only)" },
+						{ value: "anthropic", label: "Anthropic (Claude)" },
+						{ value: "openai-compatible", label: "OpenAI-compatible endpoint" },
+					],
+					default: "none",
+				},
+				aiApiKey: {
+					type: "secret",
+					label: "Provider API key",
+					description: AI_KEY_DESCRIPTION,
+				},
+				aiModel: {
+					type: "string",
+					label: "Model",
+					description:
+						"Leave empty to use claude-opus-5-5 with Anthropic. Required for an OpenAI-compatible endpoint, as that endpoint names it.",
+					default: "",
+				},
+				aiBaseUrl: {
+					type: "url",
+					label: "OpenAI-compatible base URL",
+					description:
+						"Only for an OpenAI-compatible endpoint: the URL before /chat/completions. Must be https on a public host. The endpoint must support JSON-schema response formats.",
+					placeholder: "https://api.example.com/v1",
 				},
 			},
 		},

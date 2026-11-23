@@ -233,7 +233,7 @@ export function page<T>(result: {
  * return `{ records, paths }` (records that fail to parse are left out).
  */
 export async function sampleSource(
-	deps: EngineDeps,
+	deps: Pick<EngineDeps, "source">,
 	uploadId: string,
 	n: number,
 	source: TemplateSource = CSV_SOURCE,
@@ -255,13 +255,26 @@ export async function sampleSource(
 	}
 }
 
-/** Stages pasted text like an upload. Empty or whitespace-only text is `EMPTY_BODY`. */
-export async function stagePaste(storage: UploadStorage, text: string): Promise<StagedUpload> {
+/** `sources/paste`'s refusal of an XLSX format: a workbook can only be uploaded. */
+export const XLSX_PASTE_MESSAGE =
+	"An XLSX workbook is a binary file and cannot be pasted; upload it instead";
+
+/**
+ * Pasted text as UTF-8 bytes: empty or whitespace-only text is `EMPTY_BODY`, more than
+ * `PASTE_MAX_BYTES` is `TOO_LARGE` (shared by `stagePaste` and the M6d suggestion route).
+ */
+export function pasteBytes(text: string): Uint8Array<ArrayBuffer> {
 	if (text.trim() === "") throw new ServiceError("EMPTY_BODY", "The pasted text is empty", 400);
 	const bytes = new TextEncoder().encode(text);
 	if (bytes.byteLength > PASTE_MAX_BYTES) {
 		throw new ServiceError("TOO_LARGE", `Pasted text is limited to ${PASTE_MAX_BYTES} bytes`, 413);
 	}
+	return bytes;
+}
+
+/** Stages pasted text like an upload. Empty or whitespace-only text is `EMPTY_BODY`. */
+export async function stagePaste(storage: UploadStorage, text: string): Promise<StagedUpload> {
+	const bytes = pasteBytes(text);
 	return stageUpload(storage, new Blob([bytes]).stream(), PASTE_MAX_BYTES, bytes.byteLength);
 }
 
