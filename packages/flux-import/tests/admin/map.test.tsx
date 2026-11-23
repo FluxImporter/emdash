@@ -137,6 +137,20 @@ function renderMap(initial: Partial<WizardState> = MAPPED, opts: { strict?: bool
 	return renderAdmin(opts.strict === true ? <StrictMode>{ui}</StrictMode> : ui);
 }
 
+/** Drops `key` on the row `target` with the keyboard sensor, at made-up rects. */
+async function dropOn(user: UserEvent, key: string, target: string) {
+	const restore = withRects({
+		[`key:${key}`]: new DOMRect(0, 0, 100, 20),
+		"drag-overlay": new DOMRect(0, 0, 100, 20),
+		[target]: new DOMRect(0, 50, 100, 20),
+	});
+	try {
+		await dragDown(user, key, 2);
+	} finally {
+		restore();
+	}
+}
+
 /** A promise and the function that settles it. */
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -225,6 +239,129 @@ describe("MapStep", () => {
 				.filter((c) => c.route === "templates/suggest")
 				.map((c) => (c.body as { collection: string }).collection),
 		).toEqual(["posts", "pages"]);
+	});
+
+	it("replaces the key of a mapped row and keeps its settings; Key, Slug and translationOf take the key alone", async () => {
+		routes();
+		const { user } = renderMap({
+			...MAPPED,
+			target: { collection: "posts", locale: "fr", translationLocale: "en" },
+			rows: {
+				key: { from: "SKU" },
+				"field:title": { from: "Name", type: "text" },
+				"field:price": { from: "Price", type: "number", decimal: "," },
+			},
+		});
+		await fieldsLoaded();
+		await dropOn(user, "Name", "field:price");
+		expect(probe.state.rows["field:price"]).toEqual({ type: "number", decimal: ",", from: "Name" });
+		await dropOn(user, "Name", "key");
+		expect(probe.state.rows.key).toEqual({ from: "Name" });
+		await dropOn(user, "Body", "slug");
+		expect(probe.state.rows.slug).toEqual({ from: "Body" });
+		await dropOn(user, "SKU", "translationOf");
+		expect(probe.state.rows.translationOf).toEqual({ from: "SKU" });
+	});
+
+	it("announces a pick-up, a field it is over, and a cancel", async () => {
+		routes();
+		const { user } = renderMap(MAPPED);
+		await fieldsLoaded();
+		const restore = withRects({
+			"key:Price": new DOMRect(0, 0, 100, 20),
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
+			"field:price": new DOMRect(0, 50, 100, 20),
+		});
+		try {
+			within(keysPane())
+				.getByRole("button", { name: /^Price/ })
+				.focus();
+			await user.keyboard(" ");
+			expect(await screen.findByText("Picked up the key Price.")).toBeInTheDocument();
+			await user.keyboard("{ArrowDown}{ArrowDown}");
+			expect(await screen.findByText("The key Price is over Price.")).toBeInTheDocument();
+			await user.keyboard("{Escape}");
+			expect(
+				await screen.findByText("Moving the key Price was cancelled; nothing changed."),
+			).toBeInTheDocument();
+		} finally {
+			restore();
+		}
+		expect(probe.state.rows["field:price"]).toBeUndefined();
+		expect(screen.queryByTestId("drag-overlay")).toBeNull();
+	});
+
+	it("waits for the fields, then for the suggestions, before Next", async () => {
+		const fieldsRead = deferred<unknown>();
+		const suggested = deferred<SuggestReply>();
+		routes({
+			"GET collection:posts": () => fieldsRead.promise,
+			"templates/suggest": () => suggested.promise,
+		});
+		renderMap(DRAFT);
+		await waitFor(() => expect(next()).toHaveAccessibleDescription("Wait for the fields to load"));
+		expect(next()).toBeDisabled();
+		await act(async () => {
+			fieldsRead.resolve(collection(FIELD_ROWS));
+			await fieldsRead.promise;
+		});
+		await fieldsLoaded();
+		expect(next()).toHaveAccessibleDescription("Wait for the suggestions to finish");
+		expect(next()).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Ask again" })).toBeDisabled();
+		await act(async () => {
+			suggested.resolve(reply());
+			await suggested.promise;
+		});
+		await waitFor(() => expect(next()).toBeEnabled());
+	});
+
+	it("shows a fields read error with Try again", async () => {
+		let failing = true;
+		routes({
+			"GET collection:posts": () =>
+				// A 4xx: the fields query retries only offline errors, 429s and 5xxs.
+				failing ? fail("NOT_FOUND", "Collection not found", 404) : collection(FIELD_ROWS),
+		});
+		const { user } = renderMap(MAPPED);
+		const banner = await screen.findByRole("alert");
+		expect(banner).toHaveTextContent("This item no longer exists.");
+		expect(next()).toBeDisabled();
+		expect(next()).not.toHaveAccessibleDescription("Wait for the fields to load");
+		failing = false;
+		await user.click(within(banner).getByRole("button", { name: "Try again" }));
+		await fieldsLoaded();
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("does not ask on entry when the suggestion is not idle", async () => {
+		const { calls } = routes();
+		renderMap({
+			...DRAFT,
+			suggestion: { status: "error", error: new Error("earlier"), dismissed: false },
+		});
+		await fieldsLoaded();
+		expect(calls.filter((c) => c.route === "templates/suggest")).toEqual([]);
+	});
+
+	it("lists a key a row reads that the sample lacks, without a value", async () => {
+		routes();
+		renderMap({
+			...MAPPED,
+			rows: { ...MAPPED.rows, "field:price": { from: "Cost", type: "number" } },
+		});
+		await fieldsLoaded();
+		const cost = within(keysPane()).getByRole("button", { name: /^Cost/ });
+		expect(cost).toHaveTextContent("not in the sample");
+		expect(cost).toHaveClass("opacity-50");
+		expect(within(keysPane()).getByRole("heading")).toHaveTextContent("Source keys · 6");
+	});
+
+	it("shows name matching for an AI reply that names no provider", async () => {
+		routes({ "templates/suggest": () => reply({ ai: { available: true } }) });
+		renderMap(DRAFT);
+		expect(await screen.findByText("Name matching")).toBeVisible();
+		expect(screen.queryByText(/^AI \(/)).toBeNull();
 	});
 
 	it("does not ask on entry when rows are already mapped", async () => {
@@ -640,6 +777,8 @@ describe("MapStep", () => {
 		await user.click(within(dialog).getByRole("button", { name: "Add the fields" }));
 		await waitFor(() => expect(probe.state.newFields.map((f) => f.slug)).toEqual(["colour"]));
 		expect(probe.state.rows["field:weight_g"]).toEqual({ type: "number", from: "Weight (g)" });
+		// The field that could not be added is not mapped.
+		expect(probe.state.rows["field:colour"]).toBeUndefined();
 		expect(probe.state.step).toBe("map");
 		expect(
 			screen.getByRole("dialog", { name: "Add these fields to the collection?" }),

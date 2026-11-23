@@ -652,6 +652,17 @@ describe("suggestionReceived", () => {
 		] satisfies WizardAction[]) {
 			expect(reducer(moved, late)).toBe(moved);
 		}
+		// The same ask answered once already: no longer loading, so a second answer is dropped.
+		const answered: WizardState = {
+			...target,
+			suggestion: { status: "done", dismissed: false, ask: 1 },
+		};
+		for (const late of [
+			{ type: "suggestionReceived", reply: REPLY, overwriteUserRows: false, ask: 1 },
+			{ type: "suggestionFailed", error: "boom", ask: 1 },
+		] satisfies WizardAction[]) {
+			expect(reducer(answered, late)).toBe(answered);
+		}
 		// A newer ask is in flight: the older answer is dropped, the newer one lands.
 		const again = reducer(moved, { type: "suggestionStarted", ask: 2 });
 		expect(
