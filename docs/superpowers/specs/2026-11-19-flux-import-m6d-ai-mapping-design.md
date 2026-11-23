@@ -68,7 +68,7 @@ These are left out, for the reasons given under "Out of scope" and in the Ruling
 | Output | `{ method, ai, template, key, slug?, fields, unmapped, check, warnings, sent }`. `template` is a draft that passed `templateShapeProblems`, or `null` when nothing could be mapped (Ruling 27). |
 | Deterministic suggester | Pure, no I/O: Unicode-aware name normalisation, a fixed synonym table, token overlap, a type check of the sample values through the engine's own converters, a fixed tie order on integer hundredths (Rulings 29-31, 57, 58, 62). Always computed first; it is the answer without a provider. |
 | Providers | `none` (default), `anthropic` through `@anthropic-ai/sdk` loaded by dynamic `import()`, `openai-compatible` through `guardedRequest` to `<aiBaseUrl>/chat/completions` (Rulings 3-5, 60). |
-| Transport | *Amended by Ruling 48.* Every provider call, on every site, goes through `guardedRequest`, a new sibling of `guardedFetch` in `src/sources/net.ts`: flux-import's URL, host and address checks once, a `POST` with `redirect: "manual"` to the runtime's fetch, any 3xx returned and treated as an error, the reply capped while it streams, and abort and timeout errors re-thrown as raised. `ctx.http` is not used. Development sites differ only by `allowPrivateNetwork()` and the development-only Anthropic base URL (Ruling 7). |
+| Transport | *Amended by Ruling 48.* Every provider call, on every site, goes through `guardedRequest`, a new sibling of `guardedFetch` in `src/sources/net.ts`: flux-import's URL, host and address checks once, a `POST` with `redirect: "manual"` to the runtime's fetch, any 3xx returned and treated as an error, the reply capped while it streams (amended by Ruling 72: read whole under the cap before the fetch resolves), and abort and timeout errors re-thrown as raised. `ctx.http` is not used. Development sites differ only by `allowPrivateNetwork()` and the development-only Anthropic base URL (Ruling 7). |
 | Anthropic request | `@anthropic-ai/sdk` pinned at exactly 1.5.0 (Ruling 54). `client.beta.messages.create` on `claude-opus-5-5` with `output_config: { effort: "low", format: { type: "json_schema", schema } }`, `max_tokens: 16000`, `betas: ["server-side-fallback-2026-07-01"]`, `fallbacks: "default"`, `timeout` scaled with the fields sent (Ruling 52), `maxRetries: 0`, `logLevel: "off"`, `openTelemetry: { traces: false, propagation: false }`, explicit `apiKey` and `baseURL`, and `fetch` through `guardedRequest` (A1-A9, Rulings 14-20, 52-56). |
 | Validation | The model's reply (after a server-side fallback, only the text after the last `fallback` block, Ruling 53) is parsed with flux-import's own strict Zod schema, then each item is checked: only fields that were sent, only keys that were sent, only whitelisted options valid for every sampled value; the mapping type is flux-import's choice, never the model's; no `expr`. Anything else is dropped and counted in a warning. No source key maps two fields in the merged draft (Rulings 24-27, 59, 63). |
 | Data out | Field slugs, labels, types, required flags and short select option lists (at most 100 fields, only those name matching did not settle); free key names (at most 200, each at most 200 characters); at most 5 records with each value cut to 200 code points; the escaped data block at most 48 KiB, reduced in a fixed order and, if it still does not fit, no call (`ai_payload_too_large`); the SDK's client metadata headers. No IDs, URLs of sources, credentials or user data (Rulings 21-22, 50, 56). |
@@ -191,7 +191,8 @@ M5a-M6b. A failure of V1, V2, V5 or V9 stops the plan, and this spec is amended 
   OpenAI-compatible provider, each with `text`, `uploadId` and `sourceId` (a source with a staged
   copy); and of `sources/overview` and `schedules/overview` at full pages. Each must stay under the
   free plan's 50 queries and 50 subrequests (F12). Measure the CPU time of a fallback suggestion
-  over 200 keys and 100 fields, and over 200 keys and 50 datetime fields (Ruling 68); include
+  over 200 keys and 100 fields, and over 200 keys and 50 datetime fields (Ruling 68; measured
+  with 30 datetime fields at 200 and 1,000 keys, Rulings 99 and 100); include
   the rate limit's worst case of 10 KV queries (Ruling 66) in the provider counts.
 - **V6. Consent.** After the change, `tools/list` holds eight `flux-import__*` tools only after a
   fresh `PUT …/mcp { enabled: true }`; before it, none (M6c F3).
@@ -257,9 +258,10 @@ model, key, baseUrl? }`:
    (development only), where a set `aiBaseUrl` is used so tests reach the fake server (Ruling 7).
 
 The route reports `ai.available` and, when unavailable for a reason other than `off`, a warning
-(`ai_key_unavailable`, `ai_not_configured`, `ai_url_blocked`). The reason `off` gives no warning:
-name matching alone is a normal configuration (Ruling 12). With `ai: false` in the input only
-step 1 runs, and `ai.available` then means "a provider is selected", nothing more (Ruling 64).
+(`ai_key_unavailable`, `ai_not_configured`, `ai_url_blocked`; refined by Ruling 91: only when a call
+would otherwise be made, with `ai !== false` and an unsettled field). The reason `off` gives no
+warning: name matching alone is a normal configuration (Ruling 12). With `ai: false` in the input
+only step 1 runs, and `ai.available` then means "a provider is selected", nothing more (Ruling 64).
 
 ### Missing encryption key and clearing a key
 
@@ -267,6 +269,7 @@ step 1 runs, and `ai.available` then means "a provider is selected", nothing mor
   off. A key saved earlier that can no longer be decrypted (key removed or rotated away) makes the
   route answer with name matching and `ai_key_unavailable`; it never fails the request (Ruling 12).
 - The Admin clears a key with the form's clear action, which stores `null` and so deletes it (F7).
+  An empty string is stored as a key and read as `no_key` (Ruling 94).
   Setting `aiProvider` to `none` stops all provider calls without deleting the key (Ruling 13).
 
 ## The suggestion route: `templates/suggest`
@@ -314,20 +317,20 @@ input's (default CSV), and `locale` the input's.
 
 ```ts
 interface SuggestReply {
-	method: "ai" | "fallback";            // "ai" when at least one provider field item, or the provider's key or slug, is in the draft (Ruling 64)
+	method: "ai" | "fallback";            // "ai" when at least one provider field item, or the provider's key or slug, is in the draft (Ruling 64); "fallback" without a draft (Ruling 83)
 	ai: {
 		available: boolean;                // settings allow a provider call (Settings, steps 1-4); with ai: false, only that a provider is selected
 		provider?: "anthropic" | "openai-compatible";
-		model?: string;                    // the model that answered (A6: may be a fallback model)
+		model?: string;                    // the model that answered (A6: may be a fallback model); the configured one when the answer fails MODEL_RE (Ruling 91)
 	};
 	template: Template | null;           // the draft; passed templateShapeProblems; never saved
 	key: Suggestion;                     // template.key
 	slug?: Suggestion;                   // template.slug, when one was suggested or kept
 	fields: FieldSuggestion[];           // one per eligible collection field, in schema order, not capped (Ruling 64)
-	unmapped: { fields: string[]; keys: string[] };   // eligible fields without a mapping; keys no field uses (first 100 each)
+	unmapped: { fields: string[]; keys: string[] };   // eligible fields without a mapping; keys no field uses (first 100 each; refined by Ruling 89: nor the key or the slug; keys past the 1,000th included, Ruling 100)
 	check: { problems: string[]; warnings: string[] }; // siteCheck of the draft (P6); empty when template is null
 	warnings: SuggestWarning[];
-	sent: { records: number; keys: number; fields: number; bytes: number } | null; // non-null once a request reached the transport, a failed one included; null when none did (Ruling 64)
+	sent: { records: number; keys: number; fields: number; bytes: number } | null; // non-null once a request reached the transport, a failed one included; null when none did (Ruling 64; amended by Ruling 101: once the provider call is attempted, except ai_url_blocked)
 }
 
 interface Suggestion {
@@ -381,32 +384,38 @@ interface SuggestWarning {
    (400). A parse error is `INVALID_SOURCE`, as `sources/sample`.
 5. **Deterministic draft.** Run the fallback suggester (Rulings 29-31) over the eligible fields
    not kept from the base template, the keys **not used by the base template's kept mappings**
-   (the key column aside, Ruling 59) and the 20 records. It is pure and always runs.
+   (the key column aside, Ruling 59; refined by Ruling 80: its mapped paths, the key column
+   excluded only when a base field or the slug maps it) and the 20 records. It is pure and always
+   runs. (Amended by Ruling 100: only the first 1,000 keys, in sample order, are matched.)
 6. **Provider** (amended by Rulings 50, 51 and 59). Only when `ai !== false`, `ai.available`, and
    at least one eligible field is **unsettled**: not kept from the base template, and not given a
    key by the exact-name rule at score 1.0 (Ruling 51). Then:
    1. build the payload from the unsettled fields and the free keys (Ruling 21; "What data leaves
-      the site") and the prompt (Ruling 23). If it cannot fit the byte cap after every reduction,
+      the site"; refined by Ruling 90, and by Ruling 100: only among the first 1,000 keys) and the
+      prompt (Ruling 23). If it cannot fit the byte cap after every reduction,
       stop here with `ai_payload_too_large` and `sent: null`: no rate-limit count, no call
       (Ruling 50);
    2. take a call from the rate limit (Ruling 34), else `ai_rate_limited`;
    3. call the provider once, with the timeout for the number of fields sent (Rulings 18-20, 52);
    4. validate the reply (Rulings 24-26, 53, 60, 63);
-   5. merge (Rulings 25, 59): an item the provider returned for a field replaces the deterministic
-      one for that field, `from: null` included; fields it did not return keep the deterministic
-      suggestion, **unless a provider item took its key**: then that field drops to its next free
-      candidate in the suggester's order, or to `from: null`; settled fields and the base
-      template's mappings are never replaced; a valid `key` or `slug` replaces the deterministic
-      one, and a deterministic field suggestion that used the provider's `slug` key drops the same
-      way. After the merge no key maps two fields, the key column aside.
+   5. merge (Rulings 25, 59): an item the provider returned for a field replaces the
+      deterministic one for that field, `from: null` included (an item on a reserved key is ignored,
+      Ruling 81); fields it did not return keep the deterministic suggestion, **unless a provider
+      item took its key**: then that field drops to its next free candidate in the suggester's
+      order, or to `from: null`; settled fields and the base template's mappings are never replaced;
+      a valid `key` or `slug` replaces the deterministic one (not with a base template, Ruling 79; a
+      slug on a reserved key or the key column gives way, Ruling 82), and a deterministic field
+      suggestion that used the provider's `slug` key drops the same way. After the merge no key maps
+      two fields, the key column aside.
 
    Any failure in 1-4 leaves the deterministic draft and adds one warning code (Ruling 35).
-7. **Draft.** Build `{ version: 1, source, collection, locale, key: { from }, slug?, fields }`
-   (with every other block of the base template), with each mapping's type chosen by Ruling 29's
-   table and only the whitelisted options (Ruling 24). Run `templateShapeProblems`. If a draft that
-   used provider items fails it, rebuild from the deterministic draft alone and warn
-   `ai_draft_invalid`. If that fails too, or no field could be mapped, `template` is `null`
-   (`no_field_matched`); the `fields` list still explains each field (Ruling 27).
+7. **Draft.** Build `{ version: 1, source, collection, locale, key: { from }, slug?, fields }` (with
+   every other block of the base template; a slug equal to the key is dropped, Ruling 82), with each
+   mapping's type chosen by Ruling 29's table and only the whitelisted options (Ruling 24). Run
+   `templateShapeProblems`. If a draft that used provider items fails it, rebuild from the
+   deterministic draft alone and warn `ai_draft_invalid` (only then, Ruling 83). If that fails too,
+   or no field could be mapped, `template` is `null` (`no_field_matched`); the `fields` list still
+   explains each field (Ruling 27).
 8. **Site check.** `siteCheck` of the draft gives `check` (P6); problems do not fail the request.
 9. **Log** one line through `ctx.log.info` (Ruling 36) and answer.
 
@@ -425,7 +434,7 @@ interface ProviderPayload {
 		required: boolean;
 		options?: string[];                                     // select and multiSelect only, when the field has at most 50 options of at most 100 characters each (tighter at reductions 5 and 6)
 	}[];                                                      // the unsettled fields, at most MAX_FIELDS_SENT (100), in schema order
-	source: { format: "csv" | "json" | "jsonl" | "xml" | "xlsx"; keys: string[] }; // the free keys (Ruling 59), at most MAX_KEYS_SENT (200), first-seen order; keys over 200 characters are not sent
+	source: { format: "csv" | "json" | "jsonl" | "xml" | "xlsx"; keys: string[] }; // the free keys (Ruling 59; refined by Ruling 90), at most MAX_KEYS_SENT (200), first-seen order, all among the first 1,000 (Ruling 100); keys over 200 characters are not sent
 	records: Record<string, string>[];                        // at most SAMPLE_RECORDS_SENT (5): sent key → preview
 }
 ```
@@ -444,7 +453,8 @@ interface ProviderPayload {
   6. send no options;
   7. cut the collection's and the fields' labels to 40 code points.
 
-  Any reduction adds `sample_trimmed` once. Keys and field slugs are never cut: a cut key could
+  Any reduction adds `sample_trimmed` once (refined by Ruling 88: only for a payload that was
+  sent). Keys and field slugs are never cut: a cut key could
   not be returned exactly. If the payload is still over the cap after reduction 7, **no provider
   call is made**: the warning is `ai_payload_too_large`, `sent` is `null`, the rate limit is not
   touched, and the answer is name matching alone. (The vocabulary alone can exceed the cap: 200
@@ -464,7 +474,8 @@ interface ProviderPayload {
 - **What the reply says was sent.** `sent: { records, keys, fields, bytes }` reports the counts and
   the payload's byte size, so the M7 screen can show the disclosure for each request. It is set
   once the request reaches the transport, a failed call included, and is `null` when nothing was
-  attempted, including `ai_url_blocked` and `ai_payload_too_large` (Ruling 64).
+  attempted, including `ai_url_blocked` and `ai_payload_too_large` (Ruling 64; amended by Ruling
+  101: set once the provider call is attempted).
 
 ### The deterministic suggester (Rulings 29-31)
 
@@ -539,7 +550,8 @@ non-empty sample values of `k` (trimmed strings other than `""`; the values read
 - `number`: one of the number candidates (below) parses every value;
 - `date`: one of the date candidates (below) parses every value;
 - `boolean`: each value, lower-cased, is a boolean token (P5);
-- `select`: each value `matchesOption` one of the field's options, ignoring case;
+- `select`: each value `matchesOption` one of the field's options, ignoring case (the mapping
+  gets `ignoreCase: true` when a value matches only ignoring case, Ruling 78);
 - `multiSelect`: each part of each value split on `,` (trimmed) does;
 - `image`, `file`: each value is an absolute http or https URL (`parseSourceUrl` accepts it);
 - `portableText`: always compatible.
@@ -553,7 +565,8 @@ final score is at least 0.3.
 The result of a check depends only on the key and the mapping type (and, for `select` and
 `multiSelect`, the field's options), so it is memoised per (key, mapping type), or per (key,
 field) for those two: at most 200 keys × 10 date candidates × 20 values are parsed per request,
-however many datetime fields the collection has (Ruling 68).
+however many datetime fields the collection has (Ruling 68; corrected by Ruling 100: 1,000 keys,
+since the 200 bounded only the payload).
 
 **Number candidates** (amended by Ruling 57), tried in this order with the engine's own
 `numberConverter` (P5); the first that parses every non-empty value wins and gives the mapping's
@@ -590,7 +603,8 @@ key maps at most one field, each field at most one key. Confidence is those hund
 
 **6. The key column** (`template.key`), chosen before the fields and also eligible for a field
 (it is the one key that may serve twice):
-1. the first key, in this priority of `joined(norm(key))`, then first-seen order: `id`, `sku`,
+1. the first key (of the first 1,000, Ruling 100), in this priority of `joined(norm(key))`, then
+   first-seen order: `id`, `sku`,
    `uuid`, `guid`, `externalid`, `key`, `code`, `productid`, `itemid`, `ref`, `reference`;
 2. else the first key (first-seen) whose values, in the records read, are all non-empty and
    distinct, with "distinct" meaning distinct after trimming, case-sensitive;
@@ -604,12 +618,14 @@ by Ruling 71).
 
 **7. The entry slug** (`template.slug`): the first key, other than the key column, whose
 `canon(joined(norm(key)))` is `slug`; confidence 0.8. Such a key is then not offered to fields.
+(Amended by Ruling 82: never a reserved key, and dropped when it equals the chosen key.)
 
 **8. Warnings** the suggester adds: `required_unmapped` (required eligible fields left without a
 key, by slug), `reference_not_suggested` (reference fields, by slug), `fields_not_eligible`
 (repeater, blocks and unsupported fields, by slug), `date_format_ambiguous`,
 `number_format_ambiguous`, `key_guessed`,
-`key_not_unique_in_sample`, `no_field_matched`, `sample_empty` (keys but no record).
+`key_not_unique_in_sample`, `no_field_matched`, `sample_empty` (keys but no record), and
+`keys_not_matched` (keys past the 1,000th, Ruling 100).
 
 ### Provider requests
 
@@ -678,11 +694,14 @@ It checks the URL (`parseSourceUrl`), the host (`checkHost`) and every resolved 
 skipping the host and address checks only under `allowPrivateNetwork()` (P2); a refusal throws
 `UrlSourceError("URL_BLOCKED")`. It then calls the runtime's fetch once with
 `redirect: "manual"` and the caller's signal, and returns any response, a 3xx included, without
-following it. The returned `Response` wraps the original body in a stream that errors once more
-than `maxResponseBytes` have passed, so an oversized reply is refused while it streams, not after
-it is buffered. A rejection of the runtime fetch (an `AbortError`, a `TimeoutError`, a network
-error) is re-thrown **as raised**, never wrapped, so the SDK and the OpenAI-compatible client
-classify timeouts themselves (A8).
+following it. The returned `Response` wraps the original body in a stream that errors once more than
+`maxResponseBytes` have passed, so an oversized reply is refused while it streams, not after it is
+buffered. (Amended by Ruling 72: the body is read to its end under the cap before `guardedRequest`
+resolves and is returned as a new `Response` over the bytes, so a body that stalls after its headers
+fails inside the fetch the SDK times; an oversized reply is still refused as soon as the cap is
+passed.) A rejection of the runtime fetch (an `AbortError`, a `TimeoutError`, a network error) is
+re-thrown **as raised**, never wrapped, so the SDK and the OpenAI-compatible client classify
+timeouts themselves (A8).
 
 **Anthropic** (`src/plugin/ai/anthropic.ts`), loaded with `await import("@anthropic-ai/sdk")` only
 when a call is made (Ruling 4), from `@anthropic-ai/sdk` pinned at exactly 1.5.0 (Ruling 54).
@@ -697,7 +716,7 @@ const client = new Anthropic({
 	apiKey: key,                         // explicit: no credential env, profile or federation lookup (A8)
 	baseURL,                             // https://api.anthropic.com (dev: aiBaseUrl, Ruling 7)
 	fetch: transport,                    // guardedRequest on every site (Ruling 48)
-	timeout: aiTimeoutMs(fieldsSent),    // min(90_000, 20_000 + 600 × fieldsSent) ms (A8 units, Ruling 52)
+	timeout: aiTimeoutMs(fieldsSent),    // min(90_000, 20_000 + 600 × fieldsSent) ms (A8 units, Ruling 52); the caller passes it (Ruling 97)
 	maxRetries: 0,                       // one attempt (Ruling 19)
 	logLevel: "off",                     // nothing on the console (Ruling 36)
 	openTelemetry: { traces: false, propagation: false },   // no span, no traceparent (Ruling 56)
@@ -746,7 +765,7 @@ const response = await guardedRequest(`${baseUrl}/chat/completions`, {
 
 - A status other than 2xx maps by Ruling 55's order; a 3xx is `ai_provider_error`.
 - The body streams through the cap of `PROVIDER_RESPONSE_MAX_BYTES` (256 KiB, Ruling 47); more is
-  `ai_invalid_output`.
+  `ai_invalid_output` (read whole before `guardedRequest` resolves, Ruling 72).
 - A rejection that is an `AbortError` or a `TimeoutError` (`AbortSignal.timeout` aborts with a
   `DOMException` named `TimeoutError`) is `ai_timeout`; `UrlSourceError("URL_BLOCKED")` is
   `ai_url_blocked`; any other rejection is `ai_provider_error` (amended by Ruling 60).
@@ -765,18 +784,23 @@ const response = await guardedRequest(`${baseUrl}/chat/completions`, {
    the package's `zod`, unknown keys refused). A failure, or more than `MAX_FIELDS_SENT` × 2 items,
    is `ai_invalid_output`, and no item is used.
 2. **Per item**, in order, dropping the item and counting a warning:
-   - `field` not among the fields sent (exact, case-sensitive) → `ai_unknown_field`;
+   - `field` not among the fields sent (exact, case-sensitive), or a sent field without a
+     mapping type (Ruling 85) → `ai_unknown_field`;
    - a second item for the same field → `ai_duplicate_field` (the first is kept);
    - `from` not null and not exactly one of the keys sent → `ai_unknown_key`;
    - `from` already used by an earlier kept item → `ai_duplicate_key` (the item is kept with
-     `from: null`).
+     `from: null`; refined by Ruling 85).
+
+   (Amended by Ruling 81: an item on a settled field's key, a key a base-template field maps or
+   the kept slug's key is ignored by the merge and counted in the same `ai_duplicate_key`.)
 3. **Options** (amended by Ruling 63), per kept item, checked against every non-empty value read
    for its key (up to 20), as the suggester checks its own:
    - `dateFormat` only on a `date` mapping, of at most 50 characters, and only when Luxon (the
      engine's `en-US` setup) parses **every** value with it;
    - `decimalComma: true` only on `number`; it gives `{ decimal: "," }`, plus `thousands: "."`
      when any value contains a `.`, and is kept only when the engine's `numberConverter` parses
-     every value with that pair; `false` or `null` leaves the suggester's number candidates
+     every value with that pair (amended by Ruling 84: either option needs at least one non-empty
+     sampled value); `false` or `null` leaves the suggester's number candidates
      (Ruling 57) to set the options for that key;
    - `portableTextFormat` only on `portableText`.
 
@@ -785,9 +809,11 @@ const response = await guardedRequest(`${baseUrl}/chat/completions`, {
    is always Ruling 29's, whatever the model wrote.
 4. **`key` and `slug`:** used only when exactly one of the sent keys; otherwise ignored with
    `ai_unknown_key`. A `slug` equal to the key column, or to a key a kept field item uses, is
-   ignored (Ruling 59).
+   ignored (Ruling 59; amended by Ruling 82). With a base template the provider's `key` and `slug`
+   are ignored (Ruling 79).
 5. **Text**: `rationale` has control and format characters (`\p{Cc}`, `\p{Cf}`) removed, whitespace
-   collapsed, and is cut to 200 code points; empty becomes "Suggested by the model".
+   collapsed, and is cut to 200 code points (199 plus `…`, Ruling 87); empty becomes "Suggested
+   by the model".
    `confidence` maps `high` 0.9, `medium` 0.6, `low` 0.3.
 6. **Nothing else** from the reply reaches the response: no field or key name the reply invents,
    no extra keys, no model text other than the cut rationale.
@@ -835,14 +861,16 @@ Warnings, in `warnings` (`count` where it says so):
 | `ai_truncated` | `max_tokens`, `model_context_window_exceeded` or `length` |
 | `ai_invalid_output` | The reply is not JSON, fails `REPLY_ZOD` or the envelope schema, is too large, or ends with another `stop_reason` (`pause_turn`, `compaction`, `stop_sequence`, `tool_use`) |
 | `ai_unknown_field`, `ai_duplicate_field`, `ai_unknown_key`, `ai_duplicate_key`, `ai_option_dropped` | Items or options dropped (`count`) |
-| `ai_draft_invalid` | The merged draft failed the shape check; the deterministic draft is used |
-| `sample_trimmed` | The payload was reduced to fit 48 KiB (any reduction of Ruling 50) |
-| `keys_not_sent` | Keys over 200 characters, or past the 200th, were not sent (`count`) |
-| `fields_not_sent` | Unsettled eligible fields past the 100th were not sent (`count`); they keep their name-matching suggestion |
+| `ai_draft_invalid` | The merged draft failed the shape check; the deterministic draft is used (only when the failing draft used provider output, Ruling 83) |
+| `sample_trimmed` | The payload was reduced to fit 48 KiB (any reduction of Ruling 50); only when it was sent (Ruling 88) |
+| `keys_not_matched` | Keys past the 1,000th, in sample order, were neither matched by name nor sent (`count`; Ruling 100) |
+| `keys_not_sent` | Keys over 200 characters, or past the 200th, were not sent (`count` only, Ruling 86; counted among the first 1,000 keys, Ruling 100) |
+| `fields_not_sent` | Unsettled eligible fields past the 100th were not sent (`count` and the first 20 slugs, Ruling 86); they keep their name-matching suggestion |
 | `required_unmapped`, `reference_not_suggested`, `fields_not_eligible`, `date_format_ambiguous`, `number_format_ambiguous` | `fields` |
-| `key_guessed`, `key_not_unique_in_sample`, `no_field_matched`, `sample_empty` | As named |
+| `key_guessed`, `key_not_unique_in_sample`, `no_field_matched`, `sample_empty` | As named (`no_field_matched` alone when the failing draft had no provider output, Ruling 83) |
 
-`ai_*` failure codes appear only when a provider call was attempted or configured; at most one of
+`ai_*` failure codes appear only when a provider call was attempted or configured (refined by
+Ruling 91: settings codes only when a call would otherwise be made); at most one of
 the failure codes (`ai_url_blocked`, `ai_payload_too_large`, `ai_rate_limited`, and `ai_timeout`
 … `ai_invalid_output`) appears per reply. When every eligible field is settled (Ruling 51) no call
 is made and no `ai_*` code is added.
@@ -981,14 +1009,14 @@ M6b review), `current.claimedAt`, `due.force`. `schedules/list` is unchanged.
 ### Consent and the one re-consent
 
 `MCP_TOOLS` gains `list_sources` (route `sources/overview`) and `list_schedules` (route
-`schedules/overview`), each with its route's own input object (M6c Ruling 2). The six M6c tools
-keep their names, descriptions, routes and schemas byte for byte. Any change to the list disables
-the tools until an Administrator enables them again (M6c F3), so 0.5.0 costs every site with Agent
+`schedules/overview`), each with its route's own input object (M6c Ruling 2). The six M6c tools keep
+their names, descriptions, routes and schemas byte for byte. Any change to the list disables the
+tools until an Administrator enables them again (M6c F3), so 0.5.0 costs every site with Agent
 access one re-consent, the one M6b deferred to here (M6b Ruling 50). The test fixture
 `tests/unit/fixtures/mcp-consent.txt` is regenerated and committed with the tool change; the unit
-test's tool table grows to eight and the integration test's stored-consent check follows the
-fixture. M8's upgrade notes say to switch Agent access off and on (the switch stays "on" while the
-tools are gone, M6c F3).
+test's tool table grows to eight and the integration test's stored-consent check follows the fixture
+(Ruling 98: the M6c upgrade test filters it to the six M6c rows). M8's upgrade notes say to switch
+Agent access off and on (the switch stays "on" while the tools are gone, M6c F3).
 
 ### No `suggest_mapping` tool (Ruling 2)
 
@@ -1055,19 +1083,22 @@ The suggestion route is REST only. Reasons, in order:
 - **The free plan.** Every M6d route must stay under 50 queries and 50 subrequests (V5); the
   projections are under 30. The free plan's 10 ms of CPU may not cover the SDK's first evaluation
   or name matching over many datetime fields (V2 and V5 measure them; the type checks are
-  memoised, Ruling 68); imports need the paid plan anyway (M6c "Workers and Node").
+  memoised, Ruling 68); imports need the paid plan anyway (M6c "Workers and Node"). (Measured by
+  Rulings 99 and 100: every route is under 15 queries; name matching at its bound costs about
+  0.5-0.7 s of CPU on Node, far over 10 ms.)
 - **Wall time.** A provider call waits up to 90 s (Ruling 52); an HTTP-triggered Worker has no
   wall-time limit while the client is connected, and waiting is not CPU time (F12). On Node there
   is no limit.
 - **Bundle size and startup.** The SDK adds about 381 KB minified (84 KB gzip, measured on 1.10.0)
-  to the server bundle (A9); the OpenAI-compatible client is a few KB of flux-import's own code.
-  The Workers script limit is 64 MiB uncompressed with no compressed limit (F12), far above. The
-  SDK is loaded by dynamic `import()` (Ruling 4), so the bundler can split it into its own chunk,
-  only a provider call evaluates it, and its evaluation stays outside the 1 s startup CPU limit
-  (F12); V2 measures the real delta of `sites/dev-cf`'s build output and the first call's CPU.
+  to the server bundle (A9; measured by Ruling 99: about 1.06 MB unminified in a chunk of its own);
+  the OpenAI-compatible client is a few KB of flux-import's own code. The Workers script limit is 64
+  MiB uncompressed with no compressed limit (F12), far above. The SDK is loaded by dynamic
+  `import()` (Ruling 4), so the bundler can split it into its own chunk, only a provider call
+  evaluates it, and its evaluation stays outside the 1 s startup CPU limit (F12); V2 measures the
+  real delta of `sites/dev-cf`'s build output and the first call's CPU.
 - **Memory.** The sample is at most 20 records of a source read as a stream (P3); `text` is at most
   1 MiB in memory; the payload is at most 48 KiB; a provider reply at most 256 KiB, enforced
-  while it streams (Ruling 48).
+  while it streams (Ruling 48) and read whole before the fetch resolves (Ruling 72).
 
 ## Bounded work
 
@@ -1085,9 +1116,10 @@ The suggestion route is REST only. Reasons, in order:
 | `AI_MAX_TOKENS` | 16,000 | 100 items of about 60 tokens plus thinking at `low` (A2); the skill's non-streaming default (Ruling 52) |
 | `AI_TIMEOUT_MS` | `min(90_000, 20_000 + 600 × fieldsSent)` | One attempt; output volume grows with the fields sent; an Admin waits at a screen (Ruling 52) |
 | `AI_CALLS_PER_HOUR` | 30 per site; at most 10 KV queries per call | Pre-spec ruling 6; Ruling 66 |
-| `PROVIDER_RESPONSE_MAX_BYTES` | 256 KiB, enforced while streaming | A valid reply is under 40 KiB (Rulings 47, 48) |
-| Type checks | memoised per (key, mapping type); at most 200 × 10 × 20 date parses | CPU on the free plan (Ruling 68) |
-| Rationale | 200 code points | Ruling 26 |
+| `PROVIDER_RESPONSE_MAX_BYTES` | 256 KiB, enforced while streaming; read whole before the fetch resolves (Ruling 72) | A valid reply is under 40 KiB (Rulings 47, 48) |
+| Keys matched by name | the first 1,000 (`PATHS_MAX_COUNT`), in sample order; the rest counted in `keys_not_matched` | CPU: about 0.5 ms per field-like key on Node (Ruling 100) |
+| Type checks | memoised per (key, mapping type); at most 1,000 × 10 × 20 date parses (corrected by Ruling 100) | CPU on the free plan (Ruling 68) |
+| Rationale | 200 code points (199 plus `…`) | Rulings 26, 87 |
 | `RUNS_SHOWN` | 5 per schedule in `list_schedules` | 20 schedules stay at a few tens of KB |
 | Overview pages | 50 sources, 20 schedules | As the REST lists |
 
@@ -1161,7 +1193,8 @@ No test calls a real provider; CI holds no key. The fakes are deterministic.
   `redirect: "manual"` (even when the caller passes `follow`), the method, headers, body and the
   caller's signal; a 3xx is returned, not followed (one fetch); a body over the cap errors while
   streaming, before the rest is read; an `AbortError` and a `TimeoutError` are re-thrown as the
-  same objects.
+  same objects (amended by Ruling 72: the reply is read to its end before the fetch resolves, so a
+  body that stalls fails inside it).
 - **Unit, providers through the real transport** (`tests/unit/ai-providers.test.ts`): each test
   passes `guardedRequest` a fake runtime fetch and resolver, so the SDK adapter and the error
   mapping run as in production:
@@ -1174,7 +1207,9 @@ No test calls a real provider; CI holds no key. The fakes are deterministic.
   - the environment (amended by Ruling 56): with `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
     `ANTHROPIC_BASE_URL` and `ANTHROPIC_LOG` set to markers, none is used; with
     `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content` and a test tracer provider registered,
-    no span is recorded and no `traceparent` header is sent; a set `ANTHROPIC_CUSTOM_HEADERS`
+    no span is recorded and no `traceparent` header is sent (amended by Ruling 75: no tracer
+    provider can be registered; the test pins the client's `openTelemetry` option and that no
+    `traceparent` is sent); a set `ANTHROPIC_CUSTOM_HEADERS`
     does reach the request (pinning the documented behaviour);
   - replies: `end_turn`; `refusal` with empty content; `max_tokens`; `pause_turn` and
     `compaction` (`ai_invalid_output`); a reply with `thinking` and `fallback` blocks before the
@@ -1237,7 +1272,10 @@ No test calls a real provider; CI holds no key. The fakes are deterministic.
      with the redacted views; a call before re-consent finds no tool.
 - **Cloudflare parity on `sites/dev-cf`:** steps 1, 2 and 8, plus V5's counts. The fake provider
   runs in the test process on the host; the workerd site reaches it with `allowPrivateNetwork`
-  (V7). This adds under a minute to `test:cf`.
+  (V7). This adds under a minute to `test:cf`. (Amended by Ruling 95: the harness writes
+  `.dev.vars` with a generated `EMDASH_ENCRYPTION_KEY`; and by Ruling 96: both this test and the
+  Node one first prove that an OpenAI-compatible call reaches the fake, and `ai_url_blocked` is
+  reached on the shared server.)
 - **The manual run against the real Anthropic API (optional; recorded in the review note).** Only
   with a key the user supplies at run time: exported in the shell that starts `sites/dev`, written
   to the settings through the API from that variable, never to a file, a fixture or the note; the
@@ -1405,11 +1443,12 @@ Tasks 1 and 5 can run in parallel with 2 and 3.
     Ruling 59); for the rest, a provider item is authoritative
     for its field (including an explicit `null`, a model saying "no column fits"); fields the
     provider skipped keep the name-matching suggestion, so a partial reply still helps. Each field
-    says its `origin`.
+    says its `origin`. (Refined by Ruling 79: a base template's key, slug and fields are kept
+    whole.)
 26. **Invalid items are dropped and counted, never echoed.** A field or key the reply invents is
     model text, possibly steered by the feed; repeating it in a warning would hand that text to
     the Admin's screen. Warnings carry codes, counts and the site's own field slugs. The rationale
-    is the only model text returned, cleaned and cut to 200 code points, and labelled.
+    is the only model text returned, cleaned and cut to 200 code points (Ruling 87), and labelled.
 27. **The draft always passes the shape check, or is `null`.** The pre-spec ruling requires a
     shape-valid draft. A merged draft that fails falls back to the deterministic draft
     (`ai_draft_invalid`); a draft with no mapped field cannot pass ("Map at least one field", P4),
@@ -1507,7 +1546,8 @@ review").
     `guardedRequest(url, { method, headers, body, signal }, net, { maxResponseBytes })` in
     `src/sources/net.ts` checks the URL, host and addresses once, calls the runtime fetch with
     `redirect: "manual"` forced, returns any response (a 3xx included) without following it,
-    caps the body while it streams, re-throws aborts and timeouts as raised, and throws
+    caps the body while it streams (amended by Ruling 72: reads it whole under the cap before it
+    resolves), re-throws aborts and timeouts as raised, and throws
     `UrlSourceError("URL_BLOCKED")` for a refused host. The SDK's `fetch` adapter and the
     OpenAI-compatible client both use it; the error mapping reads `APIConnectionError.cause
     instanceof UrlSourceError` for `ai_url_blocked`. The reasons: with the earlier split, the
@@ -1587,17 +1627,19 @@ review").
     `AnthropicError` (for example the constructor's `TypeError`) or thrown value →
     `ai_provider_error`. `stop_reason` values other than `end_turn`, `refusal`, `max_tokens` and
     `model_context_window_exceeded` (`pause_turn`, `compaction`, `stop_sequence`, `tool_use`) are
-    `ai_invalid_output`. Downside: one more warning code for M7 to word.
-56. **The SDK's telemetry is off, and what it still reads and sends is stated.** (Finding 6;
-    amends A8 and the Testing bullet on `ANTHROPIC_*` variables.) The client gets
-    `openTelemetry: { traces: false, propagation: false }` (`false` alone would leave propagation
-    on), so no span can record sample values, even with
-    `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content`, and no `traceparent` is sent.
-    `ANTHROPIC_CUSTOM_HEADERS` is still read and merged; it is documented as operator-controlled
-    (the operator owns the environment) and pinned by a test, rather than overridden. "What data
-    leaves the site" and the disclosure name the SDK's `x-stainless-*` metadata headers. The
-    test asserting that no `ANTHROPIC_*` variable is read is narrowed to the variables the options
-    short-circuit. Downside: an operator's custom headers reach Anthropic without flux-import's
+    `ai_invalid_output`. Downside: one more warning code for M7 to word. (Refined by Ruling 74:
+    classes by `instanceof`, never by name, over a cause chain of at most 5 links; guard failures
+    re-thrown code-only for the SDK.)
+56. **The SDK's telemetry is off, and what it still reads and sends is stated.** (Finding 6; amends
+    A8 and the Testing bullet on `ANTHROPIC_*` variables.) The client gets `openTelemetry: { traces:
+    false, propagation: false }` (`false` alone would leave propagation on), so no span can record
+    sample values, even with `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content`, and no
+    `traceparent` is sent. `ANTHROPIC_CUSTOM_HEADERS` is still read and merged; it is documented as
+    operator-controlled (the operator owns the environment) and pinned by a test, rather than
+    overridden. "What data leaves the site" and the disclosure name the SDK's `x-stainless-*`
+    metadata headers. The test asserting that no `ANTHROPIC_*` variable is read is narrowed to the
+    variables the options short-circuit (the span test amended by Ruling 75: no tracer provider is
+    registered). Downside: an operator's custom headers reach Anthropic without flux-import's
     knowledge; that is the operator's choice.
 57. **Number options come from the engine's own converter over fixed candidates.** (Finding 7;
     amends "Number options" and corrects P5.) The old rule assumed the default options read
@@ -1615,14 +1657,16 @@ review").
     Greek, CJK or Arabic name normalised to `""` and "exactly" matched every other. Downside: NFKD
     mark-stripping still folds `é` into `e` but leaves non-decomposable letters (`ß`, `ø`) as they
     are, so `Straße` and `Strasse` do not match exactly.
-59. **No source key maps two fields in the merged draft.** (Finding 9; amends Rulings 25 and 26
-    and steps 5-6.) Keys used by the base template's kept mappings are removed from the candidates
+59. **No source key maps two fields in the merged draft.** (Finding 9; amends Rulings 25 and 26 and
+    steps 5-6.) Keys used by the base template's kept mappings are removed from the candidates
     before both passes and are not sent; keys of settled fields are not sent either. After the
     merge, a deterministic suggestion whose key a provider item took drops to its next free
     candidate in the suggester's order, or to `from: null`; the same applies to the provider's
     `slug` key. The key column stays the one key that may serve twice (Ruling 30), and so it is
-    always among the keys sent. Downside: a base template that maps one column to two fields on
-    purpose gets no further suggestions for that column; the Admin keeps that choice by hand.
+    always among the keys sent (refined by Rulings 80-82 and 90; a base key column past the first
+    1,000 keys is not sent, Ruling 100). Downside: a base template that maps one column to two
+    fields on purpose gets no further suggestions for that column; the Admin keeps that choice by
+    hand.
 60. **The OpenAI-compatible client handles OpenAI's token field, empty choices, odd content and
     both abort errors.** (Finding 10; amends Rulings 5 and 46.) OpenAI's reference confirms
     `max_tokens` is deprecated for `max_completion_tokens` and rejected by o-series models (O1), so
@@ -1645,14 +1689,17 @@ review").
     only when `numberConverter` parses every value. For the halving rule, a date or number column's
     failing values are those its best candidate (the one parsing the most values) fails.
     Downside: a model's correct format for a column with a few malformed values is dropped; the
-    suggester's own candidate, or none, is used instead.
+    suggester's own candidate, or none, is used instead. (Amended by Ruling 84: an empty column no
+    longer passes vacuously.)
 64. **The response's semantics are pinned.** (Finding 15.) `fields` lists every eligible field and
     is not capped; only what is sent is capped (`fields_not_sent`). Under `ai: false`,
     `ai.available` means only "a provider is selected". `method` is `"ai"` when at least one
     provider field item, or the provider's `key` or `slug`, is in the draft; a valid reply with
     every item dropped is `"fallback"`. `sent` is non-null once a request reached the transport,
     a failed call included, and `null` when nothing was attempted (`ai_url_blocked`,
-    `ai_payload_too_large`, `ai_rate_limited`, settings or `ai: false`). Downside: none.
+    `ai_payload_too_large`, `ai_rate_limited`, settings or `ai: false`). Downside: none. (Amended
+    by Ruling 101: `sent` is set once the provider call is attempted; refined by Ruling 83 for
+    `method` without a draft and by Ruling 91 for `ai.model` and settings warnings.)
 65. **The read tools' paging and order are pinned.** (Finding 16.) `schedules/overview` pages
     like `listSchedules` with `limit: MAX_SCHEDULES`, so its cursor is normally absent; runs are
     `runs.slice(0, RUNS_SHOWN)`, the newest, since they are stored newest first (P11);
@@ -1675,7 +1722,10 @@ review").
     the key and the mapping type (and, for `select` and `multiSelect`, the field's options), so it
     is computed once per (key, type), bounding date parsing at 200 keys × 10 candidates × 20
     values whatever the number of datetime fields. V5 measures CPU with many datetime fields.
-    Downside: none.
+    Downside: none. (Corrected by Ruling 100: the 200 was the payload's key cap, which never
+    bounded name matching; name matching now reads the first 1,000 keys, so the bound is 1,000 ×
+    10 × 20 = 200,000 date parses, measured at about 0.5-0.7 s of CPU on Node with 30 datetime
+    fields.)
 69. **The disclosure names everything sent.** (Finding 21; amends "Disclosure text".) It now
     names the collection's name and label, the required flags, the SDK's client details, and says
     "fewer when the data is large", and that only the fields name matching did not settle are
@@ -1783,6 +1833,10 @@ text point here.
 88. **`sample_trimmed` reports only a payload that was sent** (plan Ruling 16; refines "The byte
     cap"). A payload that cannot fit after reduction 7 reports `keys_not_sent` and
     `fields_not_sent` where they apply, and `ai_payload_too_large`, but no `sample_trimmed`.
+    (Final review.) Nor does a payload that fits but is not sent: `sample_trimmed` is added only
+    when `sent` is non-null (Ruling 101), never with `ai_rate_limited` (a used-up hour or a KV
+    error) or `ai_url_blocked`. `keys_not_sent` and `fields_not_sent` are reported once the
+    payload is built, in every case, as for a payload too large.
 89. **`unmapped.keys` leaves out the key column and the entry slug's key** (plan Ruling 18;
     refines "Output"): it lists the sample keys that no field mapping, the key or the slug uses.
 90. **The keys sent are the sample's keys without the base template's and the settled fields'
@@ -1825,13 +1879,41 @@ text point here.
 98. **The six M6c tools' consent snapshot is derived** (plan Ruling 15, V6): the M6c upgrade test
     filters the regenerated fixture to the six M6c rows, which are byte-identical to 0.4.0's.
 99. **The measured costs** (review, V2 and V5). On local workerd and D1, whole requests including
-    the 4 queries of PAT authentication: `templates/suggest` 9 queries with name matching, 10-12
-    for a `sourceId` (12 and one subrequest when it fetches), 14 and one subrequest with either
-    provider; `sources/overview` over 50 sources 5; `schedules/overview` over 20 schedules 6.
-    The SDK adds 1,064,525 bytes, unminified, to `sites/dev-cf`'s server build in a chunk of its
-    own that only the provider's `await import()` loads (plus a 108,743-byte chunk the SDK itself
-    imports lazily); the server output grows by 1,251,045 bytes in all. Name matching at Ruling
-    68's bound costs about 100-150 ms of CPU, over the free plan's 10 ms (Open issues).
+    the 4 queries of PAT authentication: `templates/suggest` 9 queries with name matching, 10-12 for
+    a `sourceId` (12 and one subrequest when it fetches), 14 and one subrequest with either
+    provider; `sources/overview` over 50 sources 5; `schedules/overview` over 20 schedules 6. The
+    SDK adds 1,064,525 bytes, unminified, to `sites/dev-cf`'s server build in a chunk of its own
+    that only the provider's `await import()` loads (plus a 108,743-byte chunk the SDK itself
+    imports lazily); the server output grows by 1,251,045 bytes in all. Name matching over 200
+    field-like keys and 30 datetime fields costs about 100-170 ms of route time on workerd and
+    110-290 ms of CPU on Node; at its real bound, 1,000 such keys (Ruling 100), about 0.5 s of CPU
+    on Node in a warm process and 0.7 s in a fresh one, medians of 5 (final review). Either is far
+    over the free plan's 10 ms (Open issues).
+100. **Name matching reads only the first 1,000 keys** (final review; amends steps 5 and 6.1,
+    suggester steps 6 and 7, "Bounded work", the warning table, and corrects Rulings 68 and 99).
+    `MAX_KEYS_SENT` capped only the provider payload, so name matching scored every sample key:
+    a CSV of field-like headers cost about 0.5 ms of CPU per key on Node (10,000 keys, about
+    5 s). `matchedKeys(sample)` is the first `PATHS_MAX_COUNT` (1,000) keys in sample order, the
+    path walk's own limit; the field pairs, the key column and the entry slug are chosen among
+    them, and the rest are counted in a new count-only warning, `keys_not_matched` (`count`, no
+    names, Ruling 26), placed after `sample_empty` among name matching's warnings. The keys sent
+    are chosen from the same prefix (Ruling 90's filter over `matchedKeys`), so `keysSent`, at
+    most 200, is always a subset of the matched keys, and `keys_not_sent` counts only matched
+    keys left out; a base template's key column past the 1,000th is not sent either.
+    `unmapped.keys` still lists the sample keys no mapping uses, in sample order, keys past the
+    1,000th included: they are unmapped, and `UNMAPPED_MAX` (100) keeps the reply bounded. Name
+    matching then costs, on Node v22 with 30 datetime fields and 1,000 field-like keys (each
+    type-checked against `datetime`), about 0.7 s of CPU for a fresh process's first call and
+    0.5 s for later calls, the same at 10,000 keys. Downside: a feed with more than 1,000 columns
+    or paths gets no suggestion past the 1,000th; the Admin maps those by hand, and the warning
+    says how many.
+101. **`sent` is set once the provider call is attempted** (final review; amends Ruling 64,
+    "Output" and "What the reply says was sent"). The route sets `sent` once it calls the
+    provider module, so a failure inside that module or the SDK before any byte reaches the
+    transport also reports what would have been sent; only `ai_url_blocked`, a refusal before any
+    connection, reports `null`. Nothing is plumbed from the transport. `sent` stays `null` when no
+    call was attempted: `ai_payload_too_large`, `ai_rate_limited`, a settings warning, `ai: false`,
+    or every field settled.
 
 ## Out of scope
 
@@ -1858,10 +1940,21 @@ text point here.
   headers to every provider request. Documented in M8 as operator-controlled.
 - **The OpenAI token field is chosen by host** (Ruling 60): a gateway in front of OpenAI's
   reasoning models under another host gets `max_tokens`, which those models reject.
-- **The free plan's CPU** (F12, V2, V5): the SDK's first evaluation, or name matching over many
-  datetime fields, may exceed 10 ms of CPU on the free plan; if V2 or V5 shows it does, the free
-  plan is limited accordingly (`openai-compatible` and name matching, or smaller samples), and M8
-  documents it.
+- **The free plan's CPU is exceeded** (F12, V2, V5; Rulings 99 and 100). Name matching at its bound,
+  1,000 keys that each name-match a `datetime` field (30 such fields, 20 date-like values each),
+  costs about 0.5 s of CPU on Node in a warm process and 0.7 s in a fresh one; at 200 such keys it
+  measured 110-290 ms of CPU on Node and 106-171 ms of route time on workerd. The SDK's first
+  evaluation costs 74-105 ms of CPU on Node. All are far over the free plan's 10 ms. A typical feed
+  costs far less (the products fixture's whole route: 13-21 ms on workerd, D1 reads included).
+  Imports need the paid plan anyway (M6c); on the free plan an Admin should use `ai: false` with
+  small, narrow samples, and M8 documents it. A cheaper type check (stop a candidate at its first
+  failure once another reads every value) is a later option.
+- **A settings storage failure on the `ai: true` path is a 500** (Task 9 review, final review).
+  `readAiSettings` maps encryption errors to `ai_key_unavailable` but rethrows any other settings
+  read error, so plugin storage failing while the AI settings are read fails the request. It is
+  accepted: storage that fails breaks the rest of the request anyway (the base template, the
+  site check). The `ai: false` path is guarded: a failed `aiProvider` read reports
+  `ai: { available: false }` and the route answers by name.
 - **Large requests are slow and billed even when they fail** (Rulings 52, 67): up to 90 s and
   about $0.40 at worst; V4 measures the real figures.
 - **The disclosure covers labels and option names.** An Admin may have put sensitive words in a
