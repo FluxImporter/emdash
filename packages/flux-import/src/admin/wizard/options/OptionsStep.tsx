@@ -10,7 +10,6 @@ import { StepFooter } from "../StepFooter.js";
 import {
 	fromTemplate,
 	isEdited,
-	isTimezone,
 	mappingNamesOf,
 	type Options,
 	optionsBlockers,
@@ -33,6 +32,30 @@ function wholeIn(text: string, min: number, max: number): number | null {
 	if (!/^\d+$/.test(text)) return null;
 	const n = Number(text);
 	return n >= min && n <= max ? n : null;
+}
+
+/**
+ * Whether a typed timezone is one the engine reads: `site`, or a zone the browser's `Intl` knows.
+ * The engine checks with Luxon, which also takes forms such as `UTC+2` that `Intl` refuses, so
+ * only text the user types is checked: a saved template's own zone is left to the engine.
+ */
+function isTimezone(tz: string): boolean {
+	if (tz === "site") return true;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: tz });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A fixed date's day and time for the date picker and the time input. The step writes
+ * `yyyy-MM-ddTHH:mm`; a saved template may also hold seconds, or a day alone (midnight).
+ */
+function fixedParts(at: string): { day: string; time: string } {
+	const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/.exec(at);
+	return { day: m?.[1] ?? "", time: m?.[2] ?? MIDNIGHT };
 }
 
 /** A calendar day as `yyyy-MM-dd`, in the browser's own calendar. */
@@ -99,10 +122,7 @@ export function OptionsStep() {
 		options.schedule?.kind ?? null,
 	);
 	const fixedAt = options.schedule?.kind === "fixed" ? options.schedule.at : "";
-	const [fixed, setFixed] = useState({
-		day: fixedAt.slice(0, 10),
-		time: fixedAt.slice(11, 16) || MIDNIGHT,
-	});
+	const [fixed, setFixed] = useState(() => fixedParts(fixedAt));
 	const feedAt = options.schedule?.kind === "feed" ? options.schedule : null;
 	const [feed, setFeed] = useState({
 		from: feedAt?.from ?? "",
@@ -137,7 +157,10 @@ export function OptionsStep() {
 		setFeed(next);
 		set({ schedule: feedSchedule(next) });
 	};
-	const tzInvalid = feed.tz.trim() !== "" && !isTimezone(feed.tz.trim());
+	// Only a timezone typed here is checked; a saved template's own one the engine accepted.
+	const [tzTyped, setTzTyped] = useState(false);
+	const tzShown = options.status === "schedule" && scheduleKind === "feed";
+	const tzInvalid = tzShown && tzTyped && feed.tz.trim() !== "" && !isTimezone(feed.tz.trim());
 	const keys = state.columns?.map((c) => c.key) ?? [];
 	if (feed.from !== "" && !keys.includes(feed.from)) keys.push(feed.from);
 
@@ -184,6 +207,12 @@ export function OptionsStep() {
 	const owner = ownerText ?? (ownerNone ? "" : ownerOf(state));
 	const ownerValid = (ownerNone && ownerText === null) || OWNER_PATTERN.test(owner);
 	const changeOwner = (text: string) => {
+		// On a template that sets no owner, an empty field is no owner again, not an invalid one.
+		if (text === "" && base !== null && base.template.rules?.owner === undefined) {
+			setOwnerText(null);
+			set({ owner: null });
+			return;
+		}
 		setOwnerText(text);
 		if (OWNER_PATTERN.test(text)) set({ owner: text });
 	};
@@ -216,6 +245,7 @@ export function OptionsStep() {
 	const tooMany = blockers.some((b) => b.msg === M.updateFieldsTooMany);
 	const local: ({ msg: Msg; values?: Values } | false)[] = [
 		nameTaken && { msg: M.nameTaken },
+		tzInvalid && { msg: M.feedTzInvalid },
 		options.missing !== null && threshold === null && { msg: M.thresholdInvalid },
 		!ownerValid && { msg: M.ownerInvalid },
 		!batchValid && { msg: M.batchSizeInvalid, values: { max: BATCH_SIZE_MAX } },
@@ -377,7 +407,10 @@ export function OptionsStep() {
 								label={t(M.feedTz)}
 								description={t(M.feedTzHelp)}
 								value={feed.tz}
-								onChange={(e: ChangeEvent<HTMLInputElement>) => changeFeed({ tz: e.target.value })}
+								onChange={(e: ChangeEvent<HTMLInputElement>) => {
+									setTzTyped(true);
+									changeFeed({ tz: e.target.value });
+								}}
 								{...(tzInvalid ? { error: t(M.feedTzInvalid) } : {})}
 							/>
 						</div>

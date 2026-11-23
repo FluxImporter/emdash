@@ -69,6 +69,20 @@ function editedBase(template = BASE_TEMPLATE): WizardState {
 	]);
 }
 
+/** A saved template loaded unedited, on the Options step. */
+function savedOnOptions(template: ReturnType<typeof templateSchema.parse>): WizardState {
+	return run(initialState, [
+		{
+			type: "sourceReady",
+			source: { kind: "upload", uploadId: UPLOAD_ID, label: "feed.csv" },
+			sourceBlock: { format: "csv" },
+			columns: COLUMNS,
+		},
+		{ type: "templateLoaded", base: { id: "T1", revision: 1, name: "Feed", template } },
+		{ type: "stepChanged", step: "options" },
+	]);
+}
+
 function summary(over: Partial<TemplateSummary>): TemplateSummary {
 	const row: TemplateSummary = {
 		id: "T9",
@@ -199,6 +213,34 @@ describe("the Options step", () => {
 		expect(owner).toHaveAccessibleDescription(described("The saved template sets no owner"));
 		expect(screen.queryByText(/has the same owner/)).not.toBeInTheDocument();
 		expect(next()).toBeEnabled();
+	});
+
+	it("returns a template without an owner to none when the owner field is cleared", async () => {
+		const state = run(editedBase(), [{ type: "rowCleared", row: "field:excerpt" }]);
+		const { user, seen } = renderOptions(state);
+		const owner = await openAdvanced(user);
+		await user.type(owner, "x");
+		expect(seen.state.options.owner).toBe("x");
+		expect(isEdited(seen.state)).toBe(true);
+		await user.clear(owner);
+		expect(seen.state.options.owner).toBeNull();
+		expect(isEdited(seen.state)).toBe(false);
+		expect(owner).toHaveValue("");
+		expect(owner).toHaveAccessibleDescription(described("The saved template sets no owner"));
+		expect(next()).toBeEnabled();
+		expect(reachable(seen.state, "preview")).toBe(true);
+	});
+
+	it("refuses an empty owner on a template that sets one", async () => {
+		const owned = templateSchema.parse({ ...BASE_TEMPLATE, rules: { owner: "feed" } });
+		const { user, seen } = renderOptions(editedBase(owned));
+		const owner = await openAdvanced(user);
+		expect(owner).toHaveValue("feed");
+		await user.clear(owner);
+		expect(owner).toHaveValue("");
+		expect(owner).toHaveAccessibleDescription(described("Use 1 to 100 letters, digits"));
+		expect(seen.state.options.owner).toBe("feed");
+		expect(next()).toBeDisabled();
 	});
 
 	it("shows the derived owner an edited template without one runs with", async () => {
@@ -409,11 +451,19 @@ describe("the Options step", () => {
 		await user.click(screen.getByRole("radio", { name: "A date from the feed" }));
 		await user.click(screen.getByRole("combobox", { name: "Source key" }));
 		await user.click(await screen.findByRole("option", { name: "date" }));
-		const tz = screen.getByRole("textbox", { name: "Timezone" });
+		let tz = screen.getByRole("textbox", { name: "Timezone" });
 		await user.type(tz, "Mars/Olympus");
 		expect(tz).toHaveAccessibleDescription(described("Use an IANA timezone"));
 		expect(next()).toBeDisabled();
 		expect(reason()).toBe("Use an IANA timezone such as Europe/Paris, or site");
+		// A timezone left behind by another choice no longer counts.
+		await user.click(screen.getByRole("radio", { name: "Publish" }));
+		expect(next()).toBeEnabled();
+		// Back on the feed date, the typed timezone shows and counts again.
+		await user.click(screen.getByRole("radio", { name: "Schedule" }));
+		expect(next()).toBeDisabled();
+		tz = screen.getByRole("textbox", { name: "Timezone" });
+		expect(tz).toHaveValue("Mars/Olympus");
 		await user.clear(tz);
 		await user.type(tz, "Europe/Paris");
 		expect(next()).toBeEnabled();
@@ -421,6 +471,53 @@ describe("the Options step", () => {
 		await user.clear(tz);
 		await user.type(tz, "site");
 		expect(next()).toBeEnabled();
+	});
+
+	it("shows a saved one date with seconds, and leaves it as saved", () => {
+		const at = "2026-12-01T09:30:00";
+		const template = templateSchema.parse({
+			...BASE_TEMPLATE,
+			publishAt: { expr: JSON.stringify(at), tz: "site" },
+		});
+		const { seen } = renderOptions(savedOnOptions(template));
+		expect(screen.getByRole("radio", { name: "The same date for every record" })).toBeChecked();
+		expect(screen.getByLabelText("Time")).toHaveValue("09:30");
+		const picked = screen
+			.getAllByRole("gridcell")
+			.filter((c) => c.getAttribute("aria-selected") === "true");
+		expect(picked.map((c) => c.textContent)).toEqual(["1"]);
+		expect(screen.getByRole("grid")).toHaveAccessibleName(/December 2026/);
+		expect(next()).toBeEnabled();
+		expect(seen.state.options.schedule).toEqual({ kind: "fixed", at });
+		expect(isEdited(seen.state)).toBe(false);
+		expect(reachable(seen.state, "preview")).toBe(true);
+	});
+
+	it("shows a saved one date without a time at midnight", () => {
+		const template = templateSchema.parse({
+			...BASE_TEMPLATE,
+			publishAt: { expr: JSON.stringify("2026-12-01"), tz: "site" },
+		});
+		const { seen } = renderOptions(savedOnOptions(template));
+		expect(screen.getByLabelText("Time")).toHaveValue("00:00");
+		expect(next()).toBeEnabled();
+		expect(seen.state.options.schedule).toEqual({ kind: "fixed", at: "2026-12-01" });
+	});
+
+	it("accepts a saved feed timezone the browser does not know, and checks only typed ones", async () => {
+		const template = templateSchema.parse({
+			...BASE_TEMPLATE,
+			publishAt: { from: "date", tz: "UTC+2" },
+		});
+		const { user, seen } = renderOptions(savedOnOptions(template));
+		const tz = screen.getByRole("textbox", { name: "Timezone" });
+		expect(tz).toHaveValue("UTC+2");
+		expect(tz).not.toHaveAccessibleDescription(described("Use an IANA timezone"));
+		expect(next()).toBeEnabled();
+		expect(reachable(seen.state, "preview")).toBe(true);
+		await user.type(tz, "x");
+		expect(tz).toHaveAccessibleDescription(described("Use an IANA timezone"));
+		expect(next()).toBeDisabled();
 	});
 
 	it("keeps a saved template's own publish date as it is", async () => {

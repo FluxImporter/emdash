@@ -687,23 +687,6 @@ export function mapBlockers(state: WizardState, fields: readonly SchemaField[]):
 
 // --- Options' blockers ---
 
-/** A fixed publish date: a day and a time, as the Options step writes it (Ruling 16). */
-const FIXED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
-
-/**
- * Whether the engine reads `tz` as a timezone: `site`, or a zone the browser's `Intl` knows (the
- * engine's Luxon zones are `Intl`'s).
- */
-export function isTimezone(tz: string): boolean {
-	if (tz === SITE_TIMEZONE) return true;
-	try {
-		new Intl.DateTimeFormat("en-US", { timeZone: tz });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 /**
  * What `templates/create` refuses in a name (`templateNameProblem`): empty, over
  * `TEMPLATE_NAME_MAX`, a space at either end, or a control or format character. Whether the name
@@ -728,25 +711,21 @@ export function saveOffered(state: WizardState): boolean {
 
 /**
  * What Options' choices leave unfinished, checked without the saved templates (review ruling):
- * Schedule without a date (one date without its day and time, a feed date without its key, or a
- * timezone `Intl` does not know); more update fields than `MAX_UPDATE_FIELDS`; and, while Options
- * offers them, a new template's name `templates/create` would refuse, or changes to save to the
- * template that are not saved yet (`templateSaved` clears that choice). Preview and Run stay
- * closed while any holds, so the step bar cannot skip Options' Next.
+ * Schedule with no date chosen (neither one date nor a feed key); more update fields than
+ * `MAX_UPDATE_FIELDS`; and, while Options offers them, a new template's name `templates/create`
+ * would refuse, or changes to save to the template that are not saved yet (`templateSaved` clears
+ * that choice). Preview and Run stay closed while any holds, so the step bar cannot skip Options'
+ * Next. Nothing a saved template the engine accepted can hold is refused here: the engine reads
+ * dates and timezones with Luxon, which the browser cannot match, so the Options step checks only
+ * a timezone the user types.
  */
 export function optionsBlockers(state: WizardState): Blocker[] {
 	const { options, base } = state;
 	const blockers: Blocker[] = [];
 	if (options.status === "schedule") {
 		const s = options.schedule;
-		if (
-			s === null ||
-			(s.kind === "fixed" && !FIXED_AT.test(s.at)) ||
-			(s.kind === "feed" && s.from === "")
-		) {
+		if (s === null || (s.kind === "feed" && s.from === "")) {
 			blockers.push({ row: null, msg: OPTIONS.scheduleUnset });
-		} else if (s.kind === "feed" && s.tz !== undefined && !isTimezone(s.tz)) {
-			blockers.push({ row: null, msg: OPTIONS.feedTzInvalid });
 		}
 	}
 	if (options.mode !== "create") {

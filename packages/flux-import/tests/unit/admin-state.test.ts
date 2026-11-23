@@ -1131,12 +1131,17 @@ describe("optionsBlockers (the step bar can skip Options' Next)", () => {
 		// A name no longer mapped does not count toward the cap.
 		const stale = opt({ updateFields: ["gone", ...many.slice(0, 200)] }, wide);
 		expect(optionsBlockers(stale)).toEqual([]);
-		for (const tz of ["site", "UTC", "Europe/Paris"]) {
+		// The engine checks a timezone with Luxon, which takes zones `Intl` refuses: the step checks
+		// only what is typed there.
+		for (const tz of ["site", "UTC", "Europe/Paris", "UTC+2", "Mars/Olympus"]) {
 			const s = opt({ status: "schedule", schedule: { kind: "feed", from: "date", tz } });
 			expect(optionsBlockers(s)).toEqual([]);
 		}
-		const fixed = opt({ status: "schedule", schedule: { kind: "fixed", at: "2026-12-01T09:30" } });
-		expect(optionsBlockers(fixed)).toEqual([]);
+		// Any chosen date: the step writes one form, a saved template may hold another.
+		for (const at of ["2026-12-01T09:30", "2026-12-01T09:30:00", "2026-12-01"]) {
+			const fixed = opt({ status: "schedule", schedule: { kind: "fixed", at } });
+			expect(optionsBlockers(fixed)).toEqual([]);
+		}
 		// A schedule kept for a later switch back does not block Publish.
 		expect(optionsBlockers(opt({ schedule: { kind: "feed", from: "" } }))).toEqual([]);
 	});
@@ -1144,24 +1149,9 @@ describe("optionsBlockers (the step bar can skip Options' Next)", () => {
 	it.each([
 		["Schedule with no date", { status: "schedule" }, OPTIONS.scheduleUnset],
 		[
-			"one date with none picked",
-			{ status: "schedule", schedule: { kind: "fixed", at: "" } },
-			OPTIONS.scheduleUnset,
-		],
-		[
-			"one date without its time",
-			{ status: "schedule", schedule: { kind: "fixed", at: "2026-12-01" } },
-			OPTIONS.scheduleUnset,
-		],
-		[
 			"a feed date with no key",
 			{ status: "schedule", schedule: { kind: "feed", from: "" } },
 			OPTIONS.scheduleUnset,
-		],
-		[
-			"a feed date in an unknown timezone",
-			{ status: "schedule", schedule: { kind: "feed", from: "date", tz: "Mars/Olympus" } },
-			OPTIONS.feedTzInvalid,
 		],
 		["a new template with no name", { save: { kind: "new", name: "" } }, OPTIONS.nameNeeded],
 		[
@@ -1209,6 +1199,17 @@ describe("optionsBlockers (the step bar can skip Options' Next)", () => {
 		});
 		expect(optionsBlockers(saved)).toEqual([]);
 		expect(reachable(saved, "preview")).toBe(true);
+	});
+
+	it.each([
+		["one date, with seconds", { expr: JSON.stringify("2026-12-01T09:30:00"), tz: "site" }],
+		["a feed date in a Luxon zone", { from: "date", format: "yyyy-MM-dd", tz: "UTC+2" }],
+	])("lets a saved template with %s reach Preview unedited", (_, publishAt) => {
+		const template = templateSchema.parse({ ...BASE_TEMPLATE, publishAt });
+		const s = loaded(template);
+		expect(isEdited(s)).toBe(false);
+		expect(optionsBlockers(s)).toEqual([]);
+		expect(reachable(s, "preview")).toBe(true);
 	});
 
 	it("ignores a save choice an unedited template no longer offers", () => {
