@@ -6,7 +6,14 @@ import {
 	SOURCE_ID_FIELD,
 	templateSchema,
 } from "../engine/template.js";
+import { FLUX_IMPORT_ID } from "../meta.js";
 import { emdashErrorCode } from "./errors.js";
+
+/**
+ * The field widget `flux_source_id` is shown with: `"<pluginId>:<name>"`, the admin module's
+ * `fields["source-id"]` (`SOURCE_ID_WIDGET` in `src/admin/fields/SourceIdField.tsx`).
+ */
+export const SOURCE_ID_FIELD_WIDGET = `${FLUX_IMPORT_ID}:source-id`;
 
 /**
  * The part of EmDash's `SchemaRegistry` this plugin uses (`emdash` src/schema/registry.ts:380,
@@ -17,15 +24,22 @@ export interface SchemaRegistryLike {
 	getField(
 		collectionSlug: string,
 		fieldSlug: string,
-	): Promise<{ type: string; indexed: boolean } | null>;
+	): Promise<{ type: string; indexed: boolean; widget?: string | null } | null>;
 	createField(
 		collectionSlug: string,
-		input: { slug: string; label: string; type: "string"; indexed: boolean; translatable: boolean },
+		input: {
+			slug: string;
+			label: string;
+			type: "string";
+			indexed: boolean;
+			translatable: boolean;
+			widget?: string;
+		},
 	): Promise<unknown>;
 	updateField(
 		collectionSlug: string,
 		fieldSlug: string,
-		input: { indexed: boolean },
+		input: { indexed?: boolean; widget?: string },
 	): Promise<unknown>;
 	getCollectionWithFields(slug: string): Promise<{
 		label?: string | undefined;
@@ -59,8 +73,9 @@ export interface RegistryField {
 }
 
 /**
- * Adds `flux_source_id` (`string`, indexed, not translatable) to the collection, or makes an
- * existing one indexed. Idempotent and safe against a concurrent creator. Throws
+ * Adds `flux_source_id` (`string`, indexed, not translatable, shown by the plugin's field widget)
+ * to the collection, or makes an existing one indexed and gives it the widget when it has none; a
+ * widget someone else set is kept. Idempotent and safe against a concurrent creator. Throws
  * `ContentWriteError("collection_missing")` when the collection does not exist.
  * `SchemaError` is matched by its `code`: the plugin may load a second copy of `emdash`.
  */
@@ -77,6 +92,7 @@ export async function ensureSourceIdField(
 				type: "string",
 				indexed: true,
 				translatable: false,
+				widget: SOURCE_ID_FIELD_WIDGET,
 			});
 			return;
 		} catch (e) {
@@ -98,7 +114,12 @@ export async function ensureSourceIdField(
 			`Field "${SOURCE_ID_FIELD}" in "${collection}" has type "${field.type}"; it must be "string" or "text"`,
 		);
 	}
-	if (!field.indexed) await registry.updateField(collection, SOURCE_ID_FIELD, { indexed: true });
+	const update = {
+		...(field.indexed ? {} : { indexed: true }),
+		...(field.widget == null ? { widget: SOURCE_ID_FIELD_WIDGET } : {}),
+	};
+	if (Object.keys(update).length > 0)
+		await registry.updateField(collection, SOURCE_ID_FIELD, update);
 }
 
 /**

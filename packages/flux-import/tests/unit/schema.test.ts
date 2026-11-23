@@ -6,7 +6,13 @@ import {
 } from "../../src/emdash/schema.js";
 import { ContentWriteError } from "../../src/engine/ports.js";
 
-type Field = { slug: string; type: string; indexed: boolean; translatable: boolean };
+type Field = {
+	slug: string;
+	type: string;
+	indexed: boolean;
+	translatable: boolean;
+	widget?: string | null;
+};
 
 class FakeRegistry implements SchemaRegistryLike {
 	readonly collections = new Map<string, Field[]>([
@@ -19,7 +25,7 @@ class FakeRegistry implements SchemaRegistryLike {
 	async getField(collection: string, slug: string) {
 		return this.collections.get(collection)?.find((f) => f.slug === slug) ?? null;
 	}
-	async createField(collection: string, input: Field & { label: string }) {
+	async createField(collection: string, input: Field & { label: string; widget?: string }) {
 		this.calls.push(`create:${collection}`);
 		const fields = this.collections.get(collection);
 		if (!fields)
@@ -36,19 +42,36 @@ class FakeRegistry implements SchemaRegistryLike {
 			type: input.type,
 			indexed: input.indexed,
 			translatable: input.translatable,
+			...(input.widget === undefined ? {} : { widget: input.widget }),
 		});
 		return {};
 	}
-	async updateField(collection: string, slug: string, input: { indexed: boolean }) {
-		this.calls.push(`update:${collection}:${slug}:${input.indexed}`);
+	async updateField(
+		collection: string,
+		slug: string,
+		input: { indexed?: boolean; widget?: string },
+	) {
+		this.calls.push(`update:${collection}:${slug}:${JSON.stringify(input)}`);
 		const field = this.collections.get(collection)!.find((f) => f.slug === slug)!;
-		field.indexed = input.indexed;
+		if (input.indexed !== undefined) field.indexed = input.indexed;
+		if (input.widget !== undefined) field.widget = input.widget;
 		return {};
 	}
 	async getCollectionWithFields(slug: string) {
 		const fields = this.collections.get(slug);
 		return fields ? { fields } : null;
 	}
+}
+
+const WIDGET = "flux-import:source-id";
+
+/** A registry whose products already hold `flux_source_id` as given. */
+function withSourceId(field: Omit<Field, "slug" | "type" | "translatable">) {
+	const registry = new FakeRegistry();
+	registry.collections
+		.get("products")!
+		.push({ slug: "flux_source_id", type: "string", translatable: false, ...field });
+	return registry;
 }
 
 describe("ensureSourceIdField", () => {
@@ -62,22 +85,52 @@ describe("ensureSourceIdField", () => {
 			type: "string",
 			indexed: true,
 			translatable: false,
+			widget: WIDGET,
 		});
 	});
 
-	it("indexes an existing unindexed field", async () => {
+	it("creates flux_source_id with the flux-import:source-id widget", async () => {
 		const registry = new FakeRegistry();
-		registry.collections
-			.get("products")!
-			.push({ slug: "flux_source_id", type: "string", indexed: false, translatable: true });
 		await ensureSourceIdField(registry, "products");
-		expect(registry.calls).toEqual(["update:products:flux_source_id:true"]);
+		expect((await registry.getField("products", "flux_source_id"))?.widget).toBe(WIDGET);
 	});
 
-	it("accepts a field another request created first", async () => {
+	it("indexes an existing unindexed field", async () => {
+		const registry = withSourceId({ indexed: false, widget: WIDGET });
+		await ensureSourceIdField(registry, "products");
+		expect(registry.calls).toEqual(['update:products:flux_source_id:{"indexed":true}']);
+	});
+
+	it("sets the widget on an existing field that has none, with indexed in the same update", async () => {
+		const unindexed = withSourceId({ indexed: false });
+		await ensureSourceIdField(unindexed, "products");
+		expect(unindexed.calls).toEqual([
+			`update:products:flux_source_id:{"indexed":true,"widget":"${WIDGET}"}`,
+		]);
+		const indexed = withSourceId({ indexed: true, widget: null });
+		await ensureSourceIdField(indexed, "products");
+		await ensureSourceIdField(indexed, "products");
+		expect(indexed.calls).toEqual([`update:products:flux_source_id:{"widget":"${WIDGET}"}`]);
+	});
+
+	it("leaves a widget someone else set", async () => {
+		const indexed = withSourceId({ indexed: true, widget: "other:thing" });
+		await ensureSourceIdField(indexed, "products");
+		expect(indexed.calls).toEqual([]);
+		const unindexed = withSourceId({ indexed: false, widget: "other:thing" });
+		await ensureSourceIdField(unindexed, "products");
+		expect(unindexed.calls).toEqual(['update:products:flux_source_id:{"indexed":true}']);
+		expect((await unindexed.getField("products", "flux_source_id"))?.widget).toBe("other:thing");
+	});
+
+	it("accepts a field another request created first, and gives it the widget", async () => {
 		const registry = new FakeRegistry();
 		registry.raceOnCreate = true;
 		await expect(ensureSourceIdField(registry, "products")).resolves.toBeUndefined();
+		expect(registry.calls).toEqual([
+			"create:products",
+			`update:products:flux_source_id:{"widget":"${WIDGET}"}`,
+		]);
 	});
 
 	it("reports a missing collection and a field of the wrong type", async () => {
