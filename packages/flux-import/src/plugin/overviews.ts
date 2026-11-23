@@ -105,11 +105,22 @@ const runOf = (r: RunEntry): RunEntry => ({
 	jobId: r.jobId,
 	at: r.at,
 	outcome: r.outcome,
-	counters: { ...r.counters },
+	counters: {
+		created: r.counters.created,
+		updated: r.counters.updated,
+		unchanged: r.counters.unchanged,
+		failed: r.counters.failed,
+		conflict: r.counters.conflict,
+		locked: r.counters.locked,
+		removed: r.counters.removed,
+	},
 	...(r.rolledBack === undefined
 		? {}
 		: { rolledBack: { by: r.rolledBack.by, at: r.rolledBack.at } }),
 });
+
+const missingOf = (m: ScheduleMissing): ScheduleMissing =>
+	typeof m === "object" ? { maxPercent: m.maxPercent } : m;
 
 /** No `armedBy`, `createdBy`, `updatedBy`, `sourcePin`, `current.claimedAt` or `due.force`. */
 export function scheduleSummary(view: ScheduleView): ScheduleSummary {
@@ -125,7 +136,7 @@ export function scheduleSummary(view: ScheduleView): ScheduleSummary {
 		publish: view.publish,
 		batchSize: view.batchSize,
 		budgetMs: view.budgetMs,
-		...(view.missing === undefined ? {} : { missing: view.missing }),
+		...(view.missing === undefined ? {} : { missing: missingOf(view.missing) }),
 		...(pause === undefined
 			? {}
 			: {

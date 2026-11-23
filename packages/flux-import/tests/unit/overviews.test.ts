@@ -90,6 +90,14 @@ describe("sources/overview (spec Ruling 38)", () => {
 		expect(sourceSummary(sourceRow("S3"))).not.toHaveProperty("lastFetch");
 	});
 
+	it("refuses a cursor it did not issue with INVALID_CURSOR", async () => {
+		const sources = new MemoryKv<SourceRow>(STORAGE.sources.indexes);
+		const error = await sourcesOverview({ sources }, "bogus").catch((e: unknown) =>
+			toRouteError(e),
+		);
+		expect(error).toMatchObject({ code: "INVALID_CURSOR", status: 400 });
+	});
+
 	it("pages 50 sources newest first, as sources/list", async () => {
 		const sources = new MemoryKv<SourceRow>(STORAGE.sources.indexes);
 		for (let i = 0; i < 51; i++) {
@@ -167,6 +175,24 @@ describe("schedules/overview (spec Rulings 39, 65)", () => {
 			"force",
 		]) {
 			expect(seen, marker).not.toContain(marker);
+		}
+	});
+
+	it("copies missing and the run counters field by field (spec Ruling 39)", () => {
+		const extra = { ...run("J0"), counters: { ...run("J0").counters, leak: "COUNTERMARK" } };
+		const summary = scheduleSummary({
+			...row("SC3", {
+				missing: { maxPercent: 10, leak: "MISSINGMARK" } as never,
+				runs: [extra as RunEntry],
+			}),
+			nextRunAt: null,
+		});
+		expect(summary.missing).toEqual({ maxPercent: 10 });
+		expect(summary.runs).toEqual([run("J0")]);
+		for (const missing of [false, "template"] as const) {
+			expect(scheduleSummary({ ...row("SC4", { missing }), nextRunAt: null }).missing).toBe(
+				missing,
+			);
 		}
 	});
 

@@ -229,6 +229,13 @@ describe("M6c MCP tools on sites/dev", () => {
 			isError: true,
 			code: "INSUFFICIENT_PERMISSIONS",
 		});
+		// M6d's read tools need import:execute too (spec "Security").
+		for (const name of ["list_sources", "list_schedules"]) {
+			expect(await tool(editor, name, {}), name).toMatchObject({
+				isError: true,
+				code: "INSUFFICIENT_PERMISSIONS",
+			});
+		}
 
 		const templateId = await saveTemplate("Refusals", template("it_mcp_no"));
 		const audits = toolAudits().length;
