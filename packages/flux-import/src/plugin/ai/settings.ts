@@ -65,7 +65,7 @@ export function providerBaseUrl(text: string, allowPrivate: boolean): string | n
 	} catch {
 		return null;
 	}
-	return url.href.endsWith("/") ? url.href.slice(0, -1) : url.href;
+	return url.href.replace(/\/+$/, "");
 }
 
 /** Spec F6: EmDash's settings decryption errors, which make a stored key unreadable. */
@@ -76,7 +76,10 @@ function isEncryptionError(e: unknown): boolean {
 	);
 }
 
-/** Spec "Reading the settings", in its order; settings after the provider are read only when set. */
+/**
+ * Spec "Reading the settings": settings are read in order, stopping at the first reason the AI
+ * is unavailable.
+ */
 export async function readAiSettings(
 	settings: SettingsReader,
 	allowPrivate: boolean,

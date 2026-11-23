@@ -23,7 +23,8 @@ const isUsage = (v: unknown): v is AiUsage =>
 	typeof v === "object" &&
 	v !== null &&
 	typeof (v as AiUsage).hour === "string" &&
-	Number.isInteger((v as AiUsage).count);
+	Number.isInteger((v as AiUsage).count) &&
+	(v as AiUsage).count >= 0;
 
 /** True when a call may be made, and it is counted; at most 10 KV queries. */
 export async function takeAiCall(
@@ -33,6 +34,8 @@ export async function takeAiCall(
 	for (let attempt = 0; attempt < RATE_ATTEMPTS; attempt++) {
 		const read = await kv.getVersioned<unknown>(AI_USAGE_KEY);
 		// Ruling 66: the hour is read in each attempt, so a rollover between attempts counts afresh.
+		// A stored hour later than now also reads as fresh: a clock that steps back must never
+		// wedge the limit.
 		const hour = utcHour(now());
 		const usage =
 			read !== null && isUsage(read.value) && read.value.hour === hour ? read.value.count : 0;

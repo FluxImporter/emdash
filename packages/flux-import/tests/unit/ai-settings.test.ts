@@ -66,6 +66,15 @@ describe('readAiSettings (spec "Reading the settings", Rulings 7, 8, 12, 13)', (
 		expect(await readAiSettings(s, false)).toMatchObject({ baseUrl: ANTHROPIC_BASE_URL });
 	});
 
+	it("refuses an invalid aiBaseUrl for Anthropic under allowPrivateNetwork, never the real API", async () => {
+		const s = settings({ aiProvider: "anthropic", aiApiKey: "k", aiBaseUrl: "ftp://127.0.0.1/" });
+		expect(await readAiSettings(s, true)).toEqual({
+			available: false,
+			reason: "bad_base_url",
+			provider: "anthropic",
+		});
+	});
+
 	it.each([
 		["a missing key", { aiApiKey: undefined }, "no_key"],
 		["an empty key (Fact D6)", { aiApiKey: "" }, "no_key"],
@@ -76,7 +85,17 @@ describe('readAiSettings (spec "Reading the settings", Rulings 7, 8, 12, 13)', (
 			"key_unavailable",
 		],
 		[
-			"a rotated encryption key",
+			"an encryption key unknown to the stored envelope",
+			{ aiApiKey: encryptionError("PLUGIN_SETTING_ENCRYPTION_KEY_UNKNOWN") },
+			"key_unavailable",
+		],
+		[
+			"a stored key that fails to decrypt",
+			{ aiApiKey: encryptionError("PLUGIN_SETTING_DECRYPTION_FAILED") },
+			"key_unavailable",
+		],
+		[
+			"an invalid encryption key",
 			{ aiApiKey: encryptionError("INVALID_ENCRYPTION_KEY") },
 			"key_unavailable",
 		],
@@ -132,6 +151,7 @@ describe("providerBaseUrl (spec Ruling 8)", () => {
 	it.each([
 		["https://llm.example/v1", "https://llm.example/v1"],
 		["https://llm.example/v1/", "https://llm.example/v1"],
+		["https://llm.example/v1//", "https://llm.example/v1"],
 		["https://llm.example", "https://llm.example"],
 		["http://llm.example/v1", null],
 		["https://llm.example/v1?key=x", null],
@@ -229,5 +249,15 @@ describe('takeAiCall (spec "Rate limit and timeouts", Rulings 34, 66)', () => {
 		expect(await takeAiCall(k, at("2026-11-19T23:30:00-02:00"))).toBe(true);
 		expect(utcHour(Date.parse("2026-11-19T23:30:00-02:00"))).toBe("2026-11-20T01");
 		expect(AI_USAGE_KEY.startsWith("settings:")).toBe(false);
+	});
+
+	it("reads a negative count as a fresh hour", async () => {
+		const k = kv();
+		k.store.put(AI_USAGE_KEY, { hour: "2026-11-19T10", count: -5 });
+		expect(await takeAiCall(k, at("2026-11-19T10:15:00Z"))).toBe(true);
+		expect((await k.store.getVersioned(AI_USAGE_KEY))?.value).toEqual({
+			hour: "2026-11-19T10",
+			count: 1,
+		});
 	});
 });
