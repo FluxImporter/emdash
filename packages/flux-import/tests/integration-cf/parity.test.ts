@@ -50,7 +50,7 @@ import {
 } from "../fixtures/translations.js";
 import { productsXlsx, xlsxTemplate } from "../fixtures/xlsx.js";
 import { Client, type Product } from "../integration/client.js";
-import { FakeAiServer } from "../integration/fake-ai.js";
+import { type AiRequest, FakeAiServer } from "../integration/fake-ai.js";
 import { FeedServer } from "../integration/feed-server.js";
 import { productsCsv, template } from "../integration/fixtures.js";
 import {
@@ -120,6 +120,15 @@ async function importRules(collection: string, csv: string, extra: object) {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * What a provider request carries besides `authorization`, the key's one place (plan Ruling 2),
+ * and `host`, the fake's own address: every other header, and the body (as Task 10's).
+ */
+function outsideAuthorization(request: AiRequest | undefined): string {
+	const { authorization: _authorization, host: _host, ...headers } = request?.headers ?? {};
+	return JSON.stringify({ headers, body: request?.body });
+}
 
 describe("workerd parity (D1, R2)", () => {
 	it("uploads to R2 and imports 10 rows through plugin routes that reach the runtime", async () => {
@@ -1112,8 +1121,8 @@ describe("workerd parity (D1, R2)", () => {
 		}
 	});
 
-	// A body that stalls waits 20.6 s; without the buffered read it would wait until the 30-minute
-	// suite timeout, so this test has its own.
+	// A body that stalls waits 20.6 s; without the buffered read it would wait for the per-test
+	// testTimeout of 1,800 s (vitest.cf.config.ts), so this test has its own.
 	it("suggests M6d mappings on workerd by name and through the pinned SDK, and lists the M6d tools", {
 		timeout: 180_000,
 	}, async () => {
@@ -1122,6 +1131,7 @@ describe("workerd parity (D1, R2)", () => {
 		const suggest = (input: Record<string, unknown>) =>
 			client.plugin<SuggestReply>("templates/suggest", input);
 		const codes = (r: SuggestReply) => r.warnings.map((w) => w.code);
+		const KEY = "sk-test-cf";
 		const text = { collection: "cf_m6d", locale: "en", text: productsCsv(20) };
 		const fake = new FakeAiServer();
 		await fake.start();
@@ -1145,29 +1155,49 @@ describe("workerd parity (D1, R2)", () => {
 				counters: { failed: 0 },
 			});
 
-			// Step 2: the SDK, evaluated on workerd, through guardedRequest to the fake (V7).
+			// Binding: no request may reach a real provider. Anthropic's aiBaseUrl is read only under
+			// allowPrivateNetwork (Ruling 7), the same flag that lets an OpenAI-compatible base URL be
+			// http://127.0.0.1 (Ruling 8). So an OpenAI-compatible call must reach the fake before
+			// Anthropic is ever configured.
 			await settings({
-				aiProvider: "anthropic",
-				aiApiKey: "sk-test-cf",
-				aiModel: "",
-				aiBaseUrl: fake.baseUrl,
+				aiProvider: "openai-compatible",
+				aiApiKey: KEY,
+				aiModel: "local-model",
+				aiBaseUrl: `${fake.baseUrl}/v1`,
 			});
+			let before = fake.requests.length;
+			const compatible = await suggest(text);
+			if (fake.requests.length !== before + 1 || compatible.method !== "ai") {
+				throw new Error(
+					"Safety check failed, so no Anthropic call is made: an OpenAI-compatible call did not reach the fake",
+				);
+			}
+			expect(compatible).toMatchObject({ ai: { provider: "openai-compatible" } });
+			expect(outsideAuthorization(fake.requests.at(-1))).not.toContain(KEY);
+
+			// Step 2: the SDK, evaluated on workerd, through guardedRequest to the fake (V7).
+			await settings({ aiProvider: "anthropic", aiModel: "", aiBaseUrl: fake.baseUrl });
+			before = fake.requests.length;
 			const ai = await suggest(text);
+			expect(fake.requests.length).toBe(before + 1);
 			expect(ai).toMatchObject({
 				method: "ai",
 				ai: { provider: "anthropic", model: "claude-opus-5-5" },
 			});
 			const request = fake.requests.at(-1);
-			// Fact D1 / plan Ruling 2: a bearer token, never x-api-key.
-			expect(request?.headers.authorization).toBe("Bearer sk-test-cf");
+			expect(request?.path).toBe("/v1/messages");
+			// Fact D1 / plan Ruling 2: a bearer token, never x-api-key, and nowhere else.
+			expect(request?.headers.authorization).toBe(`Bearer ${KEY}`);
 			expect(request?.headers["x-api-key"]).toBeUndefined();
+			expect(outsideAuthorization(request)).not.toContain(KEY);
 			expect(request?.headers["anthropic-version"]).toBe("2026-10-21");
 			expect(request?.headers["user-agent"]).toBe("Anthropic/JS 1.5.0");
 			expect(request?.body).toMatchObject({ max_tokens: 16_000, fallbacks: "default" });
 			// guardedRequest's redirect: "manual" on workerd: one request, the 307 not followed.
 			fake.scenario = "redirect";
-			const before = fake.requests.length;
-			expect(codes(await suggest(text))).toContain("ai_provider_error");
+			before = fake.requests.length;
+			const redirected = await suggest(text);
+			expect(codes(redirected)).toContain("ai_provider_error");
 			expect(fake.requests.length).toBe(before + 1);
 			// Review Focus 1 on workerd: a body that stalls after its headers times out. The SDK's
 			// APIConnectionTimeoutError has no cause, so only its class can name it (Fact D5).
@@ -1175,15 +1205,10 @@ describe("workerd parity (D1, R2)", () => {
 			const stalled = await suggest(text);
 			expect(codes(stalled)).toContain("ai_timeout");
 			fake.scenario = "valid";
-			await settings({
-				aiProvider: "openai-compatible",
-				aiModel: "local-model",
-				aiBaseUrl: `${fake.baseUrl}/v1`,
-			});
-			expect(await suggest(text)).toMatchObject({
-				method: "ai",
-				ai: { provider: "openai-compatible" },
-			});
+			// The key never reaches a reply.
+			for (const reply of [compatible, ai, redirected, stalled]) {
+				expect(JSON.stringify(reply)).not.toContain(KEY);
+			}
 
 			// Step 8: the two read tools answer on workerd.
 			await enableTools(client);
