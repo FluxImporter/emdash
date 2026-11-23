@@ -49,10 +49,11 @@ function hrefOf(text: string): string | null {
 function TakenOffer({
 	name,
 	href,
+	credential,
 	busy,
 	run,
 	pick,
-}: TabProps & { name: string; href: string | null }) {
+}: TabProps & { name: string; href: string | null; credential: string | null }) {
 	const t = useT();
 	const sources = useAllSources();
 	if (sources.isPending) return <Loader aria-label={t(M.loadingSources)} />;
@@ -64,10 +65,21 @@ function TakenOffer({
 		const address = hostAndPath(row.url);
 		return <Banner variant="alert" description={t(M.nameTakenOther, { name, address })} />;
 	}
+	// Its credential's name only, when it is not the one chosen here (never a value).
+	const saved = row.credential ?? null;
+	let uses: string | null = null;
+	if (saved !== credential) {
+		uses = saved === null ? t(M.takenNoCredential) : t(M.takenCredential, { credential: saved });
+	}
 	return (
 		<Banner
 			variant="alert"
-			description={t(M.nameTaken, { name })}
+			description={
+				<div>
+					<p>{t(M.nameTaken, { name })}</p>
+					{uses === null ? null : <p>{uses}</p>}
+				</div>
+			}
 			action={
 				<Button
 					variant="secondary"
@@ -99,7 +111,11 @@ export function UrlTab(props: TabProps) {
 	const [name, setName] = useState("");
 	const [named, setNamed] = useState(false);
 	const [credential, setCredential] = useState<string | null>(null);
-	const [taken, setTaken] = useState<{ name: string; href: string | null } | null>(null);
+	const [taken, setTaken] = useState<{
+		name: string;
+		href: string | null;
+		credential: string | null;
+	} | null>(null);
 	const ready = url.trim() !== "" && name.trim() !== "";
 
 	const fetchUrl = () =>
@@ -117,7 +133,7 @@ export function UrlTab(props: TabProps) {
 				if (e instanceof ApiError && e.code === "CONFLICT") {
 					// The cached list may predate the source with this name.
 					void queryClient.invalidateQueries({ queryKey: queryKeys.sources });
-					setTaken({ name: input.name, href: hrefOf(input.url) });
+					setTaken({ name: input.name, href: hrefOf(input.url), credential });
 					return;
 				}
 				throw e;
@@ -156,7 +172,10 @@ export function UrlTab(props: TabProps) {
 					label={t(M.credential)}
 					value={credential}
 					loading={credentials.isPending}
-					onValueChange={(v: unknown) => setCredential(typeof v === "string" ? v : null)}
+					onValueChange={(v: unknown) => {
+						setCredential(typeof v === "string" ? v : null);
+						setTaken(null);
+					}}
 					items={[
 						{ value: null, label: t(M.noCredential) },
 						...names.map((n) => ({ value: n, label: n })),

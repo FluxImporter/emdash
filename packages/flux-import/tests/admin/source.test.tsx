@@ -240,10 +240,62 @@ describe("the Source step", () => {
 		);
 		await user.click(screen.getByRole("button", { name: "Fetch" }));
 		expect(await screen.findByText(/already named .* and fetches this address/i)).toBeVisible();
+		// Same credential (none on either side): nothing more to say.
+		expect(screen.queryByText(/fetches with/i)).toBeNull();
 		await user.click(await screen.findByRole("button", { name: "Use the saved source" }));
 		await waitFor(() => expect(readState().keys).toEqual(["sku"]));
 		expect(calls.find((c) => c.route === "sources/fetch")?.body).toEqual({ id: SOURCE_ROW.id });
 		expect(readState().source?.kind).toBe("saved");
+	});
+
+	/** Types the address, picks `chosen` (or none), fetches; returns the offer's text and `user`. */
+	async function clash(saved: { credential?: string }, chosen: string | null) {
+		routes({
+			"credentials/list": () => [
+				{ name: "feed-token", header: "Authorization" },
+				{ name: "other-token", header: "X-Key" },
+			],
+			"sources/create": () => fail("CONFLICT", "A source named … already exists", 409),
+			"sources/list": () => ({ items: [{ ...SOURCE_ROW, ...saved }], hasMore: false }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Address" }),
+			"https://example.com/feeds/products.json",
+		);
+		if (chosen !== null) {
+			await user.click(screen.getByRole("combobox", { name: "Credential" }));
+			await user.click(await screen.findByRole("option", { name: chosen }));
+		}
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		const offer = await screen.findByText(/already named .* and fetches this address/i);
+		expect(screen.getByRole("button", { name: "Use the saved source" })).toBeEnabled();
+		return { text: offer.closest("div")?.textContent ?? "", user };
+	}
+
+	it("says which credential the saved source uses when it differs from the one chosen", async () => {
+		const { text } = await clash({ credential: "other-token" }, "feed-token");
+		expect(text).toContain("It fetches with the credential other-token, not the one chosen here.");
+	});
+
+	it("says the saved source uses no credential when one was chosen", async () => {
+		const { text } = await clash({}, "feed-token");
+		expect(text).toContain("It fetches with no credential, not the one chosen here.");
+	});
+
+	it("says which credential the saved source uses when none was chosen", async () => {
+		const { text, user } = await clash({ credential: "other-token" }, null);
+		expect(text).toContain("It fetches with the credential other-token, not the one chosen here.");
+		// Choosing a credential withdraws the offer, which was made for the form as it was.
+		await user.click(screen.getByRole("combobox", { name: "Credential" }));
+		await user.click(await screen.findByRole("option", { name: "other-token" }));
+		expect(screen.queryByRole("button", { name: "Use the saved source" })).toBeNull();
+	});
+
+	it("adds nothing about credentials when the saved source uses the one chosen", async () => {
+		const { text } = await clash({ credential: "feed-token" }, "feed-token");
+		expect(text).not.toMatch(/fetches with/);
 	});
 
 	it("does not offer a taken name's saved source when it fetches another address", async () => {

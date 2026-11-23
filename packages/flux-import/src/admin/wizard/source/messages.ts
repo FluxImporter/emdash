@@ -28,6 +28,14 @@ export const M = {
 		message:
 			"A saved source is already named {name} and fetches this address. Use it, or choose another name.",
 	},
+	takenCredential: {
+		id: "flux-import.source.taken-credential",
+		message: "It fetches with the credential {credential}, not the one chosen here.",
+	},
+	takenNoCredential: {
+		id: "flux-import.source.taken-no-credential",
+		message: "It fetches with no credential, not the one chosen here.",
+	},
 	nameTakenOther: {
 		id: "flux-import.source.name-taken-other",
 		message:
