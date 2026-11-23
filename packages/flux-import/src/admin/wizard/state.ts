@@ -76,6 +76,8 @@ export interface WizardState {
 		reply?: SuggestReply;
 		error?: unknown;
 		dismissed: boolean;
+		/** The ask in flight, while `loading`: an answer to any other one is dropped. */
+		ask?: number;
 	};
 	newFields: ProposedField[];
 	options: Options;
@@ -97,9 +99,10 @@ export type WizardAction =
 	/** Fills target, rows, meta (origin template), options and the source block; step → preview. */
 	| { type: "templateLoaded"; base: NonNullable<WizardState["base"]> }
 	| { type: "targetChosen"; collection: string; locale: string; translationLocale: string | null }
-	| { type: "suggestionStarted" }
-	| { type: "suggestionFailed"; error: unknown }
-	| { type: "suggestionReceived"; reply: SuggestReply; overwriteUserRows: boolean }
+	/** `ask` names the request, so a late answer to an earlier one is dropped. */
+	| { type: "suggestionStarted"; ask?: number }
+	| { type: "suggestionFailed"; error: unknown; ask?: number }
+	| { type: "suggestionReceived"; reply: SuggestReply; overwriteUserRows: boolean; ask?: number }
 	| { type: "warningsDismissed" }
 	| { type: "rowSet"; row: RowId; mapping: RowMapping }
 	| { type: "rowCleared"; row: RowId }
@@ -320,7 +323,14 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 			return { ...state, target, rows: {}, meta: {}, newFields: [], suggestion: IDLE };
 		}
 		case "suggestionStarted":
-			return { ...state, suggestion: { status: "loading", dismissed: false } };
+			return {
+				...state,
+				suggestion: {
+					status: "loading",
+					dismissed: false,
+					...(action.ask === undefined ? {} : { ask: action.ask }),
+				},
+			};
 		case "suggestionFailed":
 			return { ...state, suggestion: { status: "error", error: action.error, dismissed: false } };
 		case "suggestionReceived":
@@ -389,7 +399,18 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 	}
 }
 
+/**
+ * An answer to an ask the draft no longer waits for: the suggestion was reset (a new source or
+ * collection) or asked again since. Only an answer that names its ask is checked.
+ */
+function staleAnswer(state: WizardState, action: WizardAction): boolean {
+	if (action.type !== "suggestionReceived" && action.type !== "suggestionFailed") return false;
+	if (action.ask === undefined) return false;
+	return state.suggestion.status !== "loading" || state.suggestion.ask !== action.ask;
+}
+
 export function reducer(state: WizardState, action: WizardAction): WizardState {
+	if (staleAnswer(state, action)) return state;
 	const clears = clearsDryRun(state, action);
 	// A target or options change that changes nothing leaves the state as it is (review ruling 3).
 	if (!clears && (action.type === "targetChosen" || action.type === "optionsChanged")) return state;
@@ -651,7 +672,8 @@ export function mappable(field: SchemaField): boolean {
 
 /**
  * What stops Map's Next (preflight F3, F6, F8; Review Focus 5): the key unmapped; a required field
- * with no default unmapped, or one no mapping can write; a field EmDash cannot read; no field
+ * with no default unmapped, or one no mapping can write; a Portable Text mapping without its
+ * source format (Preview would fail with INVALID_TEMPLATE); a field EmDash cannot read; no field
  * mapped, counting proposed fields; a translation without its `translationOf` row. A proposed
  * field never blocks: Next opens the schema diff for it.
  */
@@ -671,6 +693,12 @@ export function mapBlockers(state: WizardState, fields: readonly SchemaField[]):
 		else if (rows[row] === undefined) {
 			blockers.push({ row, msg: M.requiredUnmapped, values: { field: f.label } });
 		}
+	}
+	// The engine's grammar requires a Portable Text mapping's `format` (`template.ts`).
+	for (const [slug, m] of Object.entries(rowsWith(rows, "field:"))) {
+		if (m.type !== "portableText" || m.format !== undefined) continue;
+		const label = fields.find((f) => f.slug === slug)?.label ?? slug;
+		blockers.push({ row: `field:${slug}`, msg: M.formatUnset, values: { field: label } });
 	}
 	const unsupported = fields.filter((f) => f.unsupported);
 	if (unsupported.length > 0) {

@@ -627,6 +627,45 @@ describe("suggestionReceived", () => {
 		}
 	});
 
+	it("drops an answer to an ask the draft no longer waits for", () => {
+		const asking = reducer(target, { type: "suggestionStarted", ask: 1 });
+		expect(asking.suggestion).toEqual({ status: "loading", dismissed: false, ask: 1 });
+		const done = reducer(asking, {
+			type: "suggestionReceived",
+			reply: REPLY,
+			overwriteUserRows: false,
+			ask: 1,
+		});
+		expect(done.suggestion).toEqual({ status: "done", reply: REPLY, dismissed: false });
+		expect(done.rows.key).toEqual({ from: "sku" });
+
+		// Another collection reset the suggestion: its late answer and failure change nothing.
+		const moved = reducer(asking, {
+			type: "targetChosen",
+			collection: "pages",
+			locale: "en",
+			translationLocale: null,
+		});
+		for (const late of [
+			{ type: "suggestionReceived", reply: REPLY, overwriteUserRows: false, ask: 1 },
+			{ type: "suggestionFailed", error: "boom", ask: 1 },
+		] satisfies WizardAction[]) {
+			expect(reducer(moved, late)).toBe(moved);
+		}
+		// A newer ask is in flight: the older answer is dropped, the newer one lands.
+		const again = reducer(moved, { type: "suggestionStarted", ask: 2 });
+		expect(
+			reducer(again, {
+				type: "suggestionReceived",
+				reply: REPLY,
+				overwriteUserRows: false,
+				ask: 1,
+			}),
+		).toBe(again);
+		const failed = reducer(again, { type: "suggestionFailed", error: "boom", ask: 2 });
+		expect(failed.suggestion).toEqual({ status: "error", error: "boom", dismissed: false });
+	});
+
 	it("builds a field's row from its type when the reply has no draft", () => {
 		const s = reducer(target, {
 			type: "suggestionReceived",
@@ -1037,6 +1076,24 @@ describe("mapBlockers and mappable", () => {
 		expect(
 			blockers(reducer(translation, { type: "rowCleared", row: "translationOf" }), fields),
 		).toEqual([["translationOf", M.translationOfUnmapped.id, undefined]]);
+	});
+
+	it("blocks a Portable Text field mapped without its source format", () => {
+		const body = (mapping: Record<string, unknown>) =>
+			reducer(filled, {
+				type: "rowSet",
+				row: "field:body",
+				mapping: { from: "name", type: "portableText", ...mapping },
+			});
+		expect(blockers(body({}))).toEqual([["field:body", M.formatUnset.id, { field: "Body" }]]);
+		expect(blockers(body({ format: "html" }))).toEqual([]);
+		// An expression needs the format too; a field the schema no longer has is named by its slug.
+		const expr = reducer(filled, {
+			type: "rowSet",
+			row: "field:notes",
+			mapping: { expr: "name", type: "portableText" },
+		});
+		expect(blockers(expr)).toEqual([["field:notes", M.formatUnset.id, { field: "notes" }]]);
 	});
 
 	it("reports one collection-level blocker for fields EmDash cannot read", () => {

@@ -29,7 +29,7 @@ export interface DetailRow {
 const MAPPING_TYPES = Object.keys(COMPATIBLE) as MappingType[];
 
 /** The mapping types that can write a field type, in `COMPATIBLE`'s order. */
-function compatibleTypes(fieldType: string): MappingType[] {
+export function compatibleTypes(fieldType: string): MappingType[] {
 	return MAPPING_TYPES.filter((type) => COMPATIBLE[type].includes(fieldType));
 }
 

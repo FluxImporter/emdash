@@ -22,6 +22,10 @@ export const M = {
 		message:
 			"{field} has a field type this version of EmDash cannot read, so nothing can be imported into this collection",
 	},
+	formatUnset: {
+		id: "flux-import.wizard.format-unset",
+		message: "{field} is Portable Text: choose the format of its source",
+	},
 	noFieldMapped: { id: "flux-import.wizard.no-field-mapped", message: "Map at least one field" },
 	translationOfUnmapped: {
 		id: "flux-import.wizard.translation-of-unmapped",
