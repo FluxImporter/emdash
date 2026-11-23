@@ -874,6 +874,122 @@ describe("templates/suggest's unmapped lists (plan Ruling 18)", () => {
 	});
 });
 
+describe("templates/suggest's key cap (final review)", () => {
+	/** `sku`, then `n` headers over 200 characters (never sent), then `Name`. */
+	const wide = (n: number) => {
+		const long = Array.from(
+			{ length: n },
+			(_, i) => `${"y".repeat(197)}${String(i).padStart(4, "0")}`,
+		);
+		const headers = ["sku", ...long, "Name"];
+		return `${headers.join(",")}\r\n${headers.map((_, i) => `v${i}`).join(",")}\r\n`;
+	};
+
+	it("matches and sends the 1,000th key, with no keys_not_matched", async () => {
+		const h = harness();
+		const out = await suggestMapping(h.deps, { ...TEXT, text: wide(998) });
+		expect(payloadOf(h.requests[0] as ProviderRequest).source.keys).toEqual(["sku", "Name"]);
+		expect(out.warnings).toContainEqual({ code: "keys_not_sent", count: 998 });
+		expect(out.warnings.map((w) => w.code)).not.toContain("keys_not_matched");
+	});
+
+	it("never matches or sends a key past the 1,000th, and counts it in keys_not_matched", async () => {
+		const h = harness({
+			outcome: { ...VALID, value: { key: null, slug: null, fields: [item("title", "Name")] } },
+		});
+		const out = await suggestMapping(h.deps, { ...TEXT, text: wide(999) });
+		expect(payloadOf(h.requests[0] as ProviderRequest).source.keys).toEqual(["sku"]);
+		expect(out.warnings).toContainEqual({ code: "keys_not_matched", count: 1 });
+		// The keys not sent are counted among the matched keys only.
+		expect(out.warnings).toContainEqual({ code: "keys_not_sent", count: 999 });
+		// The reply's item for Name names a key that was never sent.
+		expect(out.warnings).toContainEqual({ code: "ai_unknown_key", count: 1 });
+		expect(out.fields.find((f) => f.field === "title")?.from).toBeNull();
+		// unmapped.keys lists sample keys whatever their position, the first 100.
+		expect(out.unmapped.keys).toHaveLength(100);
+		const named = await suggestMapping(harness().deps, { ...TEXT, text: wide(999), ai: false });
+		expect(named.fields.find((f) => f.field === "title")?.from).toBeNull();
+		expect(named.warnings).toContainEqual({ code: "keys_not_matched", count: 1 });
+	});
+});
+
+describe("templates/suggest's sample_trimmed (spec Ruling 88, final review)", () => {
+	/** 60 free keys of 200-character values: over 48 KiB until values are cut to 80. */
+	const heavy = (() => {
+		const headers = ["sku", "Name", ...Array.from({ length: 60 }, (_, i) => `Extra ${i}`)];
+		const rows = Array.from({ length: 5 }, (_, r) =>
+			headers.map((_, i) => (i < 2 ? `R${r}-${i}` : "v".repeat(200))).join(","),
+		);
+		return `${headers.join(",")}\r\n${rows.join("\r\n")}\r\n`;
+	})();
+	const HEAVY: SuggestInput = { ...TEXT, text: heavy };
+
+	it.each([
+		["an answered call", (_h: ReturnType<typeof harness>) => {}],
+		[
+			"a provider port that rejects",
+			(h: ReturnType<typeof harness>) => {
+				h.deps.callProvider = () => Promise.reject(new Error("boom"));
+			},
+		],
+	])("reports sample_trimmed for %s", async (_name, arrange) => {
+		const h = harness();
+		arrange(h);
+		const out = await suggestMapping(h.deps, HEAVY);
+		expect(out.sent).not.toBeNull();
+		expect(out.warnings).toContainEqual({ code: "sample_trimmed" });
+	});
+
+	it.each([
+		[
+			"a used-up hour",
+			"ai_rate_limited",
+			(h: ReturnType<typeof harness>) => {
+				h.kvStore.put(AI_USAGE_KEY, { hour: "2026-11-19T10", count: 30 });
+			},
+		],
+		[
+			"a KV error",
+			"ai_rate_limited",
+			(h: ReturnType<typeof harness>) => {
+				h.deps.kv = {
+					...h.deps.kv,
+					getVersioned: async () => {
+						throw new Error("D1_ERROR: database is locked");
+					},
+				};
+			},
+		],
+		[
+			"a blocked URL",
+			"ai_url_blocked",
+			(h: ReturnType<typeof harness>) => {
+				h.deps.callProvider = async () => ({ ok: false, code: "ai_url_blocked" });
+			},
+		],
+	])("reports no sample_trimmed after %s (%s): nothing was sent", async (_name, code, arrange) => {
+		const h = harness();
+		arrange(h);
+		const out = await suggestMapping(h.deps, HEAVY);
+		expect(out.sent).toBeNull();
+		expect(out.warnings).toContainEqual({ code });
+		expect(out.warnings.map((w) => w.code)).not.toContain("sample_trimmed");
+	});
+});
+
+describe("templates/suggest's settings read failure (final review)", () => {
+	it("answers ai: false with available false when aiProvider cannot be read", async () => {
+		const h = harness({ settings: { aiProvider: new Error("D1_ERROR: database is locked") } });
+		const out = await suggestMapping(h.deps, { ...TEXT, ai: false });
+		expect(out.ai).toEqual({ available: false });
+		expect(out).toMatchObject({ method: "fallback", sent: null, key: { from: "sku" } });
+		expect(out.template).not.toBeNull();
+		expect(h.logged[0]).not.toContain("D1_ERROR");
+		// With ai: true the failure is still a route error (spec Open issues).
+		await expect(suggestMapping(h.deps, TEXT)).rejects.toThrow("D1_ERROR");
+	});
+});
+
 describe("readSuggestCollection (spec step 3)", () => {
 	it("reads the collection's label and each field's, from one registry read", async () => {
 		let reads = 0;

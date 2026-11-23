@@ -14,6 +14,7 @@ import {
 	eligibleFields,
 	fieldWarning,
 	type Mapper,
+	matchedKeys,
 	type NameSuggestion,
 	type Sample,
 	type SuggestField,
@@ -283,7 +284,10 @@ async function consult(
 		sample: c.sample,
 		keys: c.keys,
 	});
-	warnings.push(...built.warnings);
+	// Ruling 88: `sample_trimmed` waits for a payload that reaches the transport; the counts of keys
+	// and fields left out are reported once the payload is built, as for one too large.
+	const trimmed = built.warnings.filter((w) => w.code === "sample_trimmed");
+	warnings.push(...built.warnings.filter((w) => w.code !== "sample_trimmed"));
 	// Ruling 50: no count and no call for a payload that cannot fit.
 	if (!built.ok) return stop("ai_payload_too_large");
 
@@ -314,6 +318,7 @@ async function consult(
 	}
 	// A refused URL never reached the transport (Ruling 64).
 	const sent = outcome.ok || outcome.code !== "ai_url_blocked" ? built.sent : null;
+	if (sent !== null) warnings.push(...trimmed);
 	if (!outcome.ok) {
 		return stop(outcome.code, {
 			sent,
@@ -365,7 +370,8 @@ export async function suggestMapping(
 	let settings: AiSettings | null = null;
 	let ai: SuggestReply["ai"];
 	if (input.ai === false) {
-		const provider = await readAiProvider(deps.settings);
+		// Name matching needs no setting: a failed read reports no provider (final review).
+		const provider = await readAiProvider(deps.settings).catch(() => null);
 		ai = provider === null ? { available: false } : { available: true, provider };
 	} else {
 		settings = await readAiSettings(deps.settings, deps.allowPrivateNetwork);
@@ -424,8 +430,9 @@ export async function suggestMapping(
 		for (const pick of names.fields.values()) {
 			if (pick.settled && pick.from !== null) settled.add(pick.from);
 		}
-		// Plan Ruling 21: the key column is always sent, the entry slug's key too.
-		const keys = sample.keys.filter(
+		// Plan Ruling 21: the key column is always sent, the entry slug's key too. Only the keys name
+		// matching read are sent (final review): a base key column past `matchedKeys` is not.
+		const keys = matchedKeys(sample).filter(
 			(k) => k === keyColumn || (!baseKeys.has(k) && !settled.has(k)),
 		);
 		consulted = await consult(deps, settings, {

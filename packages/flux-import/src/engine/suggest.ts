@@ -4,6 +4,7 @@
  * one answer. It is the suggestion route's answer without a provider, and what a provider refines.
  */
 import { parseSourceUrl } from "../sources/net.js";
+import { PATHS_MAX_COUNT } from "../sources/paths.js";
 import type { SourceFormat } from "../sources/reader.js";
 import { dateConverter } from "./dates.js";
 import { type MappingType, matchesOption, type SchemaField, SOURCE_ID_FIELD } from "./template.js";
@@ -620,26 +621,35 @@ function keyColumn(
 	keys: readonly SampleKey[],
 	warnings: SuggestWarning[],
 ): KeyPick {
-	const first = sample.keys[0];
+	const first = keys[0];
 	if (first === undefined) throw new Error("suggestByName needs at least one key");
 	const names = keys.map((k) => joined(k.tokens.tokens));
 	for (const name of KEY_NAMES) {
 		const index = names.indexOf(name);
-		const from = sample.keys[index];
+		const from = keys[index]?.name;
 		if (index < 0 || from === undefined) continue;
 		const unique = distinct(sample, from);
 		if (unique === false) warnings.push({ code: "key_not_unique_in_sample" });
 		return { from, hundredths: unique === true ? 90 : 60, rationale: KEY_NAMED };
 	}
 	if (sample.rows.length > 0) {
-		const from = sample.keys.find((k) => distinct(sample, k) === true);
+		const from = keys.find((k) => distinct(sample, k.name) === true)?.name;
 		if (from !== undefined) {
 			warnings.push({ code: "key_guessed" });
 			return { from, hundredths: 40, rationale: KEY_UNIQUE };
 		}
 	}
 	warnings.push({ code: "key_guessed" });
-	return { from: first, hundredths: 10, rationale: KEY_FIRST };
+	return { from: first.name, hundredths: 10, rationale: KEY_FIRST };
+}
+
+/**
+ * The keys name matching reads: the first `PATHS_MAX_COUNT` (1,000), in sample order, so a wide
+ * CSV costs bounded CPU (final review). Keys past them are never matched nor sent to a provider,
+ * and are counted in `keys_not_matched`.
+ */
+export function matchedKeys(sample: Sample): readonly string[] {
+	return sample.keys.slice(0, PATHS_MAX_COUNT);
 }
 
 /**
@@ -651,7 +661,8 @@ export function suggestByName(
 	sample: Sample,
 	options: SuggestOptions = {},
 ): NameSuggestion {
-	const keys = sample.keys.map((name, position): SampleKey => {
+	const matched = matchedKeys(sample);
+	const keys = matched.map((name, position): SampleKey => {
 		const tokens = norm(name, sample.format);
 		return { name, position, tokens, prepared: prepareKey(tokens) };
 	});
@@ -659,6 +670,8 @@ export function suggestByName(
 	const mapper = options.mapper ?? createMapper(sample);
 	const warnings: SuggestWarning[] = [];
 	if (sample.rows.length === 0 && sample.keys.length > 0) warnings.push({ code: "sample_empty" });
+	const notMatched = sample.keys.length - matched.length;
+	if (notMatched > 0) warnings.push({ code: "keys_not_matched", count: notMatched });
 
 	const key = options.base === undefined ? keyColumn(sample, keys, warnings) : null;
 

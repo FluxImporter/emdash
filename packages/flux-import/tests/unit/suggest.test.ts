@@ -6,6 +6,7 @@ import {
 	createMapper,
 	eligibleFields,
 	joined,
+	matchedKeys,
 	nameScore,
 	norm,
 	type Sample,
@@ -492,6 +493,38 @@ describe("bounded work", () => {
 		const out = suggestByName(fields, only(keys));
 		expect(out.candidates).toEqual([]);
 		expect(labelReads).toBeLessThanOrEqual(fields.length);
+	});
+
+	const filler = (n: number) => Array.from({ length: n }, (_, i) => `Beta ${i}`);
+
+	it("matches a field to the 1,000th key, and counts no key left out", () => {
+		const out = suggestByName([field("title")], only([...filler(999), "title"]));
+		expect(matchedKeys(only([...filler(999), "title"]))).toHaveLength(1000);
+		expect(out.fields.get("title")).toMatchObject({ from: "title", hundredths: 100 });
+		expect(out.warnings.map((w) => w.code)).not.toContain("keys_not_matched");
+	});
+
+	it("never matches a key past the 1,000th, and counts the rest in keys_not_matched", () => {
+		const keys = [...filler(1000), "title", "slug", "Beta extra"];
+		expect(matchedKeys(only(keys))).toEqual(filler(1000));
+		const out = suggestByName([field("title")], only(keys));
+		expect(out.fields.get("title")?.from).toBeNull();
+		expect(out.candidates.some((c) => c.key === "title")).toBe(false);
+		expect(out.slug).toBeNull();
+		expect(out.warnings).toEqual([
+			{ code: "sample_empty" },
+			{ code: "keys_not_matched", count: 3 },
+			{ code: "key_guessed" },
+		]);
+	});
+
+	it("takes the key column from the first 1,000 keys only", () => {
+		const row = (sku: string) => Object.fromEntries([...filler(1000), "sku"].map((k) => [k, sku]));
+		const rows = [row("1"), { ...row("1"), sku: "2" }];
+		const past = suggestByName([], sample(rows, [...filler(1000), "sku"]));
+		expect(past.key).toMatchObject({ from: "Beta 0", hundredths: 10 });
+		const at = suggestByName([], sample(rows, [...filler(999), "sku"]));
+		expect(at.key).toMatchObject({ from: "sku", hundredths: 90 });
 	});
 });
 
