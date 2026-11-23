@@ -106,6 +106,11 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// mcp:tools, and the routes still need Admin.
 		mcp: { tools: MCP_TOOLS },
 		admin: {
+			// M7a: the import wizard, a trusted React page. `entry` equals the descriptor's
+			// `adminEntry`, and the module's `pages` export keys the same path (docs "React admin
+			// extensions": https://docs.emdashcms.com/plugins/creating-native-plugins/react-admin/).
+			entry: "flux-import/admin",
+			pages: [{ path: "/import", label: "Import", icon: "upload-simple" }],
 			settingsSchema: {
 				credentials: {
 					type: "secret",

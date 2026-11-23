@@ -12,6 +12,8 @@ export function fluxImport(options: FluxImportOptions = {}): PluginDescriptor<Fl
 		version: FLUX_IMPORT_VERSION,
 		format: "native",
 		entrypoint: "flux-import",
+		// The React admin module Astro bundles; matches the runtime's `admin.entry`.
+		adminEntry: "flux-import/admin",
 		options,
 	};
 }

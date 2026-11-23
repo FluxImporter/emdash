@@ -1,0 +1,17 @@
+import type { PluginAdminExports } from "emdash";
+import { type Msg, useT } from "./i18n.js";
+
+/**
+ * The admin entry (`flux-import/admin`): EmDash's admin renders each page with no props, inside
+ * its own `I18nProvider` and `QueryClientProvider` (Facts V7, V8).
+ */
+
+const TITLE: Msg = { id: "flux-import.shell.title", message: "Import" };
+
+/** A placeholder until the wizard replaces it (M7a Task 15). */
+function ImportPage() {
+	const t = useT();
+	return <h1>{t(TITLE)}</h1>;
+}
+
+export const pages: PluginAdminExports["pages"] = { "/import": ImportPage };
