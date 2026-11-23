@@ -6,16 +6,7 @@ import { useAllSources } from "../../queries.js";
 import { M } from "./messages.js";
 import { formatOfUrl } from "./SourceSettings.js";
 import type { TabProps } from "./SourceStep.js";
-
-/** A URL's host and path: its query may hold a key, so it is never shown. */
-function shownUrl(text: string): string {
-	try {
-		const url = new URL(text);
-		return `${url.host}${url.pathname}`;
-	} catch {
-		return "";
-	}
-}
+import { hostAndPath } from "./UrlTab.js";
 
 /** Saved source: `sources/list`, then `sources/fetch { id }` for the one picked. */
 export function SavedSourceTab({ busy, run, pick }: TabProps) {
@@ -41,7 +32,12 @@ export function SavedSourceTab({ busy, run, pick }: TabProps) {
 						<p className="truncate font-medium" title={row.name}>
 							{row.name}
 						</p>
-						<p className="truncate text-sm text-kumo-subtle">{shownUrl(row.url)}</p>
+						<p className="truncate text-sm text-kumo-subtle">{hostAndPath(row.url)}</p>
+						{row.lastError !== undefined ? (
+							<p className="text-sm text-kumo-danger">{t(M.lastFetchFailed)}</p>
+						) : row.lastFetch === undefined ? (
+							<p className="text-sm text-kumo-subtle">{t(M.neverFetched)}</p>
+						) : null}
 					</div>
 					<Button
 						variant="secondary"

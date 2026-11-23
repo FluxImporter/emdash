@@ -3,10 +3,19 @@ import { type ReactNode, useState } from "react";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
+import { SAMPLE_MAX } from "../../limits.js";
 import { useAllTemplates } from "../../queries.js";
 import { useWizard } from "../context.js";
+import { sampleColumns } from "../sample.js";
 import { M } from "./messages.js";
-import type { TabProps } from "./SourceStep.js";
+import type { Described, TabProps } from "./SourceStep.js";
+
+/** A template whose settings find no records in the file: it is not loaded. */
+class NoRecords extends Error {}
+
+function describeLoad(e: unknown): Described {
+	return e instanceof NoRecords ? { msg: M.templateNoRecords } : describeError(e);
+}
 
 /**
  * Start from a saved template: `templates/get`, then `templateLoaded`, which opens Preview. Only
@@ -14,7 +23,7 @@ import type { TabProps } from "./SourceStep.js";
  */
 export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "busy" | "run">) {
 	const t = useT();
-	const { dispatch } = useWizard();
+	const { state, dispatch } = useWizard();
 	const templates = useAllTemplates();
 	const [id, setId] = useState<string | null>(null);
 	const disabled = !props.enabled || props.busy;
@@ -36,9 +45,18 @@ export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "bus
 			label: t(M.templateOption, { name: s.name, collection: s.collection }),
 		}));
 		const load = () => {
-			if (id === null) return;
+			const uploadId = state.source?.uploadId;
+			if (id === null || uploadId === undefined) return;
 			props.run(async () => {
 				const saved = await api.getTemplate({ id });
+				// The template reads the file with its own settings: Map gets the keys they find.
+				const { source } = saved.template;
+				const reply = await api.sample({ uploadId, n: SAMPLE_MAX, source });
+				const columns = sampleColumns(reply, source.format);
+				if (columns.length === 0 || (columns[0]?.values.length ?? 0) === 0) {
+					throw new NoRecords();
+				}
+				dispatch({ type: "sourceBlockChanged", sourceBlock: source, columns });
 				dispatch({
 					type: "templateLoaded",
 					base: {
@@ -48,7 +66,7 @@ export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "bus
 						template: saved.template,
 					},
 				});
-			});
+			}, describeLoad);
 		};
 		body = (
 			<div className="flex flex-wrap items-end gap-3">

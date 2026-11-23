@@ -1,4 +1,4 @@
-import { Banner, Button, Input, Select } from "@cloudflare/kumo";
+import { Banner, Button, Input, Loader, Select } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ChangeEvent, useState } from "react";
 import { api } from "../../api.js";
@@ -23,11 +23,47 @@ export function nameFromUrl(text: string): string {
 	}
 }
 
-/** The offer to use the saved source that already has the name (Fact D7). */
-function TakenOffer({ name, busy, run, pick }: TabProps & { name: string }) {
+/** A URL's host and path: its query may hold a key, so it is never shown. */
+export function hostAndPath(text: string): string {
+	try {
+		const url = new URL(text);
+		return `${url.host}${url.pathname}`;
+	} catch {
+		return "";
+	}
+}
+
+/** `sources/create`'s form of an address (`URL.href`), or null when it is not one. */
+function hrefOf(text: string): string | null {
+	try {
+		return new URL(text).href;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * A name clash (Fact D7: `sources/create` answers CONFLICT on the name alone). The saved source
+ * is offered only when it fetches the address typed; otherwise another name is asked for.
+ */
+function TakenOffer({
+	name,
+	href,
+	busy,
+	run,
+	pick,
+}: TabProps & { name: string; href: string | null }) {
 	const t = useT();
 	const sources = useAllSources();
+	if (sources.isPending) return <Loader aria-label={t(M.loadingSources)} />;
 	const row = sources.data?.find((s) => s.name === name);
+	if (row === undefined) {
+		return <Banner variant="alert" description={t(M.nameTakenGone, { name })} />;
+	}
+	if (row.url !== href) {
+		const address = hostAndPath(row.url);
+		return <Banner variant="alert" description={t(M.nameTakenOther, { name, address })} />;
+	}
 	return (
 		<Banner
 			variant="alert"
@@ -35,15 +71,13 @@ function TakenOffer({ name, busy, run, pick }: TabProps & { name: string }) {
 			action={
 				<Button
 					variant="secondary"
-					disabled={busy || row === undefined}
-					loading={sources.isPending}
-					onClick={() => {
-						if (row === undefined) return;
+					disabled={busy}
+					onClick={() =>
 						run(async () => {
 							const { uploadId } = await api.fetchSource({ id: row.id });
 							await pick({ kind: "saved", uploadId, label: row.name }, formatOfUrl(row.url));
-						});
-					}}
+						})
+					}
 				>
 					{t(M.useSaved)}
 				</Button>
@@ -65,7 +99,7 @@ export function UrlTab(props: TabProps) {
 	const [name, setName] = useState("");
 	const [named, setNamed] = useState(false);
 	const [credential, setCredential] = useState<string | null>(null);
-	const [taken, setTaken] = useState<string | null>(null);
+	const [taken, setTaken] = useState<{ name: string; href: string | null } | null>(null);
 	const ready = url.trim() !== "" && name.trim() !== "";
 
 	const fetchUrl = () =>
@@ -83,7 +117,7 @@ export function UrlTab(props: TabProps) {
 				if (e instanceof ApiError && e.code === "CONFLICT") {
 					// The cached list may predate the source with this name.
 					void queryClient.invalidateQueries({ queryKey: queryKeys.sources });
-					setTaken(input.name);
+					setTaken({ name: input.name, href: hrefOf(input.url) });
 					return;
 				}
 				throw e;
@@ -103,6 +137,7 @@ export function UrlTab(props: TabProps) {
 					value={url}
 					onChange={(e: ChangeEvent<HTMLInputElement>) => {
 						setUrl(e.target.value);
+						setTaken(null);
 						if (!named) setName(nameFromUrl(e.target.value));
 					}}
 				/>
@@ -114,6 +149,7 @@ export function UrlTab(props: TabProps) {
 					onChange={(e: ChangeEvent<HTMLInputElement>) => {
 						setName(e.target.value);
 						setNamed(true);
+						setTaken(null);
 					}}
 				/>
 				<Select
@@ -137,7 +173,7 @@ export function UrlTab(props: TabProps) {
 			<Button variant="primary" disabled={busy || !ready} onClick={fetchUrl}>
 				{t(M.fetch)}
 			</Button>
-			{taken === null ? null : <TakenOffer {...props} name={taken} />}
+			{taken === null ? null : <TakenOffer {...props} {...taken} />}
 		</div>
 	);
 }

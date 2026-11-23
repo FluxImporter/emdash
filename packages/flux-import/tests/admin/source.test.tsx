@@ -239,11 +239,133 @@ describe("the Source step", () => {
 			"https://example.com/feeds/products.json",
 		);
 		await user.click(screen.getByRole("button", { name: "Fetch" }));
-		expect(await screen.findByText(/a saved source is already named/i)).toBeVisible();
+		expect(await screen.findByText(/already named .* and fetches this address/i)).toBeVisible();
 		await user.click(await screen.findByRole("button", { name: "Use the saved source" }));
 		await waitFor(() => expect(readState().keys).toEqual(["sku"]));
 		expect(calls.find((c) => c.route === "sources/fetch")?.body).toEqual({ id: SOURCE_ROW.id });
 		expect(readState().source?.kind).toBe("saved");
+	});
+
+	it("does not offer a taken name's saved source when it fetches another address", async () => {
+		const { calls } = routes({
+			"credentials/list": () => [],
+			"sources/create": () => fail("CONFLICT", "A source named … already exists", 409),
+			"sources/list": () => ({
+				items: [{ ...SOURCE_ROW, url: "https://example.com/feeds/products.json?page=1" }],
+				hasMore: false,
+			}),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		const address = screen.getByRole("textbox", { name: "Address" });
+		// The derived name drops the query, so both addresses get the same name.
+		await user.type(address, "https://example.com/feeds/products.json?page=2");
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		const note = await screen.findByText(/fetches a different address/i);
+		expect(note).toHaveTextContent("example.com/feeds/products.json");
+		expect(note).not.toHaveTextContent("page=1");
+		expect(note).toHaveTextContent(/choose another name/i);
+		expect(screen.queryByRole("button", { name: "Use the saved source" })).toBeNull();
+		expect(calls.some((c) => c.route === "sources/fetch")).toBe(false);
+		// Editing the name withdraws the note.
+		await user.type(screen.getByRole("textbox", { name: "Name" }), " 2");
+		expect(screen.queryByText(/fetches a different address/i)).toBeNull();
+	});
+
+	it("says so when the taken name's saved source cannot be found", async () => {
+		routes({
+			"credentials/list": () => [],
+			"sources/create": () => fail("CONFLICT", "A source named … already exists", 409),
+			"sources/list": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		const address = screen.getByRole("textbox", { name: "Address" });
+		await user.type(address, "https://example.com/feeds/products.json");
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		expect(await screen.findByText(/can no longer be found/i)).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Use the saved source" })).toBeNull();
+		// Editing the address withdraws the note.
+		await user.type(address, "/x");
+		expect(screen.queryByText(/can no longer be found/i)).toBeNull();
+	});
+
+	it("says CSV was assumed when a URL names no format", async () => {
+		routes({
+			"credentials/list": () => [],
+			"sources/create": () => ({ ...SOURCE_ROW, url: "https://example.com/api/products" }),
+			"sources/fetch": () => ({ changed: true, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Address" }),
+			"https://example.com/api/products",
+		);
+		await user.click(screen.getByRole("button", { name: "Fetch" }));
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "csv" }));
+		const format = screen.getByRole("combobox", { name: "Format" });
+		expect(format).toHaveAccessibleDescription(/CSV was assumed/);
+		await user.click(format);
+		await user.click(await screen.findByRole("option", { name: "JSON" }));
+		await waitFor(() => expect(readState().sourceBlock).toEqual({ format: "json" }));
+		expect(screen.getByRole("combobox", { name: "Format" })).not.toHaveAccessibleDescription(
+			/CSV was assumed/,
+		);
+	});
+
+	it("does not say CSV was assumed for a file with an extension", async () => {
+		routes({});
+		renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(next()).toBeEnabled());
+		expect(screen.getByRole("combobox", { name: "Format" })).not.toHaveAccessibleDescription(
+			/CSV was assumed/,
+		);
+	});
+
+	it("shows TOO_LARGE from the upload as its sentence", async () => {
+		routes({ upload: () => fail("TOO_LARGE", "Upload exceeds 50 MB", 413) });
+		renderSource();
+		chooseFile("huge.csv");
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"The file or text is larger than the site accepts.",
+		);
+		expect(next()).toBeDisabled();
+	});
+
+	it("puts the active tab's content in a labelled tab panel", async () => {
+		routes({ "credentials/list": () => [] });
+		const { user } = renderSource();
+		const panel = screen.getByRole("tabpanel", { name: "Upload file" });
+		expect(within(panel).getByLabelText("Choose a file")).toBeInTheDocument();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		expect(screen.getByRole("tabpanel", { name: "From URL" })).toBeInTheDocument();
+	});
+
+	it("does not switch tabs while an upload runs, so its progress stays visible", async () => {
+		const reply = deferred<unknown>();
+		routes({ upload: () => reply.promise });
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		expect(await screen.findByRole("meter")).toBeInTheDocument();
+		const paste = screen.getByRole("tab", { name: "Paste" });
+		expect(paste).toBeDisabled();
+		await user.click(paste);
+		expect(screen.getByRole("tabpanel", { name: "Upload file" })).toBeInTheDocument();
+		expect(screen.getByRole("meter")).toBeInTheDocument();
+		reply.resolve({ uploadId: UPLOAD_ID, bytes: 20 });
+		await waitFor(() => expect(next()).toBeEnabled());
+		expect(screen.getByRole("tab", { name: "Paste" })).toBeEnabled();
+	});
+
+	it("hides the paste counter while there is no text", async () => {
+		routes({});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Paste" }));
+		expect(screen.queryByText(/KiB of/)).toBeNull();
+		fireEvent.change(screen.getByRole("textbox", { name: "Text" }), { target: { value: "a" } });
+		expect(screen.getByText("1 KiB of 1,024 KiB")).toBeInTheDocument();
 	});
 
 	it("does not offer XLSX for Paste and disables Next past 1 MiB of UTF-8", async () => {
@@ -262,6 +384,7 @@ describe("the Source step", () => {
 		await waitFor(() => expect(next()).toBeEnabled());
 		await user.click(screen.getByRole("tab", { name: "Paste" }));
 		const area = screen.getByRole("textbox", { name: "Text" });
+		fireEvent.change(area, { target: { value: "a" } });
 		expect(area).toHaveAccessibleDescription("1 KiB of 1,024 KiB");
 		// Under the limit as text, over it once JSON escapes each newline (preflight F18).
 		const text = "\n".repeat(PASTE_MAX_BYTES / 2 + 1);
@@ -419,10 +542,154 @@ describe("the Source step", () => {
 		expect(calls.find((c) => c.route === "templates/get")?.body).toEqual({
 			id: SAVED_TEMPLATE.id,
 		});
+		// The file is sampled again with the template's own source settings.
+		expect(calls.filter((c) => c.route === "sources/sample").map((c) => c.body)).toEqual([
+			{ uploadId: UPLOAD_ID, n: SAMPLE_MAX, source: { format: "csv" } },
+			{ uploadId: UPLOAD_ID, n: SAMPLE_MAX, source: { format: "csv" } },
+		]);
 		const state = readState();
 		expect(state.target).toEqual({ collection: "posts", locale: "en", translationLocale: null });
 		expect(state.rows).toEqual(["key", "field:title"]);
 		expect(state.base).toEqual({ id: SAVED_TEMPLATE.id, revision: 3 });
+	});
+
+	/** Picks the saved template in the picker and loads it. */
+	async function loadTemplate(user: { click(e: Element): Promise<void> }): Promise<void> {
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		await waitFor(() => expect(picker).toBeEnabled());
+		await user.click(picker);
+		await user.click(await screen.findByRole("option", { name: /Feed items/ }));
+		await user.click(screen.getByRole("button", { name: "Load template" }));
+	}
+
+	const JSON_TEMPLATE = {
+		...SAVED_TEMPLATE,
+		id: "01JZ000000000000000000TPL2",
+		name: "Feed items",
+		format: "json",
+		template: templateSchema.parse({
+			version: 1,
+			source: { format: "json", records: "data.items" },
+			collection: "posts",
+			locale: "en",
+			key: { from: "sku" },
+			fields: { title: { from: "name", type: "text" } },
+		}),
+	};
+	const { template: __, ...JSON_SUMMARY } = JSON_TEMPLATE;
+
+	it("samples a loaded template's source settings, so Map gets its keys", async () => {
+		const { calls } = routes({
+			"templates/list": () => ({ items: [JSON_SUMMARY], hasMore: false }),
+			"templates/get": () => JSON_TEMPLATE,
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "data.items"
+					? { records: [{ sku: "A", name: "Alpha" }], paths: ["name", "sku"] }
+					: { records: [{ data: { items: [] } }], paths: ["data.items"] },
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["data.items"]));
+		await loadTemplate(user);
+		await waitFor(() => expect(readState().step).toBe("preview"));
+		const state = readState();
+		expect(state.keys).toEqual(["name", "sku"]);
+		expect(state.sourceBlock).toEqual({ format: "json", records: "data.items" });
+		expect(state.base).toEqual({ id: JSON_TEMPLATE.id, revision: 3 });
+		expect(calls.filter((c) => c.route === "sources/sample").at(-1)?.body).toEqual({
+			uploadId: UPLOAD_ID,
+			n: SAMPLE_MAX,
+			source: { format: "json", records: "data.items" },
+		});
+	});
+
+	it("stays on Source when a template's settings find no records in the file", async () => {
+		routes({
+			"templates/list": () => ({ items: [JSON_SUMMARY], hasMore: false }),
+			"templates/get": () => JSON_TEMPLATE,
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "data.items"
+					? { records: [], paths: [] }
+					: { records: [{ a: 1 }], paths: ["a"] },
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["a"]));
+		await loadTemplate(user);
+		expect(await screen.findByRole("alert")).toHaveTextContent(/finds? no records/i);
+		const state = readState();
+		expect(state.step).toBe("source");
+		expect(state.base).toBeNull();
+		expect(state.keys).toEqual(["a"]);
+		expect(state.sourceBlock).toEqual({ format: "json" });
+		expect(next()).toBeEnabled();
+	});
+
+	it("stays on Source when a template's settings find a header but no rows", async () => {
+		let samples = 0;
+		routes({
+			"templates/list": () => ({ items: [SUMMARY], hasMore: false }),
+			"templates/get": () => SAVED_TEMPLATE,
+			"sources/sample": () => (++samples === 1 ? CSV_SAMPLE : sampleCsv(["id", "title"], [])),
+		});
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		await waitFor(() => expect(picker).toBeEnabled());
+		await user.click(picker);
+		await user.click(await screen.findByRole("option", { name: /Posts from CSV/ }));
+		await user.click(screen.getByRole("button", { name: "Load template" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent(/finds? no records/i);
+		expect(readState()).toMatchObject({ step: "source", base: null, keys: ["id", "title"] });
+	});
+
+	it("stays on Source when a template's settings cannot read the file", async () => {
+		routes({
+			"templates/list": () => ({ items: [JSON_SUMMARY], hasMore: false }),
+			"templates/get": () => JSON_TEMPLATE,
+			"sources/sample": (body) =>
+				(body as { source: { records?: string } }).source.records === "data.items"
+					? fail("INVALID_SOURCE", "Expected an array at data.items", 400)
+					: { records: [{ a: 1 }], paths: ["a"] },
+		});
+		const { user } = renderSource();
+		chooseFile("feed.json", "{}");
+		await waitFor(() => expect(readState().keys).toEqual(["a"]));
+		await loadTemplate(user);
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("The data could not be read.");
+		expect(alert).toHaveTextContent("Expected an array at data.items");
+		expect(readState()).toMatchObject({ step: "source", base: null, keys: ["a"] });
+	});
+
+	it("notes per saved source whether its last fetch failed or it was never fetched", async () => {
+		const at = "2026-11-23T12:00:00.000Z";
+		const fetched = { at, status: 200, sha256: "x", bytes: 1, uploadId: FETCHED_ID };
+		routes({
+			"sources/list": () => ({
+				items: [
+					{ ...SOURCE_ROW, id: "S1", name: "Fresh" },
+					{ ...SOURCE_ROW, id: "S2", name: "Fetched", lastFetch: fetched },
+					{
+						...SOURCE_ROW,
+						id: "S3",
+						name: "Broken",
+						lastFetch: fetched,
+						lastError: { at, code: "HTTP_ERROR", message: "HTTP 500 from example.com" },
+					},
+				],
+				hasMore: false,
+			}),
+		});
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "Saved source" }));
+		const rows = await screen.findAllByRole("listitem");
+		expect(rows.map((r) => r.textContent)).toEqual([
+			expect.stringContaining("Never fetched"),
+			expect.not.stringMatching(/Never fetched|Last fetch failed/),
+			expect.stringContaining("Last fetch failed"),
+		]);
+		expect(document.body.textContent).not.toContain("HTTP 500");
 	});
 
 	it("uses a saved source: fetches it by ID and samples it", async () => {
@@ -661,7 +928,7 @@ describe("the Source step's helpers", () => {
 		expect(formatOf("a.constructor")).toBeNull();
 		expect(formatOf("a.json/")).toBeNull();
 		expect(formatOfUrl("https://x.example/feed.xml?page=2")).toBe("xml");
-		expect(formatOfUrl("https://x.example/api/products")).toBe("csv");
+		expect(formatOfUrl("https://x.example/api/products")).toBeNull();
 	});
 
 	it("names a source after the URL's host and path", () => {

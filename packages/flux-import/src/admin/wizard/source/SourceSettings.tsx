@@ -41,15 +41,15 @@ export function formatOf(path: string): SourceFormat | null {
 	return ext !== undefined && Object.hasOwn(EXTENSIONS, ext) ? (EXTENSIONS[ext] ?? null) : null;
 }
 
-/** A URL source's format, from its path's extension; CSV when the path names none. */
-export function formatOfUrl(url: string): SourceFormat {
+/** A URL source's format, from its path's extension; null when the path names none. */
+export function formatOfUrl(url: string): SourceFormat | null {
 	let path = url;
 	try {
 		path = new URL(url).pathname;
 	} catch {
 		// Not a URL: read the text as a path.
 	}
-	return formatOf(path) ?? "csv";
+	return formatOf(path);
 }
 
 interface Settings {
@@ -121,6 +121,8 @@ function TextSetting(props: {
 export function SourceSettings(props: {
 	choice: SourceChoice;
 	block: SourceBlock;
+	/** The address named no format, so CSV was assumed. */
+	assumed: boolean;
 	onChange(block: SourceBlock): void;
 }) {
 	const t = useT();
@@ -133,6 +135,7 @@ export function SourceSettings(props: {
 			<div className="grid gap-4 md:grid-cols-2">
 				<Select
 					label={t(M.format)}
+					{...(props.assumed ? { description: t(M.formatAssumed) } : {})}
 					value={block.format}
 					onValueChange={(v: unknown) => {
 						const format = formats.find((f) => f === v);

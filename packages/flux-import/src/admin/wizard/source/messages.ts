@@ -25,7 +25,18 @@ export const M = {
 	fetch: { id: "flux-import.source.fetch", message: "Fetch" },
 	nameTaken: {
 		id: "flux-import.source.name-taken",
-		message: "A saved source is already named {name}. Use it, or choose another name.",
+		message:
+			"A saved source is already named {name} and fetches this address. Use it, or choose another name.",
+	},
+	nameTakenOther: {
+		id: "flux-import.source.name-taken-other",
+		message:
+			"A saved source named {name} fetches a different address ({address}). Choose another name for this one.",
+	},
+	nameTakenGone: {
+		id: "flux-import.source.name-taken-gone",
+		message:
+			"A saved source is named {name}, but it can no longer be found. Try again, or choose another name.",
 	},
 	useSaved: { id: "flux-import.source.use-saved", message: "Use the saved source" },
 
@@ -45,6 +56,8 @@ export const M = {
 		message: "A source fetched from a URL is saved here.",
 	},
 	use: { id: "flux-import.source.use", message: "Use" },
+	lastFetchFailed: { id: "flux-import.source.last-fetch-failed", message: "Last fetch failed" },
+	neverFetched: { id: "flux-import.source.never-fetched", message: "Never fetched" },
 	useSource: { id: "flux-import.source.use-source", message: "Use {name}" },
 
 	format: { id: "flux-import.source.format", message: "Format" },
@@ -53,6 +66,11 @@ export const M = {
 	formatJsonl: { id: "flux-import.source.format-jsonl", message: "JSON Lines" },
 	formatXml: { id: "flux-import.source.format-xml", message: "XML" },
 	formatXlsx: { id: "flux-import.source.format-xlsx", message: "XLSX" },
+	formatAssumed: {
+		id: "flux-import.source.format-assumed",
+		message:
+			"The address names no format, so CSV was assumed. Change it if the data is another format.",
+	},
 	settings: { id: "flux-import.source.settings", message: "How to read {name}" },
 	records: { id: "flux-import.source.records", message: "Records path" },
 	recordsJsonHint: {
@@ -123,6 +141,11 @@ export const M = {
 	noTemplatesHint: {
 		id: "flux-import.source.no-templates-hint",
 		message: "A template saved in the Options step can be reused here.",
+	},
+	templateNoRecords: {
+		id: "flux-import.source.template-no-records",
+		message:
+			"This template's settings find no records in the file. Choose another template or file.",
 	},
 	templateNeedsFile: {
 		id: "flux-import.source.template-needs-file",

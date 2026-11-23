@@ -1,9 +1,9 @@
 import { Banner, Link, Tabs } from "@cloudflare/kumo";
-import { useCallback, useRef, useState } from "react";
+import { type ComponentProps, useCallback, useRef, useState } from "react";
 import type { SourceFormat } from "../../../sources/reader.js";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
-import { useT } from "../../i18n.js";
+import { type Msg, useT } from "../../i18n.js";
 import { SAMPLE_MAX } from "../../limits.js";
 import type { SourceBlock } from "../../types.js";
 import { useWizard } from "../context.js";
@@ -30,14 +30,23 @@ export interface TabProps {
 	 * (`describeError` by default); `run` itself never rejects.
 	 */
 	run(work: () => Promise<void>, describe?: (e: unknown) => Described): void;
-	/** Samples the chosen data as `format`, and makes it the wizard's source when that works. */
-	pick(choice: SourceChoice, format: SourceFormat): Promise<void>;
+	/**
+	 * Samples the chosen data as `format` (CSV, said to be assumed, when null), and makes it the
+	 * wizard's source when that works.
+	 */
+	pick(choice: SourceChoice, format: SourceFormat | null): Promise<void>;
 	/** Shows an error that no request produced. */
 	fail(error: Described): void;
 }
 
 type TabId = SourceChoice["kind"];
 const TABS: readonly TabId[] = ["upload", "url", "paste", "saved"];
+const TAB_LABELS: Readonly<Record<TabId, Msg>> = {
+	upload: M.tabUpload,
+	url: M.tabUrl,
+	paste: M.tabPaste,
+	saved: M.tabSaved,
+};
 
 const WORDPRESS_IMPORTER = "/_emdash/admin/import/wordpress";
 
@@ -81,6 +90,7 @@ export function SourceStep() {
 	// The data being read: the wizard's source, or a new choice whose sample has not worked yet.
 	const [choice, setChoice] = useState<SourceChoice | null>(state.source);
 	const [block, setBlock] = useState<SourceBlock>(state.sourceBlock);
+	const [assumed, setAssumed] = useState(false);
 	const [pending, setPending] = useState(0);
 	const [error, setError] = useState<Described | null>(null);
 	const [paste, setPaste] = useState<Paste>({ format: "csv", text: "" });
@@ -121,10 +131,11 @@ export function SourceStep() {
 	}, []);
 
 	const pick = useCallback(
-		async (c: SourceChoice, format: SourceFormat) => {
-			const b: SourceBlock = { format };
+		async (c: SourceChoice, format: SourceFormat | null) => {
+			const b: SourceBlock = { format: format ?? "csv" };
 			setChoice(c);
 			setBlock(b);
+			setAssumed(format === null);
 			await sample(c, b);
 		},
 		[sample],
@@ -134,6 +145,7 @@ export function SourceStep() {
 
 	const changeBlock = (b: SourceBlock) => {
 		if (choice === null) return;
+		if (b.format !== block.format) setAssumed(false);
 		setBlock(b);
 		run(() => sample(choice, b));
 	};
@@ -154,16 +166,19 @@ export function SourceStep() {
 	return (
 		<div className="space-y-6">
 			<Tabs
-				tabs={[
-					{ value: "upload", label: t(M.tabUpload) },
-					{ value: "url", label: t(M.tabUrl) },
-					{ value: "paste", label: t(M.tabPaste) },
-					{ value: "saved", label: t(M.tabSaved) },
-				]}
+				tabs={TABS.map((id) => ({
+					value: id,
+					label: t(TAB_LABELS[id]),
+					// Kumo's tabs take no `disabled`: while a request runs the tab stays put, so an
+					// upload's progress is never unmounted.
+					render: (own: ComponentProps<"button">) => (
+						<button {...own} type="button" disabled={busy} aria-disabled={busy} />
+					),
+				}))}
 				value={tab}
 				onValueChange={(v: string) => setTab(TABS.find((id) => id === v) ?? "upload")}
 			/>
-			<div>
+			<div role="tabpanel" aria-label={t(TAB_LABELS[tab])}>
 				{tab === "upload" ? <UploadTab {...tabProps} /> : null}
 				{tab === "url" ? <UrlTab {...tabProps} /> : null}
 				{tab === "paste" ? <PasteTab {...tabProps} paste={paste} onPaste={setPaste} /> : null}
@@ -171,7 +186,7 @@ export function SourceStep() {
 			</div>
 			{error === null ? null : <ErrorNote error={error} />}
 			{choice === null ? null : (
-				<SourceSettings choice={choice} block={block} onChange={changeBlock} />
+				<SourceSettings choice={choice} block={block} assumed={assumed} onChange={changeBlock} />
 			)}
 			{sampled === null ? null : <SamplePreview columns={sampled} format={block.format} />}
 			<TemplatePicker enabled={usable} busy={busy} run={run} />
