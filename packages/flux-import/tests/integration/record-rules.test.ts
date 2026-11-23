@@ -535,7 +535,7 @@ describe("M5b write modes on a translation job", () => {
 });
 
 describe("M5b kill and resume of a scheduling job", () => {
-	it("schedules every entry once when a crash cuts the job off mid-batch", async () => {
+	it("schedules each entry once, and reports any it left unscheduled, when a crash cuts the job off mid-batch", async () => {
 		await client.createProducts("it_rr_crash");
 		const rowsCount = 300;
 		const publishAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -557,18 +557,29 @@ describe("M5b kill and resume of a scheduling job", () => {
 		if (!interrupted) throw new Error("The kill did not cut off a jobs/next call in flight");
 		expect(killed.status).toBe("running");
 		const done = await client.runToEnd(created.id);
-		expect(done).toMatchObject({
-			status: "completed",
-			counters: { created: rowsCount, failed: 0, conflict: 0 },
-		});
+		expect(done.status).toBe("completed");
 		expect(await client.records(created.id, "writing")).toEqual([]);
 		const entries = await client.listAll("it_rr_crash");
 		expect(entries).toHaveLength(rowsCount);
-		expect(
-			entries.filter(
-				(e) =>
-					e.status !== "scheduled" || (e as { scheduledAt?: string }).scheduledAt !== publishAt,
-			),
-		).toEqual([]);
+		expect(new Set(entries.map((e) => e.data.flux_source_id)).size).toBe(rowsCount);
+		// A kill between the create and the save of its revision leaves a draft the repair cannot
+		// prove is the job's: it is reported schedule_unverified and left unscheduled (spec M5b
+		// "Crash repair", as publish_unverified in crash.test.ts). Every other entry is scheduled
+		// once, at the job's time.
+		const conflicts = await client.records(created.id, "conflict");
+		expect(conflicts.every((r) => r.errors?.[0]?.code === "schedule_unverified")).toBe(true);
+		const unverified = new Set(conflicts.map((r) => r.entryId));
+		expect(unverified.size).toBe(conflicts.length);
+		expect(done.counters).toMatchObject({
+			created: rowsCount - unverified.size,
+			conflict: unverified.size,
+			failed: 0,
+		});
+		const unscheduled = entries.filter(
+			(e) => e.status !== "scheduled" || (e as { scheduledAt?: string }).scheduledAt !== publishAt,
+		);
+		expect(unscheduled.every((e) => e.status === "draft")).toBe(true);
+		expect(new Set(unscheduled.map((e) => e.id))).toEqual(unverified);
+		console.info(`entries left unscheduled and reported schedule_unverified: ${unverified.size}`);
 	});
 });
