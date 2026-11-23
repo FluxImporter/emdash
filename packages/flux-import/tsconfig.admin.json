@@ -1,0 +1,5 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": { "module": "Preserve", "moduleResolution": "Bundler" },
+	"include": ["src/admin", "src/astro/env.d.ts", "tests/admin", "tests/unit/admin-*.test.ts"]
+}
