@@ -1,6 +1,6 @@
 import { Banner, Button, Dialog, Loader } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { FieldChange } from "../../../../plugin/schema-apply.js";
 import { type ApplyField, api } from "../../../api.js";
 import { ApiError, redact } from "../../../api-error.js";
@@ -9,6 +9,7 @@ import { type Msg, useT } from "../../../i18n.js";
 import { MAX_APPLY_FIELDS } from "../../../limits.js";
 import { queryKeys } from "../../../queries.js";
 import type { ProposedField } from "../../state.js";
+import { labelOf } from "./infer.js";
 import { M } from "./messages.js";
 
 type Described = ReturnType<typeof describeError>;
@@ -30,16 +31,22 @@ const CHANGE_MESSAGES: Readonly<Record<FieldChange["action"], Msg>> = {
 	conflict: M.conflict,
 };
 
-/** The `schema/apply` fields for the proposed fields. */
+/**
+ * The `schema/apply` fields for the proposed fields. A label is trimmed, and an empty one is left
+ * out: the route then labels the field from its slug (`labelOf`).
+ */
 function toApply(fields: readonly ProposedField[]): ApplyField[] {
-	return fields.map((f) => ({
-		slug: f.slug,
-		// A proposed type is one of `APPLY_FIELD_TYPES`; the route refuses anything else.
-		type: f.type as ApplyField["type"],
-		label: f.label,
-		translatable: f.translatable,
-		searchable: f.searchable,
-	}));
+	return fields.map((f) => {
+		const label = f.label.trim();
+		return {
+			slug: f.slug,
+			// A proposed type is one of `APPLY_FIELD_TYPES`; the route refuses anything else.
+			type: f.type as ApplyField["type"],
+			...(label === "" ? {} : { label }),
+			translatable: f.translatable,
+			searchable: f.searchable,
+		};
+	});
 }
 
 const parse = (request: string) =>
@@ -61,12 +68,18 @@ export function SchemaDiffDialog(p: {
 	const t = useT();
 	const queryClient = useQueryClient();
 	const [plan, setPlan] = useState<Plan>(LOADING);
-	const [error, setError] = useState<Described | null>(null);
+	/** Why the plan failed; cleared with the plan. */
+	const [planError, setPlanError] = useState<Described | null>(null);
+	/** Why Confirm failed; kept while the list is planned again, cleared on close or a change. */
+	const [applyError, setApplyError] = useState<Described | null>(null);
+	/** Bumped to plan again: Try again, and after an apply that ended in an error. */
+	const [attempt, setAttempt] = useState(0);
 	const [applying, setApplying] = useState(false);
 	const tooMany = p.fields.length > MAX_APPLY_FIELDS;
 	// The request as text, so the plan reruns only when what would be sent changes.
 	const request = JSON.stringify({ collection: p.collection, fields: toApply(p.fields) });
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a new `attempt` plans the same request again.
 	useEffect(() => {
 		if (!p.open || tooMany) return;
 		let live = true;
@@ -77,16 +90,24 @@ export function SchemaDiffDialog(p: {
 			(e: unknown) => {
 				if (!live) return;
 				setPlan({ status: "failed" });
-				setError(describeError(e));
+				setPlanError(describeError(e));
 			},
 		);
 		return () => {
-			// Closed, or the fields changed: no plan or error of these fields is shown again.
+			// Closed, changed or planned again: the last plan, and its error, are not shown again.
 			live = false;
 			setPlan(LOADING);
-			setError(null);
+			setPlanError(null);
 		};
-	}, [p.open, request, tooMany]);
+	}, [p.open, request, tooMany, attempt]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Confirm's error belongs to one opening of these fields.
+	useEffect(
+		() => () => {
+			setApplyError(null);
+		},
+		[p.open, request],
+	);
 
 	const changes = plan.status === "ready" ? plan.changes : [];
 	const conflicts = changes.some((c) => c.action === "conflict");
@@ -94,30 +115,31 @@ export function SchemaDiffDialog(p: {
 
 	async function confirm() {
 		setApplying(true);
-		setError(null);
+		setApplyError(null);
 		try {
 			const input = parse(request);
 			const result = await api.applySchema({ ...input, dryRun: false });
-			// The schema changed, even if an error stopped the rest: read the fields again.
-			if (result.applied.length > 0) {
-				void queryClient.invalidateQueries({ queryKey: queryKeys.fields(input.collection) });
-			}
-			setPlan({ status: "ready", changes: result.changes });
+			// Whatever was applied, the wizard's copy of the fields may be stale (an `unchanged`
+			// field was created elsewhere): read them again before the step uses them.
+			await queryClient.invalidateQueries({ queryKey: queryKeys.fields(input.collection) });
 			if (result.error !== null) {
-				// EmDash's error, reported inside a successful (200) reply.
+				// EmDash's error, reported inside a successful (200) reply. Some fields may exist
+				// now, so the list is planned again.
 				const { code, message } = result.error;
-				setError(describeError(new ApiError(code, message, 200)));
+				setApplyError(describeError(new ApiError(code, message, 200)));
+				setAttempt((n) => n + 1);
 				return;
 			}
+			setPlan({ status: "ready", changes: result.changes });
 			p.onApplied(result.changes.filter((c) => KEPT.has(c.action)).map((c) => c.field));
 		} catch (e) {
-			setError(describeError(e));
+			setApplyError(describeError(e));
 		} finally {
 			setApplying(false);
 		}
 	}
 
-	const labels = new Map(p.fields.map((f) => [f.slug, f.label === "" ? f.slug : f.label]));
+	const requested = new Map(parse(request).fields.map((f) => [f.slug, f]));
 	const cancel = () => {
 		if (!applying) p.onCancel();
 	};
@@ -153,11 +175,21 @@ export function SchemaDiffDialog(p: {
 							<li key={c.field} className="text-sm">
 								<span className={c.action === "conflict" ? "text-kumo-danger" : ""}>
 									{t(CHANGE_MESSAGES[c.action], {
-										label: labels.get(c.field) ?? c.field,
+										label: requested.get(c.field)?.label ?? labelOf(c.field),
 										slug: c.field,
 										type: c.type,
 									})}
 								</span>
+								{c.action === "create" ? (
+									<span className="block text-kumo-subtle">
+										{t(M.flags, {
+											translatable: t(
+												requested.get(c.field)?.translatable === false ? M.no : M.yes,
+											),
+											searchable: t(requested.get(c.field)?.searchable === true ? M.yes : M.no),
+										})}
+									</span>
+								) : null}
 								{c.message === undefined ? null : (
 									<span className="block text-kumo-subtle">{redact(c.message)}</span>
 								)}
@@ -166,7 +198,17 @@ export function SchemaDiffDialog(p: {
 					</ul>
 				) : null}
 				{conflicts ? <p className="text-sm text-kumo-danger">{t(M.conflictsBlock)}</p> : null}
-				{error === null ? null : <ErrorBanner error={error} />}
+				{planError === null ? null : (
+					<ErrorBanner
+						error={planError}
+						action={
+							<Button variant="secondary" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+								{t(M.tryAgain)}
+							</Button>
+						}
+					/>
+				)}
+				{applyError === null ? null : <ErrorBanner error={applyError} />}
 				<div className="flex justify-end gap-3">
 					<Button variant="secondary" disabled={applying} onClick={cancel}>
 						{t(M.cancel)}
@@ -188,7 +230,7 @@ export function SchemaDiffDialog(p: {
 }
 
 /** An error sentence, with the route's specifics under it (Task 4 review). */
-function ErrorBanner({ error }: { error: Described }) {
+function ErrorBanner({ error, action }: { error: Described; action?: ReactNode }) {
 	const t = useT();
 	const problems = error.problems ?? [];
 	return (
@@ -196,6 +238,7 @@ function ErrorBanner({ error }: { error: Described }) {
 			role="alert"
 			variant="error"
 			title={t(error.msg, error.values)}
+			action={action}
 			description={
 				error.detail === undefined && problems.length === 0 ? undefined : (
 					<>

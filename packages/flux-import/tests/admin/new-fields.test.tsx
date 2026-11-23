@@ -1,8 +1,10 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { api } from "../../src/admin/api.js";
 import { APPLY_FIELD_TYPES, MAX_APPLY_FIELDS } from "../../src/admin/limits.js";
-import { queryKeys } from "../../src/admin/queries.js";
+import { queryKeys, useFields } from "../../src/admin/queries.js";
+import type { SchemaField } from "../../src/admin/types.js";
 import { NewFields } from "../../src/admin/wizard/map/new-fields/NewFields.js";
 import { SchemaDiffDialog } from "../../src/admin/wizard/map/new-fields/SchemaDiffDialog.js";
 import type { ProposedField } from "../../src/admin/wizard/state.js";
@@ -67,11 +69,29 @@ function renderDialog(
 	return { ...result, onApplied, onCancel };
 }
 
+/** A schema API field row (`GET /_emdash/api/schema/collections/posts?includeFields=true`). */
+const row = (slug: string, type: string, sortOrder: number) => ({
+	slug,
+	label: slug,
+	type,
+	required: false,
+	sortOrder,
+	translatable: true,
+});
+const TITLE_ROW = row("title", "string", 0);
+const RELEASED_ROW = row("released", "datetime", 1);
+
+/** Keeps the collection's fields query active, as the Map step does. */
+function FieldsReader() {
+	useFields("posts");
+	return null;
+}
+
 /** The dialog under a parent whose `open` and `fields` a test changes. */
-function renderHost() {
+function renderHost(initial: { open?: boolean } = {}) {
 	let set: (patch: { open?: boolean; fields?: ProposedField[] }) => void = () => {};
 	function Host() {
-		const [state, setState] = useState({ open: true, fields: FIELDS });
+		const [state, setState] = useState({ open: initial.open ?? true, fields: FIELDS });
 		set = (patch) => setState((s) => ({ ...s, ...patch }));
 		return (
 			<SchemaDiffDialog
@@ -103,6 +123,7 @@ describe("SchemaDiffDialog", () => {
 		renderDialog();
 		const list = within(await dialog()).getByRole("list");
 		await within(list).findByText("Released (released): a new datetime field");
+		expect(within(list).getByText("Translatable: yes · Searchable: no")).toBeInTheDocument();
 		expect(within(list).getByText("Price (price) cannot be added")).toBeInTheDocument();
 		expect(within(list).getByText(PRICE_CONFLICT)).toBeInTheDocument();
 		expect(
@@ -176,6 +197,14 @@ describe("SchemaDiffDialog", () => {
 			"schema/apply": (body) =>
 				new Promise((resolve) => answers.push((changes) => resolve(reply(body, changes)))),
 		});
+		// The dialog's own handler of a reply runs before a later one on the same promise.
+		const replies: Promise<unknown>[] = [];
+		const applySchema = api.applySchema;
+		vi.spyOn(api, "applySchema").mockImplementation((input) => {
+			const pending = applySchema(input);
+			replies.push(pending);
+			return pending;
+		});
 		const host = renderHost();
 		await waitFor(() => expect(answers).toHaveLength(1));
 		act(() => host.set({ fields: FIELDS.slice(0, 2) }));
@@ -183,7 +212,7 @@ describe("SchemaDiffDialog", () => {
 		answers[1]?.(CREATE.slice(0, 2));
 		await waitFor(() => expect(confirm()).toBeEnabled());
 		answers[0]?.([{ field: "price", action: "conflict", type: "number", message: PRICE_CONFLICT }]);
-		await new Promise((r) => setTimeout(r, 20));
+		await act(() => replies[0]);
 		expect(screen.queryByText(PRICE_CONFLICT)).not.toBeInTheDocument();
 		expect(confirm()).toBeEnabled();
 	});
@@ -201,6 +230,118 @@ describe("SchemaDiffDialog", () => {
 		act(() => host.set({ open: true }));
 		await waitFor(() => expect(confirm()).toBeEnabled());
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it("drops an apply's error when it is closed and opened again", async () => {
+		mockRoutes({
+			"schema/apply": (body) =>
+				(body as { dryRun: boolean }).dryRun
+					? reply(body, CREATE)
+					: fail("INTERNAL_ERROR", "boom", 500),
+		});
+		const host = renderHost();
+		await waitFor(() => expect(confirm()).toBeEnabled());
+		await host.user.click(confirm());
+		await screen.findByRole("alert");
+		act(() => host.set({ open: false }));
+		act(() => host.set({ open: true }));
+		await waitFor(() => expect(confirm()).toBeEnabled());
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it("plans again on Try again after a failed plan", async () => {
+		let refuse = true;
+		const { calls } = mockRoutes({
+			"schema/apply": (body) =>
+				refuse ? fail("INTERNAL_ERROR", "boom", 500) : reply(body, CREATE),
+		});
+		const { user } = renderDialog();
+		const alert = await screen.findByRole("alert");
+		expect(confirm()).toBeDisabled();
+		refuse = false;
+		await user.click(within(alert).getByRole("button", { name: "Try again" }));
+		await waitFor(() => expect(confirm()).toBeEnabled());
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(calls.map((c) => c.body)).toEqual([
+			{ collection: "posts", fields: BODY_FIELDS, dryRun: true },
+			{ collection: "posts", fields: BODY_FIELDS, dryRun: true },
+		]);
+	});
+
+	it("trims labels, leaves out an empty one, and shows the label each field gets", async () => {
+		const fields = [
+			{ ...proposed("Price", "unit_price", "number"), label: "  Unit cost " },
+			{ ...proposed("Sku", "sku_code", "string"), label: "   " },
+		];
+		const { calls } = mockRoutes({
+			"schema/apply": (body) =>
+				reply(body, [
+					{ field: "unit_price", action: "create", type: "number" },
+					{ field: "sku_code", action: "create", type: "string" },
+				]),
+		});
+		renderDialog(fields);
+		expect(
+			await screen.findByText("Unit cost (unit_price): a new number field"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Sku code (sku_code): a new string field")).toBeInTheDocument();
+		expect(calls[0]?.body).toEqual({
+			collection: "posts",
+			fields: [
+				{
+					slug: "unit_price",
+					type: "number",
+					label: "Unit cost",
+					translatable: true,
+					searchable: false,
+				},
+				{ slug: "sku_code", type: "string", translatable: true, searchable: false },
+			],
+			dryRun: true,
+		});
+	});
+
+	it("reads the collection's fields again before reporting the applied slugs", async () => {
+		let release: () => void = () => {};
+		let applied = false;
+		const fieldReads: boolean[] = [];
+		mockRoutes({
+			"schema/apply": (body) => {
+				if (!(body as { dryRun: boolean }).dryRun) applied = true;
+				return reply(body, CREATE);
+			},
+			"GET collection:posts": () => {
+				fieldReads.push(applied);
+				const fields = applied ? [TITLE_ROW, RELEASED_ROW] : [TITLE_ROW];
+				const answer = { item: { slug: "posts", fields } };
+				return applied ? new Promise((resolve) => (release = () => resolve(answer))) : answer;
+			},
+		});
+		const seen: string[][] = [];
+		const { user, queryClient } = renderAdmin(
+			<>
+				<FieldsReader />
+				<SchemaDiffDialog
+					collection="posts"
+					fields={FIELDS}
+					open
+					onApplied={() => {
+						const data = queryClient.getQueryData<SchemaField[]>(queryKeys.fields("posts"));
+						seen.push((data ?? []).map((f) => f.slug));
+					}}
+					onCancel={() => {}}
+				/>
+			</>,
+		);
+		await waitFor(() => expect(fieldReads).toEqual([false]));
+		await waitFor(() => expect(confirm()).toBeEnabled());
+		await user.click(confirm());
+		await waitFor(() => expect(fieldReads).toEqual([false, true]));
+		// Still adding while the fields are read: nothing reported, nothing to cancel.
+		expect(seen).toEqual([]);
+		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+		release();
+		await waitFor(() => expect(seen).toEqual([["title", "released"]]));
 	});
 
 	it("applies with dryRun false on Confirm and reports the applied slugs", async () => {
@@ -254,19 +395,31 @@ describe("SchemaDiffDialog", () => {
 
 	it("shows result.error and stays open", async () => {
 		const error = { code: "SCHEMA_FAILED", message: 'Could not create "price": disk full' };
-		mockRoutes({
+		const { calls } = mockRoutes({
 			"schema/apply": (body) => {
 				const dryRun = (body as { dryRun: boolean }).dryRun;
-				if (dryRun) return reply(body, CREATE);
+				if (dryRun && !applied) return reply(body, CREATE);
+				if (dryRun)
+					return reply(body, [{ ...CREATE[0]!, action: "unchanged" }, ...CREATE.slice(1)]);
+				applied = true;
 				return { ...reply(body, CREATE), applied: ["released"], error };
 			},
 		});
+		let applied = false;
 		const { user, onApplied, onCancel } = renderDialog();
 		await waitFor(() => expect(confirm()).toBeEnabled());
 		await user.click(confirm());
 		const alert = await screen.findByRole("alert");
 		expect(alert).toHaveTextContent("Something went wrong.");
 		expect(alert).toHaveTextContent('Could not create "price": disk full');
+		// The list is planned again, so it shows what now exists, and the error stays.
+		expect(
+			await screen.findByText(
+				"Released (released) already exists as a datetime field; nothing changes",
+			),
+		).toBeInTheDocument();
+		expect(calls.map((c) => (c.body as { dryRun: boolean }).dryRun)).toEqual([true, false, true]);
+		expect(screen.getByRole("alert")).toHaveTextContent('Could not create "price": disk full');
 		expect(await dialog()).toBeInTheDocument();
 		expect(onApplied).not.toHaveBeenCalled();
 		expect(onCancel).not.toHaveBeenCalled();
@@ -351,18 +504,12 @@ describe("SchemaDiffDialog", () => {
 
 	it("does not call while closed", async () => {
 		const { calls } = mockRoutes({ "schema/apply": (body) => reply(body, CREATE) });
-		renderAdmin(
-			<SchemaDiffDialog
-				collection="posts"
-				fields={FIELDS}
-				open={false}
-				onApplied={() => {}}
-				onCancel={() => {}}
-			/>,
-		);
-		await new Promise((r) => setTimeout(r, 20));
+		const host = renderHost({ open: false });
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-		expect(calls).toEqual([]);
+		act(() => host.set({ open: true }));
+		await waitFor(() => expect(confirm()).toBeEnabled());
+		// The plan made on opening is the only call.
+		expect(calls.map((c) => (c.body as { dryRun: boolean }).dryRun)).toEqual([true]);
 	});
 });
 

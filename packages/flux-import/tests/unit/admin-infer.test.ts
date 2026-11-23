@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { RESERVED_FIELD_SLUGS } from "../../src/admin/limits.js";
-import { inferFieldType, proposeField } from "../../src/admin/wizard/map/new-fields/infer.js";
+import {
+	inferFieldType,
+	labelOf,
+	proposeField,
+} from "../../src/admin/wizard/map/new-fields/infer.js";
+import { labelOf as serverLabelOf } from "../../src/plugin/schema-apply.js";
 
 describe("inferFieldType", () => {
 	const cases: [string, unknown[], string][] = [
 		["no values", [], "string"],
 		["only empty values", [undefined, null, "", "  "], "string"],
-		["integers as text", ["1", "2", "-30", "+4"], "integer"],
+		["integers as text", ["1", "2", "-30", "10"], "integer"],
 		["integers as numbers", [12, 7], "integer"],
 		["decimals and integers", ["9.5", "10"], "number"],
 		["JSON numbers", [1.25, 3], "number"],
@@ -33,10 +38,29 @@ describe("inferFieldType", () => {
 		["an object", [{ a: 1 }], "string"],
 		["a long object", [{ a: "x".repeat(300) }], "text"],
 		["a mix of true and integers", [true, "7"], "string"],
+		// Review fixes 2-4.
+		["only ones", ["1", "1", 1], "integer"],
+		["only zeros", ["0", 0], "integer"],
+		["ones and a word", ["1", "yes"], "boolean"],
+		["leading zeros", ["007", "12"], "string"],
+		["a ZIP code", ["02134"], "string"],
+		["a leading zero decimal", ["0.5", "0"], "number"],
+		["a negative leading zero", ["-012"], "string"],
+		["a leading plus", ["+4", "5"], "string"],
+		["a phone number", ["+40721000000"], "string"],
+		["zero and a decimal", ["0", "1.5"], "number"],
+		["a d/M/yyyy date", ["1/3/2026"], "string"],
+		["a number with a thousands separator", ["1,234.5"], "string"],
 	];
 
 	it.each(cases)("infers %s", (_, values, type) => {
 		expect(inferFieldType(values)).toBe(type);
+	});
+});
+
+describe("labelOf", () => {
+	it.each(["unit_price", "a__b_", "x", "f_2nd_price"])("agrees with the server's on %s", (slug) => {
+		expect(labelOf(slug)).toBe(serverLabelOf(slug));
 	});
 });
 

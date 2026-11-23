@@ -15,9 +15,10 @@ const LABEL_MAX = 200;
 /** A value longer than this suggests a `text` field rather than a `string`. */
 const STRING_MAX = 200;
 
-const BOOLEAN_TOKENS: ReadonlySet<string> = new Set(["true", "false", "yes", "no", "1", "0"]);
-const INTEGER_RE = /^[+-]?\d+$/;
-const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const BOOLEAN_WORDS: ReadonlySet<string> = new Set(["true", "false", "yes", "no"]);
+/** No `+` and no leading zero but `0` and `0.x`: such values are identifiers, phone numbers… */
+const INTEGER_RE = /^-?(0|[1-9]\d*)$/;
+const NUMBER_RE = /^-?((0|[1-9]\d*)(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i;
 const ISO_RE =
 	/^(\d{4})-(\d{2})-(\d{2})([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?$/i;
 const DAY_FIRST_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;
@@ -33,10 +34,23 @@ function textOf(value: unknown): string {
 	return String(value);
 }
 
-const isBoolean = (v: unknown) =>
-	typeof v === "boolean" ||
-	(typeof v === "number" && (v === 0 || v === 1)) ||
-	(typeof v === "string" && BOOLEAN_TOKENS.has(v.trim().toLowerCase()));
+/** A boolean as written: a JSON boolean, a word, or `1`/`0` (as a number or text). */
+function booleanToken(v: unknown): "word" | "1" | "0" | null {
+	if (typeof v === "boolean") return "word";
+	const text = typeof v === "number" || typeof v === "string" ? String(v).trim().toLowerCase() : "";
+	if (BOOLEAN_WORDS.has(text)) return "word";
+	return text === "1" || text === "0" ? text : null;
+}
+
+/**
+ * Every value is a boolean token, and they read as flags: a word or JSON boolean among them, or
+ * both `1` and `0`. A column of only `1`s (or only `0`s) is a number column.
+ */
+function areBooleans(values: readonly unknown[]): boolean {
+	const tokens = new Set(values.map(booleanToken));
+	if (tokens.has(null)) return false;
+	return tokens.has("word") || (tokens.has("1") && tokens.has("0"));
+}
 
 const isInteger = (v: unknown) =>
 	typeof v === "number" ? Number.isInteger(v) : typeof v === "string" && INTEGER_RE.test(v.trim());
@@ -62,21 +76,27 @@ function isDate(v: unknown): boolean {
 const isUrl = (v: unknown) => typeof v === "string" && URL_RE.test(v.trim());
 
 /**
- * The field type a column's values suggest, from its non-empty values: booleans first (so `1`/`0`
- * columns are flags), then integers, numbers, dates, URLs; `text` when any value is over 200
+ * The field type a column's values suggest, from its non-empty values: booleans first (so a column
+ * of `1`s and `0`s is a flag), then integers, numbers, dates, URLs; `text` when any value is over 200
  * characters; `string` otherwise, and when there are no values.
  */
 export function inferFieldType(values: readonly unknown[]): string {
 	const present = values.filter((v) => !isEmpty(v));
 	if (present.length === 0) return "string";
 	const all = (test: (v: unknown) => boolean) => present.every(test);
-	if (all(isBoolean)) return "boolean";
+	if (areBooleans(present)) return "boolean";
 	if (all(isInteger)) return "integer";
 	if (all(isNumber)) return "number";
 	if (all(isDate)) return "datetime";
 	if (all(isUrl)) return "url";
 	if (present.some((v) => textOf(v).length > STRING_MAX)) return "text";
 	return "string";
+}
+
+/** `unit_price` → `Unit price`: `schema/apply`'s label for a field requested without one. */
+export function labelOf(slug: string): string {
+	const words = slug.replace(/_+/g, " ").trim();
+	return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** `s` cut to `max` UTF-16 units, never inside a surrogate pair. */

@@ -36,6 +36,13 @@ export const M = {
 		message: "{label} ({slug}) already exists as a {type} field; nothing changes",
 	},
 	conflict: { id: "flux-import.new-fields.conflict", message: "{label} ({slug}) cannot be added" },
+	flags: {
+		id: "flux-import.new-fields.flags",
+		message: "Translatable: {translatable} · Searchable: {searchable}",
+	},
+	yes: { id: "flux-import.new-fields.yes", message: "yes" },
+	no: { id: "flux-import.new-fields.no", message: "no" },
+	tryAgain: { id: "flux-import.new-fields.try-again", message: "Try again" },
 	conflictsBlock: {
 		id: "flux-import.new-fields.conflicts-block",
 		message: "Remove or change the fields that cannot be added to continue.",
