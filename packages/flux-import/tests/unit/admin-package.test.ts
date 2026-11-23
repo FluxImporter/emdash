@@ -5,6 +5,20 @@ import { describe, expect, it } from "vitest";
 
 /** packages/flux-import, from tests/unit. */
 const PACKAGE_DIR = fileURLToPath(new URL("../../", import.meta.url));
+const REPO_DIR = join(PACKAGE_DIR, "../..");
+/** flux-import and the sites that host it; a site serves the admin its own emdash resolves. */
+const SITES = ["packages/flux-import", "sites/dev", "sites/dev-cf"];
+/** The host libraries the admin and flux-import's admin code must share (Fact V2). */
+const SHARED = [
+	"@cloudflare/kumo",
+	"@lingui/core",
+	"@lingui/react",
+	"@tanstack/react-query",
+	"@dnd-kit/core",
+	"@dnd-kit/utilities",
+	"react",
+	"react-dom",
+];
 
 interface PackageJson {
 	exports: Record<string, string>;
@@ -40,19 +54,27 @@ describe("the admin package wiring (M7a Task 1)", () => {
 		expect(pkg.dependencies["@dnd-kit/sortable"]).toBeUndefined();
 	});
 
-	it.each([
-		"@cloudflare/kumo",
-		"@lingui/core",
-		"@lingui/react",
-		"@tanstack/react-query",
-		"@dnd-kit/core",
-		"@dnd-kit/utilities",
-		"react",
-		"react-dom",
-	])("resolves %s to the admin's own copy (Fact V2)", (name) => {
-		const ours = realpathSync(join(PACKAGE_DIR, "node_modules", name));
-		// The admin's dependencies sit beside it in its pnpm store node_modules.
-		const admins = realpathSync(join(ADMIN_DIR, "../..", name));
-		expect(ours).toBe(admins);
+	it.each(SITES.flatMap((site) => SHARED.map((name) => [site, name] as const)))(
+		"resolves %s's admin's %s to flux-import's own copy (Fact V2)",
+		(site, name) => {
+			// The admin a site serves is its emdash's; flux-import's admin source imports its own
+			// node_modules, so both must be one real path or a build bundles two copies.
+			const emdash = realpathSync(join(REPO_DIR, site, "node_modules/emdash"));
+			const siteAdmin = realpathSync(join(emdash, "../@emdash-cms/admin"));
+			expect(siteAdmin).toBe(ADMIN_DIR);
+			expect(realpathSync(join(siteAdmin, "../..", name))).toBe(
+				realpathSync(join(PACKAGE_DIR, "node_modules", name)),
+			);
+		},
+	);
+
+	it("locks one emdash, one admin and one Kumo for the whole workspace", () => {
+		const lock = readFileSync(join(REPO_DIR, "pnpm-lock.yaml"), "utf8");
+		const snapshots = lock.slice(lock.indexOf("\nsnapshots:\n"));
+		const count = (name: string) =>
+			snapshots.split("\n").filter((line) => line.startsWith(`  ${name}@`)).length;
+		expect(count("emdash")).toBe(1);
+		expect(count("'@emdash-cms/admin")).toBe(1);
+		expect(count("'@cloudflare/kumo")).toBe(1);
 	});
 });

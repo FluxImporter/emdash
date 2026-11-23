@@ -33,7 +33,7 @@ export function translate(i18n: I18n, msg: Msg, values?: Values): string {
 
 /** `translate` bound to the admin's own Lingui instance. */
 export function useT(): (msg: Msg, values?: Values) => string {
-	// A locale change re-renders every `useLingui` consumer, which then calls this again.
-	const { i18n } = useLingui();
-	return useCallback((msg: Msg, values?: Values) => translate(i18n, msg, values), [i18n]);
+	const { i18n, _ } = useLingui();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `i18n` is the same object in every locale; the provider binds a new `_` on each change, so `t` changes with the locale.
+	return useCallback((msg: Msg, values?: Values) => translate(i18n, msg, values), [i18n, _]);
 }

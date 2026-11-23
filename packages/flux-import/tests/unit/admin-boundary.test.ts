@@ -95,6 +95,12 @@ function resolveRelative(from: string, specifier: string): string {
 	throw new Error(`${relative(PACKAGE_DIR, from)}: cannot resolve ${specifier}`);
 }
 
+/** The files that hold messages (plan Ruling 2, preflight F11). */
+const isMessageTable = (file: string) => /(^|[/\\])(messages|errors)\.ts$/.test(file);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+
 const insideAdmin = (path: string) => path === ADMIN_SRC || path.startsWith(ADMIN_SRC + sep);
 
 /**
@@ -242,24 +248,22 @@ describe("the admin module's boundary", () => {
 
 	it("keeps message IDs unique, well-formed and free of ICU syntax (Ruling 2)", async () => {
 		const ID = /^flux-import\.[a-z0-9-]+(\.[a-z0-9-]+)+$/;
-		const tables = files.filter((f) => /(^|[/\\])(messages|errors)\.ts$/.test(f));
 		const seen = new Map<string, string>();
 		const problems: string[] = [];
-		for (const file of tables) {
+		for (const file of files.filter(isMessageTable)) {
 			const where = relative(PACKAGE_DIR, file);
 			const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
-			const msgs: [string, unknown][] = [];
+			// Message tables are plain objects, nested or not; a value with an `id` or a `message`
+			// must be a Msg. Arrays (such as lists of codes), primitives and functions are skipped.
+			const msgs: [string, Record<string, unknown>][] = [];
 			const collect = (path: string, value: unknown) => {
-				if (value && typeof value === "object" && !Array.isArray(value) && !("id" in value)) {
-					for (const [k, v] of Object.entries(value)) collect(`${path}.${k}`, v);
-				} else msgs.push([path, value]);
+				if (!isPlainObject(value)) return;
+				if ("id" in value || "message" in value) msgs.push([path, value]);
+				else for (const [k, v] of Object.entries(value)) collect(`${path}.${k}`, v);
 			};
-			for (const [name, value] of Object.entries(mod)) {
-				if (typeof value !== "function") collect(name, value);
-			}
-			for (const [path, value] of msgs) {
-				const msg = value as { id?: unknown; message?: unknown };
-				if (typeof msg?.id !== "string" || typeof msg.message !== "string") {
+			for (const [name, value] of Object.entries(mod)) collect(name, value);
+			for (const [path, msg] of msgs) {
+				if (typeof msg.id !== "string" || typeof msg.message !== "string") {
 					problems.push(`${where} ${path}: not a Msg`);
 					continue;
 				}
@@ -273,5 +277,30 @@ describe("the admin module's boundary", () => {
 			}
 		}
 		expect(problems).toEqual([]);
+		expect(seen.size).toBeGreaterThan(0);
+	});
+
+	it("defines messages only in messages.ts and errors.ts (Ruling 2)", () => {
+		const stray = files
+			.filter((f) => !isMessageTable(f))
+			.flatMap((file) => {
+				const source = parse(file);
+				const found: string[] = [];
+				const visit = (node: ts.Node) => {
+					if (ts.isObjectLiteralExpression(node)) {
+						const names = node.properties
+							.filter((p) => ts.isPropertyAssignment(p) && ts.isStringLiteralLike(p.initializer))
+							.map((p) => p.name?.getText(source).replace(/^["']|["']$/g, ""));
+						if (names.includes("id") && names.includes("message")) {
+							const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+							found.push(`${relative(PACKAGE_DIR, file)}:${line}`);
+						}
+					}
+					ts.forEachChild(node, visit);
+				};
+				visit(source);
+				return found;
+			});
+		expect(stray).toEqual([]);
 	});
 });

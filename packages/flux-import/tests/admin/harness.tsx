@@ -62,11 +62,75 @@ function json(value: unknown, status: number): Response {
 const answer = (value: unknown, status: number) =>
 	value instanceof Response ? value : json({ success: true, data: value }, status);
 
+/** Requests the harness refused. `setup.ts` fails the test unless the list is empty. */
+const violations: string[] = [];
+
+/**
+ * Returns and clears the refused requests, for a test that provokes one on purpose. A refusal is
+ * also thrown, but a component may catch it; this list is how it still fails the test.
+ */
+export function takeViolations(): string[] {
+	return violations.splice(0);
+}
+
+function refuse(message: string): never {
+	violations.push(message);
+	throw new Error(message);
+}
+
+/** What `fetch` rejects with on an abort: the signal's reason, an `AbortError` by default. */
+const abortReason = (signal: AbortSignal): unknown =>
+	signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+
+/** `pending`, unless `signal` aborts first. */
+function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(abortReason(signal));
+		signal.addEventListener("abort", onAbort, { once: true });
+		pending.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/**
+ * The fake XHR's events. Not `EventTarget`: happy-dom's `dispatchEvent` also calls some `on<type>`
+ * handlers itself, so a handler could run twice.
+ */
+class Listeners {
+	private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+	addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+		if (!listener) return;
+		const set = this.listeners.get(type) ?? new Set();
+		set.add(listener);
+		this.listeners.set(type, set);
+	}
+
+	removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+		if (listener) this.listeners.get(type)?.delete(listener);
+	}
+
+	emit(type: string, event: Event) {
+		for (const listener of [...(this.listeners.get(type) ?? [])]) {
+			if (typeof listener === "function") listener.call(this, event);
+			else listener.handleEvent(event);
+		}
+	}
+}
+
 /**
  * Stubs `fetch` and `XMLHttpRequest` with `table`. Keys: a plugin route name (`"jobs/next"`),
  * `"upload"`, `"GET manifest"`, `"GET collection:<slug>"` and `"GET log.csv"`. Any other request,
- * and any request without `X-EmDash-Request: 1`, is refused with an error. `setup.ts` unstubs
- * both after each test.
+ * and any request without `X-EmDash-Request: 1`, is refused: thrown, and recorded for `setup.ts`.
+ * Both honour aborts. `setup.ts` unstubs both after each test.
  */
 export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteCall[] } {
 	const calls: RouteCall[] = [];
@@ -76,8 +140,8 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 		const url = toUrl(raw);
 		const key = routeKey(method, url.pathname);
 		const handler = key === null ? undefined : table[key];
-		if (key === null || !handler) throw new Error(`Unexpected request: ${method} ${raw}`);
-		if (csrf !== "1") throw new Error(`Request without X-EmDash-Request: 1: ${method} ${raw}`);
+		if (key === null || !handler) refuse(`Unexpected request: ${method} ${raw}`);
+		if (csrf !== "1") refuse(`Request without X-EmDash-Request: 1: ${method} ${raw}`);
 		const call: RouteCall = { method, path: url.pathname + url.search, route: key, body };
 		calls.push(call);
 		return { handler, call };
@@ -88,18 +152,18 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 		const raw = request ? request.url : String(input);
 		const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
 		const headers = new Headers(init?.headers ?? request?.headers);
-		const { handler, call } = accept(
-			method,
-			raw,
-			headers.get("X-EmDash-Request"),
-			parseBody(init?.body),
-		);
-		return answer(await handler(call.body, call), call.route === "upload" ? 201 : 200);
+		const signal = init?.signal ?? request?.signal;
+		if (signal?.aborted) throw abortReason(signal);
+		const body = init?.body != null ? init.body : request?.body ? await request.text() : undefined;
+		const { handler, call } = accept(method, raw, headers.get("X-EmDash-Request"), parseBody(body));
+		const pending = Promise.resolve().then(() => handler(call.body, call));
+		const value = await (signal ? untilAborted(pending, signal) : pending);
+		return answer(value, call.route === "upload" ? 201 : 200);
 	});
 
 	/** The upload's `XMLHttpRequest` (preflight F12). */
-	class FakeXhr extends EventTarget {
-		readonly upload = new EventTarget() as EventTarget & {
+	class FakeXhr extends Listeners {
+		readonly upload = new Listeners() as Listeners & {
 			onprogress?: ((e: ProgressEvent) => void) | null;
 		};
 		readyState = 0;
@@ -108,12 +172,15 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 		responseType: XMLHttpRequestResponseType = "";
 		onload: ((e: Event) => void) | null = null;
 		onerror: ((e: Event) => void) | null = null;
+		onabort: ((e: Event) => void) | null = null;
 		onloadend: ((e: Event) => void) | null = null;
 		onreadystatechange: ((e: Event) => void) | null = null;
 		private method = "GET";
 		private url = "";
 		private readonly headers = new Map<string, string>();
 		private contentType: string | null = null;
+		/** `sent` from `send` until the request ends (`done`), by a response, an error or `abort`. */
+		private state: "idle" | "sent" | "done" = "idle";
 
 		get response(): unknown {
 			return this.responseType === "json" ? parseBody(this.responseText) : this.responseText;
@@ -133,7 +200,17 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 			return name.toLowerCase() === "content-type" ? this.contentType : null;
 		}
 
-		abort() {}
+		/** Ends a sent request: `abort` and `loadend` fire, and `load` never does. */
+		abort() {
+			if (this.state !== "sent") return;
+			this.state = "done";
+			this.status = 0;
+			this.readyState = 4;
+			this.fire(this, "readystatechange", new Event("readystatechange"));
+			this.fire(this, "abort", new ProgressEvent("abort"));
+			this.fire(this, "loadend", new ProgressEvent("loadend"));
+			this.readyState = 0;
+		}
 
 		send(body?: Document | XMLHttpRequestBodyInit | null) {
 			const { handler, call } = accept(
@@ -142,11 +219,13 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 				this.headers.get("x-emdash-request") ?? null,
 				body ?? undefined,
 			);
+			this.state = "sent";
 			void this.respond(handler, call, body instanceof Blob ? body.size : 0);
 		}
 
-		private fire(target: EventTarget, type: string, event: Event) {
-			target.dispatchEvent(event);
+		/** Calls the `type` listeners, then the `on<type>` handler, once each. */
+		private fire(target: Listeners, type: string, event: Event) {
+			target.emit(type, event);
 			const own = (target as unknown as Record<string, unknown>)[`on${type}`];
 			if (typeof own === "function") own.call(target, event);
 		}
@@ -154,6 +233,7 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 		private async respond(handler: RouteHandler, call: RouteCall, size: number) {
 			await Promise.resolve();
 			for (const loaded of [size / 2, size]) {
+				if (this.state !== "sent") return;
 				const progress = new ProgressEvent("progress", {
 					lengthComputable: true,
 					loaded,
@@ -161,17 +241,25 @@ export function mockRoutes(table: Record<string, RouteHandler>): { calls: RouteC
 				});
 				this.fire(this.upload, "progress", progress);
 			}
+			let res: Response | null = null;
+			let text = "";
 			try {
-				const res = answer(await handler(call.body, call), 201);
+				res = answer(await handler(call.body, call), 201);
+				text = await res.text();
+			} catch {
+				res = null;
+			}
+			if (this.state !== "sent") return;
+			this.state = "done";
+			this.readyState = 4;
+			if (res) {
 				this.status = res.status;
 				this.contentType = res.headers.get("Content-Type");
-				this.responseText = await res.text();
-				this.readyState = 4;
+				this.responseText = text;
 				this.fire(this, "readystatechange", new Event("readystatechange"));
 				this.fire(this, "load", new ProgressEvent("load"));
-			} catch {
+			} else {
 				this.status = 0;
-				this.readyState = 4;
 				this.fire(this, "readystatechange", new Event("readystatechange"));
 				this.fire(this, "error", new ProgressEvent("error"));
 			}
