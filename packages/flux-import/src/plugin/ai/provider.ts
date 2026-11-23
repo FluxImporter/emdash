@@ -93,14 +93,17 @@ export function statusOf(e: unknown): number | undefined {
 }
 
 /**
- * What a provider transport re-throws for a `guardedRequest` failure. The runtime's abort and
- * timeout errors pass unchanged. Anything else becomes a `UrlSourceError` whose message is only
+ * What a provider transport re-throws for a `guardedRequest` failure. The runtime's abort or
+ * timeout error, the failure itself or anywhere in its cause chain (plan Ruling 3), is re-thrown
+ * on its own: its message is the runtime's, never ours. Anything else becomes a `UrlSourceError` whose message is only
  * its code, with no cause: the SDK reads any rejection whose text matches `/timed? ?out/i` as its
  * own timeout (SDK `client.js` `makeRequest`), and a guard message names the host ("The host
  * llm-timeout.internal is not allowed") or the resolver's error ("…aborted due to timeout").
  */
 export function guardFailure(e: unknown): unknown {
-	if (named(e)) return e;
+	// The abort or timeout itself, not its wrapper, whose message may name the host.
+	const abort = chain(e).find(named);
+	if (abort !== undefined) return abort;
 	const code = e instanceof UrlSourceError ? e.code : "FETCH_FAILED";
 	return new UrlSourceError(code, code);
 }

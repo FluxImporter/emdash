@@ -90,6 +90,9 @@ export function readMessage(message: Message): ProviderOutcome {
 		code,
 		status: 200,
 	});
+	// The SDK returns a JSON `null`, a number or a text body as it is (SDK `internal/parse.js`).
+	const body: unknown = message;
+	if (typeof body !== "object" || body === null) return fail("ai_invalid_output");
 	if (message.stop_reason === "refusal") return fail("ai_refused");
 	if (
 		message.stop_reason === "max_tokens" ||

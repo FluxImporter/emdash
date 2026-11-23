@@ -7,6 +7,7 @@ import {
 	aiTimeoutMs,
 	callProvider,
 	codeForStatus,
+	guardFailure,
 	type ProviderRequest,
 } from "../../src/plugin/ai/provider.js";
 import { type AiReady, DEFAULT_MODEL } from "../../src/plugin/ai/settings.js";
@@ -91,6 +92,11 @@ const hung = (s: Sent) =>
 		const signal = s.init.signal as AbortSignal;
 		signal.addEventListener("abort", () => reject(signal.reason));
 	});
+/** A runtime that wraps the abort in its own error, whose message names the host. */
+const wrappedAbort = () =>
+	new TypeError("fetch failed for llm-timeout.example", {
+		cause: new DOMException("This operation was aborted", "AbortError"),
+	});
 /** What a DNS-over-HTTPS lookup rejects with when its own `AbortSignal.timeout` fires. */
 const resolverTimeout: Resolver = async () => {
 	throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
@@ -120,6 +126,22 @@ describe("aiTimeoutMs and codeForStatus (spec Rulings 52, 55)", () => {
 		[529, "ai_provider_error"],
 	] as const)("maps %i to %s", (status, code) => {
 		expect(codeForStatus(status)).toBe(code);
+	});
+
+	it("re-throws an abort found in the cause chain on its own, never its host-naming wrapper", () => {
+		const abort = new DOMException("This operation was aborted", "AbortError");
+		const wrapped = new TypeError("fetch failed for llm-timeout.example", {
+			cause: new Error("socket", { cause: abort }),
+		});
+		const out = guardFailure(wrapped);
+		expect(out).toBe(abort);
+		expect(String(out)).not.toContain("llm-timeout");
+		const blocked = guardFailure(
+			new UrlSourceError("URL_BLOCKED", "The host llm-timeout.internal"),
+		);
+		expect(blocked).toBeInstanceOf(UrlSourceError);
+		expect(String(blocked)).toBe("UrlSourceError: URL_BLOCKED");
+		expect(blocked).not.toHaveProperty("cause");
 	});
 
 	it("maps thrown values in plan Ruling 3's order", () => {
@@ -242,6 +264,9 @@ describe('Anthropic through the pinned SDK and guardedRequest (spec "Provider re
 		["text that is not JSON", () => message([text("Here you go: {}")]), "ai_invalid_output"],
 		["no text block", () => message([]), "ai_invalid_output"],
 		["content that is not a list", () => message({} as unknown[]), "ai_invalid_output"],
+		["a null body", () => Response.json(null), "ai_invalid_output"],
+		["a number body", () => Response.json(42), "ai_invalid_output"],
+		["a text body", () => new Response("hello"), "ai_invalid_output"],
 	] as const)("reads %s as %s", async (_name, answer, code) => {
 		const { net } = fakeNet(answer);
 		expect(await callProvider(ANTHROPIC, REQUEST, net)).toEqual({ ok: false, code, status: 200 });
@@ -262,6 +287,33 @@ describe('Anthropic through the pinned SDK and guardedRequest (spec "Provider re
 					fallback,
 					text(JSON.stringify(REPLY).slice(0, 10)),
 					text(JSON.stringify(REPLY).slice(10)),
+				],
+				"end_turn",
+				{ model: "claude-opus-4-8" },
+			),
+		);
+		expect(await callProvider(ANTHROPIC, REQUEST, net)).toMatchObject({
+			ok: true,
+			value: REPLY,
+			model: "claude-opus-4-8",
+		});
+	});
+
+	it("parses only the text after the second of two fallback blocks (Ruling 53)", async () => {
+		const hop = (from: string, to: string) => ({
+			type: "fallback",
+			from: { model: from },
+			to: { model: to },
+			trigger: null,
+		});
+		const { net } = fakeNet(() =>
+			message(
+				[
+					text('{"key":"first'),
+					hop(DEFAULT_MODEL, "claude-opus-5"),
+					text('{"key":"second'),
+					hop("claude-opus-5", "claude-opus-4-8"),
+					text(JSON.stringify(REPLY)),
 				],
 				"end_turn",
 				{ model: "claude-opus-4-8" },
@@ -361,6 +413,11 @@ describe('Anthropic through the pinned SDK and guardedRequest (spec "Provider re
 			ok: false,
 			code: "ai_invalid_output",
 		});
+	});
+
+	it("maps a fetch failure caused by an abort to ai_timeout", async () => {
+		const { net } = fakeNet(() => Promise.reject(wrappedAbort()));
+		expect(await callProvider(ANTHROPIC, REQUEST, net)).toEqual({ ok: false, code: "ai_timeout" });
 	});
 
 	it("maps a hung request to ai_timeout through the SDK's timer", async () => {
@@ -551,5 +608,10 @@ describe("an OpenAI-compatible endpoint through guardedRequest (spec Rulings 5, 
 			code: "ai_provider_error",
 		});
 		expect([...named.sent, ...dns.sent]).toEqual([]);
+	});
+
+	it("maps a fetch failure caused by an abort to ai_timeout", async () => {
+		const { net } = fakeNet(() => Promise.reject(wrappedAbort()));
+		expect(await callProvider(OPENAI, REQUEST, net)).toEqual({ ok: false, code: "ai_timeout" });
 	});
 });
