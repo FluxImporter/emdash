@@ -20,7 +20,7 @@ import {
 	type SuggestWarning,
 	suggestByName,
 } from "../engine/suggest.js";
-import type { Template } from "../engine/template.js";
+import { type Template, templatePaths } from "../engine/template.js";
 import type { CsvSample } from "../sources/csv.js";
 import { hostOf, type NetOptions } from "../sources/net.js";
 import { resolvePath } from "../sources/paths.js";
@@ -137,33 +137,27 @@ export function toSample(read: CsvSample | ValueSample, format: SourceFormat): S
 	return { format, keys, rows };
 }
 
-/** Every string `from` in `value`, at any depth. */
-function collectFroms(value: unknown, into: Set<string>): Set<string> {
-	if (Array.isArray(value)) {
-		for (const v of value) collectFroms(v, into);
-	} else if (typeof value === "object" && value !== null) {
-		for (const [name, v] of Object.entries(value)) {
-			if (name === "from" && typeof v === "string") into.add(v);
-			else collectFroms(v, into);
-		}
-	}
-	return into;
+/** The keys the template's field mappings (image `alt` included) and its slug read. */
+function fieldAndSlugPaths(t: Template): string[] {
+	const froms = [
+		t.slug?.from,
+		...Object.values(t.fields).flatMap((m) =>
+			m.type === "image" ? [m.from, m.alt?.from] : [m.from],
+		),
+	];
+	return froms.filter((path): path is string => path !== undefined);
 }
 
 /**
- * The keys the base template uses (plan Ruling 20): every `from` outside its `key` and `source`
- * blocks. The key column is left out unless a base field or the slug maps it (pre-flight F2), so a
- * key column a base field already maps is never offered to another field.
+ * The keys the base template uses (plan Ruling 20): `templatePaths`, its typed `from`s. The key
+ * column stays among them only when a base field or the slug maps it (pre-flight F2): a key column
+ * read only by the key, `translationOf`, `publishAt`, taxonomies or bylines is freed, and one a
+ * base field already maps is never offered to another field.
  */
 function baseKeysOf(base: Template): Set<string> {
-	const keys = new Set<string>();
-	for (const [name, block] of Object.entries(base)) {
-		if (name !== "key" && name !== "source") collectFroms(block, keys);
-	}
+	const keys = new Set(templatePaths(base));
 	const keyFrom = base.key.from;
-	if (keyFrom !== undefined && !collectFroms([base.fields, base.slug], new Set()).has(keyFrom)) {
-		keys.delete(keyFrom);
-	}
+	if (keyFrom !== undefined && !fieldAndSlugPaths(base).includes(keyFrom)) keys.delete(keyFrom);
 	return keys;
 }
 
@@ -256,6 +250,8 @@ interface Consulted {
 	usage?: { input: number; output: number };
 	/** The answering model, checked by `MODEL_RE`, else the configured one; only for an answer. */
 	model?: string;
+	/** The rate limit's KV read or write failed: still `ai_rate_limited`, logged apart. */
+	kvError?: true;
 }
 
 interface ConsultInput {
@@ -295,8 +291,9 @@ async function consult(
 	try {
 		allowed = await takeAiCall(deps.kv, deps.now);
 	} catch {
-		// Ruling 35: a KV failure is a provider-side failure; the limit fails closed.
-		allowed = false;
+		// Ruling 35: a KV failure is a provider-side failure; the limit fails closed. The log line
+		// tells it from a used-up limit, without the error's text.
+		return stop("ai_rate_limited", { kvError: true });
 	}
 	if (!allowed) return stop("ai_rate_limited");
 
@@ -349,8 +346,8 @@ function unmappedKeys(
 	template: Template | null,
 	merged: { key: Suggestion; slug?: Suggestion; fields: FieldSuggestion[] },
 ): string[] {
-	const used = new Set<string>();
-	if (template !== null) collectFroms([template.fields, template.key, template.slug], used);
+	const used = new Set<string>(template === null ? [] : fieldAndSlugPaths(template));
+	if (template?.key.from !== undefined) used.add(template.key.from);
 	for (const s of [merged.key, merged.slug, ...merged.fields]) {
 		if (s?.from != null) used.add(s.from);
 	}
@@ -487,6 +484,7 @@ export async function suggestMapping(
 			`host=${ready === null ? "none" : hostOf(new URL(ready.baseUrl))}`,
 			`status=${consulted?.status ?? "none"}`,
 			`code=${consulted?.code ?? "none"}`,
+			...(consulted?.kvError === true ? ["rate=kv_error"] : []),
 			`ms=${deps.now() - started}`,
 			`sent=${sent === null ? "none" : `${sent.records}/${sent.keys}/${sent.fields}/${sent.bytes}`}`,
 			`usage=${usage === undefined ? "none" : `${usage.input}/${usage.output}`}`,

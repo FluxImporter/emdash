@@ -349,6 +349,9 @@ describe("templates/suggest with a provider (spec step 6)", () => {
 		expect(h.requests).toEqual([]);
 		expect(out).toMatchObject({ method: "fallback", sent: null });
 		expect(out.warnings).toContainEqual({ code: "ai_rate_limited" });
+		// A used-up limit is not a KV failure (review fix 2).
+		expect(h.logged[0]).toContain(" code=ai_rate_limited ms=");
+		expect(h.logged[0]).not.toContain("rate=");
 	});
 
 	it("answers a KV failure of the rate limit with name matching and ai_rate_limited, never a 5xx (Ruling 35)", async () => {
@@ -366,7 +369,7 @@ describe("templates/suggest with a provider (spec step 6)", () => {
 			expect(out.warnings.filter((w) => w.code.startsWith("ai_"))).toEqual([
 				{ code: "ai_rate_limited" },
 			]);
-			expect(h.logged[0]).toContain("code=ai_rate_limited");
+			expect(h.logged[0]).toContain(" code=ai_rate_limited rate=kv_error ");
 			expect(h.logged[0]).not.toContain("D1_ERROR");
 		}
 	});
@@ -566,6 +569,92 @@ describe("templates/suggest with a provider (spec step 6)", () => {
 			ai: false,
 		});
 		expect(plain.fields.find((f) => f.field === "title")?.from).not.toBe("sku");
+	});
+});
+
+describe("templates/suggest's base keys (plan Ruling 20, review fixes)", () => {
+	const EMPTY_REPLY: ProviderOutcome = { ...VALID, value: { key: null, slug: null, fields: [] } };
+
+	it("reads a base template's keys from its mappings, not from a select map's entries", async () => {
+		const h = harness({ outcome: EMPTY_REPLY });
+		h.deps.readCollection = async () => ({
+			label: "P",
+			fields: [
+				{
+					slug: "status",
+					label: "Status",
+					type: "select",
+					validation: { options: ["Draft", "Published"] },
+				},
+				{ slug: "title", label: "Title", type: "string" },
+				{ slug: "body", label: "Body", type: "portableText" },
+			],
+		});
+		const base = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			// A source value "from" maps to the option "Draft": "Draft" is a value, not a key.
+			fields: { status: { type: "select", from: "state", map: { from: "Draft" } } },
+		};
+		const text = "sku,state,Draft,Heading,Text\r\nA,from,x,Hello,<p>1</p>\r\n";
+		await suggestMapping(h.deps, { collection: "products", text, template: base });
+		const keys = payloadOf(h.requests[0] as ProviderRequest).source.keys;
+		expect(keys).toContain("Draft");
+		expect(keys).not.toContain("state");
+		const plain = await suggestMapping(h.deps, {
+			collection: "products",
+			text,
+			template: base,
+			ai: false,
+		});
+		expect(plain.unmapped.keys).toContain("Draft");
+		expect(plain.unmapped.keys).not.toContain("state");
+	});
+
+	it("never sends a key the base template reads outside its fields, such as a taxonomy's", async () => {
+		const h = harness({ outcome: EMPTY_REPLY });
+		const base = {
+			version: 1,
+			collection: "products",
+			locale: "en",
+			key: { from: "sku" },
+			fields: { price: { from: "Price", type: "number" } },
+			taxonomies: { tags: { from: "Tags" } },
+		};
+		const text = "sku,Name,Price,Tags\r\nA,x,1,t\r\n";
+		await suggestMapping(h.deps, { collection: "products", text, template: base });
+		const keys = payloadOf(h.requests[0] as ProviderRequest).source.keys;
+		expect(keys).toEqual(["sku", "Name"]);
+		expect(keys).not.toContain("Tags");
+		// unmapped.keys lists what no field, the key or the slug uses (plan Ruling 18): Tags is one.
+		const plain = await suggestMapping(h.deps, {
+			collection: "products",
+			text,
+			template: base,
+			ai: false,
+		});
+		expect(plain.unmapped.keys).toEqual(["Tags"]);
+	});
+
+	it("drafts in the base template's locale, whatever locale the input names", async () => {
+		const h = harness();
+		const base = {
+			version: 1,
+			collection: "products",
+			locale: "fr",
+			key: { from: "sku" },
+			fields: { price: { from: "Price", type: "number" } },
+		};
+		const out = await suggestMapping(h.deps, {
+			collection: "products",
+			locale: "en",
+			text: csv(),
+			template: base,
+			ai: false,
+		});
+		expect(out.template?.locale).toBe("fr");
 	});
 });
 
