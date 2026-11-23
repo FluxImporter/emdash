@@ -1,0 +1,201 @@
+import { Banner, Button, Empty, Loader } from "@cloudflare/kumo";
+import { useEffect, useState } from "react";
+import type { Counters, Job } from "../../../engine/types.js";
+import { api } from "../../api.js";
+import { ApiError, redact } from "../../api-error.js";
+import { describeError, describeJobError } from "../../errors.js";
+import { type Msg, useT } from "../../i18n.js";
+import { useJobDriver } from "../../run-driver.js";
+import { useWizard } from "../context.js";
+import { StepFooter } from "../StepFooter.js";
+import { jobInput } from "../state.js";
+import { M } from "./messages.js";
+import { RecordsTable } from "./RecordsTable.js";
+
+/** The `once` key of the dry run's `jobs/create` (preflight F14; the provider forgets it). */
+const DRY_RUN_KEY = "dry-run";
+
+/** The records a dry run read: every outcome but the missing phase's `removed`. */
+function totalOf(c: Counters): number {
+	return c.created + c.updated + c.unchanged + c.locked + c.conflict + c.failed + c.filtered;
+}
+
+/** The counts per action; "Missing → <action>" only when the template has a missing phase. */
+function Counts(p: { job: Job }) {
+	const t = useT();
+	const c = p.job.counters;
+	const missing = p.job.template.rules?.missing?.action;
+	const items: [Msg, number][] = [
+		[M.create, c.created],
+		[M.update, c.updated],
+		[M.unchanged, c.unchanged],
+		[M.failed, c.failed],
+		[M.conflict, c.conflict],
+		[M.locked, c.locked],
+		[M.filtered, c.filtered],
+	];
+	if (missing !== undefined) {
+		items.push([missing === "trash" ? M.missingTrash : M.missingUnpublish, c.removed ?? 0]);
+	}
+	return (
+		<section aria-label={t(M.counts)}>
+			<dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+				{items.map(([msg, n]) => (
+					<div key={msg.id} className="rounded-lg border border-kumo-line p-3">
+						<dt className="text-sm text-kumo-subtle">{t(msg)}</dt>
+						<dd className="text-2xl font-semibold tabular-nums">{n}</dd>
+					</div>
+				))}
+			</dl>
+		</section>
+	);
+}
+
+/** A failed request in plain words, with its problems, and "Try again" when it may help. */
+function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
+	const t = useT();
+	const e = describeError(p.error);
+	const hasBody = e.detail !== undefined || e.problems !== undefined;
+	return (
+		<Banner
+			variant="error"
+			title={t(e.msg, e.values)}
+			description={
+				hasBody ? (
+					<div className="space-y-2">
+						{e.detail === undefined ? null : <p>{e.detail}</p>}
+						{e.problems === undefined ? null : (
+							<ul className="list-disc space-y-1 pl-4">
+								{e.problems.map((problem) => (
+									<li key={problem}>{problem}</li>
+								))}
+							</ul>
+						)}
+					</div>
+				) : undefined
+			}
+			action={
+				p.onRetry === undefined ? undefined : (
+					<Button variant="secondary" onClick={p.onRetry}>
+						{t(M.tryAgain)}
+					</Button>
+				)
+			}
+		/>
+	);
+}
+
+/**
+ * Preview: a dry run of the draft (or of the unedited saved template), driven to its end, then
+ * its counts and records. Run is offered once it has finished with at least one record.
+ */
+export function PreviewStep() {
+	const t = useT();
+	const { state, dispatch, once } = useWizard();
+	const [createError, setCreateError] = useState<unknown>(null);
+	const { dryRun } = state;
+
+	// Created once per draft (F14): a remount while `jobs/create` is in flight sends no second
+	// one, and a reply for a draft edited meanwhile is dropped by the reducer (its generation).
+	useEffect(() => {
+		if (dryRun !== null || createError !== null) return;
+		let live = true;
+		const draft = state;
+		once(DRY_RUN_KEY, async () => {
+			const input = jobInput(draft, true);
+			const created = await api.createJob(input);
+			dispatch({
+				type: "dryRunStarted",
+				jobId: created.id,
+				uploadId: input.uploadId,
+				generation: draft.generation,
+			});
+		}).catch((error: unknown) => {
+			if (live) setCreateError(error);
+		});
+		return () => {
+			live = false;
+		};
+	}, [state, dryRun, createError, once, dispatch]);
+
+	const jobId = dryRun?.jobId ?? null;
+	const driver = useJobDriver(jobId, api.next);
+	const job = driver.job;
+	const finished = job?.status === "completed" ? totalOf(job.counters) : null;
+	// The reducer ignores it once the draft has changed (`dryRun` is then null).
+	useEffect(() => {
+		if (finished !== null) dispatch({ type: "dryRunFinished", total: finished });
+	}, [finished, dispatch]);
+
+	const creating = dryRun === null && createError === null;
+	const driving =
+		jobId !== null &&
+		(driver.phase === "idle" ||
+			driver.phase === "driving" ||
+			driver.phase === "waiting" ||
+			driver.phase === "retrying");
+	const checking = creating || driving;
+	const total = dryRun?.total ?? null;
+	const failed =
+		job?.status === "failed" && job.error !== null ? describeJobError(job.error) : null;
+	const invalid = createError instanceof ApiError && createError.code === "INVALID_TEMPLATE";
+	const warnings = state.saved?.warnings ?? [];
+
+	return (
+		<div className="space-y-4">
+			{warnings.length === 0 ? null : (
+				<Banner
+					variant="alert"
+					title={t(M.templateWarnings)}
+					description={
+						<ul className="list-disc space-y-1 pl-4">
+							{warnings.map((w) => (
+								<li key={w}>{redact(w)}</li>
+							))}
+						</ul>
+					}
+				/>
+			)}
+			{createError === null ? null : (
+				<ErrorNotice
+					error={createError}
+					{...(invalid ? {} : { onRetry: () => setCreateError(null) })}
+				/>
+			)}
+			{driver.phase === "error" ? (
+				<ErrorNotice error={driver.error} onRetry={driver.start} />
+			) : null}
+			{failed === null ? null : (
+				<Banner
+					variant="error"
+					title={t(failed.msg)}
+					{...(failed.detail === undefined ? {} : { description: failed.detail })}
+				/>
+			)}
+			{checking ? (
+				<div role="status" className="flex items-center gap-2 text-sm text-kumo-subtle">
+					<span aria-hidden="true">
+						<Loader size="sm" />
+					</span>
+					<span>{t(M.checking)}</span>
+				</div>
+			) : null}
+			{job === null ? null : <Counts job={job} />}
+			{total === 0 ? <Empty title={t(M.noRecords)} description={t(M.noRecordsHint)} /> : null}
+			{total !== null && total > 0 && jobId !== null ? (
+				<RecordsTable key={jobId} jobId={jobId} />
+			) : null}
+			<div>
+				<Button variant="secondary" onClick={() => dispatch({ type: "stepChanged", step: "map" })}>
+					{t(M.backToMap)}
+				</Button>
+			</div>
+			<StepFooter
+				canNext={!checking && total !== null && total > 0}
+				{...(total === 0 ? { reason: t(M.nothingToRun) } : {})}
+				nextLabel={t(M.runImport)}
+				onNext={() => dispatch({ type: "stepChanged", step: "run" })}
+			/>
+		</div>
+	);
+}
