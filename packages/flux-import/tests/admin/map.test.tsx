@@ -705,24 +705,30 @@ describe("MapStep", () => {
 
 	it("proposes a field by picking a key without dragging", async () => {
 		routes();
-		const { user } = renderMap(MAPPED);
+		const { user } = renderMap({
+			...MAPPED,
+			columns: [...COLUMNS, { key: "released!", values: ["2024-03-07"] }],
+		});
 		await fieldsLoaded();
 		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
 		const picker = within(details()).getByRole("combobox", { name: "Key for the new field" });
 		await user.click(picker);
 		await user.click(await screen.findByRole("option", { name: "Released" }));
+		// The existing field's slug is taken.
 		expect(probe.state.newFields.map((f) => [f.key, f.slug, f.type])).toEqual([
 			["Released", "released_2", "datetime"],
 		]);
-		// Every existing field and every other proposal is taken.
+		// A key that already has a proposal is not proposed twice.
 		await user.click(picker);
 		await user.click(await screen.findByRole("option", { name: "Released" }));
+		expect(probe.state.newFields.map((f) => f.slug)).toEqual(["released_2"]);
+		// Another proposal's slug is taken too.
+		await user.click(picker);
+		await user.click(await screen.findByRole("option", { name: "released!" }));
 		expect(probe.state.newFields.map((f) => f.slug)).toEqual(["released_2", "released_3"]);
-		expect(screen.getByText("From Released · slug released_3")).toBeVisible();
+		expect(screen.getByText("From released! · slug released_3")).toBeVisible();
 
-		const removes = screen.getAllByRole("button", { name: "Remove Released" });
-		expect(removes).toHaveLength(2);
-		await user.click(removes[1]!);
+		await user.click(screen.getByRole("button", { name: "Remove released!" }));
 		expect(probe.state.newFields.map((f) => f.slug)).toEqual(["released_2"]);
 	});
 

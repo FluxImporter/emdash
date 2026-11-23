@@ -137,6 +137,8 @@ export function MapStep() {
 
 	const propose = (key: string) => {
 		const s = latest.current;
+		// One proposal per key: a second drop or pick of the same key adds nothing.
+		if (s.newFields.some((f) => f.key === key)) return;
 		const column = columns.find((c) => c.key === key) ?? { key, values: [] };
 		const taken = [...fieldList.map((f) => f.slug), ...s.newFields.map((f) => f.slug)];
 		dispatch({ type: "fieldProposed", field: proposeField(column, taken) });
