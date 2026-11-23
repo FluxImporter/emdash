@@ -425,6 +425,7 @@ describe("guardedRequest (M6d spec Ruling 48, plan Ruling 1)", () => {
 			"ftp://api.example/v1",
 			"https://user:pw@api.example/v1",
 			"not a url",
+			"https://[::ffff:127.0.0.1]/",
 		]) {
 			const error = await failure(guardedRequest(url, POST, net, CAP));
 			expect(error.code, url).toBe("URL_BLOCKED");
@@ -557,6 +558,40 @@ describe("guardedRequest (M6d spec Ruling 48, plan Ruling 1)", () => {
 		const over = postNet(() => new Response(new Uint8Array(CAP.maxResponseBytes + 1)));
 		const error = await failure(guardedRequest("https://api.example/v1", POST, over.net, CAP));
 		expect(error.code).toBe("TOO_LARGE");
+	});
+
+	it("refuses an opaque redirect and a status 0 reply with FETCH_FAILED, naming no host", async () => {
+		const opaque = {
+			type: "opaqueredirect",
+			status: 0,
+			statusText: "",
+			headers: new Headers(),
+			body: null,
+		} as unknown as Response;
+		for (const answer of [() => opaque, () => Response.error()]) {
+			const { net } = postNet(answer);
+			const error = await failure(guardedRequest("https://api.example/v1", POST, net, CAP));
+			expect(error.code).toBe("FETCH_FAILED");
+			expect(error.message).not.toContain("api.example");
+		}
+	});
+
+	it("drops content-encoding and content-length, which describe the wire body", async () => {
+		const { net } = postNet(
+			() =>
+				new Response('{"a":1}', {
+					headers: {
+						"content-encoding": "gzip",
+						"content-length": "27",
+						"content-type": "application/json",
+					},
+				}),
+		);
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect(res.headers.get("content-encoding")).toBeNull();
+		expect(res.headers.get("content-length")).toBeNull();
+		expect(res.headers.get("content-type")).toBe("application/json");
+		expect(await res.text()).toBe('{"a":1}');
 	});
 
 	it.each([204, 205, 304])("returns a %i reply with a null body", async (status) => {

@@ -298,8 +298,14 @@ export interface PostInit {
 	signal?: AbortSignal | undefined;
 }
 
-/** Statuses whose `Response` must have a null body. */
-const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+/**
+ * Statuses whose `Response` must have a null body. 101 is left out: `new Response` refuses it
+ * outright, and a provider never switches protocols on a POST.
+ */
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+/** Headers that describe the bytes on the wire, not the decoded bytes `readCapped` returns. */
+const WIRE_HEADERS = ["content-encoding", "content-length"];
 
 /** Reads a reply whole, refusing it as soon as more than `max` bytes have arrived. */
 async function readCapped(response: Response, max: number): Promise<Uint8Array<ArrayBuffer>> {
@@ -331,10 +337,11 @@ async function readCapped(response: Response, max: number): Promise<Uint8Array<A
  * resolves to are checked once, as `guardedFetch` checks a source (skipped only under
  * `allowPrivateNetwork`); then the runtime's fetch is called once with `redirect: "manual"`,
  * whatever the caller passed, so a credential header never follows a redirect (spec Ruling 9). A
- * 3xx is returned, not followed. The reply is read to its end inside this call, refused once it
- * passes `maxResponseBytes`, and returned as a new `Response` over its bytes: a caller's timer
- * that stops when the fetch resolves (the Anthropic SDK's) then covers the whole reply (plan
- * Ruling 1, Fact V1c). Rejections of the fetch and of the body read, aborts and timeouts
+ * 3xx is returned, not followed; an opaque redirect or a status 0 reply is `FETCH_FAILED`. The
+ * reply is read to its end inside this call, refused once it passes `maxResponseBytes`, and
+ * returned as a new `Response` over its bytes, without the `content-encoding` and
+ * `content-length` of the wire body: a caller's timer that stops when the fetch resolves (the
+ * Anthropic SDK's) then covers the whole reply (plan Ruling 1, Fact V1c). Rejections of the fetch and of the body read, aborts and timeouts
  * included, and the signal's reason during DNS, are re-thrown as raised, never wrapped, so the
  * caller classifies them (Fact D8).
  */
@@ -356,11 +363,19 @@ export async function guardedRequest(
 		redirect: "manual",
 		...(init.signal === undefined ? {} : { signal: init.signal }),
 	});
+	// A runtime that hides a manual redirect (`opaqueredirect`, status 0), or a network error
+	// reply, cannot be rebuilt as a `Response`; refuse it by name, with no host in the message.
+	if (response.type === "opaqueredirect" || response.status === 0) {
+		await response.body?.cancel().catch(() => {});
+		throw new UrlSourceError("FETCH_FAILED", "The provider's reply was a hidden redirect or empty");
+	}
 	const bytes = await readCapped(response, opts.maxResponseBytes);
+	const headers = new Headers(response.headers);
+	for (const name of WIRE_HEADERS) headers.delete(name);
 	return new Response(NULL_BODY_STATUSES.has(response.status) ? null : bytes, {
 		status: response.status,
 		statusText: response.statusText,
-		headers: response.headers,
+		headers,
 	});
 }
 
