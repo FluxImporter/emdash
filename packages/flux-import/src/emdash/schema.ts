@@ -75,8 +75,10 @@ export interface RegistryField {
 /**
  * Adds `flux_source_id` (`string`, indexed, not translatable, shown by the plugin's field widget)
  * to the collection, or makes an existing one indexed and gives it the widget when it has none; a
- * widget someone else set is kept. Idempotent and safe against a concurrent creator. Throws
- * `ContentWriteError("collection_missing")` when the collection does not exist.
+ * widget someone else set is kept. The registry has no compare-and-set, so a widget set between
+ * our `getField` and `updateField` can still be overwritten. Idempotent and safe against a
+ * concurrent creator. Throws `ContentWriteError("collection_missing")` when the collection does
+ * not exist.
  * `SchemaError` is matched by its `code`: the plugin may load a second copy of `emdash`.
  */
 export async function ensureSourceIdField(

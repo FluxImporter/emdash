@@ -5,7 +5,7 @@ import { SOURCE_ID_FIELD_WIDGET } from "../../src/emdash/schema.js";
 import { renderAdmin } from "./harness.js";
 
 /** The widget as the content editor renders it for `flux_source_id`. */
-function renderField(value: unknown) {
+function renderField(value: unknown, minimal?: boolean) {
 	const onChange = vi.fn();
 	const result = renderAdmin(
 		<SourceIdField
@@ -13,6 +13,7 @@ function renderField(value: unknown) {
 			onChange={onChange}
 			label="Flux source ID"
 			id="field-flux_source_id"
+			{...(minimal === undefined ? {} : { minimal })}
 		/>,
 	);
 	return { ...result, onChange };
@@ -54,6 +55,17 @@ describe("the flux_source_id field widget", () => {
 		await user.keyboard("{Enter}");
 		expect(screen.getByText("SKU-0")).toBeVisible();
 		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it("uses the built-in fields' compact label in the minimal layout", () => {
+		const { unmount } = renderField("SKU-0");
+		expect(screen.getByText("Flux source ID")).toHaveClass("text-base", "font-medium");
+		unmount();
+		renderField("SKU-0", true);
+		const legend = screen.getByText("Flux source ID");
+		expect(legend).toHaveClass("text-kumo-subtle/50", "text-xs", "font-normal");
+		expect(legend).not.toHaveClass("text-base");
+		expect(screen.getByRole("group", { name: "Flux source ID" })).toBeInTheDocument();
 	});
 
 	it("says so when the entry has no import ID", async () => {

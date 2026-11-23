@@ -11,7 +11,8 @@ export const SOURCE_ID_WIDGET = "source-id";
 
 /**
  * `flux_source_id` in the content editor: the label, and a collapsed "Import ID" disclosure that
- * shows the value as text. The importer matches entries by this value, so it is never editable
+ * shows the value as text; in the editor's `minimal` layout the label takes the compact style the
+ * built-in fields use (`@emdash-cms/admin` `FieldRenderer`'s `labelClass`). The importer matches entries by this value, so it is never editable
  * here and `onChange` is never called.
  */
 export function SourceIdField(p: {
@@ -19,12 +20,18 @@ export function SourceIdField(p: {
 	onChange(v: unknown): void;
 	label: string;
 	id: string;
+	/** The editor's compact layout, where built-in fields shrink their labels too. */
+	minimal?: boolean;
 }): JSX.Element {
 	const t = useT();
 	const value = typeof p.value === "string" && p.value !== "" ? p.value : null;
 	return (
 		<fieldset id={p.id} className="grid gap-1">
-			<legend className="text-base font-medium">{p.label}</legend>
+			<legend
+				className={p.minimal ? "text-kumo-subtle/50 text-xs font-normal" : "text-base font-medium"}
+			>
+				{p.label}
+			</legend>
 			<Collapsible.Root>
 				<Collapsible.DefaultTrigger>{t(M.importId)}</Collapsible.DefaultTrigger>
 				<Collapsible.DefaultPanel>
