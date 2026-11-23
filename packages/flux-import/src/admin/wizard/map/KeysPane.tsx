@@ -1,6 +1,5 @@
 import { Input } from "@cloudflare/kumo";
 import { useDraggable } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
 import { type ChangeEvent, useId, useMemo, useState } from "react";
 import { useT } from "../../i18n.js";
 import { KEYS_SHOWN } from "../../limits.js";
@@ -65,7 +64,8 @@ export function KeysPane(p: {
 			{shown.length === 0 ? (
 				<p className="text-sm text-kumo-subtle">{t(M.noKeyMatches)}</p>
 			) : (
-				<ul className="space-y-1">
+				// Scrolls on its own: the dragged key is drawn in Map's `DragOverlay`, outside it.
+				<ul className="max-h-96 space-y-1 overflow-y-auto">
 					{shown.map((key) => (
 						<KeyRow
 							key={key}
@@ -82,7 +82,7 @@ export function KeysPane(p: {
 
 function KeyRow(p: { name: string; sample: string | null; used: boolean }) {
 	const t = useT();
-	const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+	const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
 		id: dragId(p.name),
 	});
 	return (
@@ -93,11 +93,9 @@ function KeyRow(p: { name: string; sample: string | null; used: boolean }) {
 				title={p.name}
 				{...attributes}
 				{...listeners}
-				// Inline style only for the drag transform (Global Constraints).
-				style={transform === null ? undefined : { transform: CSS.Translate.toString(transform) }}
 				className={
 					isDragging
-						? "relative z-10 flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-brand bg-kumo-base px-2 py-1 text-sm shadow-sm"
+						? "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-dashed border-kumo-brand bg-kumo-base px-2 py-1 text-sm"
 						: p.used
 							? "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm opacity-50"
 							: "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm"

@@ -3,6 +3,7 @@ import {
 	type Announcements,
 	DndContext,
 	type DragEndEvent,
+	DragOverlay,
 	KeyboardSensor,
 	PointerSensor,
 	useSensor,
@@ -111,6 +112,8 @@ export function MapStep() {
 	const [selected, setSelected] = useState<Selection | null>(null);
 	const [confirming, setConfirming] = useState(false);
 	const [applying, setApplying] = useState(false);
+	/** The key being dragged, drawn in the overlay. */
+	const [dragging, setDragging] = useState<string | null>(null);
 	const sensors = useSensors(
 		useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
 		useSensor(KeyboardSensor),
@@ -145,6 +148,7 @@ export function MapStep() {
 		);
 
 	const onDragEnd = ({ active, over }: DragEndEvent) => {
+		setDragging(null);
 		if (over === null) return;
 		const key = keyOfDrag(active.id);
 		if (over.id === NEW_FIELD) {
@@ -237,7 +241,9 @@ export function MapStep() {
 			<SuggestionNotices onRetry={askAgain} />
 			<DndContext
 				sensors={sensors}
+				onDragStart={({ active }) => setDragging(keyOfDrag(active.id))}
 				onDragEnd={onDragEnd}
+				onDragCancel={() => setDragging(null)}
 				accessibility={{
 					announcements,
 					screenReaderInstructions: { draggable: t(M.instructions) },
@@ -275,6 +281,17 @@ export function MapStep() {
 						)}
 					</aside>
 				</div>
+				{/* Drawn above the panes, so the keys list can scroll and clip while a key moves. */}
+				<DragOverlay dropAnimation={null}>
+					{dragging === null ? null : (
+						<div
+							data-testid="drag-overlay"
+							className="max-w-full cursor-grab truncate rounded-md border border-kumo-brand bg-kumo-base px-2 py-1 text-sm font-medium shadow-sm"
+						>
+							{dragging}
+						</div>
+					)}
+				</DragOverlay>
 			</DndContext>
 			<NewFields
 				fields={state.newFields}

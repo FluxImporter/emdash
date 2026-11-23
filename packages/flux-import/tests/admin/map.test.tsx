@@ -310,11 +310,19 @@ describe("MapStep", () => {
 		const { user } = renderMap({ ...DRAFT, rows: { key: { from: "SKU" } }, meta: { key: USER } });
 		await fieldsLoaded();
 		const restore = withRects({
+			// @dnd-kit measures the `DragOverlay` by its content.
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
 			"key:Name": new DOMRect(0, 0, 100, 20),
 			"field:title": new DOMRect(0, 50, 100, 20),
 		});
 		try {
-			await dragDown(user, "Name", 2);
+			within(keysPane()).getByRole("button", { name: /^Name/ }).focus();
+			await user.keyboard(" ");
+			// The key moves in an overlay above the panes; its row stays in the scrolling list.
+			expect(screen.getByTestId("drag-overlay")).toHaveTextContent("Name");
+			expect(within(keysPane()).getByRole("list")).toHaveClass("max-h-96", "overflow-y-auto");
+			await user.keyboard("{ArrowDown}{ArrowDown} ");
+			expect(screen.queryByTestId("drag-overlay")).toBeNull();
 			expect(within(row("field:title")).getByText("Name")).toBeVisible();
 			expect(probe.state.rows["field:title"]).toEqual({ type: "text", from: "Name" });
 			expect(probe.state.meta["field:title"]).toEqual(USER);
@@ -353,6 +361,8 @@ describe("MapStep", () => {
 		expect(name).toHaveClass("opacity-50");
 		expect(price).not.toHaveClass("opacity-50");
 		const restore = withRects({
+			// @dnd-kit measures the `DragOverlay` by its content.
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
 			"key:Name": new DOMRect(0, 0, 100, 20),
 			"field:released": new DOMRect(0, 75, 100, 20),
 		});
@@ -461,6 +471,8 @@ describe("MapStep", () => {
 
 		// It is no drop target: a drop on it does nothing.
 		const restore = withRects({
+			// @dnd-kit measures the `DragOverlay` by its content.
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
 			"key:Price": new DOMRect(0, 0, 100, 20),
 			"field:blocks": new DOMRect(0, 50, 100, 20),
 		});
@@ -500,6 +512,8 @@ describe("MapStep", () => {
 		const { user } = renderMap(MAPPED);
 		await fieldsLoaded();
 		const restore = withRects({
+			// @dnd-kit measures the `DragOverlay` by its content.
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
 			"key:Body": new DOMRect(0, 0, 100, 20),
 			"field:body": new DOMRect(0, 50, 100, 20),
 		});
@@ -543,6 +557,8 @@ describe("MapStep", () => {
 		});
 		await fieldsLoaded();
 		const restore = withRects({
+			// @dnd-kit measures the `DragOverlay` by its content.
+			"drag-overlay": new DOMRect(0, 0, 100, 20),
 			"key:Weight (g)": new DOMRect(0, 0, 100, 20),
 			"new-field": new DOMRect(0, 50, 100, 20),
 		});
