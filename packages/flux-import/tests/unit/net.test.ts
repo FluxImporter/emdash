@@ -529,6 +529,66 @@ describe("guardedRequest (M6d spec Ruling 48, plan Ruling 1)", () => {
 			"nope",
 		]);
 	});
+
+	it("cancels the reply's stream when it passes the cap", async () => {
+		let cancelled = false;
+		let pulled = 0;
+		// Ends after 100 KB, so a guard without its cap finishes instead of reading forever.
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled++;
+				if (pulled > 100) controller.close();
+				else controller.enqueue(new Uint8Array(1_000));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const { net } = postNet(() => new Response(body, { status: 200 }));
+		const error = await failure(guardedRequest("https://api.example/v1", POST, net, CAP));
+		expect(error.code).toBe("TOO_LARGE");
+		expect(cancelled).toBe(true);
+	});
+
+	it("accepts a reply of exactly the cap and refuses one byte more", async () => {
+		const exact = postNet(() => new Response(new Uint8Array(CAP.maxResponseBytes)));
+		const res = await guardedRequest("https://api.example/v1", POST, exact.net, CAP);
+		expect((await res.arrayBuffer()).byteLength).toBe(CAP.maxResponseBytes);
+		const over = postNet(() => new Response(new Uint8Array(CAP.maxResponseBytes + 1)));
+		const error = await failure(guardedRequest("https://api.example/v1", POST, over.net, CAP));
+		expect(error.code).toBe("TOO_LARGE");
+	});
+
+	it.each([204, 205, 304])("returns a %i reply with a null body", async (status) => {
+		const { net } = postNet(() => new Response(null, { status }));
+		const res = await guardedRequest("https://api.example/v1", POST, net, CAP);
+		expect(res.status).toBe(status);
+		expect(res.body).toBeNull();
+		expect(await res.text()).toBe("");
+	});
+
+	it("leaves no unhandled rejection when the address is refused after the signal aborted", async () => {
+		const errors: unknown[] = [];
+		const record = (e: unknown) => {
+			errors.push(e);
+		};
+		process.on("unhandledRejection", record);
+		try {
+			const reason = new DOMException("stopped", "TimeoutError");
+			const { net, sent } = postNet(
+				() => new Response("{}"),
+				() => new Promise((resolve) => setTimeout(() => resolve(["10.0.0.7"]), 10)),
+			);
+			const init = { ...POST, signal: AbortSignal.abort(reason) };
+			await expect(guardedRequest("https://api.example/v1", init, net, CAP)).rejects.toBe(reason);
+			// Let the resolver answer and the check refuse the private address after the abort.
+			await new Promise((r) => setTimeout(r, 40));
+			expect(errors).toEqual([]);
+			expect(sent).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", record);
+		}
+	});
 });
 
 describe("resolvers", () => {
