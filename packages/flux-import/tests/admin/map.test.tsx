@@ -316,6 +316,23 @@ describe("MapStep", () => {
 		await waitFor(() => expect(next()).toBeEnabled());
 	});
 
+	it("disables Next while Ask again is loading, even with nothing blocking", async () => {
+		const suggested = deferred<SuggestReply>();
+		routes({ "templates/suggest": () => suggested.promise });
+		const { user } = renderMap(MAPPED);
+		await fieldsLoaded();
+		expect(next()).toBeEnabled();
+		await user.click(screen.getByRole("button", { name: "Ask again" }));
+		await user.click(await screen.findByRole("button", { name: "Keep my choices" }));
+		await waitFor(() => expect(next()).toBeDisabled());
+		expect(next()).toHaveAccessibleDescription("Wait for the suggestions to finish");
+		await act(async () => {
+			suggested.resolve(reply());
+			await suggested.promise;
+		});
+		await waitFor(() => expect(next()).toBeEnabled());
+	});
+
 	it("shows a fields read error with Try again", async () => {
 		let failing = true;
 		routes({
