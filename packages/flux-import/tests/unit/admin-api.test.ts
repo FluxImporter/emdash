@@ -424,6 +424,20 @@ describe("api.collection (preflight F6)", () => {
 		]);
 	});
 
+	it("maps an empty targetCollection to no target", async () => {
+		ok({
+			item: {
+				fields: [
+					fieldRow("editor", "reference", 0, {
+						validation: { relation: "post_editor", targetCollection: "" },
+					}),
+				],
+			},
+		});
+		const [editor] = await api.collection("posts");
+		expect(editor?.reference).toEqual({ target: null, bound: true });
+	});
+
 	it("encodes the collection slug and throws ApiError when the read fails", async () => {
 		const sent = stub(404, {
 			success: false,
@@ -474,8 +488,8 @@ class FakeXhr {
 		this.onloadend?.();
 	}
 
-	progress(loaded: number, total: number) {
-		this.upload.onprogress?.({ loaded, total, lengthComputable: true } as ProgressEvent);
+	progress(loaded: number, total: number, lengthComputable = true) {
+		this.upload.onprogress?.({ loaded, total, lengthComputable } as ProgressEvent);
 	}
 
 	respond(status: number, body: unknown) {
@@ -529,6 +543,24 @@ describe("uploadFile", () => {
 		});
 		await expect(result).rejects.toBeInstanceOf(ApiError);
 		await expect(result).rejects.toMatchObject({ code: "UNSUPPORTED_SOURCE", status: 415 });
+	});
+
+	it("reports the file's size as the total when the progress length is not computable", () => {
+		const file = new File(["id,title\n1,A\n"], "posts.csv");
+		const onProgress = vi.fn();
+		const { xhr } = startUpload(file, { onProgress });
+		xhr!.progress(4, 0, false);
+		expect(onProgress.mock.calls).toEqual([[4, file.size]]);
+	});
+
+	it.each([
+		[204, "a null-body status with a body"],
+		[600, "a status outside 200-599"],
+	])("rejects with ApiError HTTP_%i on %s, without throwing from onload", async (status) => {
+		const { result, xhr } = startUpload(new File(["x"], "posts.csv"));
+		expect(() => xhr!.respond(status, { success: true, data: {} })).not.toThrow();
+		await expect(result).rejects.toBeInstanceOf(ApiError);
+		await expect(result).rejects.toMatchObject({ code: `HTTP_${status}`, status });
 	});
 
 	it("rejects with a TypeError on a network error", async () => {
@@ -604,7 +636,10 @@ describe("downloadLog (plan Ruling 4)", () => {
 		expect(append).toHaveBeenCalledWith(anchor);
 		expect(anchor.click).toHaveBeenCalledOnce();
 		expect(anchor.remove).toHaveBeenCalledOnce();
-		expect(revoke).toHaveBeenCalledWith("blob:log");
+		// Revoked only after the click has been handled, on the next task.
+		expect(revoke).not.toHaveBeenCalled();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:log");
 	});
 
 	it("takes the server's file name, and falls back to flux-import-<id>.csv", async () => {

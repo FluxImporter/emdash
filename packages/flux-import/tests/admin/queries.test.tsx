@@ -78,6 +78,28 @@ describe("the admin queries", () => {
 		expect(calls.map((c) => c.body)).toEqual([{}, { cursor: "a" }, { cursor: "b" }]);
 	});
 
+	it.each([
+		["useAllSources", "sources/list", (): unknown => useAllSources()],
+		["useAllTemplates", "templates/list", (): unknown => useAllTemplates("posts")],
+	] as const)("%s stops its cursor walk when the component unmounts", async (_, route, hook) => {
+		let release!: () => void;
+		const first = new Promise<void>((r) => {
+			release = r;
+		});
+		const { calls } = mockRoutes({
+			[route]: async () => {
+				await first;
+				return { items: [{ id: "A" }], cursor: "next", hasMore: true };
+			},
+		});
+		const { unmount } = renderHook(hook, { wrapper: wrapperFor(hostClient()) });
+		await waitFor(() => expect(calls).toHaveLength(1));
+		unmount();
+		release();
+		await new Promise((r) => setTimeout(r, 20));
+		expect(calls).toHaveLength(1);
+	});
+
 	it("useFields(null) makes no request", async () => {
 		const { calls } = mockRoutes({});
 		const { result } = renderHook(() => useFields(null), { wrapper: wrapperFor(hostClient()) });

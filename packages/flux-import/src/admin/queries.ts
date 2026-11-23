@@ -22,7 +22,10 @@ export const queryKeys = {
  */
 const retry = (failureCount: number, error: Error) => isRetryable(error) && failureCount < 1;
 
-/** Every item of a paged list, following `cursor` while `hasMore`. */
+/**
+ * Every item of a paged list, following `cursor` while `hasMore`. `read` passes React Query's
+ * signal on, so an unmount aborts the walk instead of reading every remaining page.
+ */
 async function allPages<T>(read: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
 	const items: T[] = [];
 	let cursor: string | undefined;
@@ -56,7 +59,8 @@ export function useCredentials(): UseQueryResult<CredentialInfo[]> {
 export function useAllSources(): UseQueryResult<SourceRow[]> {
 	return useQuery({
 		queryKey: queryKeys.sources,
-		queryFn: () => allPages((cursor) => api.listSources(cursor === undefined ? {} : { cursor })),
+		queryFn: ({ signal }) =>
+			allPages((cursor) => api.listSources(cursor === undefined ? {} : { cursor }, signal)),
 		retry,
 	});
 }
@@ -65,12 +69,15 @@ export function useAllSources(): UseQueryResult<SourceRow[]> {
 export function useAllTemplates(collection?: string): UseQueryResult<TemplateSummary[]> {
 	return useQuery({
 		queryKey: queryKeys.templates(collection),
-		queryFn: () =>
+		queryFn: ({ signal }) =>
 			allPages((cursor) =>
-				api.listTemplates({
-					...(collection === undefined ? {} : { collection }),
-					...(cursor === undefined ? {} : { cursor }),
-				}),
+				api.listTemplates(
+					{
+						...(collection === undefined ? {} : { collection }),
+						...(cursor === undefined ? {} : { cursor }),
+					},
+					signal,
+				),
 			),
 		retry,
 	});

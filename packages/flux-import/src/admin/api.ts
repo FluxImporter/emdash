@@ -9,7 +9,7 @@ import type { SuggestReply } from "../plugin/suggest.js";
 import type { SavedResult, SavedTemplate, TemplateSummary } from "../plugin/templates.js";
 import type { CsvSample } from "../sources/csv.js";
 import type { SourceFormat, ValueSample } from "../sources/reader.js";
-import { readError } from "./api-error.js";
+import { ApiError, readError } from "./api-error.js";
 import type { CreateJobInput, SchemaField, SiteInfo, SourceBlock, TaxonomyInfo } from "./types.js";
 
 /**
@@ -84,10 +84,18 @@ export function uploadFile(
 		}
 		xhr.onload = () => {
 			done();
-			const res = new Response(xhr.responseText, {
-				status: xhr.status,
-				statusText: xhr.statusText,
-			});
+			let res: Response;
+			try {
+				res = new Response(xhr.responseText, {
+					status: xhr.status,
+					statusText: xhr.statusText,
+				});
+			} catch {
+				// A status `Response` refuses (outside 200-599, or a null-body status with a body).
+				const message = xhr.statusText || `HTTP ${xhr.status}`;
+				reject(new ApiError(`HTTP_${xhr.status}`, message, xhr.status));
+				return;
+			}
 			unwrap<{ uploadId: string; bytes: number }>(res).then(resolve, reject);
 		};
 		xhr.onerror = () => {
@@ -163,6 +171,7 @@ type FieldRow = Pick<
 function toSchemaField(f: FieldRow): SchemaField {
 	const options = f.validation?.options;
 	const relation = f.validation?.relation;
+	const target = f.validation?.targetCollection;
 	return {
 		slug: f.slug,
 		label: f.label,
@@ -175,7 +184,8 @@ function toSchemaField(f: FieldRow): SchemaField {
 		...(f.type === "reference"
 			? {
 					reference: {
-						target: f.validation?.targetCollection ?? null,
+						// The engine finds no target collection in "" either.
+						target: typeof target === "string" && target.length > 0 ? target : null,
 						bound: typeof relation === "string" && relation.length > 0,
 					},
 				}
@@ -198,9 +208,10 @@ export const api = {
 	createSource: (i: { name: string; url: string; credential?: string }) =>
 		callRoute<SourceRow>("sources/create", i),
 	fetchSource: (i: { id: string; force?: boolean }) => callRoute<FetchOutcome>("sources/fetch", i),
-	listSources: (i: { cursor?: string }) => callRoute<Page<SourceRow>>("sources/list", i),
-	listTemplates: (i: { collection?: string; cursor?: string }) =>
-		callRoute<Page<TemplateSummary>>("templates/list", i),
+	listSources: (i: { cursor?: string }, signal?: AbortSignal) =>
+		callRoute<Page<SourceRow>>("sources/list", i, signal),
+	listTemplates: (i: { collection?: string; cursor?: string }, signal?: AbortSignal) =>
+		callRoute<Page<TemplateSummary>>("templates/list", i, signal),
 	getTemplate: (i: ById) => callRoute<SavedTemplate>("templates/get", i),
 	createTemplate: (i: { name: string; template: unknown }) =>
 		callRoute<SavedResult>("templates/create", i),
@@ -268,6 +279,7 @@ export async function downloadLog(id: string, status?: "failed"): Promise<void> 
 		anchor.click();
 		anchor.remove();
 	} finally {
-		URL.revokeObjectURL(url);
+		// After the click has been handled: some browsers lose a download revoked at once.
+		setTimeout(() => URL.revokeObjectURL(url), 0);
 	}
 }
