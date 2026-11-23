@@ -37,5 +37,9 @@ export const M = {
 		id: "flux-import.target.choose-collection",
 		message: "Choose a collection to import into",
 	},
+	staleLocale: {
+		id: "flux-import.target.stale-locale",
+		message: "{locale} is not one of this site's locales. Choose another.",
+	},
 	tryAgain: { id: "flux-import.target.try-again", message: "Try again" },
 } satisfies Record<string, Msg>;

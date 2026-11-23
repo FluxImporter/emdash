@@ -63,8 +63,25 @@ export function TargetStep() {
 			? originalLocale(info, chosenLocale, original)
 			: null;
 	const translationLocale = translates ? originalOf : null;
+	// A saved locale (from a template or a revisit) the site no longer has blocks Next.
+	const staleLocale =
+		info !== undefined && chosenLocale !== null && !info.locales.includes(chosenLocale)
+			? chosenLocale
+			: null;
+	const staleTranslation =
+		info !== undefined && translationLocale !== null && !info.locales.includes(translationLocale)
+			? translationLocale
+			: null;
 	const canNext =
-		info !== undefined && collection !== null && chosenLocale !== null && !fields.isError;
+		info !== undefined &&
+		collection !== null &&
+		chosenLocale !== null &&
+		staleLocale === null &&
+		(translationLocale === null ||
+			(staleTranslation === null && translationLocale !== chosenLocale)) &&
+		!fields.isError;
+	const stale = staleLocale ?? staleTranslation;
+	const staleSentence = stale === null ? null : t(M.staleLocale, { locale: stale });
 	const hasCollections = (info?.collections.length ?? 0) > 0;
 	const changesCollection =
 		state.target !== null &&
@@ -101,12 +118,13 @@ export function TargetStep() {
 				{fields.isError ? (
 					<ReadError error={fields.error} onRetry={() => void fields.refetch()} />
 				) : null}
-				{info.locales.length > 1 ? (
+				{info.locales.length > 1 || staleLocale !== null ? (
 					<Select
 						label={t(M.locale)}
 						value={chosenLocale}
 						onValueChange={chosen(setLocale)}
 						items={info.locales.map((l) => ({ value: l, label: l }))}
+						{...(staleLocale === null ? {} : { error: t(M.staleLocale, { locale: staleLocale }) })}
 					/>
 				) : (
 					<Text>{t(M.onlyLocale, { locale: chosenLocale })}</Text>
@@ -127,6 +145,9 @@ export function TargetStep() {
 									items={info.locales
 										.filter((l) => l !== chosenLocale)
 										.map((l) => ({ value: l, label: l }))}
+									{...(staleTranslation === null
+										? {}
+										: { error: t(M.staleLocale, { locale: staleTranslation }) })}
 								/>
 								<Text variant="secondary">{t(M.translationHint)}</Text>
 							</>
@@ -144,7 +165,9 @@ export function TargetStep() {
 				canNext={canNext}
 				{...(info !== undefined && hasCollections && collection === null
 					? { reason: t(M.chooseCollection) }
-					: {})}
+					: staleSentence === null
+						? {}
+						: { reason: staleSentence })}
 				onNext={next}
 			/>
 		</div>

@@ -81,6 +81,14 @@ async function optionsOf(user: UserEvent, name: string): Promise<string[]> {
 
 const TRANSLATES = "These records translate entries in";
 
+/** A stale saved locale's sentence shows under its select and as Next's reason. */
+function expectStale(sentence: string) {
+	const shown = screen.getAllByText(sentence);
+	expect(shown).toHaveLength(2);
+	for (const el of shown) expect(el).toBeVisible();
+	expect(screen.getByRole("button", { name: "Next" })).toHaveAccessibleDescription(sentence);
+}
+
 describe("TargetStep", () => {
 	it("lists the manifest's collections and preselects the default locale", async () => {
 		const { calls } = mockRoutes({
@@ -247,6 +255,64 @@ describe("TargetStep", () => {
 		await screen.findByRole("combobox", { name: "Collection" });
 		await choose(user, "Collection", "Pages");
 		expect(screen.queryByText("Changing the collection clears the mapping.")).toBeNull();
+	});
+
+	it("blocks Next on a stale saved locale until a site locale is chosen", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		const { user } = renderTarget({
+			target: { collection: "posts", locale: "es", translationLocale: null },
+		});
+		await screen.findByRole("combobox", { name: "Collection" });
+		const stale = "es is not one of this site's locales. Choose another.";
+		expectStale(stale);
+		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+
+		await choose(user, "Locale", "fr");
+		expect(screen.queryByText(stale)).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(readState().target).toEqual({
+			collection: "posts",
+			locale: "fr",
+			translationLocale: null,
+		});
+	});
+
+	it("blocks Next on a stale saved translation locale until a site locale is chosen", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		const { user } = renderTarget({
+			target: { collection: "posts", locale: "fr", translationLocale: "es" },
+		});
+		await screen.findByRole("combobox", { name: "Collection" });
+		const stale = "es is not one of this site's locales. Choose another.";
+		expectStale(stale);
+		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+
+		await choose(user, "Locale of the original entries", "de");
+		expect(screen.queryByText(stale)).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(readState().target).toEqual({
+			collection: "posts",
+			locale: "fr",
+			translationLocale: "de",
+		});
+	});
+
+	it("offers a select for a stale saved locale on a single-locale site", async () => {
+		mockRoutes({ "GET manifest": () => ONE_LOCALE, "GET collection:posts": () => POSTS });
+		const { user } = renderTarget({
+			target: { collection: "posts", locale: "fr", translationLocale: null },
+		});
+		await screen.findByRole("combobox", { name: "Collection" });
+		expectStale("fr is not one of this site's locales. Choose another.");
+		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+
+		await choose(user, "Locale", "en");
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(readState().target).toEqual({
+			collection: "posts",
+			locale: "en",
+			translationLocale: null,
+		});
 	});
 
 	it("shows the empty state when the site has no collections", async () => {
