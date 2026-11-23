@@ -1,6 +1,6 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { queryKeys } from "../../src/admin/queries.js";
+import { useCredentials } from "../../src/admin/queries.js";
 import { useWizard } from "../../src/admin/wizard/context.js";
 import type { StepId } from "../../src/admin/wizard/state.js";
 import { type StepComponents, Wizard } from "../../src/admin/wizard/Wizard.js";
@@ -59,6 +59,22 @@ const DUMMY: StepComponents = {
 	options: dummy("options"),
 	preview: dummy("preview"),
 	run: dummy("run"),
+};
+
+/** Shows the probe's status as a step sees it; its observer is told in the same render as the Wizard's. */
+function ProbeStatus() {
+	return <p>{`probe ${useCredentials().status}`}</p>;
+}
+
+/** DUMMY, with the probe's status on Source. */
+const WITH_PROBE: StepComponents = {
+	...DUMMY,
+	source: () => (
+		<>
+			<DummySource />
+			<ProbeStatus />
+		</>
+	),
 };
 
 /** The access probe answers with the credential list. */
@@ -126,15 +142,11 @@ describe("Wizard", () => {
 			"credentials/list": () =>
 				failing ? fail("FORBIDDEN", "Insufficient permissions", 403) : CREDENTIALS,
 		});
-		const { user, queryClient } = renderAdmin(<Wizard steps={DUMMY} />);
+		const { user, queryClient } = renderAdmin(<Wizard steps={WITH_PROBE} />);
 		await user.click(await screen.findByRole("button", { name: "Load sample" }));
 		failing = true;
 		await queryClient.refetchQueries();
-		await waitFor(() =>
-			expect(queryClient.getQueryState(queryKeys.credentials)?.status).toBe("error"),
-		);
-		// React Query tells its observers after a timeout: let that render happen.
-		await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+		expect(await screen.findByText("probe error")).toBeInTheDocument();
 		expect(screen.getByRole("list", { name: /steps/i })).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: /Target/ })).toBeInTheDocument();
 		expect(screen.queryByText("Only administrators can import.")).toBeNull();
@@ -148,11 +160,11 @@ describe("Wizard", () => {
 		const items = within(list).getAllByRole("listitem");
 		expect(items.map((li) => li.textContent)).toEqual([
 			"1 Source",
-			"2 Target",
-			"3 Map",
-			"4 Options",
-			"5 Preview",
-			"6 Run",
+			"2 Target (not available yet)",
+			"3 Map (not available yet)",
+			"4 Options (not available yet)",
+			"5 Preview (not available yet)",
+			"6 Run (not available yet)",
 		]);
 		const source = within(list).getByRole("link", { name: /Source/ });
 		expect(source).toHaveAttribute("href", "?step=source");
@@ -160,15 +172,16 @@ describe("Wizard", () => {
 		// Unreachable steps are marked, and are not links.
 		expect(within(list).getAllByRole("link")).toHaveLength(1);
 		for (const name of ["Target", "Map", "Options", "Preview", "Run"]) {
-			expect(within(list).getByText(name).closest("[aria-disabled]")).toHaveAttribute(
-				"aria-disabled",
-				"true",
-			);
+			const step = within(list).getByText(name).closest("[aria-disabled]");
+			expect(step).toHaveAttribute("aria-disabled", "true");
+			// Screen readers hear why; the note is visually hidden.
+			expect(within(step as HTMLElement).getByText("(not available yet)")).toHaveClass("sr-only");
 		}
 		await user.click(screen.getByRole("button", { name: "Load sample" }));
 		const target = within(list).getByRole("link", { name: /Target/ });
 		expect(target).toHaveAttribute("href", "?step=target");
 		expect(target).not.toHaveAttribute("aria-current");
+		expect(target).toHaveTextContent(/^2 Target$/);
 		expect(within(list).getAllByRole("link")).toHaveLength(2);
 	});
 
@@ -203,6 +216,7 @@ describe("Wizard", () => {
 			expect(screen.getByRole("heading", { level: 2, name: "Source" })).toHaveFocus(),
 		);
 		expect(window.location.search).toBe("?step=source");
+		replace.mockRestore();
 	});
 
 	it("reopens ?job=<id> on the Run step", async () => {
@@ -246,6 +260,15 @@ describe("Wizard", () => {
 		await user.click(await screen.findByRole("button", { name: "Load sample" }));
 		expect(unloadPrevented()).toBe(true);
 		await user.click(screen.getByRole("button", { name: "Start run" }));
+		expect(unloadPrevented()).toBe(false);
+	});
+
+	it("stops warning before unload once the page unmounts", async () => {
+		granted();
+		const { user, unmount } = renderAdmin(<Wizard steps={DUMMY} />);
+		await user.click(await screen.findByRole("button", { name: "Load sample" }));
+		expect(unloadPrevented()).toBe(true);
+		unmount();
 		expect(unloadPrevented()).toBe(false);
 	});
 

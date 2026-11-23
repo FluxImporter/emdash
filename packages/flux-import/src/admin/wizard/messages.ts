@@ -34,6 +34,7 @@ export const SHELL = {
 	steps: { id: "flux-import.shell.steps", message: "Steps" },
 	checkingAccess: { id: "flux-import.shell.checking-access", message: "Checking access" },
 	tryAgain: { id: "flux-import.shell.try-again", message: "Try again" },
+	notAvailable: { id: "flux-import.shell.not-available", message: "(not available yet)" },
 	step: {
 		source: { id: "flux-import.shell.step-source", message: "Source" },
 		target: { id: "flux-import.shell.step-target", message: "Target" },
@@ -46,5 +47,6 @@ export const SHELL = {
 	steps: Msg;
 	checkingAccess: Msg;
 	tryAgain: Msg;
+	notAvailable: Msg;
 	step: Record<StepId, Msg>;
 };

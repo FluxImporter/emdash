@@ -6,7 +6,8 @@ import { reachable, STEPS } from "./state.js";
 /**
  * The step bar: an ordered list of the six steps. The current step and every reachable one is a
  * link; a click changes the step in place instead of loading `?step=` (preflight F20). An
- * unreachable step is marked `aria-disabled` and is not a link.
+ * unreachable step is marked `aria-disabled`, tells screen readers it is not available yet, and is
+ * not a link.
  */
 export function StepBar() {
 	const t = useT();
@@ -40,7 +41,7 @@ export function StepBar() {
 							</a>
 						) : (
 							<span aria-disabled="true" className="flex items-center gap-1 text-kumo-subtle">
-								{content}
+								{content} <span className="sr-only">{t(SHELL.notAvailable)}</span>
 							</span>
 						)}
 					</li>

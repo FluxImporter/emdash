@@ -100,7 +100,9 @@ function Shell(props: { steps: StepComponents }) {
 	useUnloadGuard(state.dirty && state.run === null);
 
 	// The URL names the current step (Ruling 12); on the first render this also rewrites an
-	// unreachable `?step=` and adds `step=run` to a reopened job's URL.
+	// unreachable `?step=` and adds `step=run` to a reopened job's URL. The URL is read once, at
+	// mount; after that it only follows step changes. A host navigation to this route that does not
+	// remount the page (a changed `?step=` or `?job=`) is not read back.
 	useEffect(() => {
 		writeUrl({ step: state.step });
 		if (shown.current === state.step) return;
