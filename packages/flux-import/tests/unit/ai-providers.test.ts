@@ -1,4 +1,4 @@
-import { AnthropicError } from "@anthropic-ai/sdk";
+import { AnthropicError, APIConnectionTimeoutError } from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { anthropicClientOptions, FALLBACK_BETA } from "../../src/plugin/ai/anthropic.js";
 import {
@@ -428,6 +428,21 @@ describe('Anthropic through the pinned SDK and guardedRequest (spec "Provider re
 			code: "ai_timeout",
 		});
 		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	it("maps the SDK's timeout by its class when the bundle minifies its name (Fact D5)", async () => {
+		// The timeout error has no cause, so only its class names it; workerd bundles may rename it.
+		const name = Object.getOwnPropertyDescriptor(APIConnectionTimeoutError, "name");
+		Object.defineProperty(APIConnectionTimeoutError, "name", { value: "Rr", configurable: true });
+		try {
+			const { net } = fakeNet(hung);
+			expect(await callProvider(ANTHROPIC, { ...REQUEST, timeoutMs: 50 }, net)).toEqual({
+				ok: false,
+				code: "ai_timeout",
+			});
+		} finally {
+			if (name) Object.defineProperty(APIConnectionTimeoutError, "name", name);
+		}
 	});
 
 	it("maps a body that stalls after the headers to ai_timeout through the SDK's timer (Fact V1c)", async () => {
