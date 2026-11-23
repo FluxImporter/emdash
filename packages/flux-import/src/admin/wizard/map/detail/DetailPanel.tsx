@@ -1,6 +1,6 @@
 import { Badge } from "@cloudflare/kumo";
 import { useId } from "react";
-import { type Msg, useT } from "../../../i18n.js";
+import { type Msg, useT, type Values } from "../../../i18n.js";
 import { COMPATIBLE, type MappingType } from "../../../limits.js";
 import type { SampleColumn, SchemaField, TaxonomyInfo } from "../../../types.js";
 import type { RowId, RowMapping, RowMeta, ValueSource } from "../../state.js";
@@ -195,16 +195,23 @@ function Samples(p: { column: SampleColumn | undefined }) {
 	);
 }
 
+/**
+ * A row's badge text (Global Constraints): "AI · high", "Name · medium", "Template"; null for a
+ * row the user mapped. Pass `useT()`'s function. The "check" badge is `meta.check`, shown with
+ * `M.check` from this folder's messages.
+ */
+export function badgeText(t: (msg: Msg, values?: Values) => string, meta: RowMeta): string | null {
+	const { origin, confidence } = meta;
+	if (origin === "user") return null;
+	if (confidence === undefined || origin === "template") return t(ORIGINS[origin]);
+	return t(M.badge, { origin: t(ORIGINS[origin]), band: t(bandOf(confidence)) });
+}
+
 /** The suggestion's origin and confidence as text, "check", and its rationale (F28). */
 function Suggestion(p: { meta: RowMeta }) {
 	const t = useT();
-	const { origin, confidence, rationale, check } = p.meta;
-	const label =
-		origin === "user"
-			? null
-			: confidence === undefined || origin === "template"
-				? t(ORIGINS[origin])
-				: t(M.badge, { origin: t(ORIGINS[origin]), band: t(bandOf(confidence)) });
+	const { rationale, check } = p.meta;
+	const label = badgeText(t, p.meta);
 	if (label === null && !check && rationale === undefined) return null;
 	return (
 		<div className="space-y-2">

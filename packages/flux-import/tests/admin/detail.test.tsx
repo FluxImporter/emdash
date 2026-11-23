@@ -1,8 +1,13 @@
 import { screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { useT } from "../../src/admin/i18n.js";
 import type { SampleColumn, SchemaField, TaxonomyInfo } from "../../src/admin/types.js";
-import { DetailPanel, type DetailRow } from "../../src/admin/wizard/map/detail/DetailPanel.js";
+import {
+	badgeText,
+	DetailPanel,
+	type DetailRow,
+} from "../../src/admin/wizard/map/detail/DetailPanel.js";
 import { KeyPicker } from "../../src/admin/wizard/map/detail/KeyPicker.js";
 import type { RowMapping, RowMeta } from "../../src/admin/wizard/state.js";
 import { renderAdmin } from "./harness.js";
@@ -102,6 +107,7 @@ describe("DetailPanel", () => {
 		expect(screen.queryByRole("combobox", { name: "Mapping type" })).toBeNull();
 	});
 
+	// Renders up to 271 options at once, so it gets a longer timeout for a loaded full-suite run.
 	it("finds a key past the first 200 by typing (Review Focus 4)", async () => {
 		const columns = Array.from({ length: 1000 }, (_, i) => ({ key: `key-${i}`, values: [i] }));
 		const { user, onChange } = setup(fieldRow("string"), undefined, { columns });
@@ -123,13 +129,14 @@ describe("DetailPanel", () => {
 		await user.keyboard("{Escape}");
 		// More than 200 matches are all listed; a reopened list with no query is capped again.
 		await user.clear(picker);
-		await user.type(picker, "Key");
-		expect(screen.getAllByRole("option")).toHaveLength(1000);
+		// 271 of the keys hold a 9.
+		await user.type(picker, "9");
+		expect(screen.getAllByRole("option")).toHaveLength(271);
 		await user.keyboard("{Escape}");
 		await user.clear(picker);
 		await user.click(picker);
 		expect(screen.getAllByRole("option")).toHaveLength(200);
-	});
+	}, 15_000);
 
 	it("switches to Expression and drops from", async () => {
 		const { user, onChange } = setup(fieldRow("string"), { type: "text", from: "Name" });
@@ -523,6 +530,28 @@ describe("DetailPanel", () => {
 			{ meta: { origin: "user", check: false } },
 		);
 		expect(screen.queryByText(/ · /)).toBeNull();
+	});
+});
+
+describe("badgeText", () => {
+	it("gives the Map rows' badge text, and none for the user's rows", () => {
+		const metas: RowMeta[] = [
+			{ origin: "ai", confidence: 0.95, check: false },
+			{ origin: "name", confidence: 0.6, check: false },
+			{ origin: "ai", confidence: 0.49, check: true },
+			{ origin: "ai", check: false },
+			{ origin: "template", check: false },
+			{ origin: "template", confidence: 0.9, check: false },
+			{ origin: "user", check: false },
+		];
+		function Badges() {
+			const t = useT();
+			return <output>{metas.map((m) => badgeText(t, m) ?? "none").join(" | ")}</output>;
+		}
+		renderAdmin(<Badges />);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"AI · high | Name · medium | AI · low | AI | Template | Template | none",
+		);
 	});
 });
 

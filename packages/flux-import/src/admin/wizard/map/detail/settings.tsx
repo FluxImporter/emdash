@@ -72,7 +72,7 @@ export function ChoiceSetting<V extends string>(p: {
 			label={p.label}
 			value={p.value}
 			items={p.options}
-			required={p.required}
+			{...(p.required === undefined ? {} : { required: p.required })}
 			{...(p.placeholder === undefined ? {} : { placeholder: p.placeholder })}
 			{...(p.error === undefined ? {} : { error: p.error })}
 			onValueChange={(value: V | null) => {
