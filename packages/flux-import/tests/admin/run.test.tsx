@@ -233,8 +233,13 @@ describe("the Run step", () => {
 			),
 		});
 		renderRun(reopened, { fakeTimers: true });
+		// One live region from the first render on, whose text changes (review minor 3).
+		const live = screen.getByText("Starting the import");
+		expect(live).toHaveAttribute("aria-live", "polite");
+		// The spinner beside it is not announced a second time (review minor 5).
+		expect(screen.queryByRole("status")).toBeNull();
 		await tick();
-		expect(screen.getByText("Waiting for the previous batch to finish")).toBeVisible();
+		expect(live).toHaveTextContent("Waiting for the previous batch to finish");
 		expect(named(calls, "jobs/next")).toHaveLength(1);
 		await tick(2000);
 		expect(screen.getByText("Waiting for the previous batch to finish")).toBeVisible();
@@ -247,6 +252,8 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/next")).toHaveLength(4);
 		expect(named(calls, "jobs/get").map((c) => c.body)).toEqual([{ id: JOB_ID }]);
 		expect(counter("Created")).toBe("4");
+		expect(live).toBeInTheDocument();
+		expect(live).toHaveTextContent("The import is complete.");
 	});
 
 	it("shows an indeterminate bar for a reopened job", async () => {
@@ -257,6 +264,7 @@ describe("the Run step", () => {
 		});
 		renderRun(reopened);
 		const bar = await screen.findByRole("progressbar", { name: "Import progress" });
+		expect(screen.getByText("Import progress")).toBeVisible();
 		expect(bar).not.toHaveAttribute("value");
 		expect(bar).not.toHaveAttribute("aria-valuenow");
 		expect(screen.queryByRole("meter")).toBeNull();
@@ -264,6 +272,16 @@ describe("the Run step", () => {
 		expect(screen.queryByText(/left$/)).toBeNull();
 		held.open(real({ status: "completed", counters: counters(6) }));
 		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(screen.queryByRole("progressbar")).toBeNull();
+	});
+
+	it("shows no progress bar for a reopened paused job without a total", async () => {
+		const paused = real({ status: "paused", counters: counters(5) });
+		mockRoutes({ "jobs/get": () => paused, "jobs/next": () => paused });
+		renderRun(reopened);
+		expect(await screen.findByText("The import is paused.")).toBeVisible();
+		expect(screen.queryByRole("progressbar")).toBeNull();
+		expect(screen.queryByText("Import progress")).toBeNull();
 	});
 
 	it("pauses, resumes and cancels with confirmation", async () => {
@@ -277,9 +295,9 @@ describe("the Run step", () => {
 		const { user } = renderRun(reopened);
 		await user.click(await screen.findByRole("button", { name: "Pause" }));
 		expect(await screen.findByText("The import is paused.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
 		const nextsWhilePaused = named(calls, "jobs/next").length;
-		await new Promise((r) => setTimeout(r, 700));
-		expect(named(calls, "jobs/next")).toHaveLength(nextsWhilePaused);
 
 		await user.click(screen.getByRole("button", { name: "Resume" }));
 		await waitFor(() => expect(named(calls, "jobs/next").length).toBeGreaterThan(nextsWhilePaused));
@@ -442,6 +460,22 @@ describe("the Run step", () => {
 		expect(screen.queryByText("Insufficient permissions")).toBeNull();
 		expect(screen.queryByText(/retrying/)).toBeNull();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		// Pause and Cancel could only answer 403 again (review minor 4).
+		expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Cancel import" })).toBeNull();
+	});
+
+	it("hides the controls when a control answers 403", async () => {
+		mockRoutes({
+			"jobs/get": () => real({ status: "paused", counters: counters(1) }),
+			"jobs/next": () => real({ status: "paused", counters: counters(1) }),
+			"jobs/resume": () => fail("FORBIDDEN", "Insufficient permissions", 403),
+		});
+		const { user } = renderRun(reopened);
+		await user.click(await screen.findByRole("button", { name: "Resume" }));
+		expect(await screen.findByText("Only administrators can import.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Cancel import" })).toBeNull();
 	});
 
 	it("a failed job's source_missing message never shows the upload ID", async () => {
@@ -534,5 +568,80 @@ describe("the Run step", () => {
 		expect(await screen.findByText("The import is complete.")).toBeVisible();
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(JOB_ID);
+	});
+	/** Pauses, or cancels and confirms, with fake timers (`user` stalls under them). */
+	async function stopBy(how: "pause" | "cancel") {
+		if (how === "pause") {
+			fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+			await tick();
+			expect(screen.getByText("The import is paused.")).toBeVisible();
+			return;
+		}
+		fireEvent.click(screen.getByRole("button", { name: "Cancel import" }));
+		await tick();
+		const dialog = screen.getByRole("alertdialog");
+		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel import" }));
+		await tick();
+		expect(screen.getByText("The import was cancelled.")).toBeVisible();
+	}
+
+	const stopped = (status: "paused" | "cancelled") => real({ status, counters: counters(1) });
+
+	it.each(["pause", "cancel"] as const)(
+		"drops the driver's error once a %s stops the job (review 1)",
+		async (how) => {
+			vi.useFakeTimers();
+			mockRoutes({
+				"jobs/get": () => real({ counters: counters(1) }),
+				"jobs/next": () => fail("INTERNAL_ERROR", "Worker overloaded", 503),
+				"jobs/pause": () => stopped("paused"),
+				"jobs/cancel": () => stopped("cancelled"),
+			});
+			renderRun(reopened, { fakeTimers: true });
+			await tick();
+			await tick(1000);
+			await tick(3000);
+			await tick(9000);
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Something went wrong on the server. Try again.",
+			);
+			await stopBy(how);
+			expect(screen.queryByRole("alert")).toBeNull();
+			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		},
+	);
+
+	it.each([
+		["pause", "a lease wait"],
+		["cancel", "a lease wait"],
+		["pause", "a retry"],
+		["cancel", "a retry"],
+	] as const)("can %s during %s, and the driver stops at once", async (how, during) => {
+		vi.useFakeTimers();
+		const lease = { holder: "other-tab", expiresAt: Date.now() + 30_000 };
+		const { calls } = mockRoutes({
+			"jobs/get": () => real({ counters: counters(1) }),
+			"jobs/next": () =>
+				during === "a retry"
+					? fail("INTERNAL_ERROR", "Worker overloaded", 503)
+					: real({ counters: counters(1), lease }),
+			"jobs/pause": () => stopped("paused"),
+			"jobs/cancel": () => stopped("cancelled"),
+		});
+		renderRun(reopened, { fakeTimers: true });
+		await tick();
+		expect(
+			screen.getByText(
+				during === "a retry"
+					? "Connection lost; retrying (1 of 3)"
+					: "Waiting for the previous batch to finish",
+			),
+		).toBeVisible();
+		await stopBy(how);
+		const sent = named(calls, "jobs/next").length;
+		await tick(60_000);
+		expect(named(calls, "jobs/next")).toHaveLength(sent);
+		expect(screen.queryByText(/retrying|Waiting/)).toBeNull();
+		expect(screen.queryByRole("alert")).toBeNull();
 	});
 });

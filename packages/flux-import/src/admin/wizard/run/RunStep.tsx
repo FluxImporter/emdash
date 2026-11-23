@@ -1,6 +1,6 @@
 import { Banner, Button, Dialog, LinkButton, Loader, Meter } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
 import { ApiError } from "../../api-error.js";
@@ -58,6 +58,7 @@ export function RunStep() {
 	const [problem, setProblem] = useState<Problem | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [confirming, setConfirming] = useState(false);
+	const progressId = useId();
 	const driver = useJobDriver(driveId, api.next);
 
 	useEffect(() => {
@@ -144,17 +145,32 @@ export function RunStep() {
 	const number = (n: number, digits = 0) =>
 		new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: digits }).format(n);
 
+	const status: Status | null =
+		job === null
+			? problem
+				? null
+				: { msg: M.starting }
+			: statusOf(job, driver.phase, driver.attempt);
+	// The live region stays mounted while its text changes (review minor 3).
+	const live = (
+		<div className="flex items-center gap-3">
+			{job === null && status ? (
+				// Beside its visible text, the spinner is not announced a second time.
+				<span aria-hidden="true">
+					<Loader size="sm" />
+				</span>
+			) : null}
+			<p className="text-lg font-medium" aria-live="polite">
+				{status ? t(status.msg, status.values) : null}
+			</p>
+		</div>
+	);
+
 	if (job === null) {
 		return (
 			<div className="space-y-4">
-				{problem ? (
-					<ErrorNotice error={problem.error} onRetry={problem.retry} />
-				) : (
-					<div className="flex items-center gap-3">
-						<Loader size="sm" aria-label={t(M.starting)} />
-						<span className="text-sm text-kumo-subtle">{t(M.starting)}</span>
-					</div>
-				)}
+				{live}
+				{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
 			</div>
 		);
 	}
@@ -168,15 +184,17 @@ export function RunStep() {
 	const remaining = total === null ? 0 : total - done;
 	const secondsLeft = showRate && remaining > 0 ? Math.ceil(remaining / rate) : null;
 
-	const status = statusOf(job, driver.phase, driver.attempt);
+	// Only while the job runs: a pause or cancel ends the drive that failed (review 1).
+	const driverFailed = active && driver.phase === "error";
+	// A 403 leaves nothing to control: every control would answer 403 again (review minor 4).
+	const controllable = !(
+		(driverFailed && isForbidden(driver.error)) ||
+		(problem !== null && isForbidden(problem.error))
+	);
 
 	return (
 		<div className="space-y-4">
-			{status ? (
-				<p className="text-lg font-medium" aria-live="polite">
-					{t(status.msg, status.values)}
-				</p>
-			) : null}
+			{live}
 			{job.status === "failed" && job.error ? <JobError error={job.error} /> : null}
 			{job.dryRun ? <p className="text-sm text-kumo-subtle">{t(M.dryRun)}</p> : null}
 
@@ -191,10 +209,15 @@ export function RunStep() {
 						total: number(total),
 					})}
 				/>
-			) : (
+			) : active ? (
 				// A job reopened by URL has no known total (Coordinator's call 5).
-				<progress className="w-full" aria-label={t(M.progress)} />
-			)}
+				<div className="flex w-full flex-col gap-2">
+					<span id={progressId} className="text-xs text-kumo-subtle">
+						{t(M.progress)}
+					</span>
+					<progress className="w-full" aria-labelledby={progressId} />
+				</div>
+			) : null}
 
 			{showRate || secondsLeft !== null ? (
 				<div className="flex flex-wrap gap-4 text-sm text-kumo-subtle">
@@ -220,13 +243,11 @@ export function RunStep() {
 				)}
 			</dl>
 
-			{driver.phase === "error" ? (
-				<ErrorNotice error={driver.error} onRetry={driver.start} />
-			) : null}
+			{driverFailed ? <ErrorNotice error={driver.error} onRetry={driver.start} /> : null}
 			{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
 
 			<div className="flex flex-wrap items-center gap-3">
-				{active ? (
+				{controllable && active ? (
 					<Button
 						variant="secondary"
 						disabled={busy}
@@ -235,7 +256,7 @@ export function RunStep() {
 						{t(M.pause)}
 					</Button>
 				) : null}
-				{job.status === "paused" || job.status === "failed" ? (
+				{controllable && (job.status === "paused" || job.status === "failed") ? (
 					<Button
 						variant="primary"
 						disabled={busy}
@@ -244,7 +265,7 @@ export function RunStep() {
 						{t(M.resume)}
 					</Button>
 				) : null}
-				{job.status === "completed" && !job.dryRun && job.counters.failed > 0 ? (
+				{controllable && job.status === "completed" && !job.dryRun && job.counters.failed > 0 ? (
 					<Button
 						variant="primary"
 						disabled={busy}
@@ -269,7 +290,7 @@ export function RunStep() {
 						{t(M.downloadFailed)}
 					</Button>
 				) : null}
-				{active || job.status === "paused" || job.status === "failed" ? (
+				{controllable && (active || job.status === "paused" || job.status === "failed") ? (
 					<Dialog.Root role="alertdialog" open={confirming} onOpenChange={setConfirming}>
 						<Dialog.Trigger
 							render={
@@ -305,12 +326,14 @@ export function RunStep() {
 	);
 }
 
+type Status = { msg: Msg; values?: Values };
+
 /** The line that says what the job is doing; null while a driver error is shown instead. */
 function statusOf(
 	job: Job,
 	phase: ReturnType<typeof useJobDriver>["phase"],
 	attempt: number,
-): { msg: Msg; values?: Values } | null {
+): Status | null {
 	switch (job.status) {
 		case "completed":
 			return { msg: M.completed };
@@ -336,6 +359,11 @@ function duration(seconds: number, locale: string): string {
 	return new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay: "long" }).format(value);
 }
 
+/** A 403 that is not a CSRF refusal: the user may not import (preflight F29). */
+function isForbidden(error: unknown): boolean {
+	return error instanceof ApiError && error.status === 403 && error.code !== "CSRF_REJECTED";
+}
+
 /** A failed job's error, never with an upload ID in it (preflight F15). */
 function JobError(props: { error: { code: string; message: string } }) {
 	const t = useT();
@@ -351,8 +379,7 @@ function ErrorNotice(props: { error: unknown; onRetry?: (() => void) | undefined
 	const t = useT();
 	const d = describeError(props.error);
 	const { error, onRetry } = props;
-	const forbidden =
-		error instanceof ApiError && error.status === 403 && error.code !== "CSRF_REJECTED";
+	const forbidden = isForbidden(error);
 	const description =
 		d.detail === undefined && d.problems === undefined ? undefined : (
 			<>
