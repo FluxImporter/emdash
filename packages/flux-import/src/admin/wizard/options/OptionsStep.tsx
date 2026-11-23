@@ -1,24 +1,22 @@
 import { Banner, Checkbox, Collapsible, DatePicker, Input, Radio, Select } from "@cloudflare/kumo";
-import { type ChangeEvent, useMemo, useState } from "react";
-import type { TemplateSummary } from "../../../plugin/templates.js";
+import { type ChangeEvent, useEffect, useId, useMemo, useState } from "react";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
-import {
-	BATCH_SIZE_MAX,
-	MAX_UPDATE_FIELDS,
-	OWNER_PATTERN,
-	TEMPLATE_NAME_MAX,
-} from "../../limits.js";
-import { useAllTemplates, useFields } from "../../queries.js";
+import { BATCH_SIZE_MAX, MAX_UPDATE_FIELDS, OWNER_PATTERN } from "../../limits.js";
+import { useAllTemplates, useFields, useSite } from "../../queries.js";
 import { useWizard } from "../context.js";
 import { StepFooter } from "../StepFooter.js";
 import {
 	fromTemplate,
 	isEdited,
+	isTimezone,
 	mappingNamesOf,
 	type Options,
+	optionsBlockers,
 	ownerOf,
+	saveOffered,
+	templateNameRule,
 	toTemplate,
 } from "../state.js";
 import { M } from "./messages.js";
@@ -35,23 +33,6 @@ function wholeIn(text: string, min: number, max: number): number | null {
 	if (!/^\d+$/.test(text)) return null;
 	const n = Number(text);
 	return n >= min && n <= max ? n : null;
-}
-
-/**
- * What is wrong with a template name, as `templates/create` would see it (`templateNameProblem`,
- * `assertNameFree`): empty, too long, a space at either end or a control character, or taken.
- */
-function nameProblem(
-	name: string,
-	saved: readonly TemplateSummary[],
-): { msg: Msg; values?: Values } | null {
-	const n = name.normalize("NFC");
-	if (n.length === 0) return { msg: M.nameNeeded };
-	if (n.length > TEMPLATE_NAME_MAX || /^\s|\s$/u.test(n) || /[\p{Cc}\p{Cf}]/u.test(n)) {
-		return { msg: M.nameInvalid, values: { max: TEMPLATE_NAME_MAX } };
-	}
-	if (saved.some((t) => t.name === n)) return { msg: M.nameTaken };
-	return null;
 }
 
 /** A calendar day as `yyyy-MM-dd`, in the browser's own calendar. */
@@ -83,6 +64,7 @@ export function OptionsStep() {
 
 	const collection = target?.collection ?? null;
 	const fields = useFields(collection);
+	const site = useSite();
 	// Names are unique across the site; owners clash within the collection (Ruling 15).
 	const allTemplates = useAllTemplates();
 	const collectionTemplates = useAllTemplates(collection ?? undefined);
@@ -90,18 +72,20 @@ export function OptionsStep() {
 	const edited = base !== null && isEdited(state);
 	const save = options.save;
 	// An unedited saved template runs as it is: a save choice made while it was edited is moot.
-	const saveOffered = base === null || edited;
+	const offered = saveOffered(state);
 	const missingAllowed = base !== null || save.kind === "new";
 
 	// --- Records ---
 	const names = mappingNamesOf(state.rows);
 	const listed = options.updateFields.filter((n) => names.includes(n));
 	const fieldLabels = new Map((fields.data ?? []).map((f) => [f.slug, f.label]));
+	const taxonomyLabels = new Map((site.data?.taxonomies ?? []).map((x) => [x.name, x.label]));
 	const nameLabel = (name: string) => {
 		if (name === "slug") return t(M.slugName);
 		if (name === "bylines") return t(M.bylinesName);
 		if (name.startsWith("taxonomies.")) {
-			return t(M.taxonomyName, { name: name.slice("taxonomies.".length) });
+			const taxonomy = name.slice("taxonomies.".length);
+			return taxonomyLabels.get(taxonomy) ?? taxonomy;
 		}
 		return fieldLabels.get(name) ?? name;
 	};
@@ -153,6 +137,7 @@ export function OptionsStep() {
 		setFeed(next);
 		set({ schedule: feedSchedule(next) });
 	};
+	const tzInvalid = feed.tz.trim() !== "" && !isTimezone(feed.tz.trim());
 	const keys = state.columns?.map((c) => c.key) ?? [];
 	if (feed.from !== "" && !keys.includes(feed.from)) keys.push(feed.from);
 
@@ -178,8 +163,12 @@ export function OptionsStep() {
 
 	// --- Saving ---
 	const name = save.kind === "new" ? save.name : "";
-	const nameIssue =
-		save.kind === "new" && saveOffered ? nameProblem(name, allTemplates.data ?? []) : null;
+	const naming = save.kind === "new" && offered;
+	const nameRule = naming ? templateNameRule(name) : null;
+	// Whether the name is taken needs the saved templates, so it is checked here, not in
+	// `optionsBlockers`; `templates/create` checks it again on Run.
+	const nameTaken =
+		naming && (allTemplates.data ?? []).some((x) => x.name === name.normalize("NFC"));
 	const chooseSave = (kind: SaveChoice) => {
 		if (kind === "new") set({ save: { kind: "new", name: "" } });
 		else if (kind === "update") set({ save: { kind: "update" } });
@@ -189,16 +178,19 @@ export function OptionsStep() {
 
 	// --- Advanced ---
 	const [ownerText, setOwnerText] = useState<string | null>(null);
-	const owner = ownerText ?? ownerOf(state);
-	const ownerValid = OWNER_PATTERN.test(owner);
+	// An unedited saved template with no owner runs as saved, so the import stamps none. (Unedited,
+	// `options.owner` is then null too: a typed owner would be an edit.)
+	const ownerNone = base !== null && !edited && base.template.rules?.owner === undefined;
+	const owner = ownerText ?? (ownerNone ? "" : ownerOf(state));
+	const ownerValid = (ownerNone && ownerText === null) || OWNER_PATTERN.test(owner);
 	const changeOwner = (text: string) => {
 		setOwnerText(text);
 		if (OWNER_PATTERN.test(text)) set({ owner: text });
 	};
 	// The template this import runs or saves to is no clash with itself.
-	const selfId = save.kind === "new" ? null : (base?.id ?? null);
+	const selfId = offered && save.kind === "new" ? null : (base?.id ?? null);
 	const clash =
-		ownerValid && target !== null
+		ownerValid && !ownerNone && target !== null
 			? ownerClash(owner, target.locale, collectionTemplates.data ?? [], selfId)
 			: null;
 	const [batchText, setBatchText] = useState(
@@ -212,17 +204,25 @@ export function OptionsStep() {
 		else if (n !== null) set({ batchSize: n });
 	};
 	const [advancedOpen, setAdvancedOpen] = useState(false);
-	// A problem or a clash under Advanced keeps it open, so it is never hidden.
+	// A problem or a clash under Advanced opens it once, so it is seen; its trigger still closes it.
 	const advancedNeeded = !ownerValid || !batchValid || clash !== null;
+	useEffect(() => {
+		if (advancedNeeded) setAdvancedOpen(true);
+	}, [advancedNeeded]);
 
 	// --- Next ---
-	let blocker: { msg: Msg; values?: Values } | null = null;
-	if (options.status === "schedule" && options.schedule === null)
-		blocker = { msg: M.scheduleUnset };
-	else if (nameIssue !== null) blocker = nameIssue;
-	else if (options.missing !== null && threshold === null) blocker = { msg: M.thresholdInvalid };
-	else if (!ownerValid) blocker = { msg: M.ownerInvalid };
-	else if (!batchValid) blocker = { msg: M.batchSizeInvalid, values: { max: BATCH_SIZE_MAX } };
+	// Next is what saves the changes to the template, so that choice does not block it here.
+	const blockers = optionsBlockers(state).filter((b) => b.msg !== M.saveUnsaved);
+	const tooMany = blockers.some((b) => b.msg === M.updateFieldsTooMany);
+	const local: ({ msg: Msg; values?: Values } | false)[] = [
+		nameTaken && { msg: M.nameTaken },
+		options.missing !== null && threshold === null && { msg: M.thresholdInvalid },
+		!ownerValid && { msg: M.ownerInvalid },
+		!batchValid && { msg: M.batchSizeInvalid, values: { max: BATCH_SIZE_MAX } },
+	];
+	const blocker = [...blockers, ...local].find((b) => b !== false) ?? null;
+	const protectHelpId = useId();
+	const saveHelpId = useId();
 
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<unknown>(null);
@@ -252,7 +252,7 @@ export function OptionsStep() {
 				setBusy(false);
 			}
 		}
-		if (!saveOffered && save.kind !== "none") set({ save: { kind: "none" } });
+		if (!offered && save.kind !== "none") set({ save: { kind: "none" } });
 		dispatch({ type: "stepChanged", step: "preview" });
 	};
 
@@ -273,12 +273,10 @@ export function OptionsStep() {
 				<div className="space-y-4">
 					<Checkbox.Group
 						legend={t(M.updateFields)}
-						description={t(M.updateFieldsHelp)}
+						description={t(M.updateFieldsHelp, { max: MAX_UPDATE_FIELDS })}
 						value={listed}
 						onValueChange={(value: string[]) => set({ updateFields: value })}
-						{...(listed.length >= MAX_UPDATE_FIELDS
-							? { error: t(M.updateFieldsTooMany, { max: MAX_UPDATE_FIELDS }) }
-							: {})}
+						{...(tooMany ? { error: t(M.updateFieldsTooMany, { max: MAX_UPDATE_FIELDS }) } : {})}
 					>
 						<div className="max-h-96 overflow-y-auto">
 							{names.map((n) => (
@@ -296,8 +294,11 @@ export function OptionsStep() {
 							label={t(M.protectEdited)}
 							checked={options.protectEdited}
 							onCheckedChange={(checked: boolean) => set({ protectEdited: checked })}
+							aria-describedby={protectHelpId}
 						/>
-						<p className="text-sm text-kumo-subtle">{t(M.protectEditedHelp)}</p>
+						<p id={protectHelpId} className="text-sm text-kumo-subtle">
+							{t(M.protectEditedHelp)}
+						</p>
 					</div>
 				</div>
 			)}
@@ -377,6 +378,7 @@ export function OptionsStep() {
 								description={t(M.feedTzHelp)}
 								value={feed.tz}
 								onChange={(e: ChangeEvent<HTMLInputElement>) => changeFeed({ tz: e.target.value })}
+								{...(tzInvalid ? { error: t(M.feedTzInvalid) } : {})}
 							/>
 						</div>
 					) : null}
@@ -413,8 +415,11 @@ export function OptionsStep() {
 						label={t(M.saveAs)}
 						checked={save.kind === "new"}
 						onCheckedChange={(checked: boolean) => chooseSave(checked ? "new" : "none")}
+						aria-describedby={saveHelpId}
 					/>
-					<p className="text-sm text-kumo-subtle">{t(M.saveAsHelp)}</p>
+					<p id={saveHelpId} className="text-sm text-kumo-subtle">
+						{t(M.saveAsHelp)}
+					</p>
 				</div>
 			) : null}
 			{edited ? (
@@ -429,35 +434,35 @@ export function OptionsStep() {
 					<Radio.Item label={t(M.saveNew)} value="new" />
 				</Radio.Group>
 			) : null}
-			{save.kind === "new" && saveOffered ? (
+			{naming ? (
 				<Input
 					label={t(M.templateName)}
 					value={name}
 					onChange={(e: ChangeEvent<HTMLInputElement>) =>
 						set({ save: { kind: "new", name: e.target.value } })
 					}
-					{...(nameIssue !== null && nameIssue.msg !== M.nameNeeded
-						? { error: t(nameIssue.msg, nameIssue.values) }
-						: {})}
+					{...(allTemplates.isError ? { description: t(M.nameUnchecked) } : {})}
+					{...(nameRule !== null && nameRule.msg !== M.nameNeeded
+						? { error: t(nameRule.msg, nameRule.values) }
+						: nameTaken
+							? { error: t(M.nameTaken) }
+							: {})}
 				/>
 			) : null}
 
-			<Collapsible.Root
-				open={advancedOpen || advancedNeeded}
-				onOpenChange={(open: boolean) => setAdvancedOpen(open)}
-			>
+			<Collapsible.Root open={advancedOpen} onOpenChange={(open: boolean) => setAdvancedOpen(open)}>
 				<Collapsible.DefaultTrigger>{t(M.advanced)}</Collapsible.DefaultTrigger>
 				<Collapsible.DefaultPanel>
 					<div className="space-y-4">
 						<Input
 							label={t(M.owner)}
-							description={t(M.ownerHelp)}
+							description={t(ownerNone ? M.ownerNone : M.ownerHelp)}
 							value={owner}
 							onChange={(e: ChangeEvent<HTMLInputElement>) => changeOwner(e.target.value)}
 							{...(ownerValid ? {} : { error: t(M.ownerInvalid) })}
 						/>
 						{clash === null ? null : (
-							<Banner variant="alert" text={t(M.ownerClash, { name: clash.name })} />
+							<Banner variant="alert" role="status" text={t(M.ownerClash, { name: clash.name })} />
 						)}
 						<Input
 							inputMode="numeric"

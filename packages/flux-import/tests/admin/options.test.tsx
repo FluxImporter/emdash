@@ -8,6 +8,7 @@ import {
 	initialState,
 	isEdited,
 	ownerOf,
+	reachable,
 	reducer,
 	toTemplate,
 	type WizardAction,
@@ -15,7 +16,7 @@ import {
 } from "../../src/admin/wizard/state.js";
 import { templateSchema } from "../../src/engine/template.js";
 import type { TemplateSummary } from "../../src/plugin/templates.js";
-import { POSTS, UPLOAD_ID } from "./fixtures.js";
+import { MANIFEST, POSTS, UPLOAD_ID } from "./fixtures.js";
 import { fail, mockRoutes, type RouteHandler, renderAdmin } from "./harness.js";
 
 const COLUMNS = [
@@ -97,6 +98,7 @@ function renderOptions(
 	const { calls } = mockRoutes({
 		"templates/list": () => ({ items: opts.templates ?? [], hasMore: false }),
 		"GET collection:posts": () => POSTS,
+		"GET manifest": () => MANIFEST,
 		...opts.routes,
 	});
 	const result = renderAdmin(
@@ -163,24 +165,62 @@ describe("the Options step", () => {
 	});
 
 	it("warns when another template of the collection and locale has the same owner", async () => {
-		const { user, calls } = renderOptions(oneOff(), {
+		const { calls } = renderOptions(oneOff(), {
 			templates: [summary({ name: "Old posts", owner: "wizard-posts-en" })],
 		});
-		await openAdvanced(user);
-		expect(
-			await screen.findByText(/The template Old posts has the same owner/),
-		).toBeInTheDocument();
+		expect(await screen.findByText(/The template Old posts has the same owner/)).toBeVisible();
 		expect(calls.filter((c) => c.route === "templates/list").map((c) => c.body)).toContainEqual({
 			collection: "posts",
 		});
 	});
 
-	it("opens Advanced by itself to show a clash", async () => {
-		renderOptions(oneOff(), {
+	it("opens Advanced by itself to show a clash, and lets it be closed again", async () => {
+		const { user } = renderOptions(oneOff(), {
 			templates: [summary({ name: "Old posts", owner: "wizard-posts-en" })],
 		});
-		expect(await screen.findByText(/The template Old posts has the same owner/)).toBeVisible();
+		const status = await screen.findByRole("status");
+		expect(status).toHaveTextContent(/The template Old posts has the same owner/);
+		expect(status).toBeVisible();
 		expect(screen.getByRole("textbox", { name: "Owner" })).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Advanced" }));
+		expect(screen.queryByRole("textbox", { name: "Owner" })).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Advanced" }));
+		expect(screen.getByRole("textbox", { name: "Owner" })).toBeVisible();
+	});
+
+	it("says an unedited saved template sets no owner, and checks no clash for it", async () => {
+		const state = run(editedBase(), [{ type: "rowCleared", row: "field:excerpt" }]);
+		const { user, calls } = renderOptions(state, {
+			templates: [summary({ name: "Other", owner: "products-feed" })],
+		});
+		await waitFor(() => expect(calls.filter((c) => c.route === "templates/list")).toHaveLength(2));
+		const owner = await openAdvanced(user);
+		expect(owner).toHaveValue("");
+		expect(owner).toHaveAccessibleDescription(described("The saved template sets no owner"));
+		expect(screen.queryByText(/has the same owner/)).not.toBeInTheDocument();
+		expect(next()).toBeEnabled();
+	});
+
+	it("shows the derived owner an edited template without one runs with", async () => {
+		const { user } = renderOptions(editedBase());
+		const owner = await openAdvanced(user);
+		expect(owner).toHaveValue("products-feed");
+		expect(owner).not.toHaveAccessibleDescription(described("sets no owner"));
+	});
+
+	it("checks no clash with the base for a save-as-new choice it no longer offers", async () => {
+		const owned = templateSchema.parse({ ...BASE_TEMPLATE, rules: { owner: "feed" } });
+		const state = run(editedBase(owned), [
+			{ type: "optionsChanged", patch: { save: { kind: "new", name: "" } } },
+			{ type: "rowCleared", row: "field:excerpt" },
+		]);
+		expect(isEdited(state)).toBe(false);
+		const { user, calls } = renderOptions(state, {
+			templates: [summary({ id: "T1", name: "Products feed", owner: "feed" })],
+		});
+		await waitFor(() => expect(calls.filter((c) => c.route === "templates/list")).toHaveLength(2));
+		expect(await openAdvanced(user)).toHaveValue("feed");
+		expect(screen.queryByText(/has the same owner/)).not.toBeInTheDocument();
 	});
 
 	it("warns of the base template's owner only for a new template saved from it", async () => {
@@ -273,7 +313,8 @@ describe("the Options step", () => {
 		]);
 		const { user, seen } = renderOptions(state);
 		await user.click(await screen.findByRole("checkbox", { name: "Slug" }));
-		await user.click(screen.getByRole("checkbox", { name: "Taxonomy tag" }));
+		// The taxonomy's label, from the site's manifest.
+		await user.click(await screen.findByRole("checkbox", { name: "Tags" }));
 		expect(seen.state.options.updateFields).toEqual(["slug", "taxonomies.tag"]);
 	});
 
@@ -297,11 +338,32 @@ describe("the Options step", () => {
 		const first = screen.getByRole("checkbox", { name: "f0" });
 		const last = screen.getByRole("checkbox", { name: `f${MAX_UPDATE_FIELDS}` });
 		expect(isDisabled(last)).toBe(false);
-		expect(screen.queryByText("Choose at most 200 fields")).not.toBeInTheDocument();
+		expect(screen.getByText(/at most 200/)).toBeInTheDocument();
 		await user.click(first);
-		expect(screen.getByText("Choose at most 200 fields")).toBeInTheDocument();
+		// Exactly the cap is valid: the other boxes are disabled, and nothing is wrong.
 		expect(isDisabled(last)).toBe(true);
 		expect(isDisabled(first)).toBe(false);
+		expect(screen.queryByText("Choose at most 200 fields")).not.toBeInTheDocument();
+		expect(next()).toBeEnabled();
+	});
+
+	it("reports more update fields than MAX_UPDATE_FIELDS, as a saved template can hold", () => {
+		const slugs = Array.from({ length: MAX_UPDATE_FIELDS + 1 }, (_, i) => `f${i}`);
+		const state = run(oneOff(), [
+			...slugs.map(
+				(slug): WizardAction => ({
+					type: "rowSet",
+					row: `field:${slug}`,
+					mapping: { from: "title", type: "text" },
+				}),
+			),
+			{ type: "optionsChanged", patch: { updateFields: slugs } },
+		]);
+		renderOptions(state);
+		expect(reason()).toBe("Choose at most 200 fields");
+		// Also the group's own error.
+		expect(screen.getAllByText("Choose at most 200 fields")).toHaveLength(2);
+		expect(next()).toBeDisabled();
 	});
 
 	it("writes Schedule as a fixed expr with tz site, or as a feed key with format", async () => {
@@ -339,6 +401,26 @@ describe("the Options step", () => {
 
 		await user.click(screen.getByRole("radio", { name: "Draft" }));
 		expect(toTemplate(seen.state, ownerOf(seen.state))).not.toHaveProperty("publishAt");
+	});
+
+	it("refuses a feed timezone the browser does not know", async () => {
+		const { user, seen } = renderOptions(oneOff());
+		await user.click(screen.getByRole("radio", { name: "Schedule" }));
+		await user.click(screen.getByRole("radio", { name: "A date from the feed" }));
+		await user.click(screen.getByRole("combobox", { name: "Source key" }));
+		await user.click(await screen.findByRole("option", { name: "date" }));
+		const tz = screen.getByRole("textbox", { name: "Timezone" });
+		await user.type(tz, "Mars/Olympus");
+		expect(tz).toHaveAccessibleDescription(described("Use an IANA timezone"));
+		expect(next()).toBeDisabled();
+		expect(reason()).toBe("Use an IANA timezone such as Europe/Paris, or site");
+		await user.clear(tz);
+		await user.type(tz, "Europe/Paris");
+		expect(next()).toBeEnabled();
+		expect(seen.state.options.schedule).toEqual({ kind: "feed", from: "date", tz: "Europe/Paris" });
+		await user.clear(tz);
+		await user.type(tz, "site");
+		expect(next()).toBeEnabled();
 	});
 
 	it("keeps a saved template's own publish date as it is", async () => {
@@ -396,6 +478,33 @@ describe("the Options step", () => {
 		expect(next()).toBeEnabled();
 		await user.type(name, "x");
 		expect(reason()).toBe("Use 1 to 100 characters, with no space at either end");
+	});
+
+	it("says the name check is unavailable when the saved templates cannot be listed", async () => {
+		const { user } = renderOptions(oneOff(), {
+			routes: {
+				"templates/list": (body) =>
+					Object.keys(body as object).length === 0
+						? fail("VALIDATION_ERROR", "Bad request", 400)
+						: { items: [], hasMore: false },
+			},
+		});
+		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
+		const name = screen.getByRole("textbox", { name: "Template name" });
+		await waitFor(() => expect(name).toHaveAccessibleDescription(described("could not be listed")));
+		await user.type(name, "Feed");
+		expect(next()).toBeEnabled();
+	});
+
+	it("describes the checkboxes by their help lines", async () => {
+		const { user } = renderOptions(oneOff());
+		expect(screen.getByRole("checkbox", { name: "Save as template" })).toHaveAccessibleDescription(
+			described("Saves these settings on Run"),
+		);
+		await user.click(screen.getByRole("radio", { name: "Update only" }));
+		expect(
+			screen.getByRole("checkbox", { name: "Never overwrite fields edited in the admin" }),
+		).toHaveAccessibleDescription(described("keeps their change"));
 	});
 
 	it("goes on to Preview on Next without a request for a one-off run", async () => {
@@ -457,6 +566,33 @@ describe("the Options step", () => {
 			expect(calls.some((c) => c.route === "templates/update")).toBe(false);
 		},
 	);
+
+	it("closes Preview to the step bar while the changes are to be saved, until Next saves them", async () => {
+		const { user, seen } = renderOptions(editedBase(), {
+			routes: {
+				"templates/update": (body) => {
+					const b = body as { id: string; revision: number; template: unknown };
+					return {
+						template: {
+							...summary({ id: b.id, name: "Products feed", revision: b.revision + 1 }),
+							template: templateSchema.parse(b.template),
+						},
+						check: { problems: [], warnings: [] },
+					};
+				},
+			},
+		});
+		expect(reachable(seen.state, "preview")).toBe(true);
+		await user.click(screen.getByRole("radio", { name: "Save the changes to Products feed" }));
+		// The step bar links a step exactly when it is reachable (Task 5's StepBar).
+		expect(reachable(seen.state, "preview")).toBe(false);
+		expect(reachable(seen.state, "run")).toBe(false);
+		// Next is what saves them, so it is not blocked.
+		expect(next()).toBeEnabled();
+		await user.click(next());
+		await waitFor(() => expect(seen.state.step).toBe("preview"));
+		expect(reachable(seen.state, "preview")).toBe(true);
+	});
 
 	it("saves the changes to the template on Next and keeps its warnings", async () => {
 		const { user, seen, calls } = renderOptions(editedBase(), {

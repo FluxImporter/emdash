@@ -1,9 +1,10 @@
 import type { Template } from "../../engine/template.js";
 import type { SuggestReply } from "../../plugin/suggest.js";
 import type { Msg, Values } from "../i18n.js";
-import { COMPATIBLE } from "../limits.js";
+import { COMPATIBLE, MAX_UPDATE_FIELDS, TEMPLATE_NAME_MAX } from "../limits.js";
 import type { CreateJobInput, SampleColumn, SchemaField, SourceBlock } from "../types.js";
 import { M } from "./messages.js";
+import { M as OPTIONS } from "./options/messages.js";
 
 /**
  * The wizard's state: a pure reducer over the draft, and the pure helpers several steps share
@@ -684,6 +685,92 @@ export function mapBlockers(state: WizardState, fields: readonly SchemaField[]):
 	return blockers;
 }
 
+// --- Options' blockers ---
+
+/** A fixed publish date: a day and a time, as the Options step writes it (Ruling 16). */
+const FIXED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+/**
+ * Whether the engine reads `tz` as a timezone: `site`, or a zone the browser's `Intl` knows (the
+ * engine's Luxon zones are `Intl`'s).
+ */
+export function isTimezone(tz: string): boolean {
+	if (tz === SITE_TIMEZONE) return true;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: tz });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * What `templates/create` refuses in a name (`templateNameProblem`): empty, over
+ * `TEMPLATE_NAME_MAX`, a space at either end, or a control or format character. Whether the name
+ * is taken needs the saved templates, so the Options step checks that itself.
+ */
+export function templateNameRule(name: string): Blocker | null {
+	const n = name.normalize("NFC");
+	if (n.length === 0) return { row: null, msg: OPTIONS.nameNeeded };
+	if (n.length > TEMPLATE_NAME_MAX || /^\s|\s$/u.test(n) || /[\p{Cc}\p{Cf}]/u.test(n)) {
+		return { row: null, msg: OPTIONS.nameInvalid, values: { max: TEMPLATE_NAME_MAX } };
+	}
+	return null;
+}
+
+/**
+ * Whether Options offers a save choice: always for a new draft, and for a saved template only
+ * once it is edited. An unedited one runs as it is saved, so an earlier choice is moot.
+ */
+export function saveOffered(state: WizardState): boolean {
+	return state.base === null || isEdited(state);
+}
+
+/**
+ * What Options' choices leave unfinished, checked without the saved templates (review ruling):
+ * Schedule without a date (one date without its day and time, a feed date without its key, or a
+ * timezone `Intl` does not know); more update fields than `MAX_UPDATE_FIELDS`; and, while Options
+ * offers them, a new template's name `templates/create` would refuse, or changes to save to the
+ * template that are not saved yet (`templateSaved` clears that choice). Preview and Run stay
+ * closed while any holds, so the step bar cannot skip Options' Next.
+ */
+export function optionsBlockers(state: WizardState): Blocker[] {
+	const { options, base } = state;
+	const blockers: Blocker[] = [];
+	if (options.status === "schedule") {
+		const s = options.schedule;
+		if (
+			s === null ||
+			(s.kind === "fixed" && !FIXED_AT.test(s.at)) ||
+			(s.kind === "feed" && s.from === "")
+		) {
+			blockers.push({ row: null, msg: OPTIONS.scheduleUnset });
+		} else if (s.kind === "feed" && s.tz !== undefined && !isTimezone(s.tz)) {
+			blockers.push({ row: null, msg: OPTIONS.feedTzInvalid });
+		}
+	}
+	if (options.mode !== "create") {
+		const names = new Set(mappingNamesOf(state.rows));
+		const listed = new Set(options.updateFields.filter((n) => names.has(n)));
+		if (listed.size > MAX_UPDATE_FIELDS) {
+			blockers.push({
+				row: null,
+				msg: OPTIONS.updateFieldsTooMany,
+				values: { max: MAX_UPDATE_FIELDS },
+			});
+		}
+	}
+	if (saveOffered(state)) {
+		if (options.save.kind === "new") {
+			const problem = templateNameRule(options.save.name);
+			if (problem !== null) blockers.push(problem);
+		} else if (options.save.kind === "update" && base !== null) {
+			blockers.push({ row: null, msg: OPTIONS.saveUnsaved, values: { name: base.name } });
+		}
+	}
+	return blockers;
+}
+
 // --- Navigation ---
 
 /** A sample is usable with at least one key and one record (preflight F7). */
@@ -691,9 +778,15 @@ function usable(columns: SampleColumn[] | null): boolean {
 	return columns !== null && columns.length > 0 && (columns[0]?.values.length ?? 0) > 0;
 }
 
-/** Whether a step can be shown (preflight F2); once a run exists, only Run. */
+/**
+ * Whether a step can be shown (preflight F2); once a run exists, only Run. Preview and Run also
+ * need Options' choices finished (`optionsBlockers`), as the step bar can skip Options' Next.
+ */
 export function reachable(state: WizardState, step: StepId): boolean {
-	if (step === "run") return state.run !== null || (state.dryRun?.total ?? 0) > 0;
+	if (step === "run") {
+		if (state.run !== null) return true;
+		return (state.dryRun?.total ?? 0) > 0 && optionsBlockers(state).length === 0;
+	}
 	if (state.run !== null) return false;
 	switch (step) {
 		case "source":
@@ -703,8 +796,11 @@ export function reachable(state: WizardState, step: StepId): boolean {
 		case "map":
 			return state.target !== null;
 		case "options":
-		case "preview":
 			return state.target !== null && state.rows.key !== undefined;
+		case "preview":
+			return (
+				state.target !== null && state.rows.key !== undefined && optionsBlockers(state).length === 0
+			);
 	}
 }
 

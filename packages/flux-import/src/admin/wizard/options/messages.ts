@@ -15,7 +15,7 @@ export const M = {
 	updateFieldsHelp: {
 		id: "flux-import.options.update-fields-help",
 		message:
-			"An update leaves the other fields as they are. Tick none to update every mapped field.",
+			"An update leaves the other fields as they are. Tick none to update every mapped field, or at most {max}.",
 	},
 	updateFieldsTooMany: {
 		id: "flux-import.options.update-fields-too-many",
@@ -23,7 +23,6 @@ export const M = {
 	},
 	slugName: { id: "flux-import.options.slug-name", message: "Slug" },
 	bylinesName: { id: "flux-import.options.bylines-name", message: "Bylines" },
-	taxonomyName: { id: "flux-import.options.taxonomy-name", message: "Taxonomy {name}" },
 	protectEdited: {
 		id: "flux-import.options.protect-edited",
 		message: "Never overwrite fields edited in the admin",
@@ -79,6 +78,10 @@ export const M = {
 	feedTzHelp: {
 		id: "flux-import.options.feed-tz-help",
 		message: "An IANA timezone such as Europe/Paris, or site for the site's. Leave empty for UTC.",
+	},
+	feedTzInvalid: {
+		id: "flux-import.options.feed-tz-invalid",
+		message: "Use an IANA timezone such as Europe/Paris, or site",
 	},
 
 	missing: { id: "flux-import.options.missing", message: "Missing from the feed" },
@@ -136,9 +139,24 @@ export const M = {
 		id: "flux-import.options.name-invalid",
 		message: "Use 1 to {max} characters, with no space at either end",
 	},
+	nameUnchecked: {
+		id: "flux-import.options.name-unchecked",
+		message:
+			"The saved templates could not be listed, so the name is checked when the import runs.",
+	},
+	saveUnsaved: {
+		id: "flux-import.options.save-unsaved",
+		message:
+			"Save the changes to {name} with Next on Options, or choose to run them without saving",
+	},
 
 	advanced: { id: "flux-import.options.advanced", message: "Advanced" },
 	owner: { id: "flux-import.options.owner", message: "Owner" },
+	ownerNone: {
+		id: "flux-import.options.owner-none",
+		message:
+			"The saved template sets no owner, so this import stamps none. Type one to set it: the import then runs with your changes.",
+	},
 	ownerHelp: {
 		id: "flux-import.options.owner-help",
 		message:

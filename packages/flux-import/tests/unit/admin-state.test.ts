@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SchemaField } from "../../src/admin/types.js";
 import { createOnce, draftDispatch, WizardProvider } from "../../src/admin/wizard/context.js";
 import { M } from "../../src/admin/wizard/messages.js";
+import { M as OPTIONS } from "../../src/admin/wizard/options/messages.js";
 import { StepFooter } from "../../src/admin/wizard/StepFooter.js";
 import {
 	clearsDryRun,
@@ -16,6 +17,8 @@ import {
 	jobInput,
 	mapBlockers,
 	mappable,
+	type Options,
+	optionsBlockers,
 	ownerOf,
 	reachable,
 	reducer,
@@ -1094,6 +1097,125 @@ describe("reachable (F2)", () => {
 		expect(at(reducer(withDryRun, { type: "dryRunFinished", total: 0 }))).not.toContain("run");
 		expect(at(reducer(withDryRun, { type: "runStarted", jobId: "R" }))).toEqual(["run"]);
 		expect(at(reducer(initialState, { type: "jobReopened", jobId: "J" }))).toEqual(["run"]);
+	});
+});
+
+describe("optionsBlockers (the step bar can skip Options' Next)", () => {
+	const opt = (patch: Partial<Options>, from: WizardState = filled) =>
+		reducer(from, { type: "optionsChanged", patch });
+	/** The loaded template with one more field mapped: Options offers the save choices. */
+	const edited = reducer(loaded(), {
+		type: "rowSet",
+		row: "field:price",
+		mapping: { from: "cost", type: "number" },
+	});
+	const ids = (s: WizardState) => optionsBlockers(s).map((b) => b.msg.id);
+	const many = Array.from({ length: 201 }, (_, i) => `f${i}`);
+	const wide = run(
+		many.map(
+			(slug): WizardAction => ({
+				type: "rowSet",
+				row: `field:${slug}`,
+				mapping: { from: "name", type: "text" },
+			}),
+		),
+		filled,
+	);
+
+	it("finds none in a default draft, a loaded template or an edited one run unsaved", () => {
+		expect(optionsBlockers(filled)).toEqual([]);
+		expect(optionsBlockers(loaded())).toEqual([]);
+		expect(isEdited(edited)).toBe(true);
+		expect(optionsBlockers(edited)).toEqual([]);
+		expect(optionsBlockers(opt({ updateFields: many.slice(0, 200) }, wide))).toEqual([]);
+		// A name no longer mapped does not count toward the cap.
+		const stale = opt({ updateFields: ["gone", ...many.slice(0, 200)] }, wide);
+		expect(optionsBlockers(stale)).toEqual([]);
+		for (const tz of ["site", "UTC", "Europe/Paris"]) {
+			const s = opt({ status: "schedule", schedule: { kind: "feed", from: "date", tz } });
+			expect(optionsBlockers(s)).toEqual([]);
+		}
+		const fixed = opt({ status: "schedule", schedule: { kind: "fixed", at: "2026-12-01T09:30" } });
+		expect(optionsBlockers(fixed)).toEqual([]);
+		// A schedule kept for a later switch back does not block Publish.
+		expect(optionsBlockers(opt({ schedule: { kind: "feed", from: "" } }))).toEqual([]);
+	});
+
+	it.each([
+		["Schedule with no date", { status: "schedule" }, OPTIONS.scheduleUnset],
+		[
+			"one date with none picked",
+			{ status: "schedule", schedule: { kind: "fixed", at: "" } },
+			OPTIONS.scheduleUnset,
+		],
+		[
+			"one date without its time",
+			{ status: "schedule", schedule: { kind: "fixed", at: "2026-12-01" } },
+			OPTIONS.scheduleUnset,
+		],
+		[
+			"a feed date with no key",
+			{ status: "schedule", schedule: { kind: "feed", from: "" } },
+			OPTIONS.scheduleUnset,
+		],
+		[
+			"a feed date in an unknown timezone",
+			{ status: "schedule", schedule: { kind: "feed", from: "date", tz: "Mars/Olympus" } },
+			OPTIONS.feedTzInvalid,
+		],
+		["a new template with no name", { save: { kind: "new", name: "" } }, OPTIONS.nameNeeded],
+		[
+			"a name with a space at the end",
+			{ save: { kind: "new", name: "Feed " } },
+			OPTIONS.nameInvalid,
+		],
+		["a name too long", { save: { kind: "new", name: "x".repeat(101) } }, OPTIONS.nameInvalid],
+		[
+			"a name with a control character",
+			{ save: { kind: "new", name: "a\u0007b" } },
+			OPTIONS.nameInvalid,
+		],
+	] as [string, Partial<Options>, { id: string }][])(
+		"blocks Preview and Run: %s",
+		(_, patch, msg) => {
+			const s = opt(patch);
+			expect(ids(s)).toEqual([msg.id]);
+			expect(reachable(s, "options")).toBe(true);
+			expect(reachable(s, "preview")).toBe(false);
+			expect(reachable(startDry(s, "D", DRY_UPLOAD, 2), "run")).toBe(false);
+		},
+	);
+
+	it("blocks more update fields than MAX_UPDATE_FIELDS, unless the mode creates only", () => {
+		const s = opt({ updateFields: many }, wide);
+		expect(ids(s)).toEqual([OPTIONS.updateFieldsTooMany.id]);
+		expect(reachable(s, "preview")).toBe(false);
+		expect(optionsBlockers(opt({ mode: "create" }, s))).toEqual([]);
+	});
+
+	it("blocks Preview while the changes are to be saved, until templateSaved", () => {
+		const s = opt({ save: { kind: "update" } }, edited);
+		expect(optionsBlockers(s)).toEqual([
+			{ row: null, msg: OPTIONS.saveUnsaved, values: { name: "Products feed" } },
+		]);
+		expect(reachable(s, "preview")).toBe(false);
+		const saved = reducer(s, {
+			type: "templateSaved",
+			id: "T1",
+			revision: 4,
+			name: "Products feed",
+			template: templateSchema.parse(toTemplate(s, ownerOf(s))),
+			warnings: [],
+		});
+		expect(optionsBlockers(saved)).toEqual([]);
+		expect(reachable(saved, "preview")).toBe(true);
+	});
+
+	it("ignores a save choice an unedited template no longer offers", () => {
+		const base = loaded();
+		expect(optionsBlockers(opt({ save: { kind: "update" } }, base))).toEqual([]);
+		expect(optionsBlockers(opt({ save: { kind: "new", name: "" } }, base))).toEqual([]);
+		expect(ids(opt({ save: { kind: "new", name: "" } }, edited))).toEqual([OPTIONS.nameNeeded.id]);
 	});
 });
 
