@@ -420,7 +420,7 @@ function rowsWith(rows: WizardState["rows"], prefix: "field:" | "taxonomy:") {
 }
 
 /** The template's mapping names, as `rules.updateFields` lists them (engine `mappingNames`). */
-function mappingNamesOf(rows: WizardState["rows"]): string[] {
+export function mappingNamesOf(rows: WizardState["rows"]): string[] {
 	return [
 		...Object.keys(rowsWith(rows, "field:")),
 		...(rows.slug === undefined ? [] : ["slug"]),
