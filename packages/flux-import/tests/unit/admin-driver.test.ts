@@ -313,6 +313,15 @@ describe("useJobDriver (preflight F13)", () => {
 		expect(result.current.job?.status).toBe("completed");
 	});
 
+	it("ends as an error, not driving, on a malformed reply", async () => {
+		const { counters: _, ...malformed } = at(1);
+		const next = vi.fn(async (_i: { id: string }) => malformed as Job);
+		const { result } = renderHook(() => useJobDriver(ID, next));
+		await waitFor(() => expect(result.current.phase).toBe("error"));
+		expect(result.current.error).toBeInstanceOf(TypeError);
+		expect(next).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows waiting while another holder's lease is live, then drives on", async () => {
 		vi.useFakeTimers();
 		const next = apiNext(script(at(4, "running", { lease: LEASE }), at(5, "completed")));

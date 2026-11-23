@@ -175,12 +175,15 @@ export function useJobDriver(
 				...(rate === undefined ? {} : { recordsPerSecond: rate }),
 			}));
 		};
-		void driveJob({
+		// Anything that throws outside `next` (a malformed reply, say) ends the drive as an error.
+		driveJob({
 			id,
 			next: (i) => nextRef.current({ id: i }),
 			sleep,
 			signal: c.signal,
 			onEvent,
+		}).catch((error: unknown) => {
+			if (!c.signal.aborted) onEvent({ kind: "error", error });
 		});
 	}, [id]);
 

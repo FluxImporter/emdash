@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../src/admin/api-error.js";
+import * as errors from "../../src/admin/errors.js";
 import {
 	describeError,
 	describeJobError,
@@ -27,7 +29,8 @@ describe("the wizard's error and warning sentences", () => {
 	});
 
 	it("pins the code lists (F22, the M6d warnings table)", () => {
-		expect(WIZARD_ERROR_CODES).toHaveLength(36);
+		expect(WIZARD_ERROR_CODES).toHaveLength(37);
+		expect(WIZARD_ERROR_CODES).toContain("NOT_AUTHENTICATED");
 		expect(WIZARD_ERROR_CODES).toContain("UNSUPPORTED_TEMPLATE_VERSION");
 		expect(WIZARD_ERROR_CODES).toContain("INVALID_TRANSITION");
 		expect(SUGGEST_WARNING_CODES).toHaveLength(33);
@@ -47,6 +50,20 @@ describe("the wizard's error and warning sentences", () => {
 		);
 	});
 
+	it("reads any 401 as the ended session: NOT_AUTHENTICATED, and NOT_FOUND for a deleted user", () => {
+		const session = ERROR_MESSAGES.UNAUTHORIZED;
+		expect(describeError(new ApiError("NOT_AUTHENTICATED", "Not authenticated", 401))).toEqual({
+			msg: session,
+		});
+		expect(describeError(new ApiError("NOT_FOUND", "User not found", 401))).toEqual({
+			msg: session,
+		});
+		expect(describeError(new ApiError("HTTP_401", "Unauthorized", 401)).msg).toBe(session);
+		expect(describeError(new ApiError("CSRF_REJECTED", "Missing header", 401)).msg).toBe(
+			ERROR_MESSAGES.CSRF_REJECTED,
+		);
+	});
+
 	it("gives CSRF_REJECTED its own sentence, though it answers 403 (F29)", () => {
 		const d = describeError(new ApiError("CSRF_REJECTED", "Missing required header", 403));
 		expect(d.msg).toBe(ERROR_MESSAGES.CSRF_REJECTED);
@@ -57,6 +74,52 @@ describe("the wizard's error and warning sentences", () => {
 		const d = describeError(new ApiError("NAME_TAKEN", 'A template named "x" already exists', 409));
 		expect(d.msg).toBe(ERROR_MESSAGES.NAME_TAKEN);
 		expect(d.detail).toBeUndefined();
+	});
+
+	it("shows the server's specifics for INVALID_SOURCE, VALIDATION_ERROR, HTTP_ERROR and INVALID_OPTIONS", () => {
+		const source = describeError(
+			new ApiError("INVALID_SOURCE", "Unexpected token at byte 42", 400),
+		);
+		expect(source).toEqual({
+			msg: ERROR_MESSAGES.INVALID_SOURCE,
+			detail: "Unexpected token at byte 42",
+		});
+		const validation = describeError(
+			new ApiError("VALIDATION_ERROR", `uploadId: ${UPLOAD_ID} is not staged`, 400),
+		);
+		expect(validation.detail).toBe("uploadId: the uploaded file is not staged");
+		expect(describeError(new ApiError("HTTP_ERROR", "The server answered 404", 502)).detail).toBe(
+			"The server answered 404",
+		);
+		expect(describeError(new ApiError("INVALID_OPTIONS", "batchSize: too big", 400)).detail).toBe(
+			"batchSize: too big",
+		);
+		// Problems, when there are any, still win.
+		const listed = describeError(
+			new ApiError("INVALID_SOURCE", "Bad source", 400, { problems: ["records: not found"] }),
+		);
+		expect(listed.detail).toBeUndefined();
+		expect(listed.problems).toEqual(["records: not found"]);
+	});
+
+	it("never shows a FETCH_FAILED or URL_BLOCKED message, which names hosts", () => {
+		for (const code of ["FETCH_FAILED", "URL_BLOCKED"]) {
+			const d = describeError(
+				new ApiError(code, "Could not reach feeds.internal.example:8443", 502),
+			);
+			expect(d).toEqual({ msg: ERROR_MESSAGES[code] });
+			expect(JSON.stringify(d)).not.toContain("feeds.internal.example");
+		}
+	});
+
+	it("never takes a sentence from the prototype", () => {
+		for (const code of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+			expect(describeError(new ApiError(code, "Odd", 400))).toEqual({
+				msg: ERROR_MESSAGES.unknown,
+				detail: "Odd",
+			});
+			expect(describeWarning({ code }).msg).toBe(ERROR_MESSAGES.unknown);
+		}
 	});
 
 	it("takes count and name values from details", () => {
@@ -155,6 +218,40 @@ describe("the wizard's error and warning sentences", () => {
 			detail: "boom",
 		});
 		expect(describeError("text")).toEqual({ msg: ERROR_MESSAGES.unknown });
+	});
+});
+
+describe("errors.ts's message IDs (Ruling 2)", () => {
+	const ID = /^flux-import\.[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+	const isMsg = (v: unknown): v is { id: string; message: string } =>
+		typeof v === "object" &&
+		v !== null &&
+		typeof (v as { id?: unknown }).id === "string" &&
+		typeof (v as { message?: unknown }).message === "string";
+	const msgs = Object.values(errors)
+		.filter((v) => typeof v === "object" && v !== null && !Array.isArray(v))
+		.flatMap((table) => Object.values(table as Record<string, unknown>))
+		.filter(isMsg);
+
+	it("exports every Msg the file defines", () => {
+		const source = readFileSync(new URL("../../src/admin/errors.ts", import.meta.url), "utf8");
+		const literals = source.match(/\bid: "/g) ?? [];
+		expect(msgs.length).toBeGreaterThan(70);
+		expect(msgs).toHaveLength(literals.length);
+	});
+
+	it("keeps them well-formed, unique and free of ICU syntax", () => {
+		const problems: string[] = [];
+		const seen = new Set<string>();
+		for (const m of msgs) {
+			if (!ID.test(m.id)) problems.push(`bad ID ${m.id}`);
+			if (seen.has(m.id)) problems.push(`duplicate ID ${m.id}`);
+			seen.add(m.id);
+			if (/[{}]/.test(m.message.replace(/\{[A-Za-z]+\}/g, ""))) {
+				problems.push(`ICU syntax in ${m.id}: ${m.message}`);
+			}
+		}
+		expect(problems).toEqual([]);
 	});
 });
 

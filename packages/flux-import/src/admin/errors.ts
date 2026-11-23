@@ -14,6 +14,7 @@ import type { Msg, Values } from "./i18n.js";
 export const WIZARD_ERROR_CODES: readonly string[] = [
 	// EmDash
 	"UNAUTHORIZED",
+	"NOT_AUTHENTICATED",
 	"FORBIDDEN",
 	"CSRF_REJECTED",
 	"VALIDATION_ERROR",
@@ -96,6 +97,10 @@ export const SUGGEST_WARNING_CODES: readonly string[] = [
 export const ERROR_MESSAGES: Readonly<Record<string, Msg>> = {
 	UNAUTHORIZED: {
 		id: "flux-import.error.unauthorized",
+		message: "Your session has ended. Sign in again to continue.",
+	},
+	NOT_AUTHENTICATED: {
+		id: "flux-import.error.not-authenticated",
 		message: "Your session has ended. Sign in again to continue.",
 	},
 	FORBIDDEN: { id: "flux-import.error.forbidden", message: "Only administrators can import." },
@@ -382,7 +387,7 @@ export const WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
 };
 
 /** Job errors the Run step names (preflight F15); any other code shows `unknown`. */
-const JOB_ERROR_MESSAGES = {
+export const JOB_ERROR_MESSAGES = {
 	source_missing: {
 		id: "flux-import.job-error.source-missing",
 		message: "The file for this import is no longer available; start a new import.",
@@ -413,15 +418,29 @@ function detailValues(details: unknown): Values | undefined {
 	return Object.keys(values).length > 0 ? values : undefined;
 }
 
+/**
+ * Codes whose route message is the specifics the user needs (a parse position, the failing input
+ * or status), shown as `detail` when there are no `problems` (coordinator ruling). Never
+ * `FETCH_FAILED` or `URL_BLOCKED`, whose messages name hosts and addresses.
+ */
+const DETAIL_CODES: ReadonlySet<string> = new Set([
+	"INVALID_SOURCE",
+	"VALIDATION_ERROR",
+	"HTTP_ERROR",
+	"INVALID_OPTIONS",
+]);
+
 function detailProblems(details: unknown): string[] | undefined {
 	if (!isRecord(details) || !Array.isArray(details.problems)) return undefined;
 	return details.problems.filter((p): p is string => typeof p === "string").map(redact);
 }
 
 /**
- * The sentence for a failed request. A 403 is the administrators-only sentence, except
- * `CSRF_REJECTED` (preflight F29); a `TypeError` is offline; an unknown code shows the route's
- * message as `detail`. `detail` and `problems` never hold an upload ID (preflight F15).
+ * The sentence for a failed request. A 401 is the session sentence (EmDash's middleware answers
+ * `NOT_AUTHENTICATED`, or `NOT_FOUND` for a deleted user) and a 403 the administrators-only one,
+ * except `CSRF_REJECTED` (preflight F29); a `TypeError` is offline. An unknown code, or one in
+ * `DETAIL_CODES` without `problems`, shows the route's message as `detail`. `detail` and
+ * `problems` never hold an upload ID (preflight F15).
  */
 export function describeError(e: unknown): {
 	msg: Msg;
@@ -430,14 +449,18 @@ export function describeError(e: unknown): {
 	problems?: string[];
 } {
 	if (e instanceof ApiError) {
-		if (e.status === 403 && e.code !== "CSRF_REJECTED") return { msg: ERROR_MESSAGES.FORBIDDEN! };
+		if (e.code !== "CSRF_REJECTED") {
+			if (e.status === 401) return { msg: ERROR_MESSAGES.UNAUTHORIZED! };
+			if (e.status === 403) return { msg: ERROR_MESSAGES.FORBIDDEN! };
+		}
 		const msg = own(ERROR_MESSAGES, e.code);
 		const problems = detailProblems(e.details);
 		const values = detailValues(e.details);
+		const showMessage = !msg || (DETAIL_CODES.has(e.code) && !problems);
 		return {
 			msg: msg ?? ERROR_MESSAGES.unknown!,
 			...(values ? { values } : {}),
-			...(msg ? {} : { detail: redact(e.message) }),
+			...(showMessage ? { detail: redact(e.message) } : {}),
 			...(problems ? { problems } : {}),
 		};
 	}
