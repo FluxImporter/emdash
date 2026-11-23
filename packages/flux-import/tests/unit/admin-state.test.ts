@@ -86,13 +86,13 @@ const filled = run([
 	{ type: "rowSet", row: "bylines", mapping: { from: "sku", match: "slug" } },
 ]);
 
-const withDryRun = run(
-	[
-		{ type: "dryRunStarted", jobId: "D1", uploadId: DRY_UPLOAD },
-		{ type: "dryRunFinished", total: 2 },
-	],
-	filled,
-);
+/** Starts a dry run under the state's own draft generation, and finishes it with `total`. */
+function startDry(s: WizardState, jobId: string, uploadId: string, total?: number) {
+	const started = reducer(s, { type: "dryRunStarted", jobId, uploadId, generation: s.generation });
+	return total === undefined ? started : reducer(started, { type: "dryRunFinished", total });
+}
+
+const withDryRun = startDry(filled, "D1", DRY_UPLOAD, 2);
 
 const BASE_TEMPLATE: Template = templateSchema.parse({
 	version: 1,
@@ -127,10 +127,8 @@ describe("reducer", () => {
 			"sourceReady",
 			"clears columns' dependants: rows' suggestion, dryRun; keeps target",
 			() => {
-				const asked = run(
-					[{ type: "suggestionStarted" }, { type: "dryRunStarted", jobId: "D", uploadId: UPLOAD }],
-					filled,
-				);
+				const asked = startDry(run([{ type: "suggestionStarted" }], filled), "D", UPLOAD);
+				expect(asked.dryRun).not.toBeNull();
 				const s = reducer(asked, { ...SOURCE_READY, columns: COLUMNS.slice(0, 2) });
 				expect(s.columns).toEqual(COLUMNS.slice(0, 2));
 				expect(s.suggestion).toEqual({ status: "idle", dismissed: false });
@@ -161,15 +159,20 @@ describe("reducer", () => {
 			"targetChosen (new collection)",
 			"clears rows, meta, newFields, suggestion and dryRun",
 			() => {
-				const s = run(
-					[
-						{ type: "fieldProposed", field: proposed("colour") },
-						{ type: "suggestionStarted" },
-						{ type: "dryRunStarted", jobId: "D", uploadId: UPLOAD },
-						{ type: "targetChosen", collection: "pages", locale: "en", translationLocale: null },
-					],
-					filled,
+				const before = startDry(
+					run(
+						[{ type: "fieldProposed", field: proposed("colour") }, { type: "suggestionStarted" }],
+						filled,
+					),
+					"D",
+					UPLOAD,
 				);
+				const s = reducer(before, {
+					type: "targetChosen",
+					collection: "pages",
+					locale: "en",
+					translationLocale: null,
+				});
 				expect(s.target).toEqual({ collection: "pages", locale: "en", translationLocale: null });
 				expect(s.rows).toEqual({});
 				expect(s.meta).toEqual({});
@@ -277,13 +280,7 @@ describe("reducer", () => {
 			"keep rows; set dryRun",
 			() => {
 				const clean = { ...filled, dirty: false };
-				const s = run(
-					[
-						{ type: "dryRunStarted", jobId: "D1", uploadId: DRY_UPLOAD },
-						{ type: "dryRunFinished", total: 7 },
-					],
-					clean,
-				);
+				const s = startDry(clean, "D1", DRY_UPLOAD, 7);
 				expect(s.dryRun).toEqual({ jobId: "D1", uploadId: DRY_UPLOAD, total: 7 });
 				expect(s.rows).toEqual(filled.rows);
 				expect(s.dirty).toBe(false);
@@ -311,6 +308,57 @@ describe("reducer", () => {
 		],
 	])("%s: %s", (_, __, check) => check());
 
+	it("flags key, slug and field rows whose key the new sample lacks (review ruling 1)", () => {
+		const draft = reducer(filled, {
+			type: "rowSet",
+			row: "field:body",
+			mapping: { expr: "name", type: "portableText", format: "text" },
+		});
+		// `cats` is gone too, but the taxonomy row is not checked.
+		const fewer = [COLUMNS[0]!, COLUMNS[1]!].map((c) => ({ ...c }));
+		const checks = (s: WizardState) =>
+			Object.fromEntries(Object.entries(s.meta).map(([row, m]) => [row, m?.check]));
+		const expected = {
+			key: false,
+			slug: false,
+			"field:title": false,
+			"field:price": true,
+			"field:published": true,
+			"field:body": false,
+			"taxonomy:category": false,
+			bylines: false,
+		};
+		const ready = reducer(draft, { ...SOURCE_READY, columns: fewer });
+		expect(checks(ready)).toEqual(expected);
+		// Soft: the rows stay, and a flagged row keeps its origin.
+		expect(ready.rows).toEqual(draft.rows);
+		expect(ready.meta["field:price"]?.origin).toBe("user");
+		expect(mapBlockers(ready, FIELDS)).toEqual([]);
+
+		const changed = reducer(draft, {
+			type: "sourceBlockChanged",
+			sourceBlock: { format: "csv" },
+			columns: fewer,
+		});
+		expect(checks(changed)).toEqual(expected);
+		const pending = reducer(draft, {
+			type: "sourceBlockChanged",
+			sourceBlock: { format: "csv" },
+			columns: null,
+		});
+		expect(pending.meta).toEqual(draft.meta);
+		// A row whose key is still there keeps the flag it had.
+		expect(reducer(ready, { ...SOURCE_READY }).meta["field:price"]?.check).toBe(true);
+		// The slug is checked too.
+		const keyOnly = reducer(draft, { ...SOURCE_READY, columns: [COLUMNS[0]!] });
+		expect(keyOnly.meta.slug?.check).toBe(true);
+		expect(keyOnly.meta.key?.check).toBe(false);
+		// A template's row keeps its origin.
+		const template = reducer(loaded(), { ...SOURCE_READY, columns: [COLUMNS[0]!] });
+		expect(template.meta["field:title"]).toEqual({ origin: "template", check: true });
+		expect(template.meta.key).toEqual({ origin: "template", check: false });
+	});
+
 	it("clears dryRun and saved, and sets dirty, on every action but the listed ones", () => {
 		const saved = { ...withDryRun, dirty: false, saved: { warnings: ["w"] } };
 		const keeps = new Set([
@@ -325,16 +373,57 @@ describe("reducer", () => {
 		for (const action of EVERY_ACTION) {
 			const s = reducer(saved, action);
 			const clears = !keeps.has(action.type);
-			expect(clearsDryRun(action), action.type).toBe(clears);
+			expect(clearsDryRun(saved, action), action.type).toBe(clears);
 			if (clears) {
 				expect(s.dryRun, action.type).toBeNull();
 				expect(s.saved, action.type).toBeNull();
 				expect(s.dirty, action.type).toBe(true);
-			} else if (action.type !== "dryRunStarted") {
-				expect(s.dryRun, action.type).not.toBeNull();
-				expect(s.dirty, action.type).toBe(false);
+				expect(s.generation, action.type).toBe(saved.generation + 1);
+			} else {
+				expect(s.generation, action.type).toBe(saved.generation);
+				if (action.type !== "dryRunStarted") {
+					expect(s.dryRun, action.type).not.toBeNull();
+					expect(s.dirty, action.type).toBe(false);
+				}
 			}
 		}
+	});
+
+	it("ignores a dry run started under an earlier draft generation (review ruling 2)", () => {
+		const g = filled.generation;
+		const edited = reducer(filled, { type: "optionsChanged", patch: { batchSize: 20 } });
+		expect(edited.generation).toBe(g + 1);
+		const late = reducer(edited, {
+			type: "dryRunStarted",
+			jobId: "D-late",
+			uploadId: DRY_UPLOAD,
+			generation: g,
+		});
+		expect(late).toBe(edited);
+		expect(late.dryRun).toBeNull();
+		expect(startDry(edited, "D-now", DRY_UPLOAD).dryRun?.jobId).toBe("D-now");
+	});
+
+	it("returns the same state for a targetChosen or optionsChanged that changes nothing (review ruling 3)", () => {
+		const saved = { ...withDryRun, dirty: false, saved: { warnings: ["w"] } };
+		const same: WizardAction[] = [
+			{ type: "targetChosen", collection: "posts", locale: "en", translationLocale: null },
+			{ type: "optionsChanged", patch: { mode: "upsert", status: "publish" } },
+			{ type: "optionsChanged", patch: { save: { kind: "none" }, missing: null } },
+			{ type: "optionsChanged", patch: {} },
+		];
+		for (const action of same) {
+			expect(clearsDryRun(saved, action), JSON.stringify(action)).toBe(false);
+			expect(reducer(saved, action), JSON.stringify(action)).toBe(saved);
+		}
+		const changed = reducer(saved, {
+			type: "optionsChanged",
+			patch: { save: { kind: "new", name: "x" } },
+		});
+		expect(changed.dryRun).toBeNull();
+		expect(
+			clearsDryRun(saved, { type: "optionsChanged", patch: { updateFields: ["title"] } }),
+		).toBe(true);
 	});
 
 	it("records the run, and dismisses warnings without other changes", () => {
@@ -475,9 +564,64 @@ describe("suggestionReceived", () => {
 			rationale: "Same name",
 			check: false,
 		});
-		// A field the suggestion leaves without a key ends up empty.
-		expect(replaced.rows["field:body"]).toBeUndefined();
-		expect(replaced.meta["field:body"]).toBeUndefined();
+		// A field the suggestion leaves without a key keeps a user's row (review ruling 4).
+		expect(replaced.rows["field:body"]).toEqual({
+			from: "name",
+			type: "portableText",
+			format: "text",
+		});
+		expect(replaced.meta["field:body"]?.origin).toBe("user");
+	});
+
+	it("clears a keyless field only when an earlier suggestion filled it (review ruling 4)", () => {
+		const bodyFromName = {
+			...REPLY.fields[3]!,
+			from: "name",
+			confidence: 0.7,
+			origin: "fallback" as const,
+			mapping: "portableText" as const,
+		};
+		const first = reducer(target, {
+			type: "suggestionReceived",
+			reply: {
+				...REPLY,
+				template: null,
+				fields: [...REPLY.fields.slice(0, 3), bodyFromName],
+			},
+			overwriteUserRows: false,
+		});
+		expect(first.meta["field:body"]?.origin).toBe("name");
+		const again = reducer(first, {
+			type: "suggestionReceived",
+			reply: REPLY,
+			overwriteUserRows: false,
+		});
+		expect(again.rows["field:body"]).toBeUndefined();
+		expect(again.meta["field:body"]).toBeUndefined();
+		expect(again.meta["field:title"]?.origin).toBe("ai");
+
+		// A template's row stays, even with overwriteUserRows.
+		const { mapping: _, ...titleSuggestion } = REPLY.fields[0]!;
+		const titleless = {
+			...REPLY,
+			template: null,
+			fields: [{ ...titleSuggestion, from: null }],
+		};
+		const aiCleared = reducer(again, {
+			type: "suggestionReceived",
+			reply: titleless,
+			overwriteUserRows: false,
+		});
+		expect(aiCleared.rows["field:title"]).toBeUndefined();
+		for (const overwriteUserRows of [false, true]) {
+			const kept = reducer(loaded(), {
+				type: "suggestionReceived",
+				reply: titleless,
+				overwriteUserRows,
+			});
+			expect(kept.rows["field:title"]).toEqual({ from: "name", type: "text" });
+			expect(kept.meta["field:title"]?.origin).toBe("template");
+		}
 	});
 
 	it("builds a field's row from its type when the reply has no draft", () => {
@@ -652,6 +796,13 @@ describe("toTemplate", () => {
 		expect((toTemplate(draft, "o") as Template).publishAt).toBeUndefined();
 		const unset = reducer(filled, { type: "optionsChanged", patch: { status: "schedule" } });
 		expect((toTemplate(unset, "o") as Template).publishAt).toBeUndefined();
+	});
+
+	it("refuses a key, slug or translationOf row with neither from nor expr (review ruling 5)", () => {
+		const broken = { ...filled, rows: { ...filled.rows, slug: { type: "text" } as never } };
+		expect(() => toTemplate(broken, "o")).toThrow();
+		const noKey = { ...filled, rows: { ...filled.rows, key: {} as never } };
+		expect(() => toTemplate(noKey, "o")).toThrow();
 	});
 
 	it("takes only from and expr into the key and slug, and the source block without empty keys", () => {
@@ -886,6 +1037,11 @@ describe("mapBlockers and mappable", () => {
 	});
 
 	it("reports one collection-level blocker for fields EmDash cannot read", () => {
+		// A required one adds nothing of its own (review ruling 6).
+		const required = [...FIELDS, field("legacy", "geo", { unsupported: true, required: true })];
+		expect(blockers(filled, required)).toEqual([
+			[null, M.unsupportedField.id, { field: "Legacy" }],
+		]);
 		const fields = [
 			...FIELDS,
 			field("legacy", "geo", { unsupported: true }),
@@ -934,9 +1090,7 @@ describe("reachable (F2)", () => {
 		expect(at(targeted)).toEqual(["source", "target", "map"]);
 		expect(at(filled)).toEqual(["source", "target", "map", "options", "preview"]);
 		expect(at(withDryRun)).toEqual(STEPS);
-		expect(
-			at(reducer(filled, { type: "dryRunStarted", jobId: "D", uploadId: UPLOAD })),
-		).not.toContain("run");
+		expect(at(startDry(filled, "D", UPLOAD))).not.toContain("run");
 		expect(at(reducer(withDryRun, { type: "dryRunFinished", total: 0 }))).not.toContain("run");
 		expect(at(reducer(withDryRun, { type: "runStarted", jobId: "R" }))).toEqual(["run"]);
 		expect(at(reducer(initialState, { type: "jobReopened", jobId: "J" }))).toEqual(["run"]);
@@ -951,6 +1105,13 @@ describe("owner (Ruling 15)", () => {
 		expect(deriveOwner({ ...p, templateName: "!!!" })).toBe("wizard-posts-en");
 		expect(deriveOwner({ ...p, templateName: null })).toBe("wizard-posts-en");
 		expect(deriveOwner({ ...p, templateName: "a".repeat(150) })).toBe("a".repeat(100));
+		// Never ends in "-" after the cut (review ruling 8).
+		expect(deriveOwner({ ...p, templateName: `${"a".repeat(99)} bcd` })).toBe("a".repeat(99));
+		const collection = "c".repeat(63);
+		const locale = `${"x".repeat(28)} y`;
+		expect(deriveOwner({ collection, locale, templateName: null })).toBe(
+			`wizard-${collection}-${"x".repeat(28)}`,
+		);
 		expect(deriveOwner({ collection: "posts", locale: "pt BR", templateName: null })).toBe(
 			"wizard-posts-pt-BR",
 		);
@@ -984,13 +1145,7 @@ describe("jobInput", () => {
 			type: "optionsChanged",
 			patch: { status: "draft", batchSize: 50 },
 		});
-		const ready = run(
-			[
-				{ type: "dryRunStarted", jobId: "D2", uploadId: DRY_UPLOAD },
-				{ type: "dryRunFinished", total: 2 },
-			],
-			options,
-		);
+		const ready = startDry(options, "D2", DRY_UPLOAD, 2);
 		expect(jobInput(ready, false)).toEqual({
 			uploadId: DRY_UPLOAD,
 			dryRun: false,
@@ -1027,20 +1182,18 @@ describe("jobInput", () => {
 			patch: { save: { kind: "new", name: "Products feed" } },
 		});
 		const stored = templateForSave(toTemplate(s, ownerOf(s)));
-		const saved = run(
-			[
-				{
-					type: "templateSaved",
-					id: "T7",
-					revision: 2,
-					name: "Products feed",
-					template: stored,
-					warnings: [],
-				},
-				{ type: "dryRunStarted", jobId: "D", uploadId: DRY_UPLOAD },
-				{ type: "dryRunFinished", total: 2 },
-			],
-			s,
+		const saved = startDry(
+			reducer(s, {
+				type: "templateSaved",
+				id: "T7",
+				revision: 2,
+				name: "Products feed",
+				template: stored,
+				warnings: [],
+			}),
+			"D",
+			DRY_UPLOAD,
+			2,
 		);
 		expect(saved.base).toEqual({ id: "T7", revision: 2, name: "Products feed", template: stored });
 		expect(jobInput(saved, false)).toMatchObject({ templateId: "T7", templateRevision: 2 });
@@ -1109,16 +1262,30 @@ describe("once (F14)", () => {
 	it("forgets the dry run's creation when an action drops the dry run, and only then", () => {
 		const tasks = createOnce();
 		const seen: WizardAction[] = [];
-		const dispatch = draftDispatch((a) => seen.push(a), tasks);
+		const dispatch = draftDispatch((a) => seen.push(a), tasks, withDryRun);
 		const dryRun = tasks.once("dry-run", async () => {});
 		const realRun = tasks.once("run", async () => {});
 		dispatch({ type: "stepChanged", step: "options" });
 		dispatch({ type: "dryRunFinished", total: 1 });
+		// A no-op edit keeps it too (review ruling 3).
+		dispatch({ type: "optionsChanged", patch: { mode: "upsert" } });
+		dispatch({ type: "targetChosen", collection: "posts", locale: "en", translationLocale: null });
 		expect(tasks.once("dry-run", async () => {})).toBe(dryRun);
 		dispatch({ type: "optionsChanged", patch: { batchSize: 5 } });
-		expect(tasks.once("dry-run", async () => {})).not.toBe(dryRun);
+		const second = tasks.once("dry-run", async () => {});
+		expect(second).not.toBe(dryRun);
 		expect(tasks.once("run", async () => {})).toBe(realRun);
-		expect(seen.map((a) => a.type)).toEqual(["stepChanged", "dryRunFinished", "optionsChanged"]);
+		// It follows its own dispatches: setting the same batch size again is a no-op.
+		dispatch({ type: "optionsChanged", patch: { batchSize: 5 } });
+		expect(tasks.once("dry-run", async () => {})).toBe(second);
+		expect(seen.map((a) => a.type)).toEqual([
+			"stepChanged",
+			"dryRunFinished",
+			"optionsChanged",
+			"targetChosen",
+			"optionsChanged",
+			"optionsChanged",
+		]);
 	});
 });
 
@@ -1184,7 +1351,7 @@ const EVERY_ACTION: WizardAction[] = [
 		type: "templateLoaded",
 		base: { id: "T1", revision: 1, name: "Products feed", template: BASE_TEMPLATE },
 	},
-	{ type: "targetChosen", collection: "posts", locale: "en", translationLocale: null },
+	{ type: "targetChosen", collection: "posts", locale: "fr", translationLocale: null },
 	{ type: "suggestionStarted" },
 	{ type: "suggestionFailed", error: new Error("x") },
 	{ type: "suggestionReceived", reply: REPLY, overwriteUserRows: false },
@@ -1204,7 +1371,8 @@ const EVERY_ACTION: WizardAction[] = [
 		template: BASE_TEMPLATE,
 		warnings: [],
 	},
-	{ type: "dryRunStarted", jobId: "D9", uploadId: DRY_UPLOAD },
+	// Under another draft generation: ignored (review ruling 2).
+	{ type: "dryRunStarted", jobId: "D9", uploadId: DRY_UPLOAD, generation: -1 },
 	{ type: "dryRunFinished", total: 3 },
 	{ type: "runStarted", jobId: "R1" },
 	{ type: "jobReopened", jobId: "J1" },

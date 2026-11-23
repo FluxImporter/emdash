@@ -83,6 +83,11 @@ export interface WizardState {
 	dryRun: { jobId: string; uploadId: string; total: number | null } | null;
 	run: { jobId: string } | null;
 	dirty: boolean;
+	/**
+	 * The draft's generation: every action that changes the draft adds one. A dry run is started
+	 * under the generation read when its `jobs/create` was sent (review ruling 2).
+	 */
+	generation: number;
 }
 export type WizardAction =
 	| { type: "stepChanged"; step: StepId }
@@ -110,7 +115,8 @@ export type WizardAction =
 			template: Template;
 			warnings: string[];
 	  }
-	| { type: "dryRunStarted"; jobId: string; uploadId: string }
+	/** Ignored unless `generation` is still the state's: an edit made meanwhile wins. */
+	| { type: "dryRunStarted"; jobId: string; uploadId: string; generation: number }
 	| { type: "dryRunFinished"; total: number }
 	| { type: "runStarted"; jobId: string }
 	| { type: "jobReopened"; jobId: string };
@@ -152,6 +158,7 @@ export const initialState: WizardState = {
 	dryRun: null,
 	run: null,
 	dirty: false,
+	generation: 0,
 };
 
 /** The actions that leave the draft as it is; every other one invalidates the dry run. */
@@ -165,9 +172,40 @@ const KEEPS_DRAFT = new Set<WizardAction["type"]>([
 	"templateSaved",
 ]);
 
-/** Whether `action` changes the draft: the reducer then sets `dryRun: null`, `saved: null` and `dirty`. */
-export function clearsDryRun(action: WizardAction): boolean {
-	return !KEEPS_DRAFT.has(action.type);
+/**
+ * Whether `action` changes the draft: the reducer then sets `dryRun: null`, `saved: null` and
+ * `dirty`, and adds one to `generation`. A `targetChosen` or `optionsChanged` that changes nothing
+ * does not (review ruling 3).
+ */
+export function clearsDryRun(state: WizardState, action: WizardAction): boolean {
+	if (KEEPS_DRAFT.has(action.type)) return false;
+	if (action.type === "targetChosen") {
+		const { collection, locale, translationLocale } = action;
+		return !sameJson({ collection, locale, translationLocale }, state.target);
+	}
+	if (action.type === "optionsChanged") {
+		return !sameJson({ ...state.options, ...action.patch }, state.options);
+	}
+	return true;
+}
+
+/** The rows `flagMissingKeys` checks: the key, the slug and each field. */
+const isKeyedRow = (row: string) => row === "key" || row === "slug" || row.startsWith("field:");
+
+/**
+ * Marks "check" on each key, slug and field row whose source key the new sample lacks (review
+ * ruling 1). Soft: a sample may miss a rare path, so the row stays and nothing blocks.
+ */
+function flagMissingKeys(state: WizardState, columns: SampleColumn[]): WizardState["meta"] {
+	const keys = new Set(columns.map((c) => c.key));
+	const meta = { ...state.meta };
+	for (const [row, m] of Object.entries(state.rows) as [RowId, RowMapping | undefined][]) {
+		if (m === undefined || !isKeyedRow(row) || typeof m.from !== "string" || keys.has(m.from)) {
+			continue;
+		}
+		meta[row] = { ...(meta[row] ?? { origin: "user" }), check: true };
+	}
+	return meta;
 }
 
 const ORIGIN = { ai: "ai", fallback: "name", template: "template" } as const;
@@ -194,11 +232,14 @@ function applySuggestion(state: WizardState, reply: SuggestReply, overwrite: boo
 		reply.warnings.filter((w) => FORMAT_WARNINGS.has(w.code)).flatMap((w) => w.fields ?? []),
 	);
 	const fill = (row: RowId, mapping: RowMapping | null, m: RowMeta) => {
-		if (!overwrite && state.meta[row]?.origin === "user") return;
+		const origin = state.meta[row]?.origin;
 		if (mapping === null) {
-			delete rows[row];
-			delete meta[row];
-		} else {
+			// Only what an earlier suggestion filled is cleared (review ruling 4).
+			if (origin === "ai" || origin === "name") {
+				delete rows[row];
+				delete meta[row];
+			}
+		} else if (overwrite || origin !== "user") {
 			rows[row] = mapping;
 			meta[row] = m;
 		}
@@ -241,6 +282,7 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				source: action.source,
 				sourceBlock: action.sourceBlock,
 				columns: action.columns,
+				meta: flagMissingKeys(state, action.columns),
 				suggestion: IDLE,
 			};
 		case "sourceBlockChanged":
@@ -248,6 +290,7 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				...state,
 				sourceBlock: action.sourceBlock,
 				columns: action.columns,
+				meta: action.columns === null ? state.meta : flagMissingKeys(state, action.columns),
 				suggestion: IDLE,
 			};
 		case "templateLoaded": {
@@ -332,6 +375,7 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				options: { ...state.options, save: { kind: "none" } },
 			};
 		case "dryRunStarted":
+			if (action.generation !== state.generation) return state;
 			return { ...state, dryRun: { jobId: action.jobId, uploadId: action.uploadId, total: null } };
 		case "dryRunFinished":
 			return state.dryRun === null
@@ -345,15 +389,21 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 }
 
 export function reducer(state: WizardState, action: WizardAction): WizardState {
+	const clears = clearsDryRun(state, action);
+	// A target or options change that changes nothing leaves the state as it is (review ruling 3).
+	if (!clears && (action.type === "targetChosen" || action.type === "optionsChanged")) return state;
 	const next = reduce(state, action);
-	return clearsDryRun(action) ? { ...next, dryRun: null, saved: null, dirty: true } : next;
+	if (!clears) return next;
+	return { ...next, dryRun: null, saved: null, dirty: true, generation: state.generation + 1 };
 }
 
 // --- The draft template ---
 
 /** Only `from` or `expr`: the key, slug and `translationOf` take nothing else. */
 function valueSource(m: RowMapping): ValueSource {
-	return "from" in m && typeof m.from === "string" ? { from: m.from } : { expr: String(m.expr) };
+	if (typeof m.from === "string") return { from: m.from };
+	if (typeof m.expr === "string") return { expr: m.expr };
+	throw new Error("A mapping needs a source key or an expression");
 }
 
 /** A copy without the keys whose value is `undefined`. */
@@ -613,6 +663,8 @@ export function mapBlockers(state: WizardState, fields: readonly SchemaField[]):
 		if (!f.required || f.hasDefault || f.slug === SOURCE_ID_FIELD) continue;
 		// A translation takes a non-translatable field from its source (engine `checkTemplate`).
 		if (translation && !f.translatable) continue;
+		// An unsupported field has the collection-level blocker below (review ruling 6).
+		if (f.unsupported) continue;
 		const row: RowId = `field:${f.slug}`;
 		if (!mappable(f)) blockers.push({ row, msg: M.requiredUnmappable, values: { field: f.label } });
 		else if (rows[row] === undefined) {
@@ -670,16 +722,17 @@ export function deriveOwner(p: {
 	collection: string;
 	locale: string;
 }): string {
-	const fromName = (p.templateName ?? "")
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, OWNER_MAX);
-	if (fromName !== "") return fromName;
+	const fromName = (p.templateName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+	const owner = trimDashes(fromName.slice(0, OWNER_MAX));
+	if (owner !== "") return owner;
 	// Kept to `OWNER_PATTERN`'s characters, as a locale may hold others.
-	return `wizard-${p.collection}-${p.locale}`
-		.replace(/[^A-Za-z0-9._:-]+/g, "-")
-		.slice(0, OWNER_MAX);
+	const fallback = `wizard-${p.collection}-${p.locale}`.replace(/[^A-Za-z0-9._:-]+/g, "-");
+	return trimDashes(fallback.slice(0, OWNER_MAX));
+}
+
+/** No `-` at either end, also after a cut (review ruling 8). */
+function trimDashes(s: string): string {
+	return s.replace(/^-+|-+$/g, "");
 }
 
 /** The typed owner, else one derived from the template's name (to save, or the base's). */

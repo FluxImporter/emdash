@@ -13,6 +13,10 @@ export function StepFooter(props: {
 	canNext: boolean;
 	reason?: string;
 	nextLabel?: string;
+	/**
+	 * Must not reject: its promise is not awaited, so a step reports its own errors (through
+	 * `describeError`) instead of throwing them here (review ruling 7).
+	 */
 	onNext(): void | Promise<void>;
 	busy?: boolean;
 }) {

@@ -6,14 +6,9 @@ import {
 	useMemo,
 	useReducer,
 	useRef,
+	useState,
 } from "react";
-import {
-	clearsDryRun,
-	initialState,
-	reducer,
-	type WizardAction,
-	type WizardState,
-} from "./state.js";
+import { initialState, reducer, type WizardAction, type WizardState } from "./state.js";
 
 /** The `once` key of the dry run's job creation, forgotten whenever the draft changes. */
 const DRY_RUN_KEY = "dry-run";
@@ -50,15 +45,21 @@ export function createOnce(): Once {
 }
 
 /**
- * `dispatch` that first forgets the dry run's job creation whenever the action drops the dry run
- * (preflight F14), so Preview creates a new one for the changed draft.
+ * `dispatch` that first forgets the dry run's job creation whenever the action changes the draft
+ * (preflight F14), so Preview creates a new one for it. It follows its own dispatches through the
+ * pure reducer from `initial`, so a no-op edit forgets nothing (review ruling 3), and two
+ * dispatches before a render are both seen.
  */
 export function draftDispatch(
 	dispatch: Dispatch<WizardAction>,
 	tasks: Pick<Once, "forget">,
+	initial: WizardState,
 ): Dispatch<WizardAction> {
+	let latest = initial;
 	return (action) => {
-		if (clearsDryRun(action)) tasks.forget(DRY_RUN_KEY);
+		const next = reducer(latest, action);
+		if (next.generation !== latest.generation) tasks.forget(DRY_RUN_KEY);
+		latest = next;
 		dispatch(action);
 	};
 }
@@ -72,11 +73,15 @@ interface WizardContextValue {
 const WizardContext = createContext<WizardContextValue | null>(null);
 
 export function WizardProvider(props: { initial?: Partial<WizardState>; children: ReactNode }) {
-	const [state, rawDispatch] = useReducer(reducer, { ...initialState, ...props.initial });
+	const [start] = useState(() => ({ ...initialState, ...props.initial }));
+	const [state, rawDispatch] = useReducer(reducer, start);
 	const tasks = useRef<Once | null>(null);
 	tasks.current ??= createOnce();
 	const once = tasks.current;
-	const dispatch = useMemo(() => draftDispatch(rawDispatch, once), [once]);
+	// Kept in a ref, not a memo: its record of the state must never be rebuilt from `start`.
+	const dispatchRef = useRef<Dispatch<WizardAction> | null>(null);
+	dispatchRef.current ??= draftDispatch(rawDispatch, once, start);
+	const dispatch = dispatchRef.current;
 	const value = useMemo(() => ({ state, dispatch, once: once.once }), [state, dispatch, once]);
 	return <WizardContext.Provider value={value}>{props.children}</WizardContext.Provider>;
 }
