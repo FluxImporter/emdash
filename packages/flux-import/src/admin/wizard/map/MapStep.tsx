@@ -287,6 +287,7 @@ export function MapStep() {
 				<DragOverlay dropAnimation={null}>
 					{dragging === null ? null : (
 						<div
+							aria-hidden="true"
 							data-testid="drag-overlay"
 							className="max-w-full cursor-grab truncate rounded-md border border-kumo-brand bg-kumo-base px-2 py-1 text-sm font-medium shadow-sm"
 						>
