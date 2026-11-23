@@ -7,7 +7,7 @@ import type { SuggestReply } from "../../src/plugin/suggest.js";
 import type { SavedResult } from "../../src/plugin/templates.js";
 import { productsXlsx } from "../fixtures/xlsx.js";
 import { Client, devBypass } from "./client.js";
-import { FakeAiServer } from "./fake-ai.js";
+import { type AiRequest, FakeAiServer } from "./fake-ai.js";
 import { FeedServer } from "./feed-server.js";
 import { productsCsv } from "./fixtures.js";
 import { type DevServer, startServer, stopServer } from "./server.js";
@@ -15,6 +15,7 @@ import { type DevServer, startServer, stopServer } from "./server.js";
 /** Its own site: allowPrivateNetwork lets both providers reach the fake on this machine. */
 const PORT = 4388;
 const SETTINGS = "/_emdash/api/admin/plugins/flux-import/settings";
+const ROUTE = "/_emdash/api/plugins/flux-import/templates/suggest";
 /** A generated test key, held in memory only; the fake echoes it in its error bodies. */
 const KEY = `sk-test-${randomBytes(12).toString("hex")}`;
 const CLEARED = { aiProvider: "none", aiApiKey: null, aiModel: null, aiBaseUrl: null };
@@ -39,14 +40,99 @@ const pointAtFake = (provider: "anthropic" | "openai-compatible") =>
 		aiBaseUrl: provider === "anthropic" ? fake.baseUrl : `${fake.baseUrl}/v1`,
 	});
 
-/** The server log written since `start`, once it holds the route's line (stdout is piped). */
-async function logSince(start: number): Promise<string> {
-	const until = Date.now() + 5_000;
+/** Values of `productsCsv` rows: the redactor does not cover them, so no reply or log may hold one. */
+const SAMPLE_VALUES = [/SKU-\d/, /Product \d/, /quoted/, /product-\d/];
+
+/**
+ * The server log written since `start`, once `line` matches it or after 5 s (stdout is piped, so a
+ * line can arrive after the response). Waiting for the caller's own line, not any route line, means
+ * another request's line can never stand in for it.
+ */
+async function logSince(start: number, line: RegExp): Promise<string> {
+	const until = performance.now() + 5_000;
 	for (;;) {
 		const log = server.log.slice(start).join("");
-		if (log.includes("flux-import: suggest") || Date.now() > until) return log;
+		if (line.test(log) || performance.now() > until) return log;
 		await new Promise((r) => setTimeout(r, 50));
 	}
+}
+
+/** The log since `start` holds the route's `line`, and no key, bearer token or sample value. */
+async function expectCleanLog(start: number, line: RegExp): Promise<void> {
+	const log = await logSince(start, line);
+	expect(log).toMatch(line);
+	// Defence in depth only: EmDash's ctx.log redactor strips secret setting values before it prints
+	// (spec F8), so the real guards are the response checks and Task 9's unit log test, whose log
+	// does not redact.
+	expect(log).not.toContain(KEY);
+	expect(log).not.toMatch(/Bearer\s/);
+	for (const value of SAMPLE_VALUES) expect(log).not.toMatch(value);
+}
+
+/** The route's answer, checked as text first: a 200 holding no key and no sample value. */
+async function cleanSuggest(input: Record<string, unknown>): Promise<SuggestReply> {
+	const res = await admin.raw("POST", ROUTE, input);
+	expect(res.status).toBe(200);
+	const text = await res.text();
+	expect(text).not.toContain(KEY);
+	for (const value of SAMPLE_VALUES) expect(text).not.toMatch(value);
+	return (JSON.parse(text) as { data: SuggestReply }).data;
+}
+
+/**
+ * What a request carries besides `authorization`, the key's one place (plan Ruling 2), and `host`,
+ * the fake's own address: every other header, and the body.
+ */
+function outsideAuthorization(request: AiRequest | undefined): string {
+	const { authorization: _authorization, host: _host, ...headers } = request?.headers ?? {};
+	return JSON.stringify({ headers, body: request?.body });
+}
+
+/**
+ * Binding safety check: no request may reach a real provider. Before any Anthropic call, prove the
+ * site talks to the fake.
+ * 1. An OpenAI-compatible call over `http:` to 127.0.0.1, which the site makes only under
+ *    allowPrivateNetwork (Ruling 8), must reach the fake.
+ * 2. With the same settings, a collection whose every field settles by name must make no call at
+ *    all (name matching does not depend on the provider).
+ * 3. That collection, with Anthropic configured, therefore calls nothing, and its log line must name
+ *    the fake's host, not api.anthropic.com: the site reads `aiBaseUrl` for Anthropic (Ruling 7).
+ */
+async function proveTheFakeIsReached(): Promise<void> {
+	await admin.createCollection("it_suggest_probe");
+	for (const field of [
+		{ slug: "price", label: "Price", type: "number" },
+		{ slug: "released", label: "Released", type: "datetime" },
+	]) {
+		await admin.api("POST", "/_emdash/api/schema/collections/it_suggest_probe/fields", field);
+	}
+	const probe = { collection: "it_suggest_probe", locale: "en", text: productsCsv(5) };
+	const fail = (why: string) => {
+		throw new Error(`Safety check failed, so no Anthropic call is made: ${why}`);
+	};
+
+	await pointAtFake("openai-compatible");
+	let before = fake.requests.length;
+	const reached = await suggest(TEXT);
+	if (fake.requests.length !== before + 1 || reached.method !== "ai") {
+		fail("an OpenAI-compatible call did not reach the fake");
+	}
+	before = fake.requests.length;
+	const quiet = await suggest(probe);
+	if (fake.requests.length !== before || quiet.sent !== null || !quiet.ai.available) {
+		fail("the probe collection made a provider call, or the provider was unavailable");
+	}
+
+	await pointAtFake("anthropic");
+	const start = server.log.length;
+	const anthropic = await suggest(probe);
+	const line = /flux-import: suggest method=\S+ provider=anthropic \S+ host=(\S+) /;
+	const host = line.exec(await logSince(start, line))?.[1];
+	if (!anthropic.ai.available || anthropic.sent !== null || fake.requests.length !== before) {
+		fail("the Anthropic probe was unavailable or made a call");
+	}
+	if (host !== "127.0.0.1") fail(`Anthropic would call ${host ?? "an unknown host"}`);
+	await settings(admin, { aiProvider: "none" });
 }
 
 beforeAll(async () => {
@@ -54,6 +140,7 @@ beforeAll(async () => {
 	server = await startServer(PORT, undefined, undefined, true);
 	admin = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	await admin.createProducts("it_suggest");
+	await proveTheFakeIsReached();
 });
 
 afterAll(async () => {
@@ -71,6 +158,7 @@ afterAll(async () => {
 describe("M6d templates/suggest on sites/dev", () => {
 	it("drafts by name matching alone, and the draft saves and dry-runs without problems (step 1)", async () => {
 		await settings(admin, { aiProvider: "none" });
+		const before = fake.requests.length;
 		const out = await suggest(TEXT);
 		expect(out).toMatchObject({
 			method: "fallback",
@@ -85,7 +173,7 @@ describe("M6d templates/suggest on sites/dev", () => {
 			["price", "Price"],
 			["released", "Released"],
 		]);
-		expect(fake.requests).toEqual([]);
+		expect(fake.requests.length).toBe(before);
 		const saved = await admin.plugin<SavedResult>("templates/create", {
 			name: "Suggested",
 			template: out.template,
@@ -120,7 +208,9 @@ describe("M6d templates/suggest on sites/dev", () => {
 			credential: "it-suggest",
 		});
 		fake.scenario = "valid";
-		const out = await suggest({ collection: "it_suggest", locale: "en", sourceId: source.id });
+		const before = fake.requests.length;
+		const logStart = server.log.length;
+		const out = await cleanSuggest({ collection: "it_suggest", locale: "en", sourceId: source.id });
 		expect(out).toMatchObject({
 			method: "ai",
 			ai: { available: true, provider: "anthropic", model: "claude-opus-5-5" },
@@ -130,6 +220,7 @@ describe("M6d templates/suggest on sites/dev", () => {
 				{},
 			],
 		});
+		expect(fake.requests.length).toBe(before + 1);
 		const request = fake.requests.at(-1);
 		expect(request?.path).toBe("/v1/messages");
 		// Fact D1 / plan Ruling 2: the SDK sends the key as a bearer token, never as x-api-key.
@@ -149,10 +240,18 @@ describe("M6d templates/suggest on sites/dev", () => {
 			keys: payload.source.keys.length,
 			fields: 1,
 		});
-		const sent = JSON.stringify(request?.body);
-		for (const marker of ["s3cr3t", "t0ken", "it-suggest", source.id, "127.0.0.1"]) {
-			expect(sent, marker).not.toContain(marker);
+		// The copy the fetch staged: its ID is the site's own, never the provider's.
+		const staged = (await admin.plugin<SourceRow>("sources/get", { id: source.id })).lastFetch
+			?.uploadId;
+		expect(staged).toBeTruthy();
+		const outside = outsideAuthorization(request);
+		for (const marker of [KEY, "s3cr3t", "t0ken", "it-suggest", source.id, staged, "127.0.0.1"]) {
+			expect(outside, marker).not.toContain(marker);
 		}
+		await expectCleanLog(
+			logStart,
+			/flux-import: suggest method=ai provider=anthropic .* code=none /,
+		);
 	});
 
 	it("asks an OpenAI-compatible endpoint through the fake (step 3)", async () => {
@@ -162,11 +261,16 @@ describe("M6d templates/suggest on sites/dev", () => {
 			aiModel: "local-model",
 			aiBaseUrl: `${fake.baseUrl}/v1/`,
 		});
-		const out = await suggest(TEXT);
+		fake.scenario = "valid";
+		const { uploadId } = await admin.paste("csv", productsCsv(20));
+		const before = fake.requests.length;
+		const logStart = server.log.length;
+		const out = await cleanSuggest({ collection: "it_suggest", locale: "en", uploadId });
 		expect(out).toMatchObject({
 			method: "ai",
 			ai: { provider: "openai-compatible", model: "local-model" },
 		});
+		expect(fake.requests.length).toBe(before + 1);
 		const request = fake.requests.at(-1);
 		expect(request?.path).toBe("/v1/chat/completions");
 		expect(request?.headers.authorization).toBe(`Bearer ${KEY}`);
@@ -178,6 +282,14 @@ describe("M6d templates/suggest on sites/dev", () => {
 				json_schema: { name: "flux_import_mapping", strict: true },
 			},
 		});
+		const outside = outsideAuthorization(request);
+		for (const marker of [KEY, uploadId, "s3cr3t", "t0ken", "it-suggest", "127.0.0.1"]) {
+			expect(outside, marker).not.toContain(marker);
+		}
+		await expectCleanLog(
+			logStart,
+			/flux-import: suggest method=ai provider=openai-compatible .* code=none /,
+		);
 	});
 
 	it.each([
@@ -195,34 +307,17 @@ describe("M6d templates/suggest on sites/dev", () => {
 			fake.scenario = scenario;
 			const before = fake.requests.length;
 			const logStart = server.log.length;
-			const res = await admin.raw(
-				"POST",
-				"/_emdash/api/plugins/flux-import/templates/suggest",
-				TEXT,
-			);
-			expect(res.status).toBe(200);
-			const text = await res.text();
-			expect(text).not.toContain(KEY);
-			const out = (JSON.parse(text) as { data: SuggestReply }).data;
+			const out = await cleanSuggest(TEXT);
 			expect(out.method).toBe("fallback");
 			expect(codes(out).filter((c) => c.startsWith("ai_"))).toEqual([code]);
 			expect(out.template).not.toBeNull();
 			expect(fake.requests.length - before).toBe(1);
-			const log = await logSince(logStart);
-			expect(log).toMatch(
+			await expectCleanLog(
+				logStart,
 				new RegExp(
 					`flux-import: suggest method=fallback provider=${provider} .* status=${status} code=${code} `,
 				),
 			);
-			// Defence in depth only: EmDash's ctx.log redactor strips secret setting values before it
-			// prints (spec F8), so the real guards are the response check above and Task 9's unit log
-			// test, whose log does not redact.
-			expect(log).not.toContain(KEY);
-			expect(log).not.toMatch(/Bearer\s/);
-			// The redactor does not cover sample values: none may reach the log.
-			for (const value of [/SKU-\d/, /Product \d/, /quoted/, /product-\d/]) {
-				expect(log).not.toMatch(value);
-			}
 		},
 	);
 
@@ -242,11 +337,12 @@ describe("M6d templates/suggest on sites/dev", () => {
 		expect(JSON.stringify(out)).not.toMatch(/ghost|nope/);
 	});
 
-	it("times out a provider that never answers and one whose body stalls (step 4, Review Focus 1)", {
-		timeout: 120_000,
+	it("times out a provider that never answers and one whose body stalls, on both providers (step 4, Review Focus 1)", {
+		timeout: 180_000,
 	}, async () => {
 		for (const [scenario, provider] of [
 			["slow", "openai-compatible"],
+			["stall", "openai-compatible"],
 			["stall", "anthropic"],
 		] as const) {
 			await pointAtFake(provider);
@@ -259,26 +355,8 @@ describe("M6d templates/suggest on sites/dev", () => {
 			expect(ms, scenario).toBeGreaterThanOrEqual(20_000);
 			expect(ms, scenario).toBeLessThan(40_000);
 			expect(codes(out), scenario).toContain("ai_timeout");
-			expect(out.method).toBe("fallback");
+			expect(out.method, scenario).toBe("fallback");
 		}
-	});
-
-	it("allows 30 provider calls an hour and answers the 31st by name only (step 5, Ruling 66)", async () => {
-		await pointAtFake("anthropic");
-		fake.scenario = "valid";
-		// Never straddle an hour (Fact F1): start in a fresh one if fewer than two minutes remain.
-		const left = 3_600_000 - (Date.now() % 3_600_000);
-		if (left < 120_000) await new Promise((r) => setTimeout(r, left + 2_000));
-		const hour = utcHour(Date.now());
-		const used = fake.requests.filter((r) => utcHour(r.at) === hour).length;
-		for (let i = used; i < AI_CALLS_PER_HOUR; i++) {
-			expect((await suggest(TEXT)).method, `call ${i + 1}`).toBe("ai");
-		}
-		const before = fake.requests.length;
-		const limited = await suggest(TEXT);
-		expect(codes(limited)).toContain("ai_rate_limited");
-		expect(limited).toMatchObject({ method: "fallback", sent: null });
-		expect(fake.requests.length).toBe(before);
 	});
 
 	it("reports ai_not_configured once the key is cleared through the settings API (step 6)", async () => {
@@ -311,6 +389,27 @@ describe("M6d templates/suggest on sites/dev", () => {
 			suggest({ collection: "it_suggest", locale: "en", sourceId: "NOPE", ai: false }),
 		).rejects.toMatchObject({ status: 404, code: "SOURCE_NOT_FOUND" });
 	});
+
+	// Keep this the last test that calls a provider: it uses up the hour's budget, so any provider
+	// call after it would answer ai_rate_limited.
+	it("allows 30 provider calls an hour and answers the 31st by name only (step 5, Ruling 66)", async () => {
+		await pointAtFake("anthropic");
+		fake.scenario = "valid";
+		// Never straddle an hour (Fact F1): start in a fresh one if fewer than two minutes remain,
+		// 10 s past the turn, since the clock can step back up to 5.4 s.
+		const left = 3_600_000 - (Date.now() % 3_600_000);
+		if (left < 120_000) await new Promise((r) => setTimeout(r, left + 10_000));
+		const hour = utcHour(Date.now());
+		const used = fake.requests.filter((r) => utcHour(r.at) === hour).length;
+		for (let i = used; i < AI_CALLS_PER_HOUR; i++) {
+			expect((await suggest(TEXT)).method, `call ${i + 1}`).toBe("ai");
+		}
+		const before = fake.requests.length;
+		const limited = await suggest(TEXT);
+		expect(codes(limited)).toContain("ai_rate_limited");
+		expect(limited).toMatchObject({ method: "fallback", sent: null });
+		expect(fake.requests.length).toBe(before);
+	});
 });
 
 describe("M6d templates/suggest on the shared site, without allowPrivateNetwork (spec V7, plan Ruling 14)", () => {
@@ -330,7 +429,10 @@ describe("M6d templates/suggest on the shared site, without allowPrivateNetwork 
 			expect(out).toMatchObject({ method: "fallback", sent: null });
 			expect(fake.requests.length).toBe(before);
 		} finally {
-			await settings(shared, CLEARED);
+			// A failed reset must not replace the test's own error; it is reported instead.
+			await settings(shared, CLEARED).catch((e: unknown) => {
+				console.error("Could not clear the shared site's AI settings:", e);
+			});
 		}
 	});
 });
