@@ -444,6 +444,7 @@ function ScheduleForm(props: {
 			<div className="grid gap-4 md:grid-cols-2">
 				<Select
 					label={t(M.template)}
+					placeholder={t(M.templatePlaceholder)}
 					value={form.templateId}
 					disabled={props.busy}
 					{...field("template")}
@@ -458,6 +459,7 @@ function ScheduleForm(props: {
 				</Select>
 				<Select
 					label={t(M.source)}
+					placeholder={t(M.sourcePlaceholder)}
 					value={form.sourceId}
 					disabled={props.busy}
 					{...field("source")}

@@ -251,6 +251,13 @@ describe("the Schedules tab", () => {
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		expect(within(dialog).getByText("Times are in UTC, as EmDash runs schedules.")).toBeVisible();
+		// Nothing chosen yet: each select says what to choose, never an empty box (Task 16).
+		expect(within(dialog).getByRole("combobox", { name: "Template" })).toHaveTextContent(
+			"Choose a template",
+		);
+		expect(within(dialog).getByRole("combobox", { name: "URL source" })).toHaveTextContent(
+			"Choose a URL source",
+		);
 		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Nightly products");
 		await choose(user, "Template", "Products feed");
 		await choose(user, "URL source", "Feed");

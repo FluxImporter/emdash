@@ -278,6 +278,14 @@ export const M = {
 	name: { id: "flux-import.home-schedules.name", message: "Name" },
 	template: { id: "flux-import.home-schedules.template", message: "Template" },
 	source: { id: "flux-import.home-schedules.source", message: "URL source" },
+	templatePlaceholder: {
+		id: "flux-import.home-schedules.template-placeholder",
+		message: "Choose a template",
+	},
+	sourcePlaceholder: {
+		id: "flux-import.home-schedules.source-placeholder",
+		message: "Choose a URL source",
+	},
 	when: { id: "flux-import.home-schedules.when", message: "When it runs" },
 	kindHourly: { id: "flux-import.home-schedules.kind-hourly", message: "Hourly" },
 	kindDaily: { id: "flux-import.home-schedules.kind-daily", message: "Daily" },
