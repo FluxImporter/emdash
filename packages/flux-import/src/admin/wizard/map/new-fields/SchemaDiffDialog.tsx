@@ -218,6 +218,9 @@ export function SchemaDiffDialog(p: {
 						variant="primary"
 						disabled={!canConfirm}
 						loading={applying}
+						// Kumo's spinner is labelled "Loading" in English: the label names the button.
+						aria-label={t(M.confirm)}
+						aria-busy={applying || undefined}
 						onClick={() => {
 							void confirm();
 						}}

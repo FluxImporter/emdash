@@ -186,6 +186,20 @@ describe("the Source step", () => {
 		expect(next()).toBeDisabled();
 	});
 
+	it("keeps the Credential select's name, and disables it, while the credentials load", async () => {
+		const list = deferred<unknown>();
+		routes({ "credentials/list": () => list.promise });
+		const { user } = renderSource();
+		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		// Kumo's Select shows an unlabelled skeleton in place of the value, so, unlike its Button,
+		// it adds no "Loading" to the name: the label alone names it.
+		const select = screen.getByRole("combobox", { name: "Credential" });
+		expect(select).toBeDisabled();
+		list.resolve([]);
+		await waitFor(() => expect(select).toBeEnabled());
+		expect(screen.getByRole("combobox", { name: "Credential" })).toBe(select);
+	});
+
 	it("creates and fetches a URL source, then samples the fetched upload", async () => {
 		const { calls } = routes({
 			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],

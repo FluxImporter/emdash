@@ -50,8 +50,10 @@ export function StepFooter(props: {
 					variant="primary"
 					disabled={!props.canNext || busy}
 					loading={busy}
-					// Kumo's spinner is labelled "Loading" in English; the label alone names the button.
+					// Kumo's spinner is labelled "Loading" in English; the label alone names the button,
+					// and aria-busy says it is working.
 					aria-label={label}
+					aria-busy={busy || undefined}
 					aria-describedby={blocked ? reasonId : undefined}
 					onClick={() => {
 						void props.onNext();

@@ -131,10 +131,33 @@ describe("Wizard", () => {
 		const retry = await screen.findByRole("button", { name: "Try again" });
 		expect(screen.getByText(/Your session/)).toBeVisible();
 		expect(screen.queryByRole("list", { name: /steps/i })).toBeNull();
+		expect(retry).not.toHaveAttribute("aria-busy");
 		failing = false;
 		await user.click(retry);
 		expect(await screen.findByRole("list", { name: /steps/i })).toBeInTheDocument();
 		expect(calls).toHaveLength(2);
+	});
+
+	it("shows the probe's loader, not the error, while Try again probes again", async () => {
+		let probes = 0;
+		let answer: (value: unknown) => void = () => {};
+		mockRoutes({
+			"credentials/list": () => {
+				probes += 1;
+				if (probes === 1) return fail("UNAUTHORIZED", "Session expired", 401);
+				return new Promise((resolve) => {
+					answer = resolve;
+				});
+			},
+		});
+		const { user } = renderAdmin(<Wizard steps={DUMMY} />);
+		await user.click(await screen.findByRole("button", { name: "Try again" }));
+		// React Query resets an errored query with no data to pending, so the banner and its
+		// button give way to the loader: Try again's busy state is never on screen.
+		expect(await screen.findByRole("status", { name: "Checking access" })).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		answer(CREDENTIALS);
+		expect(await screen.findByRole("list", { name: /steps/i })).toBeInTheDocument();
 	});
 
 	it("keeps the draft when a later probe fails", async () => {
@@ -299,6 +322,16 @@ describe("StepFooter", () => {
 			</WizardProvider>,
 		);
 		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next" })).toHaveAttribute("aria-busy", "true");
 		expect(screen.getByRole("button", { name: "Run the import" })).toBeDisabled();
+	});
+
+	it("is not marked busy when idle", () => {
+		renderAdmin(
+			<WizardProvider>
+				<StepFooter canNext onNext={() => undefined} />
+			</WizardProvider>,
+		);
+		expect(screen.getByRole("button", { name: "Next" })).not.toHaveAttribute("aria-busy");
 	});
 });

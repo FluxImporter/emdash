@@ -73,7 +73,14 @@ function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void
 			title={t(msg, values)}
 			{...(detail === undefined ? {} : { description: detail })}
 			action={
-				<Button variant="secondary" loading={props.retrying} onClick={props.onRetry}>
+				<Button
+					variant="secondary"
+					loading={props.retrying}
+					// Kumo's spinner is labelled "Loading" in English: the label names the button.
+					aria-label={t(PAGE.tryAgain)}
+					aria-busy={props.retrying || undefined}
+					onClick={props.onRetry}
+				>
 					{t(PAGE.tryAgain)}
 				</Button>
 			}

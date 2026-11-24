@@ -480,6 +480,8 @@ describe("SchemaDiffDialog", () => {
 		await waitFor(() => expect(confirm()).toBeEnabled());
 		await user.click(confirm());
 		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+		// Kumo's spinner adds no English "Loading" to the name; the button says it is busy.
+		expect(confirm()).toHaveAttribute("aria-busy", "true");
 		await user.keyboard("{Escape}");
 		expect(onCancel).not.toHaveBeenCalled();
 		answer();
