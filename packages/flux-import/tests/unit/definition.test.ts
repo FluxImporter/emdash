@@ -4,6 +4,7 @@ import { definePlugin, InvalidCursorError, PluginRouteError } from "emdash";
 import { describe, expect, it } from "vitest";
 import { JobError } from "../../src/engine/jobs.js";
 import { sourceSchema } from "../../src/engine/template.js";
+import { fluxImport } from "../../src/index.js";
 import { FLUX_IMPORT_VERSION } from "../../src/meta.js";
 import { createPlugin, STORAGE } from "../../src/plugin/definition.js";
 import {
@@ -135,8 +136,16 @@ describe("createPlugin", () => {
 		});
 	});
 
-	it("sets FLUX_IMPORT_VERSION to 0.5.0", () => {
-		expect(FLUX_IMPORT_VERSION).toBe("0.5.0");
+	it("sets FLUX_IMPORT_VERSION to 0.6.0", () => {
+		expect(FLUX_IMPORT_VERSION).toBe("0.6.0");
+	});
+
+	it("declares the React admin entry and the Import page (M7a)", () => {
+		expect(fluxImport().adminEntry).toBe("flux-import/admin");
+		expect(plugin.admin.entry).toBe("flux-import/admin");
+		expect(plugin.admin.pages).toEqual([
+			{ path: "/import", label: "Import", icon: "upload-simple" },
+		]);
 	});
 
 	it("declares the storage indexes the queries use", () => {
