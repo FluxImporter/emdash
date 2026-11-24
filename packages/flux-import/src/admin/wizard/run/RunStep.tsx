@@ -8,7 +8,14 @@ import { describeError, describeJobError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
 import { useWizard } from "../context.js";
-import { jobInput, ownerOf, reducer, toTemplate, type WizardAction } from "../state.js";
+import {
+	jobInput,
+	ownerOf,
+	reducer,
+	saveOffered,
+	toTemplate,
+	type WizardAction,
+} from "../state.js";
 import { writeUrl } from "../url.js";
 import { M } from "./messages.js";
 
@@ -70,7 +77,9 @@ export function RunStep() {
 		once(RUN_KEY, async () => {
 			let s = latest.current;
 			const { save } = s.options;
-			if (save.kind === "new") {
+			// Only a choice Options offers: one left from edits since undone (or from a step bar
+			// skip past Options) is moot, and the unedited template runs by ID and revision.
+			if (saveOffered(s) && save.kind === "new") {
 				// Ruling 13: the template is saved first, and the job runs from its ID and revision.
 				const reply = await api.createTemplate({
 					name: save.name,

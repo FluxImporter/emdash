@@ -166,6 +166,31 @@ describe("the Run step", () => {
 		expect(body).not.toHaveProperty("template");
 	});
 
+	it("never saves a template choice that is no longer on offer: an unedited base runs by id", async () => {
+		const { calls } = mockRoutes({
+			"jobs/create": () => real({ status: "created" }),
+			"jobs/next": () => real({ status: "completed", counters: counters(4) }),
+		});
+		const template = templateSchema.parse({
+			version: 1,
+			collection: "posts",
+			locale: "en",
+			key: { from: "id" },
+			fields: { title: { from: "title", type: "text" } },
+		});
+		renderRun(
+			draft({
+				base: { id: "tpl-9", revision: 2, name: "Posts", template },
+				// Left over from while the template was edited; the edits were undone since.
+				options: { ...DEFAULT_OPTIONS, save: { kind: "new", name: "Posts copy" } },
+			}),
+		);
+		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(named(calls, "templates/create")).toEqual([]);
+		const body = named(calls, "jobs/create")[0]!.body as Record<string, unknown>;
+		expect(body).toMatchObject({ templateId: "tpl-9", templateRevision: 2, uploadId: DRY_UPLOAD });
+	});
+
 	it("puts ?job=<id> in the URL and shows a determinate bar from the dry run's total", async () => {
 		const held = gate();
 		mockRoutes({
