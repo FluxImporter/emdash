@@ -206,6 +206,9 @@ describe("Wizard", () => {
 		expect(target).toHaveAttribute("href", "?step=target");
 		expect(target).not.toHaveAttribute("aria-current");
 		expect(target).toHaveTextContent(/^2 Target$/);
+		// The admin's link colour: text-kumo-brand is the orange accent, below AA on the light theme.
+		expect(target).toHaveClass("text-kumo-link");
+		expect(target).not.toHaveClass("text-kumo-brand");
 		expect(within(list).getAllByRole("link")).toHaveLength(2);
 	});
 

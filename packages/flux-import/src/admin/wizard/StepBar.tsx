@@ -53,7 +53,7 @@ export function StepBar() {
 								className={
 									current
 										? "flex items-center gap-1 font-semibold text-kumo-default"
-										: "flex items-center gap-1 text-kumo-brand underline"
+										: "flex items-center gap-1 text-kumo-link underline"
 								}
 								onClick={(e) => {
 									e.preventDefault();
