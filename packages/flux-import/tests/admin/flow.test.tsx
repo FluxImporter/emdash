@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { pages } from "../../src/admin/index.js";
@@ -265,13 +265,13 @@ async function choose(user: UserEvent, name: string | RegExp, option: string | R
 	await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
 }
 
-/** Source: uploads a CSV and waits for its sample. */
-async function upload() {
+/** Source: uploads a CSV through the file input (the harness's XHR answers) and waits for its sample. */
+async function upload(user: UserEvent) {
 	await heading("Source");
 	const file = new File([["id,title,Released", ...ROWS].join("\n")], "posts.csv", {
 		type: "text/csv",
 	});
-	fireEvent.change(screen.getByLabelText("Choose a file"), { target: { files: [file] } });
+	await user.upload(screen.getByLabelText("Choose a file"), file);
 	await screen.findByRole("table");
 	await waitFor(() => expect(next()).toBeEnabled());
 }
@@ -316,7 +316,7 @@ async function loadTemplate(user: UserEvent) {
 
 /** The CSV flow from upload to a finished run, with one new field (`released`). */
 async function csvFlow(user: UserEvent) {
-	await upload();
+	await upload(user);
 	await user.click(next());
 	await target(user);
 	await mapped();
@@ -424,7 +424,7 @@ describe("the import wizard, end to end", () => {
 	it("starts from a saved template, runs it unedited by id and revision", async () => {
 		const { calls } = mockRoutes(server({ templates: [SAVED_TEMPLATE] }));
 		const { user } = renderPage();
-		await upload();
+		await upload(user);
 		await loadTemplate(user);
 		await previewed();
 		await run(user);
@@ -455,7 +455,7 @@ describe("the import wizard, end to end", () => {
 	it("runs an edited saved template inline by default", async () => {
 		const { calls } = mockRoutes(server({ templates: [SAVED_TEMPLATE] }));
 		const { user } = renderPage();
-		await upload();
+		await upload(user);
 		await loadTemplate(user);
 		await previewed();
 		await user.click(stepLink(4, "Options"));
@@ -495,7 +495,7 @@ describe("the import wizard, end to end", () => {
 	it("runs an unedited template by id after its edits are undone, without saving the choice left over", async () => {
 		const { calls } = mockRoutes(server({ templates: [SAVED_TEMPLATE] }));
 		const { user } = renderPage();
-		await upload();
+		await upload(user);
 		await loadTemplate(user);
 		await previewed();
 		await user.click(stepLink(4, "Options"));
@@ -527,7 +527,7 @@ describe("the import wizard, end to end", () => {
 	it("clears the mapping when the collection changes, and the dry run when an option changes", async () => {
 		const { calls } = mockRoutes(server());
 		const { user } = renderPage();
-		await upload();
+		await upload(user);
 		await user.click(next());
 		await target(user);
 		await mapped();
@@ -581,7 +581,7 @@ describe("the import wizard, end to end", () => {
 	it("links Options, Preview and Run in the step bar only while Map has no blockers", async () => {
 		mockRoutes(server());
 		const { user } = renderPage();
-		await upload();
+		await upload(user);
 		await user.click(next());
 		await target(user);
 		await mapped();
