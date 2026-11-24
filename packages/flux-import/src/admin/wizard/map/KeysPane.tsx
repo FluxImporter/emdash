@@ -46,7 +46,7 @@ export function KeysPane(p: {
 	return (
 		<section
 			aria-labelledby={headingId}
-			className="space-y-3 rounded-lg border border-kumo-line p-3"
+			className="min-w-0 space-y-3 rounded-lg border border-kumo-line p-3 xl:col-span-4"
 		>
 			<h3 id={headingId} className="text-base font-semibold">
 				{t(M.keysHeading, { count: count(keys.length) })}
@@ -101,7 +101,7 @@ function KeyRow(p: { name: string; sample: string | null; used: boolean }) {
 							: "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm"
 				}
 			>
-				<span className="min-w-0 truncate font-medium" title={p.name}>
+				<span className="max-w-full shrink-0 truncate font-medium" title={p.name}>
 					{p.name}
 				</span>
 				<span className="min-w-0 truncate text-xs text-kumo-subtle">

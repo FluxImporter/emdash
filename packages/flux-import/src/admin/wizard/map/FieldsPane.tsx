@@ -92,7 +92,7 @@ export function FieldsPane(p: {
 	return (
 		<section
 			aria-labelledby={headingId}
-			className="space-y-3 rounded-lg border border-kumo-line p-3"
+			className="min-w-0 space-y-3 rounded-lg border border-kumo-line p-3 xl:col-span-4"
 		>
 			<h3 id={headingId} className="truncate text-base font-semibold" title={p.heading}>
 				{p.heading}
@@ -168,11 +168,11 @@ function FieldRow(p: {
 					onClick={p.onSelect}
 					className={
 						reason === null
-							? "flex min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-kumo-focus"
-							: "flex min-w-0 flex-1 cursor-not-allowed items-baseline gap-2 text-left text-sm text-kumo-subtle"
+							? "flex max-w-full shrink-0 grow items-baseline gap-2 rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-kumo-focus"
+							: "flex max-w-full shrink-0 grow cursor-not-allowed items-baseline gap-2 text-left text-sm text-kumo-subtle"
 					}
 				>
-					<span className="min-w-0 truncate font-medium" title={row.label}>
+					<span className="max-w-48 shrink-0 truncate font-medium" title={row.label}>
 						{row.label}
 					</span>
 					{isRequired(row) ? (

@@ -252,7 +252,7 @@ export function MapStep() {
 					screenReaderInstructions: { draggable: t(M.instructions) },
 				}}
 			>
-				<div className="grid gap-4 md:grid-cols-3">
+				<div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-12">
 					<KeysPane columns={columns} extraKeys={extraKeys} used={used} />
 					<FieldsPane
 						heading={t(M.fieldsHeading, { collection: collectionLabel })}
@@ -267,7 +267,7 @@ export function MapStep() {
 					/>
 					<aside
 						aria-label={t(M.detailHeading)}
-						className="space-y-4 rounded-lg border border-kumo-line p-3"
+						className="min-w-0 space-y-4 rounded-lg border border-kumo-line p-3 xl:col-span-4"
 					>
 						{selected === NEW_FIELD ? (
 							<NewFieldPicker columns={columns} onPick={propose} />

@@ -511,6 +511,24 @@ describe("MapStep", () => {
 		expect(within(row("field:price")).getByText("Drop a key")).toBeVisible();
 	});
 
+	it("puts the panes side by side only where they fit, and keeps field labels and key names whole", async () => {
+		routes();
+		renderMap(MAPPED);
+		await fieldsLoaded();
+		// One column below lg, keys and fields from lg, all three panes from xl (Task 16 polish:
+		// at md the three panes crushed the field labels to one letter).
+		const grid = keysPane().parentElement as HTMLElement;
+		expect(grid).toHaveClass("grid", "lg:grid-cols-2", "xl:grid-cols-12");
+		expect(grid).not.toHaveClass("md:grid-cols-3");
+		for (const pane of grid.children) expect(pane).toHaveClass("min-w-0", "xl:col-span-4");
+		// The label never shrinks below its text (up to 12rem): the chip and badges wrap instead.
+		const label = within(row("field:title")).getByText("Title");
+		expect(label).toHaveClass("max-w-48", "shrink-0", "truncate");
+		expect(label.closest("button")).toHaveClass("shrink-0", "grow");
+		// A key's name goes first; its sample value takes what is left.
+		expect(within(keysPane()).getByText("Name")).toHaveClass("max-w-full", "shrink-0", "truncate");
+	});
+
 	it("dims used keys but still lets one key feed a second field", async () => {
 		routes();
 		const { user } = renderMap(MAPPED);
