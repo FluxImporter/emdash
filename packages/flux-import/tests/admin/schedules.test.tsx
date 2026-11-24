@@ -289,6 +289,8 @@ describe("the Schedules tab", () => {
 		const { user } = renderTab();
 		await screen.findByText("No schedules yet.");
 		const button = screen.getByRole("button", { name: "New schedule" });
+		// At the right, as the other tabs place their action (Task 16).
+		expect(button.parentElement).toHaveClass("justify-end");
 		await user.click(button);
 		await screen.findByRole("dialog", { name: "New schedule" });
 		await user.keyboard("{Escape}");

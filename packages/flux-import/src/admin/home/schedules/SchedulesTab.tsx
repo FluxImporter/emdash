@@ -196,7 +196,13 @@ export function SchedulesTab() {
 			) : fence.data === undefined ? null : (
 				<FenceBanner fence={fence.data} />
 			)}
-			<div className="flex flex-wrap items-center gap-3">
+			{/* The tab's action at the right, as in Templates and Sources; why it is off, before it. */}
+			<div className="flex flex-wrap items-center justify-end gap-3">
+				{full ? (
+					<p id={limitId} className="text-sm text-kumo-subtle">
+						{t(M.atLimit, { max: MAX_SCHEDULES })}
+					</p>
+				) : null}
 				<Button
 					variant="primary"
 					disabled={full}
@@ -205,11 +211,6 @@ export function SchedulesTab() {
 				>
 					{t(M.newSchedule)}
 				</Button>
-				{full ? (
-					<p id={limitId} className="text-sm text-kumo-subtle">
-						{t(M.atLimit, { max: MAX_SCHEDULES })}
-					</p>
-				) : null}
 			</div>
 			{failed === null ? null : (
 				<ActionError
