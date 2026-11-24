@@ -253,6 +253,30 @@ describe("RollbackDialog", () => {
 		expect(calls.some((c) => c.route === "jobs/resume")).toBe(false);
 	});
 
+	it("offers Continue the rollback when the dry rollback is refused because another tab started it (Review Focus 2)", async () => {
+		const { calls } = mockRoutes({
+			"jobs/rollback": () =>
+				fail("INVALID_TRANSITION", "The job was already rolled back (rollback job R9)", 409),
+			"jobs/get": (b) =>
+				(b as { id: string }).id === "J1"
+					? job({ id: "J1", dryRun: false, status: "completed", rolledBackBy: "R9" })
+					: rollbackJob({ id: "R9", status: "running" }),
+			"jobs/next": () =>
+				rollbackJob({ id: "R9", status: "completed", counters: counters({ reverted: 4 }) }),
+		});
+		const { user } = renderDialog(START);
+		expect(await screen.findByText("This import is already being rolled back.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Continue the rollback" }));
+		await waitFor(() => expect(announced()).toContain("Rollback finished."));
+		expect(calls.map((c) => [c.route, c.body])).toEqual([
+			["jobs/rollback", { id: "J1", dryRun: true }],
+			["jobs/get", { id: "J1" }],
+			["jobs/get", { id: "R9" }],
+			["jobs/next", { id: "R9" }],
+		]);
+	});
+
 	it("resumes the other tab's rollback first when it was paused", async () => {
 		const { calls } = mockRoutes({
 			"jobs/rollback": (b) =>

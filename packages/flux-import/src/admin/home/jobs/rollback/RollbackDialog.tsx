@@ -117,45 +117,57 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 	const driveId = state.phase === "checking" || state.phase === "rolling" ? state.driveId : null;
 	const driver = useJobDriver(driveId, api.next);
 
-	const run = useCallback(async (step: Step) => {
+	/**
+	 * `jobs/rollback`, or null once the dialog shows the race: a second tab is refused, on its dry
+	 * call as on its real one, when the first tab's rollback already exists (Review Focus 2).
+	 */
+	const rollbackOrRace = useCallback(async (jobId: string, dryRun: boolean) => {
 		try {
-			switch (step.kind) {
-				case "dry": {
-					dispatch({ type: "checking", jobId: step.jobId, driveId: null });
-					const dry = await api.rollback({ id: step.jobId, dryRun: true });
-					dispatch({ type: "checking", jobId: step.jobId, driveId: dry.id });
-					return;
-				}
-				case "real": {
-					dispatch({ type: "rolling", driveId: null, total: step.total });
-					try {
-						const real = await api.rollback({ id: step.jobId, dryRun: false });
-						dispatch({ type: "rolling", driveId: real.id, total: step.total });
-					} catch (error) {
-						const rollbackId = await raceOf(step.jobId, error);
-						if (rollbackId === null) throw error;
-						dispatch({ type: "raced", rollbackId });
-					}
-					return;
-				}
-				case "resume": {
-					dispatch({ type: "rolling", driveId: null, total: step.total });
-					await api.resume({ id: step.id });
-					dispatch({ type: "rolling", driveId: step.id, total: step.total });
-					return;
-				}
-				case "find": {
-					dispatch({ type: "rolling", driveId: null, total: null });
-					const found = await api.getJob({ id: step.id });
-					if (stopped(found.status)) await api.resume({ id: step.id });
-					dispatch({ type: "rolling", driveId: step.id, total: null });
-					return;
-				}
-			}
+			return await api.rollback({ id: jobId, dryRun });
 		} catch (error) {
-			dispatch({ type: "failed", problem: { kind: "request", error }, retry: step });
+			const rollbackId = await raceOf(jobId, error);
+			if (rollbackId === null) throw error;
+			dispatch({ type: "raced", rollbackId });
+			return null;
 		}
 	}, []);
+
+	const run = useCallback(
+		async (step: Step) => {
+			try {
+				switch (step.kind) {
+					case "dry": {
+						dispatch({ type: "checking", jobId: step.jobId, driveId: null });
+						const dry = await rollbackOrRace(step.jobId, true);
+						if (dry !== null) dispatch({ type: "checking", jobId: step.jobId, driveId: dry.id });
+						return;
+					}
+					case "real": {
+						dispatch({ type: "rolling", driveId: null, total: step.total });
+						const real = await rollbackOrRace(step.jobId, false);
+						if (real !== null) dispatch({ type: "rolling", driveId: real.id, total: step.total });
+						return;
+					}
+					case "resume": {
+						dispatch({ type: "rolling", driveId: null, total: step.total });
+						await api.resume({ id: step.id });
+						dispatch({ type: "rolling", driveId: step.id, total: step.total });
+						return;
+					}
+					case "find": {
+						dispatch({ type: "rolling", driveId: null, total: null });
+						const found = await api.getJob({ id: step.id });
+						if (stopped(found.status)) await api.resume({ id: step.id });
+						dispatch({ type: "rolling", driveId: step.id, total: null });
+						return;
+					}
+				}
+			} catch (error) {
+				dispatch({ type: "failed", problem: { kind: "request", error }, retry: step });
+			}
+		},
+		[rollbackOrRace],
+	);
 
 	// Once per dialog, also when an effect runs twice (React's strict mode).
 	const opened = useRef(false);
