@@ -4,7 +4,7 @@ import { type ReactNode, useState } from "react";
 import type { RecordError, RecordRow, RecordStatus } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { isRetryable, redact } from "../../api-error.js";
-import { describeError, describeWarning, WARNING_MESSAGES } from "../../errors.js";
+import { describeError, describeRecordWarning } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M } from "./messages.js";
 
@@ -69,10 +69,11 @@ function actionOf(row: Pick<RecordRow, "status" | "action">): Msg {
 	}
 }
 
-/** A row warning's sentence, when the wizard has one for its code; others are not shown. */
-function warningOf(w: RecordError): { msg: Msg; values: Values } | null {
-	if (!Object.hasOwn(WARNING_MESSAGES, w.code)) return null;
-	return describeWarning({ code: w.code, ...(w.field === undefined ? {} : { fields: [w.field] }) });
+/** A row warning as text: its field, its sentence, and the engine's specifics when it has them. */
+function warningText(t: (msg: Msg, values?: Values) => string, w: RecordError): string {
+	const { msg, detail } = describeRecordWarning(w);
+	const sentence = detail === undefined ? t(msg) : `${t(msg)} ${detail}`;
+	return w.field === undefined ? sentence : t(M.fieldError, { field: w.field, message: sentence });
 }
 
 /** A value as text, cut to `VALUE_MAX` characters; null when it is empty. */
@@ -154,7 +155,6 @@ export function RecordsTable(p: { jobId: string }) {
 					</Table.Header>
 					<Table.Body>
 						{query.data.items.map((row) => {
-							const warnings = (row.warnings ?? []).flatMap((w) => warningOf(w) ?? []);
 							return (
 								<Table.Row key={row.seq}>
 									<Table.Cell className="break-all">{row.sourceKey ?? t(M.noKey)}</Table.Cell>
@@ -182,9 +182,9 @@ export function RecordsTable(p: { jobId: string }) {
 												</div>
 											);
 										})}
-										{warnings.map((w, i) => (
+										{(row.warnings ?? []).map((w, i) => (
 											// biome-ignore lint/suspicious/noArrayIndexKey: a row's warnings never reorder.
-											<div key={`w${i}`}>{t(w.msg, w.values)}</div>
+											<div key={`w${i}`}>{warningText(t, w)}</div>
 										))}
 									</Table.Cell>
 								</Table.Row>

@@ -205,7 +205,14 @@ describe("PreviewStep", () => {
 						sourceKey: "a2",
 						action: "update",
 						changes: [{ field: "excerpt", before: "Old", after: long }],
-						warnings: [{ field: "published", code: "date_format_ambiguous", message: "ambiguous" }],
+						warnings: [
+							{ field: "title", code: "field_edited", message: "Not updated: …" },
+							{
+								field: "content",
+								code: "image_dropped",
+								message: "Left out 1 image inside <pre> or <figcaption>, which hold only text",
+							},
+						],
 					}),
 					row({
 						seq: 3,
@@ -216,8 +223,8 @@ describe("PreviewStep", () => {
 							{ code: "source_missing", message: `Upload ${UPLOAD_ID} not found` },
 						],
 					}),
-					// The missing phase's rows (engine missing.ts): planned removals, and one left alone
-					// with a warning no Msg names, which is not shown.
+					// The missing phase's rows (engine missing.ts): planned removals, and one left alone,
+					// which says why.
 					row({
 						seq: 4,
 						sourceKey: "gone",
@@ -270,7 +277,8 @@ describe("PreviewStep", () => {
 			"a2",
 			"Update",
 			`excerpt: Old → ${"x".repeat(119)}…`,
-			"The date format is unclear for these fields; check it: published.",
+			"title: Not updated: the value was changed outside the import since it last wrote it." +
+				"content: Some images were left out. Left out 1 image inside <pre> or <figcaption>, which hold only text",
 		]);
 		expect(cells[2]).toEqual([
 			"a3",
@@ -280,7 +288,12 @@ describe("PreviewStep", () => {
 		]);
 		expect(cells[3]).toEqual(["gone", "Missing → Unpublish", "status: published → draft", ""]);
 		expect(cells[4]).toEqual(["old", "Missing → Trash", "status: published → trashed", ""]);
-		expect(cells[5]).toEqual(["kept", "Unchanged", "", ""]);
+		expect(cells[5]).toEqual([
+			"kept",
+			"Unchanged",
+			"",
+			"Left alone: the entry changed after the import last wrote it.",
+		]);
 		expect(cells[6]).toEqual(["(no key)", "Conflict", "", ""]);
 		expect(cells[7]).toEqual(["odd", "Other", "", ""]);
 		expect(screen.queryByText("Not applied")).toBeNull();

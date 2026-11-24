@@ -386,6 +386,147 @@ export const WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
 	},
 };
 
+/**
+ * The warnings an import job writes on a record row (`RecordRow.warnings`), from the engine:
+ * the record rules (`rules.ts`: `exists`, `not_found`, `field_edited`, `not_scheduled`), a
+ * translation (`batch.ts`), Portable Text and its images (`portable-text.ts`,
+ * `portable-text-images.ts`, `template.ts`), the missing phase (`missing.ts`'s
+ * `MISSING_MESSAGES`) and the cap (`types.ts`'s `warnings_truncated`).
+ */
+export const RECORD_WARNING_CODES: readonly string[] = [
+	"exists",
+	"not_found",
+	"field_edited",
+	"not_scheduled",
+	"translation_source_not_found",
+	"translation_not_linked",
+	"unknown_markup",
+	"removed_markup",
+	"link_dropped",
+	"alt_truncated",
+	"image_dropped",
+	"missing_gone",
+	"missing_edited",
+	"missing_pending",
+	"missing_not_live",
+	"missing_has_translations",
+	"missing_over_count",
+	"warnings_truncated",
+];
+
+/** One sentence per `RECORD_WARNING_CODES`, plus `other` for a code the wizard does not know. */
+export const RECORD_WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
+	exists: {
+		id: "flux-import.record-warning.exists",
+		message: "Skipped: the entry exists, and this import only creates entries.",
+	},
+	not_found: {
+		id: "flux-import.record-warning.not-found",
+		message: "Skipped: no entry has this key, and this import only updates entries.",
+	},
+	field_edited: {
+		id: "flux-import.record-warning.field-edited",
+		message: "Not updated: the value was changed outside the import since it last wrote it.",
+	},
+	not_scheduled: {
+		id: "flux-import.record-warning.not-scheduled",
+		message:
+			"Not scheduled: the update goes live at once (the collection keeps no revisions, or only terms and bylines change).",
+	},
+	translation_source_not_found: {
+		id: "flux-import.record-warning.translation-source-not-found",
+		message: "The entry this record translates was not found, so it is updated without it.",
+	},
+	translation_not_linked: {
+		id: "flux-import.record-warning.translation-not-linked",
+		message:
+			"The entry is not linked as a translation, and an existing entry cannot be linked. Trash it so the next run creates it as one.",
+	},
+	unknown_markup: {
+		id: "flux-import.record-warning.unknown-markup",
+		message: "Some markup was not recognised; its text was kept.",
+	},
+	removed_markup: {
+		id: "flux-import.record-warning.removed-markup",
+		message: "Some markup was removed.",
+	},
+	link_dropped: {
+		id: "flux-import.record-warning.link-dropped",
+		message: "Some links were kept as text, without their address.",
+	},
+	alt_truncated: {
+		id: "flux-import.record-warning.alt-truncated",
+		message: "Some image alt text was cut to the longest length allowed.",
+	},
+	image_dropped: {
+		id: "flux-import.record-warning.image-dropped",
+		message: "Some images were left out.",
+	},
+	missing_gone: {
+		id: "flux-import.record-warning.missing-gone",
+		message: "Nothing to do: the entry no longer exists or is in the trash.",
+	},
+	missing_edited: {
+		id: "flux-import.record-warning.missing-edited",
+		message: "Left alone: the entry changed after the import last wrote it.",
+	},
+	missing_pending: {
+		id: "flux-import.record-warning.missing-pending",
+		message: "Left alone: the entry has a draft or a schedule that is not live.",
+	},
+	missing_not_live: {
+		id: "flux-import.record-warning.missing-not-live",
+		message: "Nothing to do: the entry is not published.",
+	},
+	missing_has_translations: {
+		id: "flux-import.record-warning.missing-has-translations",
+		message: "Left alone: the entry has translations that are still active.",
+	},
+	missing_over_count: {
+		id: "flux-import.record-warning.missing-over-count",
+		message:
+			"Left alone: more entries were missing than when the import counted them. Run the import again.",
+	},
+	warnings_truncated: {
+		id: "flux-import.record-warning.warnings-truncated",
+		message: "More warnings were left out.",
+	},
+	other: {
+		id: "flux-import.record-warning.other",
+		message: "The import noted something about this record.",
+	},
+};
+
+/**
+ * Record warnings whose engine message carries specifics the sentence cannot (which tags, how
+ * many, which URL or source key): the message is shown, redacted, beside the sentence.
+ */
+const RECORD_WARNING_DETAIL: ReadonlySet<string> = new Set([
+	"translation_source_not_found",
+	"translation_not_linked",
+	"unknown_markup",
+	"removed_markup",
+	"link_dropped",
+	"alt_truncated",
+	"image_dropped",
+	"warnings_truncated",
+]);
+
+/**
+ * A record row's warning, for Preview's records: its sentence, and the engine's message (never
+ * with an upload ID) where it holds specifics, or for a code the wizard does not know.
+ */
+export function describeRecordWarning(w: { code: string; message: string }): {
+	msg: Msg;
+	detail?: string;
+} {
+	const msg = own(RECORD_WARNING_MESSAGES, w.code);
+	if (msg === undefined || w.code === "other") {
+		return { msg: RECORD_WARNING_MESSAGES.other!, detail: redact(w.message) };
+	}
+	return RECORD_WARNING_DETAIL.has(w.code) ? { msg, detail: redact(w.message) } : { msg };
+}
+
 /** Job errors the Run step names (preflight F15); any other code shows `unknown`. */
 export const JOB_ERROR_MESSAGES = {
 	source_missing: {

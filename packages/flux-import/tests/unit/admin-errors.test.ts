@@ -5,13 +5,17 @@ import * as errors from "../../src/admin/errors.js";
 import {
 	describeError,
 	describeJobError,
+	describeRecordWarning,
 	describeWarning,
 	ERROR_MESSAGES,
+	RECORD_WARNING_CODES,
+	RECORD_WARNING_MESSAGES,
 	SUGGEST_WARNING_CODES,
 	WARNING_MESSAGES,
 	WIZARD_ERROR_CODES,
 } from "../../src/admin/errors.js";
 import { interpolate } from "../../src/admin/i18n.js";
+import { MISSING_MESSAGES } from "../../src/engine/missing.js";
 
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -252,6 +256,62 @@ describe("errors.ts's message IDs (Ruling 2)", () => {
 			}
 		}
 		expect(problems).toEqual([]);
+	});
+});
+
+describe("describeRecordWarning (a dry run's per-record warnings)", () => {
+	it("has a sentence for every warning code an import job writes on a record", () => {
+		for (const c of RECORD_WARNING_CODES) {
+			expect(RECORD_WARNING_MESSAGES[c]?.message, c).toMatch(/\.$/);
+		}
+		expect(Object.keys(RECORD_WARNING_MESSAGES).sort()).toEqual(
+			[...RECORD_WARNING_CODES, "other"].sort(),
+		);
+		expect(new Set(RECORD_WARNING_CODES).size).toBe(RECORD_WARNING_CODES.length);
+	});
+
+	it("covers the missing phase's codes, read from the engine", () => {
+		for (const c of Object.keys(MISSING_MESSAGES)) expect(RECORD_WARNING_CODES, c).toContain(c);
+		expect(RECORD_WARNING_CODES).toEqual(
+			expect.arrayContaining([
+				"exists",
+				"not_found",
+				"field_edited",
+				"not_scheduled",
+				"translation_source_not_found",
+				"translation_not_linked",
+				"unknown_markup",
+				"removed_markup",
+				"link_dropped",
+				"alt_truncated",
+				"image_dropped",
+				"warnings_truncated",
+			]),
+		);
+		expect(RECORD_WARNING_CODES).toHaveLength(18);
+	});
+
+	it("says why an entry was left alone, without the engine's message for a fixed one", () => {
+		const d = describeRecordWarning({ code: "missing_edited", message: "Left alone: …" });
+		expect(d).toEqual({ msg: RECORD_WARNING_MESSAGES.missing_edited });
+	});
+
+	it("keeps the engine's specifics, redacted, where its message carries them", () => {
+		const d = describeRecordWarning({
+			field: "body",
+			code: "image_dropped",
+			message: `invalid_media_url: ${UPLOAD_ID}.png: not a URL`,
+		});
+		expect(d.msg).toBe(RECORD_WARNING_MESSAGES.image_dropped);
+		expect(d.detail).toBe("invalid_media_url: the uploaded file.png: not a URL");
+	});
+
+	it("shows an unknown code's message, redacted, under a neutral sentence", () => {
+		const d = describeRecordWarning({ code: "brand_new", message: `About ${UPLOAD_ID}` });
+		expect(d).toEqual({ msg: RECORD_WARNING_MESSAGES.other, detail: "About the uploaded file" });
+		expect(describeRecordWarning({ code: "toString", message: "x" }).msg).toBe(
+			RECORD_WARNING_MESSAGES.other,
+		);
 	});
 });
 
