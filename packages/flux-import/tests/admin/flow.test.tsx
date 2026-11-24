@@ -155,6 +155,22 @@ function server(opts: { templates?: (typeof SAVED_TEMPLATE)[] } = {}) {
 		"sources/list": () => ({ items: [], hasMore: false }),
 		"templates/list": () => ({ items: templates.map(({ template, ...s }) => s), hasMore: false }),
 		"templates/get": (body) => templates.find((t) => t.id === (body as { id: string }).id),
+		"templates/create": (body) => {
+			const { name, template } = body as { name: string; template: unknown };
+			const parsed = templateSchema.parse(template);
+			const saved = {
+				...SAVED_TEMPLATE,
+				id: `01JZ000000000000000000TPL${templates.length + 2}`,
+				name,
+				template: parsed,
+				revision: 1,
+			};
+			templates.push(saved);
+			return {
+				template: { ...saved, owner: parsed.rules?.owner },
+				check: { problems: [], warnings: [] },
+			};
+		},
 		upload: (body) => ({ uploadId: UPLOAD_ID, bytes: (body as File).size, sha256: "0".repeat(64) }),
 		"sources/sample": () => sampleCsv(KEYS, ROWS),
 		"GET manifest": () => MANIFEST,
@@ -497,6 +513,33 @@ describe("the import wizard, end to end", () => {
 		await upload(user);
 		await user.click(next());
 		await heading("Target");
+	});
+
+	it("lists a template saved on Run in the picker of the next import (final review 3)", async () => {
+		mockRoutes(server());
+		const { user, queryClient } = renderPage();
+		// The host's QueryClient keeps reads fresh for a minute, so only an invalidation refetches.
+		queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+		await upload(user);
+		// Read before the save: there is none yet.
+		expect(await screen.findByText("No saved templates")).toBeVisible();
+		await user.click(next());
+		await target(user);
+		await mapped();
+		await user.click(next());
+		await heading("Options");
+		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
+		await user.type(screen.getByRole("textbox", { name: "Template name" }), "Weekly posts");
+		await user.click(next());
+		await previewed();
+		await run(user);
+		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		await upload(user);
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		await waitFor(() => expect(picker).toBeEnabled());
+		await user.click(picker);
+		const listbox = await screen.findByRole("listbox");
+		expect(await within(listbox).findByRole("option", { name: /Weekly posts/ })).toBeVisible();
 	});
 
 	it("starts from a saved template, runs it unedited by id and revision", async () => {

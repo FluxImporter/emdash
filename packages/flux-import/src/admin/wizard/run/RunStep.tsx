@@ -1,5 +1,6 @@
 import { Banner, Button, Dialog, LinkButton, Loader, Meter } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
@@ -7,6 +8,7 @@ import { ApiError, isRetryable } from "../../api-error.js";
 import { describeError, describeJobError, FINAL_JOB_ERRORS } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
+import { queryKeys } from "../../queries.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
 import { useWizard } from "../context.js";
 import { PublishingLine } from "../Publishing.js";
@@ -69,6 +71,7 @@ export function RunStep() {
 	const t = useT();
 	const { i18n } = useLingui();
 	const { state, dispatch, once, restart } = useWizard();
+	const queryClient = useQueryClient();
 	const latest = useRef(state);
 	latest.current = state;
 	const runId = state.run?.jobId ?? null;
@@ -101,6 +104,8 @@ export function RunStep() {
 					name: save.name,
 					template: toTemplate(s, ownerOf(s)),
 				});
+				// The picker of a next import lists it (final review 3).
+				void queryClient.invalidateQueries({ queryKey: queryKeys.allTemplates });
 				const saved: WizardAction = {
 					type: "templateSaved",
 					id: reply.template.id,
@@ -118,7 +123,7 @@ export function RunStep() {
 			setJob(created);
 			setDriveId(created.id);
 		}).catch((error: unknown) => setProblem({ error, retry: begin }));
-	}, [once, dispatch]);
+	}, [once, dispatch, queryClient]);
 
 	const load = useCallback((id: string) => {
 		setProblem(null);

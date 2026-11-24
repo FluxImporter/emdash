@@ -1,10 +1,11 @@
 import { Banner, Checkbox, Collapsible, DatePicker, Input, Radio, Select } from "@cloudflare/kumo";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ChangeEvent, useEffect, useId, useMemo, useState } from "react";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { BATCH_SIZE_MAX, MAX_UPDATE_FIELDS, OWNER_PATTERN } from "../../limits.js";
-import { useAllTemplates, useFields, useSite } from "../../queries.js";
+import { queryKeys, useAllTemplates, useFields, useSite } from "../../queries.js";
 import { useWizard } from "../context.js";
 import { StepFooter } from "../StepFooter.js";
 import {
@@ -254,6 +255,7 @@ export function OptionsStep() {
 	const protectHelpId = useId();
 	const saveHelpId = useId();
 
+	const queryClient = useQueryClient();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<unknown>(null);
 	const failure = error === null ? null : describeError(error);
@@ -267,6 +269,8 @@ export function OptionsStep() {
 					revision: base.revision,
 					template: toTemplate(state, ownerOf(state)),
 				});
+				// The saved templates hold its new revision (final review 3).
+				void queryClient.invalidateQueries({ queryKey: queryKeys.allTemplates });
 				dispatch({
 					type: "templateSaved",
 					id: reply.template.id,

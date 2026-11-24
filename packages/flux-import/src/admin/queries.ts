@@ -15,6 +15,8 @@ export const queryKeys = {
 	credentials: ["flux-import", "credentials"],
 	sources: ["flux-import", "sources"],
 	templates: (collection?: string) => ["flux-import", "templates", collection ?? null],
+	/** Every `templates` key, whatever its collection: what a template save makes stale. */
+	allTemplates: ["flux-import", "templates"],
 } as const;
 
 /**

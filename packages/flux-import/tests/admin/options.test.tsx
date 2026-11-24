@@ -730,6 +730,31 @@ describe("the Options step", () => {
 		expect(isEdited(seen.state)).toBe(false);
 	});
 
+	it("reads the saved templates again once the changes are saved (final review 3)", async () => {
+		const { user, seen, calls, queryClient } = renderOptions(editedBase(), {
+			routes: {
+				"templates/update": (body) => {
+					const b = body as { id: string; revision: number; template: unknown };
+					return {
+						template: {
+							...summary({ id: b.id, name: "Products feed", revision: b.revision + 1 }),
+							template: templateSchema.parse(b.template),
+						},
+						check: { problems: [], warnings: [] },
+					};
+				},
+			},
+		});
+		queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+		const lists = () => calls.filter((c) => c.route === "templates/list").length;
+		// Every name and the collection's owners.
+		await waitFor(() => expect(lists()).toBe(2));
+		await user.click(screen.getByRole("radio", { name: "Save the changes to Products feed" }));
+		await user.click(next());
+		await waitFor(() => expect(seen.state.step).toBe("preview"));
+		await waitFor(() => expect(lists()).toBe(4));
+	});
+
 	it("stays on Options with the sentence when the template changed meanwhile", async () => {
 		const { user, seen } = renderOptions(editedBase(), {
 			routes: {
