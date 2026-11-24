@@ -1341,4 +1341,101 @@ describe("workerd parity (D1, R2)", () => {
 			await feeds.stop();
 		}
 	});
+	it("lists, clears, fences and splits M7b's additions on D1 and R2", async () => {
+		await client.createProducts("cf_m7b");
+		const create = async (csv: string, dryRun: boolean) => {
+			const { uploadId } = await client.upload(csv);
+			const job = await client.plugin("jobs/create", {
+				uploadId,
+				template: template("cf_m7b"),
+				dryRun,
+				budgetMs: 20_000,
+			});
+			return { job, uploadId };
+		};
+		const jobUpdate = (id: string, at: string) =>
+			d1(
+				`UPDATE _plugin_storage SET data = json_set(data, '$.updatedAt', '${at}') WHERE plugin_id = 'flux-import' AND collection = 'jobs' AND id = '${id}'`,
+			);
+		type Items = { items: { id: string; dryRun: boolean; kind: string }[]; hasMore: boolean };
+		const summaries = (dryRun: boolean) => client.plugin<Items>("jobs/summaries", { dryRun });
+		// A job whose file is gone cannot be created over again: the read answers an error.
+		const fileGone = async (uploadId: string) => {
+			try {
+				await client.plugin("jobs/create", {
+					uploadId,
+					template: template("cf_m7b"),
+					dryRun: true,
+				});
+				return false;
+			} catch {
+				return true;
+			}
+		};
+
+		// Summaries without dry runs.
+		const real = await create(productsCsv(1), false);
+		const aged = await create(productsCsv(2), true);
+		const fresh = await create(productsCsv(2), true);
+		await client.runToEnd(aged.job.id);
+		await client.runToEnd(fresh.job.id);
+		const realList = await summaries(false);
+		expect(realList.items.map((j) => j.id)).toContain(real.job.id);
+		expect(realList.items.every((j) => !j.dryRun)).toBe(true);
+		expect((await summaries(true)).items.map((j) => j.id)).toEqual(
+			expect.arrayContaining([aged.job.id, fresh.job.id]),
+		);
+
+		// Clearing: the aged dry run loses row and file, the fresh one only its row.
+		jobUpdate(aged.job.id, new Date(Date.now() - 2 * 3_600_000).toISOString());
+		let more = true;
+		let cursor: string | undefined;
+		for (let i = 0; more && i < 50; i++) {
+			const reply = await client.plugin<{ more: boolean; cursor?: string }>(
+				"jobs/clear-dry-runs",
+				cursor ? { cursor } : {},
+			);
+			more = reply.more;
+			cursor = reply.cursor;
+		}
+		const left = (await summaries(true)).items.map((j) => j.id);
+		expect(left).not.toContain(aged.job.id);
+		expect(left).not.toContain(fresh.job.id);
+		expect((await summaries(false)).items.map((j) => j.id)).toContain(real.job.id);
+		expect(await fileGone(aged.uploadId)).toBe(true);
+		expect(await fileGone(fresh.uploadId)).toBe(false);
+
+		// The fence, with a running export row (never an import row, F3).
+		expect(await client.plugin("schedules/fence", {})).toEqual({ fence: "clear" });
+		d1(
+			"INSERT INTO _emdash_transfer_operations (id, kind, state, staging_secret, created_by) VALUES ('cf-m7b-fence', 'export', 'running', 'probe-secret', 'admin')",
+		);
+		try {
+			expect(await client.plugin("schedules/fence", {})).toEqual({ fence: "export" });
+		} finally {
+			d1("DELETE FROM _emdash_transfer_operations WHERE id = 'cf-m7b-fence'");
+		}
+		expect(await client.plugin("schedules/fence", {})).toEqual({ fence: "clear" });
+
+		// A dry rollback's split counts: 2 created, 1 updated.
+		await importCsv("cf_m7b", productsCsv(1));
+		const second = await importCsv(
+			"cf_m7b",
+			productsCsv(3, (i) => (i === 0 ? "99" : `${i}.5`)),
+		);
+		expect(second.counters).toMatchObject({ created: 2, updated: 1 });
+		const rollback = await client.plugin("jobs/rollback", {
+			id: second.id,
+			dryRun: true,
+			budgetMs: 20_000,
+		});
+		const done = await client.runToEnd(rollback.id);
+		expect(done).toMatchObject({
+			status: "completed",
+			dryRun: true,
+			counters: { reverted: 3 },
+			undo: { deleted: 2, restored: 1, recovered: 0 },
+		});
+	});
+
 });
