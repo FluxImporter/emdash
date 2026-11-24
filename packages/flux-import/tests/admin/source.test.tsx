@@ -42,9 +42,9 @@ function readState(): {
 	return JSON.parse(screen.getByTestId("state").textContent ?? "null");
 }
 
-function renderSource() {
+function renderSource(template?: string) {
 	return renderAdmin(
-		<WizardProvider>
+		<WizardProvider {...(template === undefined ? {} : { template })}>
 			<SourceStep />
 			<StateView />
 		</WizardProvider>,
@@ -667,19 +667,16 @@ describe("the Source step", () => {
 	});
 
 	it("preselects the template named in ?template= and loads it once a file is sampled", async () => {
-		history.replaceState(null, "", `?template=${SAVED_TEMPLATE.id}&step=source`);
 		const { calls } = routes({
 			"templates/list": () => ({ items: [SUMMARY], hasMore: false }),
 			"templates/get": () => SAVED_TEMPLATE,
 		});
-		const { user, unmount } = renderSource();
+		const { user } = renderSource(SAVED_TEMPLATE.id);
 		const picker = await screen.findByRole("combobox", { name: "Saved template" });
 		expect(picker).toHaveTextContent(/Posts from CSV/);
 		expect(picker).toBeDisabled();
 		expect(screen.getByText("Choose the data, then use the template.")).toBeVisible();
 		expect(screen.queryByText("Choose the file to import first")).toBeNull();
-		// Read once: the parameter leaves the URL, so a later mount does not preselect again.
-		expect(window.location.search).toBe("?step=source");
 		chooseFile("posts.csv");
 		await waitFor(() => expect(picker).toBeEnabled());
 		await user.click(screen.getByRole("button", { name: "Load template" }));
@@ -687,23 +684,15 @@ describe("the Source step", () => {
 		expect(calls.find((c) => c.route === "templates/get")?.body).toEqual({
 			id: SAVED_TEMPLATE.id,
 		});
-		unmount();
-		renderSource();
-		const again = await screen.findByRole("combobox", { name: "Saved template" });
-		expect(again).not.toHaveTextContent(/Posts from CSV/);
-		expect(screen.getByRole("button", { name: "Load template" })).toBeDisabled();
-		history.replaceState(null, "", "/");
 	});
 
 	it("ignores a ?template= that is not in the list", async () => {
-		history.replaceState(null, "", "?template=NOPE");
 		routes({ "templates/list": () => ({ items: [SUMMARY], hasMore: false }) });
-		renderSource();
+		renderSource("NOPE");
 		const picker = await screen.findByRole("combobox", { name: "Saved template" });
 		expect(picker).not.toHaveTextContent(/Posts from CSV/);
 		expect(screen.getByText("Choose the file to import first")).toBeVisible();
 		expect(screen.queryByText("Choose the data, then use the template.")).toBeNull();
-		history.replaceState(null, "", "/");
 	});
 
 	/** Picks the saved template in the picker and loads it. */

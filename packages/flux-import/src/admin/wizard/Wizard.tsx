@@ -95,13 +95,19 @@ function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void
  */
 function OpenedWizard(props: { steps: StepComponents }) {
 	const [initial] = useState(() => openingState(window.location.search));
+	// `?template=` is read at page load, handed to the first Source once and dropped from the URL,
+	// wherever the page opens: a restart or a later return to Source does not preselect it (F13).
+	const [template] = useState(() => readUrl(window.location.search).template);
+	useEffect(() => {
+		if (template !== null) writeUrl({ template: null });
+	}, [template]);
 	const [round, setRound] = useState(0);
 	const restart = useCallback(() => {
 		writeUrl({ step: "source", job: null });
 		setRound((n) => n + 1);
 	}, []);
 	return (
-		<WizardProvider key={round} {...(round === 0 ? { initial } : {})} restart={restart}>
+		<WizardProvider key={round} {...(round === 0 ? { initial, template } : {})} restart={restart}>
 			<Shell steps={props.steps} focusHeading={round > 0} />
 		</WizardProvider>
 	);

@@ -7,7 +7,6 @@ import { SAMPLE_MAX } from "../../limits.js";
 import { useAllTemplates } from "../../queries.js";
 import { useWizard } from "../context.js";
 import { sampleColumns } from "../sample.js";
-import { readUrl, writeUrl } from "../url.js";
 import { M } from "./messages.js";
 import type { Described, TabProps } from "./SourceStep.js";
 
@@ -24,15 +23,15 @@ function describeLoad(e: unknown): Described {
  */
 export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "busy" | "run">) {
 	const t = useT();
-	const { state, dispatch } = useWizard();
 	const templates = useAllTemplates();
-	// `?template=` is read once, when the picker first mounts, and then dropped from the URL: a
-	// return to Source after a reset does not preselect it again (preflight F13).
-	const [fromUrl] = useState(() => readUrl(window.location.search).template);
+	const { state, dispatch, template, clearTemplate } = useWizard();
+	// The page's `?template=` (read and dropped from the URL at page load), taken once: a return to
+	// Source does not preselect it again (preflight F13).
+	const [fromUrl] = useState(template);
 	const [picked, setPicked] = useState<{ id: string | null } | null>(null);
 	useEffect(() => {
-		if (fromUrl !== null) writeUrl({ template: null });
-	}, [fromUrl]);
+		if (fromUrl !== null) clearTemplate();
+	}, [fromUrl, clearTemplate]);
 	const preselected = picked === null && templates.data?.some((s) => s.id === fromUrl) === true;
 	const id = picked !== null ? picked.id : preselected ? fromUrl : null;
 	const setId = (v: string | null) => setPicked({ id: v });
