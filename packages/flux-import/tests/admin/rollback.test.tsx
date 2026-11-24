@@ -15,7 +15,7 @@ const START: RollbackTarget = {
 	jobId: "J1",
 	name: "Products feed",
 	when: "today 10:14",
-	scheduleName: null,
+	schedule: null,
 };
 
 const counters = (over: Partial<Counters> = {}): Counters => ({
@@ -212,8 +212,15 @@ describe("RollbackDialog", () => {
 
 	it("says a scheduled job's schedule will be paused", async () => {
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": nextScript });
-		renderDialog({ ...START, scheduleName: "Nightly" });
+		renderDialog({ ...START, schedule: { name: "Nightly" } });
 		expect(await screen.findByText("Its schedule Nightly will be paused.")).toBeVisible();
+	});
+
+	it("still says the schedule will be paused when its name is unknown", async () => {
+		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": nextScript });
+		renderDialog({ ...START, schedule: { name: null } });
+		expect(await screen.findByText("Its schedule will be paused.")).toBeVisible();
+		expect(screen.queryByText(/Its schedule .+ will be paused/)).toBeNull();
 	});
 
 	it("says nothing of a schedule for a job no schedule ran", async () => {

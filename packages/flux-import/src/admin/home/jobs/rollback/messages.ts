@@ -33,6 +33,10 @@ export const M = {
 		id: "flux-import.home-rollback.schedule",
 		message: "Its schedule {name} will be paused.",
 	},
+	scheduleUnnamed: {
+		id: "flux-import.home-rollback.schedule-unnamed",
+		message: "Its schedule will be paused.",
+	},
 	rollBack: { id: "flux-import.home-rollback.roll-back", message: "Roll back" },
 	keep: { id: "flux-import.home-rollback.keep", message: "Keep the import" },
 	rolling: { id: "flux-import.home-rollback.rolling", message: "Rolling back…" },

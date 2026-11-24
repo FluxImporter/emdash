@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { JobsTab } from "../../src/admin/home/jobs/JobsTab.js";
 import { runUrl, WIZARD_URL } from "../../src/admin/home/links.js";
+import { queryKeys } from "../../src/admin/queries.js";
 import type { Counters, Job } from "../../src/engine/types.js";
 import type { JobListItem } from "../../src/plugin/summaries.js";
 import { job, UPLOAD_ID } from "./fixtures.js";
@@ -554,7 +555,29 @@ describe("JobsTab", () => {
 		await pick(user, "Products feed", "Roll back");
 		const dialog = await screen.findByRole("dialog");
 		await within(dialog).findByText("Entries the import created, to delete: 1");
-		expect(within(dialog).getByText("Its schedule for this import will be paused.")).toBeVisible();
+		expect(within(dialog).getByText("Its schedule will be paused.")).toBeVisible();
+	});
+
+	it("says nothing of a schedule that was deleted since the job ran", async () => {
+		mockRoutes(
+			routes([row({ id: "J1", origin: "schedule", scheduleId: "SC9" })], {
+				"jobs/rollback": () => rb({ id: "D1", dryRun: true }),
+				"jobs/next": () =>
+					rb({
+						id: "D1",
+						dryRun: true,
+						status: "completed",
+						counters: { ...zero, reverted: 1 },
+						undo: { deleted: 1, restored: 0, recovered: 0 },
+					}),
+			}),
+		);
+		const { user, queryClient } = show();
+		await pick(user, "Products feed", "Roll back");
+		const dialog = await screen.findByRole("dialog");
+		await within(dialog).findByText("Entries the import created, to delete: 1");
+		await waitFor(() => expect(queryClient.getQueryData(queryKeys.schedules)).toBeDefined());
+		expect(within(dialog).queryByText(/will be paused/)).toBeNull();
 	});
 
 	it("keeps the rows when Load more fails, and tries the page again", async () => {

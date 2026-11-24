@@ -17,10 +17,17 @@ import { planLines, planOf, type RollbackPlan } from "./plan.js";
 /**
  * The rollback dialog (spec "Roll back"): a dry rollback driven to its end, what it will do in
  * plain words, then the real rollback driven with progress. `continue` picks up an unfinished
- * rollback job: resumed first when paused or failed, then driven.
+ * rollback job: resumed first when paused or failed, then driven. `schedule` is the schedule a
+ * scheduled job's rollback pauses (its name null when it cannot be read), null for any other job.
  */
 export type RollbackTarget =
-	| { kind: "start"; jobId: string; name: string; when: string; scheduleName: string | null }
+	| {
+			kind: "start";
+			jobId: string;
+			name: string;
+			when: string;
+			schedule: { name: string | null } | null;
+	  }
 	| { kind: "continue"; rollbackId: string; status: JobStatus; name: string };
 
 /** A request the dialog makes, which "Try again" makes again. */
@@ -227,10 +234,7 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 				{state.phase === "checking" ? (
 					<Busy text={t(M.checking)} />
 				) : state.phase === "ready" ? (
-					<Plan
-						plan={state.plan}
-						scheduleName={target.kind === "start" ? target.scheduleName : null}
-					/>
+					<Plan plan={state.plan} schedule={target.kind === "start" ? target.schedule : null} />
 				) : state.phase === "rolling" ? (
 					<div className="space-y-3">
 						<Busy text={t(driver.phase === "waiting" ? M.waiting : M.rolling)} />
@@ -317,7 +321,7 @@ function Busy(props: { text: string }) {
 }
 
 /** What the rollback will do, line by line, and the schedule it pauses. */
-function Plan(props: { plan: RollbackPlan; scheduleName: string | null }) {
+function Plan(props: { plan: RollbackPlan; schedule: { name: string | null } | null }) {
 	const t = useT();
 	const lines = planLines(props.plan);
 	return (
@@ -331,8 +335,12 @@ function Plan(props: { plan: RollbackPlan; scheduleName: string | null }) {
 					))}
 				</ul>
 			)}
-			{props.scheduleName === null ? null : (
-				<p className="text-sm">{t(M.schedule, { name: props.scheduleName })}</p>
+			{props.schedule === null ? null : (
+				<p className="text-sm">
+					{props.schedule.name === null
+						? t(M.scheduleUnnamed)
+						: t(M.schedule, { name: props.schedule.name })}
+				</p>
 			)}
 		</div>
 	);

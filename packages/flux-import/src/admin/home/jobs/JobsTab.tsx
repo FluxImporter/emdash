@@ -120,7 +120,7 @@ export function JobsTab() {
 				return;
 			case "rollback":
 				setRollback({
-					target: { kind: "start", jobId: item.id, name, when, scheduleName: null },
+					target: { kind: "start", jobId: item.id, name, when, schedule: null },
 					scheduleId:
 						item.origin === "schedule" && item.scheduleId !== undefined ? item.scheduleId : null,
 				});
@@ -327,13 +327,19 @@ export function JobsTab() {
  * will be paused; a schedule no longer listed was deleted, and nothing is paused.
  */
 function ScheduledRollback(props: { target: StartTarget; scheduleId: string; onClose(): void }) {
-	const t = useT();
 	const schedules = useSchedules();
 	const { target, scheduleId } = props;
-	const scheduleName =
+	// undefined: not read (yet), so unnamed; null: read, and the schedule is gone.
+	const name =
 		schedules.data === undefined
-			? t(M.thisSchedule)
+			? undefined
 			: (schedules.data.find((s) => s.id === scheduleId)?.name ?? null);
-	const named = useMemo(() => ({ ...target, scheduleName }), [target, scheduleName]);
-	return <RollbackDialog target={named} onClose={props.onClose} />;
+	const withSchedule = useMemo(
+		(): StartTarget => ({
+			...target,
+			schedule: name === null ? null : { name: name ?? null },
+		}),
+		[target, name],
+	);
+	return <RollbackDialog target={withSchedule} onClose={props.onClose} />;
 }
