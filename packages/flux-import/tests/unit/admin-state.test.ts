@@ -20,6 +20,7 @@ import {
 	type Options,
 	optionsBlockers,
 	ownerOf,
+	type RowId,
 	reachable,
 	reducer,
 	STEPS,
@@ -838,15 +839,12 @@ describe("toTemplate", () => {
 		});
 		expect((toTemplate(kept, "o") as Template).publishAt).toEqual({ expr: "now()" });
 
-		// Only the Schedule status writes publishAt, and the row is never read (F4).
-		const draft = run(
-			[
-				{ type: "optionsChanged", patch: { status: "draft" } },
-				{ type: "rowSet", row: "publishAt", mapping: { from: "date" } },
-			],
-			fixed,
-		);
+		// Only the Schedule status writes publishAt; no row maps it (F4).
+		const draft = reducer(fixed, { type: "optionsChanged", patch: { status: "draft" } });
 		expect((toTemplate(draft, "o") as Template).publishAt).toBeUndefined();
+		// @ts-expect-error: the schedule is set in Options only, never as a Map row (final review 8).
+		const noRow: RowId = "publishAt";
+		expect(noRow).toBe("publishAt");
 		const unset = reducer(filled, { type: "optionsChanged", patch: { status: "schedule" } });
 		expect((toTemplate(unset, "o") as Template).publishAt).toBeUndefined();
 	});

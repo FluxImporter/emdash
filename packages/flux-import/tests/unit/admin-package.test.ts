@@ -15,7 +15,6 @@ const SHARED = [
 	"@lingui/react",
 	"@tanstack/react-query",
 	"@dnd-kit/core",
-	"@dnd-kit/utilities",
 	"react",
 	"react-dom",
 ];
@@ -34,7 +33,7 @@ const ADMIN_DIR = realpathSync(join(PACKAGE_DIR, "node_modules/@emdash-cms/admin
 const adminPkg = readJson(join(ADMIN_DIR, "package.json"));
 
 describe("the admin package wiring (M7a Task 1)", () => {
-	it("declares the admin export, the host peers and the admin's @dnd-kit ranges", () => {
+	it("declares the admin export, the host peers and the admin's @dnd-kit/core range", () => {
 		expect(pkg.exports["./admin"]).toBe("./src/admin/index.tsx");
 		expect(pkg.peerDependencies).toMatchObject({
 			"@cloudflare/kumo": "2.6.0",
@@ -46,9 +45,8 @@ describe("the admin package wiring (M7a Task 1)", () => {
 		});
 		expect(pkg.dependencies["@dnd-kit/core"]).toBe(adminPkg.dependencies["@dnd-kit/core"]);
 		expect(pkg.dependencies["@dnd-kit/core"]).toBe("^6.3.1");
-		expect(pkg.dependencies["@dnd-kit/utilities"]).toBe(
-			adminPkg.dependencies["@dnd-kit/utilities"],
-		);
+		// Nothing imports it (final review 8).
+		expect(pkg.dependencies["@dnd-kit/utilities"]).toBeUndefined();
 		expect(pkg.devDependencies["@cloudflare/kumo"]).toBe(adminPkg.dependencies["@cloudflare/kumo"]);
 		expect(pkg.devDependencies["@cloudflare/kumo"]).toBe("2.6.0");
 		expect(pkg.dependencies["@dnd-kit/sortable"]).toBeUndefined();

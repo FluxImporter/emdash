@@ -21,7 +21,6 @@ const RUNTIME_ALLOWED = [
 	"@lingui/react",
 	"@tanstack/react-query",
 	"@dnd-kit/core",
-	"@dnd-kit/utilities",
 	"emdash/plugin-utils",
 ];
 

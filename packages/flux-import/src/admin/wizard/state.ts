@@ -17,7 +17,6 @@ export const STEPS: readonly StepId[] = ["source", "target", "map", "options", "
 export type RowId =
 	| "key"
 	| "slug"
-	| "publishAt"
 	| "translationOf"
 	| "bylines"
 	| `field:${string}`
