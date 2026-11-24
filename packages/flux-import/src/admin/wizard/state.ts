@@ -534,6 +534,21 @@ function scheduleOf(publishAt: Record<string, unknown>): Options["schedule"] {
 	return { kind: "kept", mapping: { ...publishAt } };
 }
 
+/** When the entries go live: a status and its schedule, as Preview and Run state them. */
+export type Publishing = Pick<Options, "status" | "schedule">;
+
+/**
+ * A job's own publishing, for a Run screen that shows a job (one reopened by URL has no draft
+ * options): no `publish` keeps drafts (engine `targetOf`); otherwise the template's `publishAt`
+ * schedules, read as `fromTemplate` reads it, and without one the entries are published.
+ */
+export function publishingOfJob(job: { publish: boolean; template: Template }): Publishing {
+	if (!job.publish) return { status: "draft", schedule: null };
+	const at = job.template.publishAt;
+	if (at === undefined) return { status: "publish", schedule: null };
+	return { status: "schedule", schedule: scheduleOf(at) };
+}
+
 /** A saved template as the draft's rows, meta, target and options (preflight F4, F9). */
 export function fromTemplate(t: Template): Pick<WizardState, "rows" | "meta"> & {
 	options: Partial<Options>;

@@ -9,9 +9,11 @@ import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
 import { useWizard } from "../context.js";
+import { PublishingLine } from "../Publishing.js";
 import {
 	jobInput,
 	ownerOf,
+	publishingOfJob,
 	reducer,
 	saveOffered,
 	toTemplate,
@@ -176,10 +178,24 @@ export function RunStep() {
 		</div>
 	);
 
+	// How the entries go live (final review 1): the job's own once it is known, the draft's before
+	// it starts; a job reopened by URL says nothing until it is read, as the draft is not its own.
+	// Not once the job has ended, nor for a dry run, which writes nothing.
+	const publishing =
+		job !== null
+			? job.dryRun || job.status === "completed" || job.status === "cancelled"
+				? null
+				: publishingOfJob(job)
+			: runId === null
+				? state.options
+				: null;
+	const publishingLine = publishing === null ? null : <PublishingLine publishing={publishing} />;
+
 	if (job === null) {
 		return (
 			<div className="space-y-4">
 				{live}
+				{publishingLine}
 				{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
 			</div>
 		);
@@ -205,6 +221,7 @@ export function RunStep() {
 	return (
 		<div className="space-y-4">
 			{live}
+			{publishingLine}
 			{job.status === "failed" && job.error ? <JobError error={job.error} /> : null}
 			{job.dryRun ? <p className="text-sm text-kumo-subtle">{t(M.dryRun)}</p> : null}
 

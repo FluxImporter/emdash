@@ -608,6 +608,84 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(JOB_ID);
 	});
+	describe("says how the entries will go live (final review 1)", () => {
+		it("says it from the options before the job starts, then from the job while it runs", async () => {
+			const created = gate();
+			const next = gate();
+			mockRoutes({
+				"jobs/create": () => created.promise,
+				"jobs/next": replies(next.promise),
+			});
+			renderRun(draft({ options: { ...DEFAULT_OPTIONS, status: "draft" } }));
+			expect(await screen.findByText("Entries will be saved as drafts.")).toBeVisible();
+			expect(screen.getByText("Starting the import")).toBeVisible();
+			created.open(real({ status: "created", publish: false }));
+			expect(await screen.findByText("Importing")).toBeVisible();
+			expect(screen.getByText("Entries will be saved as drafts.")).toBeVisible();
+			next.open(real({ status: "completed", publish: false, counters: counters(4) }));
+			expect(await screen.findByText("The import is complete.")).toBeVisible();
+			expect(screen.queryByText("Entries will be saved as drafts.")).toBeNull();
+		});
+
+		it("says the default options publish before the job starts", async () => {
+			const created = gate();
+			mockRoutes({ "jobs/create": () => created.promise });
+			renderRun(draft());
+			expect(await screen.findByText("Entries will be published.")).toBeVisible();
+		});
+
+		it.each<[string, Partial<Job>, string]>([
+			["a published", { publish: true }, "Entries will be published."],
+			["a draft", { publish: false }, "Entries will be saved as drafts."],
+			[
+				"a fixed-date",
+				{
+					publish: true,
+					template: templateSchema.parse({
+						...real().template,
+						publishAt: { expr: '"2026-12-01T09:30"', tz: "site" },
+					}),
+				},
+				"Entries will be scheduled for 2026-12-01 09:30, in the site's timezone.",
+			],
+			[
+				"a feed-dated",
+				{
+					publish: true,
+					template: templateSchema.parse({ ...real().template, publishAt: { from: "go_live" } }),
+				},
+				"Entries will be scheduled by the date in the source key go_live.",
+			],
+		])("says it for %s job reopened by URL", async (_name, over, sentence) => {
+			const held = gate();
+			mockRoutes({
+				"jobs/get": () => real({ counters: counters(1), ...over }),
+				"jobs/next": replies(held.promise),
+			});
+			renderRun(reopened);
+			expect(await screen.findByText(sentence)).toBeVisible();
+		});
+
+		it("says nothing for a running dry run, which writes nothing", async () => {
+			const held = gate();
+			mockRoutes({
+				"jobs/get": () => job({ id: JOB_ID, status: "running", publish: true }),
+				"jobs/next": replies(held.promise),
+			});
+			renderRun(reopened);
+			expect(await screen.findByText("This was a dry run: nothing was written.")).toBeVisible();
+			expect(screen.queryByText(/^Entries will/)).toBeNull();
+		});
+
+		it("says nothing of the draft's options while a reopened job is read", async () => {
+			const held = gate();
+			mockRoutes({ "jobs/get": () => held.promise });
+			renderRun(reopened);
+			expect(screen.getByText("Starting the import")).toBeVisible();
+			expect(screen.queryByText(/^Entries will/)).toBeNull();
+		});
+	});
+
 	/** Pauses, or cancels and confirms, with fake timers. */
 	async function stopBy(user: UserEvent, how: "pause" | "cancel") {
 		if (how === "pause") {

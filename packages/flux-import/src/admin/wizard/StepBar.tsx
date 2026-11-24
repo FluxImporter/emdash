@@ -25,6 +25,13 @@ function linked(
 	return fields === undefined || mapBlockers(state, fields).length === 0;
 }
 
+/** Whether the step bar links a step; also what Preview's "Change in Options" follows. */
+export function useStepLinked(): (step: StepId) => boolean {
+	const { state } = useWizard();
+	const fields = useCachedFields(state.target?.collection ?? null);
+	return (step) => linked(state, step, fields);
+}
+
 /**
  * The step bar: an ordered list of the six steps. The current step and every one `linked` allows
  * is a link; a click changes the step in place instead of loading `?step=` (preflight F20). An
@@ -34,7 +41,7 @@ function linked(
 export function StepBar() {
 	const t = useT();
 	const { state, dispatch } = useWizard();
-	const fields = useCachedFields(state.target?.collection ?? null);
+	const isLinked = useStepLinked();
 	return (
 		<ol aria-label={t(SHELL.steps)} className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
 			{STEPS.map((step, index) => {
@@ -46,7 +53,7 @@ export function StepBar() {
 				);
 				return (
 					<li key={step}>
-						{current || linked(state, step, fields) ? (
+						{current || isLinked(step) ? (
 							<a
 								href={`?step=${step}`}
 								aria-current={current ? "step" : undefined}

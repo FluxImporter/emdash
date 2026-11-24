@@ -8,6 +8,8 @@ import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { useJobDriver } from "../../run-driver.js";
 import { DRY_RUN_KEY, useWizard } from "../context.js";
+import { PublishingLine } from "../Publishing.js";
+import { useStepLinked } from "../StepBar.js";
 import { StepFooter } from "../StepFooter.js";
 import { jobInput } from "../state.js";
 import { M } from "./messages.js";
@@ -127,6 +129,7 @@ export function PreviewStep() {
 	const [resuming, setResuming] = useState(false);
 	const [resumeError, setResumeError] = useState<unknown>(null);
 	const { dryRun } = state;
+	const optionsLinked = useStepLinked()("options");
 
 	// Created once per draft (F14): a remount while `jobs/create` is in flight sends no second
 	// one, and a reply for a draft edited meanwhile is dropped by the reducer (its generation).
@@ -280,6 +283,18 @@ export function PreviewStep() {
 				) : total === null ? null : (
 					<span>{t(M.finished, { total })}</span>
 				)}
+			</div>
+			{/* A loaded template skips Options, so the status it runs with is said here (final review 1). */}
+			<div className="flex flex-wrap items-center gap-3">
+				<PublishingLine publishing={state.options} />
+				{optionsLinked ? (
+					<Button
+						variant="ghost"
+						onClick={() => dispatch({ type: "stepChanged", step: "options" })}
+					>
+						{t(M.changeInOptions)}
+					</Button>
+				) : null}
 			</div>
 			{job === null ? null : <Counts job={job} />}
 			{total === 0 ? <Empty title={t(M.noRecords)} description={t(M.noRecordsHint)} /> : null}

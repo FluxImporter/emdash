@@ -58,6 +58,7 @@ export const M = {
 	},
 	backToMap: { id: "flux-import.preview.back-to-map", message: "Back to Map" },
 	runImport: { id: "flux-import.preview.run-import", message: "Run import" },
+	changeInOptions: { id: "flux-import.preview.change-in-options", message: "Change in Options" },
 	filterAll: { id: "flux-import.preview.filter-all", message: "All" },
 	filterPlanned: { id: "flux-import.preview.filter-planned", message: "Would change" },
 	filterFailed: { id: "flux-import.preview.filter-failed", message: "Failed" },

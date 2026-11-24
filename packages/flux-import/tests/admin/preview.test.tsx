@@ -5,6 +5,7 @@ import { api } from "../../src/admin/api.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { PreviewStep } from "../../src/admin/wizard/preview/PreviewStep.js";
 import {
+	DEFAULT_OPTIONS,
 	initialState,
 	reducer,
 	type WizardAction,
@@ -765,6 +766,74 @@ describe("PreviewStep", () => {
 		reply.resolve(job());
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
 		expect(created(calls)).toHaveLength(1);
+	});
+
+	describe("says how the entries will go live (final review 1)", () => {
+		const routes = () =>
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () => completed({ created: 2 }),
+				"jobs/records": () => ({ items: [], hasMore: false }),
+			});
+
+		it("says a loaded template's draft publishes, with Change in Options", async () => {
+			routes();
+			const template = templateSchema.parse(DRAFT_TEMPLATE);
+			const ready = reducer(
+				{ ...initialState, ...DRAFT, step: "source", dirty: false },
+				{ type: "templateLoaded", base: { id: "T1", revision: 3, name: "Posts feed", template } },
+			);
+			expect(ready.step).toBe("preview");
+			const { user } = renderPreview(ready);
+			expect(await screen.findByText("Entries will be published.")).toBeVisible();
+			await waitFor(() => expect(probe.state.dryRun?.total).toBe(2));
+			await user.click(screen.getByRole("button", { name: "Change in Options" }));
+			expect(probe.state.step).toBe("options");
+		});
+
+		it.each<[string, Partial<WizardState["options"]>, string]>([
+			["Draft", { status: "draft" }, "Entries will be saved as drafts."],
+			[
+				"Publish after a schedule was chosen",
+				{ status: "publish", schedule: { kind: "fixed", at: "2026-12-01T09:30" } },
+				"Entries will be published.",
+			],
+			[
+				"one date",
+				{ status: "schedule", schedule: { kind: "fixed", at: "2026-12-01T09:30" } },
+				"Entries will be scheduled for 2026-12-01 09:30, in the site's timezone.",
+			],
+			[
+				"a feed key",
+				{ status: "schedule", schedule: { kind: "feed", from: "go_live" } },
+				"Entries will be scheduled by the date in the source key go_live.",
+			],
+			[
+				"a kept schedule",
+				{ status: "schedule", schedule: { kind: "kept", mapping: { expr: "$now()" } } },
+				"Entries will be scheduled as the saved template sets it.",
+			],
+		])("says what %s does", async (_name, options, sentence) => {
+			routes();
+			renderPreview({ ...DRAFT, options: { ...DEFAULT_OPTIONS, ...options } });
+			expect(await screen.findByText(sentence)).toBeVisible();
+			expect(screen.getAllByText(/^Entries will/)).toHaveLength(1);
+		});
+
+		it("offers no Change in Options while Options cannot be shown", async () => {
+			routes();
+			const proposed = {
+				key: "title",
+				slug: "headline",
+				label: "Headline",
+				type: "string",
+				translatable: true,
+				searchable: false,
+			};
+			renderPreview({ ...DRAFT, newFields: [proposed] });
+			expect(await screen.findByText("Entries will be published.")).toBeVisible();
+			expect(screen.queryByRole("button", { name: "Change in Options" })).toBeNull();
+		});
 	});
 
 	it("drops a dry run created for an older draft and creates one for the new draft", async () => {

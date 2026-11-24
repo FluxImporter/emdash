@@ -1,7 +1,10 @@
 import type { Msg } from "../i18n.js";
 import type { StepId } from "./state.js";
 
-/** The wizard's shared messages: the step footer and Map's blockers (preflight F11). */
+/**
+ * The wizard's shared messages: the step footer, Map's blockers (preflight F11) and the line that
+ * says how the entries will go live (Preview and Run).
+ */
 export const M = {
 	back: { id: "flux-import.wizard.back", message: "Back" },
 	next: { id: "flux-import.wizard.next", message: "Next" },
@@ -30,6 +33,23 @@ export const M = {
 	translationOfUnmapped: {
 		id: "flux-import.wizard.translation-of-unmapped",
 		message: "Choose the source key that names the record each translation belongs to",
+	},
+	publishingNow: { id: "flux-import.wizard.publishing-now", message: "Entries will be published." },
+	publishingDraft: {
+		id: "flux-import.wizard.publishing-draft",
+		message: "Entries will be saved as drafts.",
+	},
+	publishingFixed: {
+		id: "flux-import.wizard.publishing-fixed",
+		message: "Entries will be scheduled for {when}, in the site's timezone.",
+	},
+	publishingFeed: {
+		id: "flux-import.wizard.publishing-feed",
+		message: "Entries will be scheduled by the date in the source key {key}.",
+	},
+	publishingKept: {
+		id: "flux-import.wizard.publishing-kept",
+		message: "Entries will be scheduled as the saved template sets it.",
 	},
 } satisfies Record<string, Msg>;
 
