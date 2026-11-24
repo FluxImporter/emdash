@@ -69,7 +69,8 @@ function routes(extra: Record<string, RouteHandler>) {
 	});
 }
 
-const fileInput = () => screen.getByLabelText<HTMLInputElement>("Choose a file");
+const fileInput = () =>
+	screen.getByLabelText<HTMLInputElement>("Choose a file", { selector: "input" });
 
 /** Chooses `name` in the Upload tab. */
 function chooseFile(name: string, text = "id,title\n1,First\n") {
@@ -137,8 +138,10 @@ describe("the Source step", () => {
 		expect(input).toHaveClass("sr-only");
 		expect(input).toHaveAttribute("tabindex", "-1");
 		expect(input).toHaveAttribute("aria-hidden", "true");
-		const browse = screen.getByRole("button", { name: "Browse files" });
+		// The visible "Choose a file" label names the button a keyboard reaches, with its own text.
+		const browse = screen.getByRole("button", { name: "Choose a file Browse files" });
 		expect(browse).toHaveAccessibleDescription(/CSV, JSON/);
+		expect(screen.getByText("Choose a file").tagName).toBe("LABEL");
 		const click = vi.spyOn(input, "click").mockImplementation(() => {});
 		await user.click(browse);
 		expect(click).toHaveBeenCalledTimes(1);
@@ -446,7 +449,9 @@ describe("the Source step", () => {
 		routes({ "credentials/list": () => [] });
 		const { user } = renderSource();
 		const panel = screen.getByRole("tabpanel", { name: "Upload file" });
-		expect(within(panel).getByLabelText("Choose a file")).toBeInTheDocument();
+		expect(
+			within(panel).getByLabelText("Choose a file", { selector: "input" }),
+		).toBeInTheDocument();
 		await user.click(screen.getByRole("tab", { name: "From URL" }));
 		expect(screen.getByRole("tabpanel", { name: "From URL" })).toBeInTheDocument();
 	});

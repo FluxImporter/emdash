@@ -12,6 +12,8 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 	const t = useT();
 	const inputId = useId();
 	const hintId = useId();
+	const labelId = useId();
+	const buttonId = useId();
 	const input = useRef<HTMLInputElement>(null);
 	const [progress, setProgress] = useState<{ name: string; percent: number } | null>(null);
 
@@ -46,13 +48,14 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 
 	return (
 		<div className="space-y-2">
-			<label htmlFor={inputId} className="block font-medium">
+			<label id={labelId} htmlFor={inputId} className="block font-medium">
 				{t(M.chooseFile)}
 			</label>
 			{/*
 			 * The browser's own file control has no button look in the admin's themes, so a Kumo button
 			 * opens it, as the admin's WordPress importer does. The input stays for the label and the
-			 * file; the button is the one control keyboards and screen readers reach.
+			 * file; the button is the one control keyboards and screen readers reach, so the label names
+			 * it too, followed by its own text.
 			 */}
 			<input
 				ref={input}
@@ -67,8 +70,10 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 			/>
 			<div>
 				<Button
+					id={buttonId}
 					variant="secondary"
 					disabled={busy}
+					aria-labelledby={`${labelId} ${buttonId}`}
 					aria-describedby={hintId}
 					onClick={() => input.current?.click()}
 				>

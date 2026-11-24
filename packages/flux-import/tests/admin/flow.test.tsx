@@ -271,7 +271,7 @@ async function upload(user: UserEvent) {
 	const file = new File([["id,title,Released", ...ROWS].join("\n")], "posts.csv", {
 		type: "text/csv",
 	});
-	await user.upload(screen.getByLabelText("Choose a file"), file);
+	await user.upload(screen.getByLabelText("Choose a file", { selector: "input" }), file);
 	await screen.findByRole("table");
 	await waitFor(() => expect(next()).toBeEnabled());
 }
