@@ -420,6 +420,15 @@ describe("SourcesTab", () => {
 		expect(table.parentElement).toHaveClass("overflow-x-auto");
 	});
 
+	it("lays the credential form out in three columns only from lg up (Task 16)", async () => {
+		setup({});
+		const name = await screen.findByRole("textbox", { name: "Name" });
+		// At 768 px the page beside the sidebar is about 460 px wide: three columns overlapped.
+		const grid = name.closest("form")?.querySelector(":scope > .grid") as HTMLElement;
+		expect(grid).toHaveClass("lg:grid-cols-3");
+		expect(grid).not.toHaveClass("md:grid-cols-3");
+	});
+
 	it("lists credentials by name and header only", async () => {
 		setup({ "credentials/list": () => [{ name: "feed-token", header: "Authorization" }] });
 		const heading = await screen.findByRole("heading", { level: 3, name: "Credentials" });

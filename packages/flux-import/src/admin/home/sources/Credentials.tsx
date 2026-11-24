@@ -127,7 +127,7 @@ export function Credentials(props: {
 			)}
 			<form className="space-y-4" onSubmit={(e) => void save(e)}>
 				<h4 className="font-semibold">{t(M.credFormTitle)}</h4>
-				<div className="grid gap-4 md:grid-cols-3">
+				<div className="grid gap-4 lg:grid-cols-3">
 					<Input
 						label={t(M.credName)}
 						description={t(M.credNameHint)}
