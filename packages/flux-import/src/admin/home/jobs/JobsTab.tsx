@@ -209,7 +209,11 @@ export function JobsTab() {
 			<Empty
 				size="sm"
 				title={t(M.empty)}
-				contents={<LinkButton href={WIZARD_URL}>{t(M.newImport)}</LinkButton>}
+				contents={
+					<LinkButton variant="primary" href={WIZARD_URL}>
+						{t(M.newImport)}
+					</LinkButton>
+				}
 			/>
 		);
 	} else {

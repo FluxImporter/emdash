@@ -1,3 +1,4 @@
+import { LinkButton } from "@cloudflare/kumo";
 import { setupI18n } from "@lingui/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
@@ -81,6 +82,15 @@ describe("Home", () => {
 			"/_emdash/admin/plugins/flux-import/import",
 		);
 		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
+		// A button, as the admin's own list screens put their "Add New" (Task 16), not a text link.
+		const { container } = render(
+			<LinkButton variant="secondary" href="/x">
+				x
+			</LinkButton>,
+		);
+		expect(screen.getByRole("link", { name: "New import" }).className).toBe(
+			(container.firstElementChild as HTMLElement).className,
+		);
 		expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
 			"Jobs",
 			"Templates",

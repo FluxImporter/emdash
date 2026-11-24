@@ -1,4 +1,5 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { LinkButton } from "@cloudflare/kumo";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { JobsTab } from "../../src/admin/home/jobs/JobsTab.js";
@@ -685,7 +686,15 @@ describe("JobsTab", () => {
 		mockRoutes(routes([]));
 		show();
 		expect(await screen.findByText("No imports yet.")).toBeVisible();
-		expect(screen.getByRole("link", { name: "New import" })).toHaveAttribute("href", WIZARD_URL);
+		const link = screen.getByRole("link", { name: "New import" });
+		expect(link).toHaveAttribute("href", WIZARD_URL);
+		// The empty page's one action looks like a button (Task 16: the default variant read as text).
+		const { container } = render(
+			<LinkButton variant="primary" href="/x">
+				x
+			</LinkButton>,
+		);
+		expect(link.className).toBe((container.firstElementChild as HTMLElement).className);
 		expect(screen.queryByRole("table")).toBeNull();
 	});
 

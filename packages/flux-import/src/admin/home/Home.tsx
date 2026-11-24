@@ -1,4 +1,4 @@
-import { Banner, Button, Link, Loader, Tabs } from "@cloudflare/kumo";
+import { Banner, Button, LinkButton, Loader, Tabs } from "@cloudflare/kumo";
 import {
 	type ComponentType,
 	createContext,
@@ -73,7 +73,12 @@ export function Home(props: { tabs: TabComponents }) {
 		<div className="space-y-6">
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<h1 className="text-2xl font-bold">{t(M.title)}</h1>
-				{granted ? <Link href={WIZARD_URL}>{t(M.newImport)}</Link> : null}
+				{granted ? (
+					// A button, as the admin's own list screens put "Add New" (Task 16).
+					<LinkButton variant="secondary" href={WIZARD_URL}>
+						{t(M.newImport)}
+					</LinkButton>
+				) : null}
 			</div>
 			{granted ? (
 				// Once granted, the page stays: a later failed probe must not drop the open tab.
