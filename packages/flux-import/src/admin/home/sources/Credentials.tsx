@@ -80,48 +80,50 @@ export function Credentials(props: {
 			{props.rows.length === 0 ? (
 				<p className="text-sm text-kumo-subtle">{t(M.credentialsEmpty)}</p>
 			) : (
-				<Table>
-					<Table.Header>
-						<Table.Row>
-							<Table.Head>{t(M.credName)}</Table.Head>
-							<Table.Head>{t(M.credHeader)}</Table.Head>
-							<Table.Head>{t(M.colActions)}</Table.Head>
-						</Table.Row>
-					</Table.Header>
-					<Table.Body>
-						{props.rows.map((c) => (
-							<Table.Row key={c.name}>
-								<Table.Cell>{c.name}</Table.Cell>
-								<Table.Cell>{c.header}</Table.Cell>
-								<Table.Cell>
-									<div className="flex gap-2">
-										<Button
-											variant="secondary"
-											aria-label={t(M.credReplace, { name: c.name })}
-											onClick={() => {
-												setName(c.name);
-												setHeader(c.header);
-												valueRef.current?.focus();
-											}}
-										>
-											{t(M.credReplace, { name: c.name })}
-										</Button>
-										<Button
-											variant="secondary"
-											aria-label={t(M.credDeleteRow, { name: c.name })}
-											onClick={() => {
-												setDeleteError(null);
-												setDeleting(c.name);
-											}}
-										>
-											{t(M.credDeleteRow, { name: c.name })}
-										</Button>
-									</div>
-								</Table.Cell>
+				<div className="overflow-x-auto">
+					<Table>
+						<Table.Header>
+							<Table.Row>
+								<Table.Head>{t(M.credName)}</Table.Head>
+								<Table.Head>{t(M.credHeader)}</Table.Head>
+								<Table.Head>{t(M.colActions)}</Table.Head>
 							</Table.Row>
-						))}
-					</Table.Body>
-				</Table>
+						</Table.Header>
+						<Table.Body>
+							{props.rows.map((c) => (
+								<Table.Row key={c.name}>
+									<Table.Cell>{c.name}</Table.Cell>
+									<Table.Cell>{c.header}</Table.Cell>
+									<Table.Cell>
+										<div className="flex gap-2">
+											<Button
+												variant="secondary"
+												aria-label={t(M.credReplace, { name: c.name })}
+												onClick={() => {
+													setName(c.name);
+													setHeader(c.header);
+													valueRef.current?.focus();
+												}}
+											>
+												{t(M.credReplaceShort)}
+											</Button>
+											<Button
+												variant="secondary"
+												aria-label={t(M.credDeleteRow, { name: c.name })}
+												onClick={() => {
+													setDeleteError(null);
+													setDeleting(c.name);
+												}}
+											>
+												{t(M.delete)}
+											</Button>
+										</div>
+									</Table.Cell>
+								</Table.Row>
+							))}
+						</Table.Body>
+					</Table>
+				</div>
 			)}
 			<form className="space-y-4" onSubmit={(e) => void save(e)}>
 				<h4 className="font-semibold">{t(M.credFormTitle)}</h4>

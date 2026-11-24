@@ -397,6 +397,29 @@ describe("SourcesTab", () => {
 		expect(screen.getByRole("button", { name: "Delete the credential shared" })).toBeVisible();
 	});
 
+	it("keeps row buttons short, names the row in each accessible name, and scrolls the table (Task 16)", async () => {
+		const name = "127.0.0.1:4602/products.json";
+		setup({
+			"sources/list": () => page([sourceRow({ name })]),
+			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
+		});
+		const cases: [string, string][] = [
+			[`Fetch now ${name}`, "Fetch now"],
+			[`Edit ${name}`, "Edit"],
+			[`Delete ${name}`, "Delete"],
+			["Replace the credential feed-token", "Replace"],
+			["Delete the credential feed-token", "Delete"],
+		];
+		for (const [accessible, visible] of cases) {
+			expect(await screen.findByRole("button", { name: accessible })).toHaveTextContent(
+				new RegExp(`^${visible}$`),
+			);
+		}
+		// A long name widens the table, never the page: it scrolls in its own box.
+		const table = screen.getAllByRole("table")[0] as HTMLElement;
+		expect(table.parentElement).toHaveClass("overflow-x-auto");
+	});
+
 	it("lists credentials by name and header only", async () => {
 		setup({ "credentials/list": () => [{ name: "feed-token", header: "Authorization" }] });
 		const heading = await screen.findByRole("heading", { level: 3, name: "Credentials" });

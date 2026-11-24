@@ -17,6 +17,7 @@ export const M = {
 	never: { id: "flux-import.home-sources.never", message: "Never fetched" },
 	fetchNow: { id: "flux-import.home-sources.fetch-now", message: "Fetch now" },
 	fetchNowRow: { id: "flux-import.home-sources.fetch-now-row", message: "Fetch now {name}" },
+	edit: { id: "flux-import.home-sources.edit", message: "Edit" },
 	editRow: { id: "flux-import.home-sources.edit-row", message: "Edit {name}" },
 	deleteRow: { id: "flux-import.home-sources.delete-row", message: "Delete {name}" },
 	fetchedNew: { id: "flux-import.home-sources.fetched-new", message: "New content fetched." },
@@ -104,6 +105,7 @@ export const M = {
 	},
 	credSave: { id: "flux-import.home-sources.cred-save", message: "Save credential" },
 	credSaved: { id: "flux-import.home-sources.cred-saved", message: "Saved the credential {name}." },
+	credReplaceShort: { id: "flux-import.home-sources.cred-replace-short", message: "Replace" },
 	credReplace: {
 		id: "flux-import.home-sources.cred-replace",
 		message: "Replace the credential {name}",

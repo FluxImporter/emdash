@@ -116,58 +116,61 @@ export function SourcesTab() {
 				{sources.data.length === 0 ? (
 					<p className="text-sm text-kumo-subtle">{t(M.empty)}</p>
 				) : (
-					<Table>
-						<Table.Header>
-							<Table.Row>
-								<Table.Head>{t(M.colName)}</Table.Head>
-								<Table.Head>{t(M.colAddress)}</Table.Head>
-								<Table.Head>{t(M.colCredential)}</Table.Head>
-								<Table.Head>{t(M.colLastFetch)}</Table.Head>
-								<Table.Head>{t(M.colActions)}</Table.Head>
-							</Table.Row>
-						</Table.Header>
-						<Table.Body>
-							{sources.data.map((row) => (
-								<Table.Row key={row.id}>
-									<Table.Cell>{row.name}</Table.Cell>
-									<Table.Cell>{urlLabel(row.url)}</Table.Cell>
-									<Table.Cell>{row.credential ?? t(M.noCredential)}</Table.Cell>
-									<Table.Cell>{lastFetch(row)}</Table.Cell>
-									<Table.Cell>
-										<div className="flex gap-2">
-											<Button
-												variant="secondary"
-												loading={fetching === row.id}
-												disabled={fetching !== null}
-												aria-label={t(M.fetchNowRow, { name: row.name })}
-												aria-busy={fetching === row.id || undefined}
-												onClick={() => void fetchNow(row)}
-											>
-												{t(M.fetchNow)}
-											</Button>
-											<Button
-												variant="secondary"
-												aria-label={t(M.editRow, { name: row.name })}
-												onClick={() => setDialog({ source: row })}
-											>
-												{t(M.editRow, { name: row.name })}
-											</Button>
-											<Button
-												variant="secondary"
-												aria-label={t(M.deleteRow, { name: row.name })}
-												onClick={() => {
-													setDeleteError(null);
-													setDeleting(row);
-												}}
-											>
-												{t(M.deleteRow, { name: row.name })}
-											</Button>
-										</div>
-									</Table.Cell>
+					// A long name or address widens the table, never the page.
+					<div className="overflow-x-auto">
+						<Table>
+							<Table.Header>
+								<Table.Row>
+									<Table.Head>{t(M.colName)}</Table.Head>
+									<Table.Head>{t(M.colAddress)}</Table.Head>
+									<Table.Head>{t(M.colCredential)}</Table.Head>
+									<Table.Head>{t(M.colLastFetch)}</Table.Head>
+									<Table.Head>{t(M.colActions)}</Table.Head>
 								</Table.Row>
-							))}
-						</Table.Body>
-					</Table>
+							</Table.Header>
+							<Table.Body>
+								{sources.data.map((row) => (
+									<Table.Row key={row.id}>
+										<Table.Cell>{row.name}</Table.Cell>
+										<Table.Cell>{urlLabel(row.url)}</Table.Cell>
+										<Table.Cell>{row.credential ?? t(M.noCredential)}</Table.Cell>
+										<Table.Cell>{lastFetch(row)}</Table.Cell>
+										<Table.Cell>
+											<div className="flex gap-2">
+												<Button
+													variant="secondary"
+													loading={fetching === row.id}
+													disabled={fetching !== null}
+													aria-label={t(M.fetchNowRow, { name: row.name })}
+													aria-busy={fetching === row.id || undefined}
+													onClick={() => void fetchNow(row)}
+												>
+													{t(M.fetchNow)}
+												</Button>
+												<Button
+													variant="secondary"
+													aria-label={t(M.editRow, { name: row.name })}
+													onClick={() => setDialog({ source: row })}
+												>
+													{t(M.edit)}
+												</Button>
+												<Button
+													variant="secondary"
+													aria-label={t(M.deleteRow, { name: row.name })}
+													onClick={() => {
+														setDeleteError(null);
+														setDeleting(row);
+													}}
+												>
+													{t(M.delete)}
+												</Button>
+											</div>
+										</Table.Cell>
+									</Table.Row>
+								))}
+							</Table.Body>
+						</Table>
+					</div>
 				)}
 			</section>
 			<Credentials rows={credentials.data} sources={sources.data} />
