@@ -90,7 +90,7 @@ const bodyOf = (calls: { route: string; body: unknown }[], route: string) =>
 
 describe("the Schedules tab", () => {
 	it("lists names, timing in words with UTC, next run, last launch and the state with its pause reason in words", async () => {
-		const at = new Date().toISOString();
+		const at = "2026-11-24T06:00:00.000Z";
 		routes({
 			schedules: [
 				schedule({
@@ -156,7 +156,8 @@ describe("the Schedules tab", () => {
 		expect(nightly.getByText("Feed")).toBeVisible();
 		expect(nightly.getByText("Every day at 03:00 UTC")).toBeVisible();
 		expect(nightly.getByText("Nov 25, 2026 03:00 UTC")).toBeVisible();
-		expect(nightly.getByText(/^today \d\d:\d\d/)).toBeVisible();
+		// Every time in the tab is UTC (plan Ruling 13), the last launch's too.
+		expect(nightly.getByText("Nov 24, 2026 06:00 UTC")).toBeVisible();
 		expect(nightly.getByText("Started an import.")).toBeVisible();
 		expect(nightly.getByText("Running")).toBeVisible();
 
@@ -210,6 +211,20 @@ describe("the Schedules tab", () => {
 		routes({ fence, schedules: [schedule({ sourceId: "SRC1" })] });
 		renderTab();
 		expect(await screen.findByText(sentence)).toBeVisible();
+	});
+
+	it("shows the failed-check banner when the fence cannot be read", async () => {
+		routes(
+			{ schedules: [schedule({ sourceId: "SRC1" })] },
+			// Not a 5xx, which the query itself retries once after a delay.
+			{ "schedules/fence": () => fail("INVALID_PLUGIN_REQUEST", "refused", 400) },
+		);
+		renderTab();
+		expect(
+			await screen.findByText(
+				"flux-import couldn't check whether the site is busy, so scheduled runs wait.",
+			),
+		).toBeVisible();
 	});
 
 	it("shows the fence banner with its kind in words, and none when clear", async () => {
@@ -666,6 +681,20 @@ describe("the Schedules tab", () => {
 							},
 							rolledBack: { by: "J5", at: "2026-11-22T07:00:00.000Z" },
 						},
+						{
+							jobId: "J0",
+							at: "2026-11-21T06:05:00.000Z",
+							outcome: "from_the_future" as never,
+							counters: {
+								created: 0,
+								updated: 0,
+								unchanged: 0,
+								failed: 0,
+								conflict: 0,
+								locked: 0,
+								removed: 0,
+							},
+						},
 					],
 				}),
 				schedule({ id: "SC2", name: "Fresh" }),
@@ -676,8 +705,12 @@ describe("the Schedules tab", () => {
 		await user.click(screen.getByRole("button", { name: "Run log of Nightly" }));
 		const dialog = await screen.findByRole("dialog", { name: "Run log of Nightly" });
 		const rows = within(dialog).getAllByRole("row").slice(1);
-		expect(rows).toHaveLength(2);
+		expect(rows).toHaveLength(3);
 		expect(rows[0]).toHaveTextContent("Completed");
+		expect(rows[0]).toHaveTextContent("Nov 23, 2026 06:05 UTC");
+		expect(rows[2]).toHaveTextContent("Unknown outcome");
+		// The outcome cell says only that: never "Failed" for an outcome it does not know.
+		expect(within(rows[2]!).getAllByRole("cell")[1]).toHaveTextContent(/^Unknown outcome$/);
 		expect(rows[0]).toHaveTextContent(
 			"Created: 3. Updated: 2. Unchanged: 1. Failed: 0. Removed: 4.",
 		);
@@ -686,7 +719,9 @@ describe("the Schedules tab", () => {
 		expect(rows[0]).not.toHaveTextContent("Locked");
 		expect(rows[1]).not.toHaveTextContent("Removed");
 		expect(
-			within(rows[0]!).getByRole("link", { name: /^Open the import that finished / }),
+			within(rows[0]!).getByRole("link", {
+				name: "Open the import that finished Nov 23, 2026 06:05 UTC",
+			}),
 		).toHaveAttribute("href", runUrl("J2"));
 		expect(rows[1]).toHaveTextContent("Stopped: the feed was empty");
 		expect(rows[1]).toHaveTextContent("Rolled back");
@@ -699,6 +734,163 @@ describe("the Schedules tab", () => {
 				"No runs yet.",
 			),
 		).toBeVisible();
+	});
+
+	it("resumes a schedule paused for template_changed on the template's current revision", async () => {
+		const at = "2026-11-24T06:00:00.000Z";
+		const changed = schedule({
+			id: "SC1",
+			name: "Nightly",
+			templateId: "T1",
+			templateRevision: 1,
+			sourceId: "SRC1",
+			enabled: false,
+			pause: { reason: "template_changed", at },
+			revision: 4,
+		});
+		const dropped = schedule({
+			id: "SC2",
+			name: "Dropped",
+			templateId: "T2",
+			templateRevision: 2,
+			sourceId: "SRC1",
+			missing: { maxPercent: 10 },
+			enabled: false,
+			pause: { reason: "template_changed", at },
+			revision: 6,
+		});
+		const { calls } = routes(
+			{ schedules: [changed, dropped] },
+			{
+				"schedules/update": (body) => {
+					const b = body as { id: string };
+					const row = b.id === "SC1" ? changed : dropped;
+					const { pause: _, ...rest } = row;
+					return { schedule: { ...rest, enabled: true, revision: row.revision + 1 } };
+				},
+			},
+		);
+		const { user } = renderTab();
+		const row = within(await rowOf("Nightly"));
+		expect(row.getByText("Resume runs the template's current version.")).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
+		expect(await row.findByText("Running")).toBeVisible();
+		// T2's current revision has no rules.missing: the stored threshold is cleared with it.
+		await user.click(screen.getByRole("button", { name: "Resume Dropped" }));
+		expect(await within(await rowOf("Dropped")).findByText("Running")).toBeVisible();
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, enabled: true, templateId: "T1", templateRevision: 3 },
+			{
+				id: "SC2",
+				revision: 6,
+				enabled: true,
+				templateId: "T2",
+				templateRevision: 7,
+				missing: null,
+			},
+		]);
+	});
+
+	it("says a template_changed schedule whose template is gone needs an edit, and sends nothing", async () => {
+		const { calls } = routes({
+			schedules: [
+				schedule({
+					id: "SC1",
+					name: "Nightly",
+					templateId: "GONE",
+					sourceId: "SRC1",
+					enabled: false,
+					pause: { reason: "template_changed", at: "2026-11-24T06:00:00.000Z" },
+				}),
+			],
+		});
+		const { user } = renderTab();
+		const row = within(await rowOf("Nightly"));
+		const note = "Its template is no longer saved. Edit the schedule to choose one.";
+		expect(row.getByText(note)).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
+		expect(await screen.findByText(`Nightly: ${note}`)).toBeVisible();
+		expect(bodyOf(calls, "schedules/update")).toEqual([]);
+	});
+
+	it("shows the server's sentence when the template's current revision needs a missing choice", async () => {
+		routes(
+			{
+				schedules: [
+					schedule({
+						id: "SC1",
+						name: "Nightly",
+						templateId: "T1",
+						sourceId: "SRC1",
+						enabled: false,
+						pause: { reason: "template_changed", at: "2026-11-24T06:00:00.000Z" },
+					}),
+				],
+				bodies: { T1: saved(T1, { maxPercent: 20 }) },
+			},
+			{ "schedules/update": () => fail("MISSING_REQUIRED", "set missing", 400) },
+		);
+		const { user } = renderTab();
+		await rowOf("Nightly");
+		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
+		expect(
+			await screen.findByText(
+				"Nightly: This template tracks missing entries, so the schedule has to say what to do about them.",
+			),
+		).toBeVisible();
+	});
+
+	it("renames a schedule without a stored missing choice on a rules.missing template without sending missing", async () => {
+		const nightly = schedule({
+			id: "SC1",
+			name: "Nightly",
+			templateId: "T1",
+			sourceId: "SRC1",
+			revision: 4,
+		});
+		const { calls } = routes(
+			{ schedules: [nightly], bodies: { T1: saved(T1, { maxPercent: 20 }) } },
+			{ "schedules/update": () => ({ schedule: { ...nightly, name: "Nightly 2" } }) },
+		);
+		const { user } = renderTab();
+		await rowOf("Nightly");
+		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		const dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
+		// No stored choice is the template's own, as the engine reads it.
+		expect(
+			await within(dialog).findByRole("radio", { name: "As the template sets" }),
+		).toBeChecked();
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), " 2");
+		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, name: "Nightly 2" },
+		]);
+	});
+
+	it("sends the template's missing choice when moving a schedule without one onto a rules.missing template", async () => {
+		const nightly = schedule({
+			id: "SC1",
+			name: "Nightly",
+			templateId: "T2",
+			sourceId: "SRC1",
+			revision: 4,
+		});
+		const { calls } = routes(
+			{ schedules: [nightly], bodies: { T1: saved(T1, { maxPercent: 20 }) } },
+			{ "schedules/update": () => ({ schedule: nightly }) },
+		);
+		const { user } = renderTab();
+		await rowOf("Nightly");
+		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		const dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
+		await choose(user, "Template", "Products feed");
+		await within(dialog).findByRole("radio", { name: "As the template sets" });
+		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, templateId: "T1", templateRevision: 3, missing: "template" },
+		]);
 	});
 
 	it("edits only what changed, with templateRevision whenever templateId changes", async () => {

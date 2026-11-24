@@ -184,6 +184,14 @@ export const M = {
 		message: "Paused: {reason}",
 	},
 	statePaused: { id: "flux-import.home-schedules.state-paused", message: "Paused" },
+	resumeRepins: {
+		id: "flux-import.home-schedules.resume-repins",
+		message: "Resume runs the template's current version.",
+	},
+	resumeTemplateGone: {
+		id: "flux-import.home-schedules.resume-template-gone",
+		message: "Its template is no longer saved. Edit the schedule to choose one.",
+	},
 	// Row actions: the visible label, and the accessible name that names the row
 	pause: { id: "flux-import.home-schedules.pause", message: "Pause" },
 	pauseRow: { id: "flux-import.home-schedules.pause-row", message: "Pause {name}" },
@@ -238,6 +246,7 @@ export const M = {
 		message: "Conflicts: {count}.",
 	},
 	countLocked: { id: "flux-import.home-schedules.count-locked", message: "Locked: {count}." },
+	runUnknown: { id: "flux-import.home-schedules.run-unknown", message: "Unknown outcome" },
 	rolledBack: { id: "flux-import.home-schedules.rolled-back", message: "Rolled back" },
 	openRun: { id: "flux-import.home-schedules.open-run", message: "Open" },
 	openRunRow: {

@@ -2,7 +2,7 @@ import { Badge, Banner, Button, Empty, Loader, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
-import type { ScheduleView } from "../../../plugin/schedules.js";
+import type { ScheduleView, UpdateScheduleInput } from "../../../plugin/schedules.js";
 import { api } from "../../api.js";
 import { ApiError, isForbidden } from "../../api-error.js";
 import { describeError } from "../../errors.js";
@@ -18,8 +18,7 @@ import {
 } from "../../queries.js";
 import { useHome } from "../Home.js";
 import { ConfirmDialog } from "../shared/ConfirmDialog.js";
-import { When } from "../shared/When.js";
-import { describeTiming, fromCron, launchMessage, pauseMessage } from "./cron.js";
+import { describeTiming, fromCron, launchMessage, pauseMessage, utcLabel } from "./cron.js";
 import { FenceBanner } from "./FenceBanner.js";
 import { M } from "./messages.js";
 import { RunLog } from "./RunLog.js";
@@ -40,20 +39,6 @@ function stateOf(
 	}
 	// Disabled without a reason: what Pause leaves.
 	return { text: t(M.statePaused), variant: "neutral" };
-}
-
-/** `iso` in UTC, as "Nov 25, 2026 03:00": a schedule's times are never converted (plan Ruling 13). */
-function utcLabel(iso: string, locale: string): string {
-	const at = new Date(iso);
-	if (Number.isNaN(at.getTime())) return iso;
-	const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(at);
-	const time = new Intl.DateTimeFormat(locale, {
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
-		timeZone: "UTC",
-	}).format(at);
-	return `${date} ${time}`;
 }
 
 /** Writes the route's answer for one schedule into the list, as the next read would. */
@@ -87,7 +72,7 @@ export function SchedulesTab() {
 	const limitId = useId();
 
 	const [busy, setBusy] = useState<{ id: string; action: Action } | null>(null);
-	const [failed, setFailed] = useState<{ name: string; error: unknown } | null>(null);
+	const [failed, setFailed] = useState<{ name: string; error?: unknown; said?: Msg } | null>(null);
 	const [reloading, setReloading] = useState(false);
 	const [editor, setEditor] = useState<{ id: string | null; opening: number; open: boolean }>({
 		id: null,
@@ -128,7 +113,29 @@ export function SchedulesTab() {
 				announce(t(M.queued, { name: s.name }));
 			} else {
 				const enabled = action === "resume";
-				const reply = await api.updateSchedule({ id: s.id, revision: s.revision, enabled });
+				let input: UpdateScheduleInput = { id: s.id, revision: s.revision, enabled };
+				if (enabled && s.pause?.reason === "template_changed") {
+					// Enabling re-pins only the source: the template is re-pinned here, to its
+					// current revision (coordinator ruling b). A template no longer saved cannot be.
+					if (templates.data !== undefined && !templates.data.some((x) => x.id === s.templateId)) {
+						setFailed({ name: s.name, said: M.resumeTemplateGone });
+						return;
+					}
+					const current = await client.fetchQuery({
+						queryKey: queryKeys.template(s.templateId),
+						queryFn: () => api.getTemplate({ id: s.templateId }),
+					});
+					// A threshold the current version no longer allows goes with it; a missing
+					// choice it newly asks for is the server's sentence (MISSING_REQUIRED).
+					const dropped = current.template.rules?.missing === undefined && s.missing !== undefined;
+					input = {
+						...input,
+						templateId: s.templateId,
+						templateRevision: current.revision,
+						...(dropped ? { missing: null } : {}),
+					};
+				}
+				const reply = await api.updateSchedule(input);
 				replaceRow(reply.schedule);
 				announce(t(enabled ? M.resumed : M.paused, { name: reply.schedule.name }));
 			}
@@ -183,7 +190,12 @@ export function SchedulesTab() {
 
 	return (
 		<div className="space-y-4">
-			{fence.data === undefined ? null : <FenceBanner fence={fence.data} />}
+			{fence.isError ? (
+				// Unread, the fence may hold scheduled runs back: said as the failed check.
+				<FenceBanner fence="error" />
+			) : fence.data === undefined ? null : (
+				<FenceBanner fence={fence.data} />
+			)}
 			<div className="flex flex-wrap items-center gap-3">
 				<Button
 					variant="primary"
@@ -203,6 +215,7 @@ export function SchedulesTab() {
 				<ActionError
 					name={failed.name}
 					error={failed.error}
+					{...(failed.said === undefined ? {} : { said: failed.said })}
 					reloading={reloading}
 					onReload={() => {
 						void reloadList().then(() => setFailed(null));
@@ -249,7 +262,9 @@ export function SchedulesTab() {
 												t(M.neverLaunched)
 											) : (
 												<div className="space-y-1">
-													<When iso={launch.at} />
+													<time dateTime={launch.at}>
+														{t(M.utcTime, { time: utcLabel(launch.at, i18n.locale) })}
+													</time>
 													<p className="text-sm">
 														{launch.outcome === "failed"
 															? t(M.launchFailed, { reason: t(launchMessage(launch)) })
@@ -260,6 +275,16 @@ export function SchedulesTab() {
 										</Table.Cell>
 										<Table.Cell>
 											<Badge variant={state.variant}>{state.text}</Badge>
+											{s.pause?.reason === "template_changed" && !s.enabled ? (
+												<p className="mt-1 text-sm text-kumo-subtle">
+													{t(
+														templates.data !== undefined &&
+															!templates.data.some((x) => x.id === s.templateId)
+															? M.resumeTemplateGone
+															: M.resumeRepins,
+													)}
+												</p>
+											) : null}
 										</Table.Cell>
 										<Table.Cell>
 											<div className="flex flex-wrap gap-2">
@@ -387,6 +412,8 @@ function RowButton(props: {
 function ActionError(props: {
 	name?: string;
 	error: unknown;
+	/** A refusal made here, before any request. */
+	said?: Msg;
 	reloading: boolean;
 	onReload(): void;
 }) {
@@ -412,7 +439,8 @@ function ActionError(props: {
 			/>
 		);
 	}
-	const { msg, values, detail } = describeError(props.error);
+	const { msg, values, detail } =
+		props.said === undefined ? describeError(props.error) : { msg: props.said };
 	const reason = t(msg, values);
 	return (
 		<Banner

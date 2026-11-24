@@ -1,9 +1,9 @@
 import { Badge, Button, Dialog, Link, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import type { RunEntry, ScheduleView } from "../../../plugin/schedules.js";
-import { useT } from "../../i18n.js";
+import { type Msg, useT } from "../../i18n.js";
 import { runUrl } from "../links.js";
-import { When, whenLabel } from "../shared/When.js";
+import { utcLabel } from "./cron.js";
 import { M, RUN_OUTCOMES } from "./messages.js";
 
 /** A run's counts in words: the four every run has, then any other that is not zero. */
@@ -25,6 +25,13 @@ function Counts(props: { counters: RunEntry["counters"] }) {
 		...extra.filter(([, n]) => n > 0).map(([msg, n]) => t(msg, { count: n })),
 	];
 	return <>{parts.join(" ")}</>;
+}
+
+/** A run's outcome in words; one a newer version added reads as unknown. */
+function outcomeOf(outcome: string): Msg {
+	return Object.hasOwn(RUN_OUTCOMES, outcome)
+		? RUN_OUTCOMES[outcome as keyof typeof RUN_OUTCOMES]
+		: M.runUnknown;
 }
 
 /**
@@ -63,34 +70,32 @@ export function RunLog(props: { schedule: ScheduleView | null; onClose(): void }
 								</Table.Row>
 							</Table.Header>
 							<Table.Body>
-								{s.runs.map((run) => (
-									<Table.Row key={run.jobId}>
-										<Table.Cell>
-											<When iso={run.at} />
-										</Table.Cell>
-										<Table.Cell>
-											<div className="flex flex-wrap items-center gap-2">
-												<span>{t(RUN_OUTCOMES[run.outcome] ?? RUN_OUTCOMES.failed)}</span>
-												{run.rolledBack === undefined ? null : (
-													<Badge variant="secondary">{t(M.rolledBack)}</Badge>
-												)}
-											</div>
-										</Table.Cell>
-										<Table.Cell>
-											<Counts counters={run.counters} />
-										</Table.Cell>
-										<Table.Cell>
-											<Link
-												href={runUrl(run.jobId)}
-												aria-label={t(M.openRunRow, {
-													when: whenLabel(run.at, Date.now(), i18n.locale, t),
-												})}
-											>
-												{t(M.openRun)}
-											</Link>
-										</Table.Cell>
-									</Table.Row>
-								))}
+								{s.runs.map((run) => {
+									const when = t(M.utcTime, { time: utcLabel(run.at, i18n.locale) });
+									return (
+										<Table.Row key={run.jobId}>
+											<Table.Cell>
+												<time dateTime={run.at}>{when}</time>
+											</Table.Cell>
+											<Table.Cell>
+												<div className="flex flex-wrap items-center gap-2">
+													<span>{t(outcomeOf(run.outcome))}</span>
+													{run.rolledBack === undefined ? null : (
+														<Badge variant="secondary">{t(M.rolledBack)}</Badge>
+													)}
+												</div>
+											</Table.Cell>
+											<Table.Cell>
+												<Counts counters={run.counters} />
+											</Table.Cell>
+											<Table.Cell>
+												<Link href={runUrl(run.jobId)} aria-label={t(M.openRunRow, { when })}>
+													{t(M.openRun)}
+												</Link>
+											</Table.Cell>
+										</Table.Row>
+									);
+								})}
 							</Table.Body>
 						</Table>
 					</div>

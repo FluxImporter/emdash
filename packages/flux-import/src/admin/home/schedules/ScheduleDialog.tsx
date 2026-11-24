@@ -123,8 +123,19 @@ function timingOf(form: Form, errors: Partial<Record<FieldName, Said>>): Timing 
 		: { kind: "weekly", day: form.day, hour, minute };
 }
 
-const sameMissing = (a: ScheduleMissing | undefined, b: ScheduleMissing | undefined) =>
-	JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Whether two missing choices run the same: none stored is the template's own, as the engine reads
+ * it (`missingOption` in `src/plugin/launch.ts`). `strict` tells them apart, for a move to another
+ * template, which the server checks against the stored value as it is.
+ */
+function sameMissing(
+	a: ScheduleMissing | undefined,
+	b: ScheduleMissing | undefined,
+	strict: boolean,
+): boolean {
+	const read = (m: ScheduleMissing | undefined) => (strict ? m : (m ?? "template"));
+	return JSON.stringify(read(a)) === JSON.stringify(read(b));
+}
 
 /**
  * Create or edit a schedule (spec "Create and edit", plan Ruling 13). Create sends every field;
@@ -380,8 +391,10 @@ function ScheduleForm(props: {
 			if (cron !== base.cron) patch.cron = cron;
 			if (form.publish !== base.publish) patch.publish = form.publish;
 			if (batchSize !== undefined && batchSize !== base.batchSize) patch.batchSize = batchSize;
-			// Only once the template is read: before, what it asks of `missing` is unknown.
-			if (loaded && !sameMissing(missing, base.missing)) patch.missing = missing ?? null;
+			// Only once the template is read: before, what it asks of `missing` is unknown. A rename
+			// sends none, so it never moves the schedule (assertNotBusy) or re-arms it.
+			const moving = patch.templateId !== undefined;
+			if (loaded && !sameMissing(missing, base.missing, moving)) patch.missing = missing ?? null;
 			// Nothing changed: nothing to send (the route refuses an empty change).
 			if (Object.keys(patch).length === 0) {
 				props.onCancel();
