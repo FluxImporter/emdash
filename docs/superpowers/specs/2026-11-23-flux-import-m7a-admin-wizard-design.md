@@ -356,3 +356,113 @@ Settled after the builder check, each marked where it applies above:
 5. How the admin module's Lingui messages are extracted (by hand in M7a, or a Lingui build).
 6. That `apiFetch` handles the trusted upload route (`/_emdash/api/flux-import/uploads`) and a
    raw `GET` for the log CSV.
+
+## Amendments from the plan and review
+
+Recorded by the review (`../notes/2026-11-23-m7a-review.md`); each names the plan ruling or fact
+behind it. They override the text above where they differ.
+
+1. **The `flux_source_id` widget lands, with one server change** (plan Ruling 1, Fact V3;
+   amends "The `flux_source_id` field" and "No engine change"). The coordinator answered yes:
+   `ensureSourceIdField` creates the field with `widget: "flux-import:source-id"` and sets that
+   widget on an existing `flux_source_id` that has none, in the same idempotent pass; it never
+   overwrites another widget. The admin module exports `fields: { "source-id": SourceIdField }`,
+   which renders the value read-only and collapsed. Fields on existing sites get the widget on
+   their next real import. No other server change was made.
+2. **Messages live beside their components, and `useT()` interpolates the English itself**
+   (plan Ruling 2, Fact V5; amends "Architecture inside the package"'s single `messages.ts`). Each
+   folder has a `messages.ts` of `{ id, message }` descriptors; the error and warning tables live
+   in `src/admin/errors.ts`. `translate` asks Lingui only for an ID its catalog holds and
+   substitutes `{name}` placeholders in the English otherwise, so no uncompiled message reaches
+   Lingui in a production build and placeholders always work. A test keeps IDs unique and
+   placeholders simple across every `messages.ts`.
+3. **Route errors are read from the envelope** (plan Ruling 3, Fact D1). `parseApiResponse`
+   drops the error code, so `readError` builds `ApiError(code, message, status, details?)` from
+   `{ success: false, error }`; a body that is not JSON is `HTTP_<status>`, and a rejected
+   `fetch` stays a `TypeError`. Successful replies are still unwrapped by `parseApiResponse`.
+4. **The log is downloaded through `apiFetch`** (plan Ruling 4, Fact D2): a private route's GET
+   needs `X-EmDash-Request: 1` under session auth, so a plain link answers 403. The reply becomes
+   a `Blob` and an object URL, named from `content-disposition`, else `flux-import-<id>.csv`.
+5. **The schema is read from EmDash's manifest and schema API** (plan Ruling 5, Fact V1):
+   collections, locales and taxonomies from `GET /_emdash/api/manifest`, a collection's fields
+   from `GET /_emdash/api/schema/collections/<slug>?includeFields=true`. Hidden collections are
+   listed as "(hidden)"; `flux_source_id` is never a target.
+6. **The Map panel shows raw sample values; Preview shows conversions** (plan Ruling 6,
+   Fact V4; the spec's own fallback). No route converts samples without writing; the panel says
+   "Converted values show in Preview".
+7. **Every source becomes an upload ID in the Source step** (plan Ruling 7): upload, paste
+   (`sources/paste`), URL (`sources/create`, then `sources/fetch`) and saved source
+   (`sources/fetch { id }`). `sources/sample`, `templates/suggest` and both `jobs/create` calls
+   take that `uploadId`; a source ID is kept for display only.
+8. **Server constants and `resolvePath` are mirrored in the browser** (plan Ruling 8):
+   `src/admin/limits.ts` and `src/admin/wizard/sample.ts` hold copies, and node tests pin each to
+   the server's, since the admin may not import server code at runtime.
+9. **Only Kumo and the admin's prebuilt utility classes** (plan Ruling 9, Fact D3). The host
+   does not scan plugin sources, so a test reads every `className` literal and requires each class
+   in `@emdash-cms/admin/dist/styles.css`. The review found one consequence: Kumo classes the
+   admin never compiled (`has-[[data-disabled]]:opacity-50` on a disabled radio group) have no
+   effect, so a control must use a Kumo style the admin's CSS has (open issues).
+10. **Component tests mock the global `fetch` beneath the real `apiFetch`** (plan Ruling 11;
+    refines "Testing"'s "mocked at `apiFetch`"), so every test also checks the CSRF header.
+11. **Template-save timing** (plan Ruling 13). "Save the changes to <template>" runs
+    `templates/update` on Options' Next, so its schedule warnings show at the top of Preview;
+    Preview and Run then use the new revision. "Save as template" and "Save as a new template" run
+    `templates/create` on Run, and only while Options offers them (`saveOffered`). An unedited
+    saved template runs by ID and revision; "Run with these changes without saving them" runs the
+    draft inline.
+12. **Run-driver policy** (plan Ruling 14): retries after 1, 3 and 9 s for a `TypeError`, a 429
+    or a 5xx, then the error with "Try again"; any other 4xx at once; 2 s between calls while
+    another holder's lease is live (any non-null `lease` in a reply), 0.5 s after a reply with no
+    progress and no lease; the driver stops on `completed`, `cancelled`, `failed` or `paused`.
+13. **The owner is derived** (plan Ruling 15, coordinator's call 1): the saved template's name,
+    lower-cased, runs outside `[a-z0-9]` to `-`, trimmed of `-`, cut to 100 characters; else
+    `wizard-<collection>-<locale>`. The clash check lists every page of `templates/list` for the
+    collection and warns when another template has the same owner and locale.
+14. **"The same date for every record"** (plan Ruling 16, coordinator's call 4) is
+    `publishAt: { expr: JSON.stringify("<yyyy-MM-ddTHH:mm>"), tz: "site" }` with `publish: true`.
+15. **Access is probed once on mount with `credentials/list`** (plan Ruling 17): a 403 there
+    renders only "Only administrators can import."; any other failure its sentence and "Try
+    again". Once granted, a later failed probe never drops the draft.
+16. **The sites declare `@cloudflare/kumo` 2.6.0 and `zod` 4.5.4** (Task 1 review). A direct
+    Kumo or admin dependency in flux-import otherwise lets pnpm split `emdash` by its optional
+    peers into variants with different Kumo copies. `sites/dev` and `sites/dev-cf` declare both to
+    steer pnpm to one `emdash`/admin/Kumo variant. Bump them together with the Kumo version
+    EmDash's admin uses, never one alone; the admin-package tests catch a split.
+17. **A finished run offers "Start a new import"** (Task 16 acceptance run; amends "6. Run"). A
+    completed or cancelled job's Run screen remounts the wizard with an empty draft and drops
+    `?job=` from the URL. Without it a finished run was a dead end: the host's sidebar link
+    changes the URL without remounting the page, and a reload reopens the job.
+
+## Open issues
+
+From the review (`../notes/2026-11-23-m7a-review.md`, which has the details):
+
+- **The host does not remount the page on its own navigation.** The sidebar's Import link, or
+  any navigation to `/import` with another query, changes the URL but not the wizard, which reads
+  the URL once at mount. "Start a new import" covers the finished-run case; a reload covers the
+  rest.
+- **Kumo classes missing from the admin's prebuilt CSS have no effect.** Plan Ruling 9's test
+  checks the plugin's own classes, not those Kumo's components apply. Kumo's group-level disabled
+  style was the one found; others may exist. Each control's look should be checked in the browser.
+- **The admin has two sidebar entries named "Import"**: EmDash's WordPress importer (Admin) and
+  this page (Plugins). The label is the spec's; a clearer one (for example "Import data") would
+  need the descriptor and runtime `admin.pages` changed together.
+- **Kumo's `Empty` always renders an `<h2>`**, so the empty states under the Source step's `<h3>`
+  sections break the heading order. Kumo 2.6.0 has no prop for the level.
+- **A new field's settings need a return to Map.** The schema diff applies on Map's Next and the
+  wizard moves to Options, so a new `datetime` field's date format is set by going back to Map.
+- **Taxonomy terms match by slug by default.** A feed value such as `EUR` with "Create missing
+  terms" on fails every record ("not a slug") until "Match terms by" is set to Label. Preview
+  shows the failure in plain words; the default is the template grammar's.
+- **Every Preview leaves a dry-run job and its staged file** until retention removes them; the
+  wizard cancels and deletes none. A Preview left before its dry run finishes leaves the job
+  unfinished, and more than 100 unfinished dry runs on one URL source make it busy for schedules
+  (M6b Ruling 54). M7b's job list should show and clear them.
+- **"Waiting for the previous batch to finish" stays through the reopened page's own first
+  batch**: the driver learns that it holds the lease only from that batch's reply.
+- **The production build is unverified** (carried from M2): the acceptance ran on `astro dev`, so
+  Fact V5's production Lingui path and the admin bundle's single copies are proven by tests and
+  the dev server's module URLs only.
+- **Carried to M7b** from M6: `jobs/list` returns whole job rows (M6a); a fenced site stops
+  schedules silently, and the admin should show the fence (M6b final review); abandoned agent dry
+  runs make a source busy (M6c, M6b Ruling 54).
