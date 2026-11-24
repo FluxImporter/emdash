@@ -1,4 +1,5 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { LinkButton } from "@cloudflare/kumo";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { TemplatesTab } from "../../src/admin/home/templates/TemplatesTab.js";
@@ -440,9 +441,15 @@ describe("Templates tab", () => {
 		show();
 		expect(await screen.findByText("No saved templates yet.")).toBeTruthy();
 		expect(screen.getByText("Save one from the wizard: Options, Save as template.")).toBeTruthy();
-		expect(screen.getByRole("link", { name: "Open the wizard" }).getAttribute("href")).toBe(
-			"/_emdash/admin/plugins/flux-import/import",
+		const link = screen.getByRole("link", { name: "Open the wizard" });
+		expect(link.getAttribute("href")).toBe("/_emdash/admin/plugins/flux-import/import");
+		// A button look, as the empty Jobs tab's New import (Task 16): the default variant reads as text.
+		const { container } = render(
+			<LinkButton variant="primary" href="/x">
+				x
+			</LinkButton>,
 		);
+		expect(link.className).toBe((container.firstElementChild as HTMLElement).className);
 	});
 
 	it("shows a load failure with Try again", async () => {

@@ -90,7 +90,11 @@ export function TemplatesTab() {
 				size="sm"
 				title={t(M.empty)}
 				description={t(M.emptyHint)}
-				contents={<LinkButton href={WIZARD_URL}>{t(M.openWizard)}</LinkButton>}
+				contents={
+					<LinkButton variant="primary" href={WIZARD_URL}>
+						{t(M.openWizard)}
+					</LinkButton>
+				}
 			/>
 		);
 	} else {
