@@ -1,5 +1,5 @@
 import { Banner, Button, Checkbox, Empty, Loader, Select, Text } from "@cloudflare/kumo";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
@@ -73,21 +73,26 @@ export function TargetStep() {
 		info !== undefined && translationLocale !== null && !info.locales.includes(translationLocale)
 			? translationLocale
 			: null;
-	const canNext =
+	const complete =
 		info !== undefined &&
 		collection !== null &&
 		chosenLocale !== null &&
 		staleLocale === null &&
 		(translationLocale === null ||
-			(staleTranslation === null && translationLocale !== chosenLocale)) &&
-		!fields.isError;
+			(staleTranslation === null && translationLocale !== chosenLocale));
+	const canNext = complete && !fields.isError;
 	const stale = staleLocale ?? staleTranslation;
 	const staleSentence = stale === null ? null : t(M.staleLocale, { locale: stale });
 	const hasCollections = (info?.collections.length ?? 0) > 0;
-	const changesCollection =
-		state.target !== null &&
-		collection !== state.target.collection &&
-		Object.keys(state.rows).length > 0;
+	// A new collection clears the mapping as soon as it is chosen, so this warns beforehand.
+	const hasMapping = state.target !== null && Object.keys(state.rows).length > 0;
+
+	// Each complete choice goes to the draft as it is made, so leaving by the step bar keeps it
+	// (final review 6). The same target again changes nothing (the reducer ignores it).
+	useEffect(() => {
+		if (!complete || collection === null || chosenLocale === null) return;
+		dispatch({ type: "targetChosen", collection, locale: chosenLocale, translationLocale });
+	}, [complete, collection, chosenLocale, translationLocale, dispatch]);
 
 	const next = () => {
 		if (collection === null || chosenLocale === null) return;
@@ -114,7 +119,7 @@ export function TargetStep() {
 						value: c.slug,
 						label: c.hidden ? t(M.hiddenCollection, { label: c.label }) : c.label,
 					}))}
-					{...(changesCollection ? { description: t(M.clearsMapping) } : {})}
+					{...(hasMapping ? { description: t(M.clearsMapping) } : {})}
 				/>
 				{fields.isError ? (
 					<ReadError error={fields.error} onRetry={() => void fields.refetch()} />

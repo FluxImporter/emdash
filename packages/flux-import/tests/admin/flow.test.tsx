@@ -674,9 +674,10 @@ describe("the import wizard, end to end", () => {
 		// A new collection: the mapping, the dry run and the way to Run are gone.
 		await user.click(stepLink(2, "Target"));
 		await heading("Target");
-		await choose(user, "Collection", "Pages");
 		expect(screen.getByText("Changing the collection clears the mapping.")).toBeVisible();
-		await user.click(next());
+		await choose(user, "Collection", "Pages");
+		// Committed as chosen (final review 6): leaving by the step bar keeps it.
+		await user.click(stepLink(3, "Map"));
 		await heading("Map");
 		await waitFor(() =>
 			expect(calls.filter((c) => c.route === "templates/suggest").map((c) => c.body)).toEqual([

@@ -38,15 +38,20 @@ function StateProbe() {
 	const { state } = useWizard();
 	return (
 		<output data-testid="state">
-			{JSON.stringify({ step: state.step, target: state.target, rows: state.rows })}
+			{JSON.stringify({
+				step: state.step,
+				target: state.target,
+				rows: state.rows,
+				generation: state.generation,
+			})}
 		</output>
 	);
 }
 
-function readState(): Pick<WizardState, "step" | "target" | "rows"> {
+function readState(): Pick<WizardState, "step" | "target" | "rows" | "generation"> {
 	return JSON.parse(screen.getByTestId("state").textContent ?? "{}") as Pick<
 		WizardState,
-		"step" | "target" | "rows"
+		"step" | "target" | "rows" | "generation"
 	>;
 }
 
@@ -224,7 +229,7 @@ describe("TargetStep", () => {
 		});
 	});
 
-	it("says a new collection clears the mapping", async () => {
+	it("says before the change that a new collection clears the mapping, then clears it", async () => {
 		mockRoutes({
 			"GET manifest": () => MANIFEST,
 			"GET collection:posts": () => POSTS,
@@ -236,11 +241,72 @@ describe("TargetStep", () => {
 		});
 		await screen.findByRole("combobox", { name: "Collection" });
 		const notice = "Changing the collection clears the mapping.";
-		expect(screen.queryByText(notice)).toBeNull();
-		await choose(user, "Collection", "Pages");
+		// Choosing commits at once (final review 6), so the warning comes first.
 		expect(screen.getByText(notice)).toBeVisible();
-		await choose(user, "Collection", "Posts");
+		await choose(user, "Collection", "Pages");
+		await waitFor(() => expect(readState().target?.collection).toBe("pages"));
+		expect(readState().rows).toEqual({});
 		expect(screen.queryByText(notice)).toBeNull();
+		// The same collection again keeps the mapping.
+		await choose(user, "Collection", "Pages");
+		expect(readState().target?.collection).toBe("pages");
+	});
+
+	it("keeps a mapping when the same collection is chosen again", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		const { user } = renderTarget({
+			target: { collection: "posts", locale: "en", translationLocale: null },
+			rows: { key: { from: "id" } },
+		});
+		await screen.findByRole("combobox", { name: "Collection" });
+		await choose(user, "Locale", "fr");
+		await choose(user, "Collection", "Posts");
+		await waitFor(() => expect(readState().target?.locale).toBe("fr"));
+		expect(readState().rows).toEqual({ key: { from: "id" } });
+	});
+
+	it("commits each choice to the draft as it is made, without Next (final review 6)", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		const { user } = renderTarget();
+		await screen.findByRole("combobox", { name: "Collection" });
+		expect(readState().target).toBeNull();
+		await choose(user, "Collection", "Posts");
+		await waitFor(() =>
+			expect(readState().target).toEqual({
+				collection: "posts",
+				locale: "en",
+				translationLocale: null,
+			}),
+		);
+		await choose(user, "Locale", "fr");
+		await waitFor(() => expect(readState().target?.locale).toBe("fr"));
+		await user.click(screen.getByRole("checkbox", { name: TRANSLATES }));
+		await waitFor(() => expect(readState().target?.translationLocale).toBe("en"));
+		await choose(user, "Locale of the original entries", "de");
+		await waitFor(() =>
+			expect(readState().target).toEqual({
+				collection: "posts",
+				locale: "fr",
+				translationLocale: "de",
+			}),
+		);
+		expect(readState().step).toBe("target");
+	});
+
+	it("changes nothing on a revisit, and commits a changed locale with its fallback", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		const saved = { collection: "posts", locale: "fr", translationLocale: "de" };
+		const { user } = renderTarget({ target: saved, rows: { key: { from: "id" } } });
+		await screen.findByRole("combobox", { name: "Collection" });
+		expect(readState().target).toEqual(saved);
+		expect(readState().rows).toEqual({ key: { from: "id" } });
+		// Not even for a moment while the site was read: the draft never changed.
+		expect(readState().generation).toBe(0);
+		await choose(user, "Locale", "de");
+		// "de" cannot translate itself; the original falls back to the default.
+		await waitFor(() =>
+			expect(readState().target).toEqual({ ...saved, locale: "de", translationLocale: "en" }),
+		);
 	});
 
 	it("says nothing about the mapping when there is none to clear", async () => {
