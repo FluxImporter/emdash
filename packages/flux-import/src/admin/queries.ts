@@ -1,4 +1,5 @@
-import { skipToken, type UseQueryResult, useQuery } from "@tanstack/react-query";
+import { skipToken, type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useSyncExternalStore } from "react";
 import type { CredentialInfo } from "../plugin/credentials.js";
 import type { Page } from "../plugin/service.js";
 import type { SourceRow } from "../plugin/sources.js";
@@ -48,6 +49,23 @@ export function useFields(collection: string | null): UseQueryResult<SchemaField
 		queryFn: collection === null ? skipToken : () => api.collection(collection),
 		retry,
 	});
+}
+
+/**
+ * A collection's fields as the cache holds them, without asking for them: undefined until a step
+ * that reads them (Target, Map, Options) has. It follows the cache, so a refetch shows here too.
+ */
+export function useCachedFields(collection: string | null): SchemaField[] | undefined {
+	const client = useQueryClient();
+	const subscribe = useCallback(
+		(onChange: () => void) => client.getQueryCache().subscribe(onChange),
+		[client],
+	);
+	return useSyncExternalStore(subscribe, () =>
+		collection === null
+			? undefined
+			: client.getQueryData<SchemaField[]>(queryKeys.fields(collection)),
+	);
 }
 
 /** The credential names and headers (never values); also the page's access probe (Ruling 17). */

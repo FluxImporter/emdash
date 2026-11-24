@@ -1,17 +1,38 @@
 import { useT } from "../i18n.js";
+import { useCachedFields } from "../queries.js";
+import type { SchemaField } from "../types.js";
 import { useWizard } from "./context.js";
 import { SHELL } from "./messages.js";
-import { reachable, STEPS } from "./state.js";
+import { mapBlockers, reachable, STEPS, type StepId, type WizardState } from "./state.js";
+
+/** The steps after Map: each needs a mapping Map would let through. */
+const AFTER_MAP: ReadonlySet<StepId> = new Set(["options", "preview", "run"]);
 
 /**
- * The step bar: an ordered list of the six steps. The current step and every reachable one is a
- * link; a click changes the step in place instead of loading `?step=` (preflight F20). An
+ * Whether the step bar links `step`: it is reachable, and, for a step after Map, Map has no
+ * blockers. Map's blockers need the collection's fields, so they are checked only once a step has
+ * read them; and never once a run exists, which only Run shows.
+ */
+function linked(
+	state: WizardState,
+	step: StepId,
+	fields: readonly SchemaField[] | undefined,
+): boolean {
+	if (!reachable(state, step)) return false;
+	if (state.run !== null || fields === undefined || !AFTER_MAP.has(step)) return true;
+	return mapBlockers(state, fields).length === 0;
+}
+
+/**
+ * The step bar: an ordered list of the six steps. The current step and every one `linked` allows
+ * is a link; a click changes the step in place instead of loading `?step=` (preflight F20). An
  * unreachable step is marked `aria-disabled`, tells screen readers it is not available yet, and is
  * not a link.
  */
 export function StepBar() {
 	const t = useT();
 	const { state, dispatch } = useWizard();
+	const fields = useCachedFields(state.target?.collection ?? null);
 	return (
 		<ol aria-label={t(SHELL.steps)} className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
 			{STEPS.map((step, index) => {
@@ -23,7 +44,7 @@ export function StepBar() {
 				);
 				return (
 					<li key={step}>
-						{current || reachable(state, step) ? (
+						{current || linked(state, step, fields) ? (
 							<a
 								href={`?step=${step}`}
 								aria-current={current ? "step" : undefined}

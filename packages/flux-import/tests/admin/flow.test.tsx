@@ -578,6 +578,44 @@ describe("the import wizard, end to end", () => {
 		expect(bodies(calls, "jobs/create")).toHaveLength(2);
 	});
 
+	it("links Options, Preview and Run in the step bar only while Map has no blockers", async () => {
+		mockRoutes(server());
+		const { user } = renderPage();
+		await upload();
+		await user.click(next());
+		await target(user);
+		await mapped();
+		await user.click(next());
+		await heading("Options");
+		await user.click(next());
+		await previewed();
+		expect(stepLink(6, "Run")).toBeVisible();
+
+		// The required Title left unmapped: every later step would fail, so none is linked.
+		await user.click(stepLink(3, "Map"));
+		await heading("Map");
+		await user.click(screen.getByRole("button", { name: "Remove title from Title" }));
+		expect(next()).toBeDisabled();
+		for (const [n, step] of [
+			[4, "Options"],
+			[5, "Preview"],
+			[6, "Run"],
+		] as const) {
+			expect(screen.queryByRole("link", { name: `${n} ${step}` }), step).toBeNull();
+		}
+
+		// Mapped again: Options and Preview are back; Run waits for a new dry run.
+		await user.click(
+			within(screen.getByTestId("field:title")).getByRole("button", { name: /^Title/ }),
+		);
+		const details = screen.getByRole("complementary", { name: "Details" });
+		await user.click(within(details).getByRole("combobox", { name: "Source key" }));
+		await user.click(await screen.findByRole("option", { name: "title" }));
+		expect(stepLink(4, "Options")).toBeVisible();
+		expect(stepLink(5, "Preview")).toBeVisible();
+		expect(screen.queryByRole("link", { name: "6 Run" })).toBeNull();
+	});
+
 	it("never sends a request without X-EmDash-Request", async () => {
 		const create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:log");
 		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
