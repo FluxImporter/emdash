@@ -619,6 +619,37 @@ describe("the import wizard, end to end", () => {
 		expect(screen.queryByRole("link", { name: "6 Run" })).toBeNull();
 	});
 
+	it("links no step after Map while a proposed field waits for the schema diff", async () => {
+		mockRoutes(server());
+		const { user } = renderPage();
+		await upload(user);
+		await user.click(next());
+		await target(user);
+		await mapped();
+		expect(stepLink(4, "Options")).toBeVisible();
+
+		// A proposal goes through Map's Next and the schema diff, never around them.
+		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+		const details = screen.getByRole("complementary", { name: "Details" });
+		await user.click(within(details).getByRole("combobox", { name: "Key for the new field" }));
+		await user.click(await screen.findByRole("option", { name: "Released" }));
+		await screen.findByText("From Released · slug released");
+		for (const [n, step] of [
+			[4, "Options"],
+			[5, "Preview"],
+			[6, "Run"],
+		] as const) {
+			expect(screen.queryByRole("link", { name: `${n} ${step}` }), step).toBeNull();
+		}
+		expect(next()).toBeEnabled();
+		expect(stepLink(1, "Source")).toBeVisible();
+		expect(stepLink(2, "Target")).toBeVisible();
+
+		// Removed again, Options is a link once more.
+		await user.click(screen.getByRole("button", { name: "Remove Released" }));
+		expect(stepLink(4, "Options")).toBeVisible();
+	});
+
 	it("never sends a request without X-EmDash-Request", async () => {
 		const create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:log");
 		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});

@@ -9,9 +9,10 @@ import { mapBlockers, reachable, STEPS, type StepId, type WizardState } from "./
 const AFTER_MAP: ReadonlySet<StepId> = new Set(["options", "preview", "run"]);
 
 /**
- * Whether the step bar links `step`: it is reachable, and, for a step after Map, Map has no
- * blockers. Map's blockers need the collection's fields, so they are checked only once a step has
- * read them; and never once a run exists, which only Run shows.
+ * Whether the step bar links `step`: it is reachable, and, for a step after Map, no proposed field
+ * waits (it goes through Map's Next and the schema diff) and Map has no blockers. Map's blockers
+ * need the collection's fields, so they are checked only once a step has read them. Neither holds
+ * once a run exists, which only Run shows.
  */
 function linked(
 	state: WizardState,
@@ -19,8 +20,9 @@ function linked(
 	fields: readonly SchemaField[] | undefined,
 ): boolean {
 	if (!reachable(state, step)) return false;
-	if (state.run !== null || fields === undefined || !AFTER_MAP.has(step)) return true;
-	return mapBlockers(state, fields).length === 0;
+	if (state.run !== null || !AFTER_MAP.has(step)) return true;
+	if (state.newFields.length > 0) return false;
+	return fields === undefined || mapBlockers(state, fields).length === 0;
 }
 
 /**
