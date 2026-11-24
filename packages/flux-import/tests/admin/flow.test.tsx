@@ -603,6 +603,9 @@ describe("the import wizard, end to end", () => {
 		] as const) {
 			expect(screen.queryByRole("link", { name: `${n} ${step}` }), step).toBeNull();
 		}
+		// The steps before Map stay open: they cannot fail on the mapping.
+		expect(stepLink(1, "Source")).toBeVisible();
+		expect(stepLink(2, "Target")).toBeVisible();
 
 		// Mapped again: Options and Preview are back; Run waits for a new dry run.
 		await user.click(
