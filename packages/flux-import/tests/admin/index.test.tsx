@@ -1,8 +1,8 @@
 import { setupI18n } from "@lingui/core";
 import { I18nProvider } from "@lingui/react";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { type Msg, useT } from "../../src/admin/i18n.js";
 import { pages } from "../../src/admin/index.js";
@@ -187,6 +187,26 @@ describe("mockRoutes", () => {
 		expect(events).toEqual(["abort", "onabort", "loadend"]);
 		expect(xhr.status).toBe(0);
 	});
+});
+
+describe("renderAdmin with fakeTimers", () => {
+	it("lets user click, and waitFor advance the fake clock, under vi.useFakeTimers()", async () => {
+		vi.useFakeTimers();
+		function Later() {
+			const [shown, setShown] = useState(false);
+			return (
+				<button type="button" onClick={() => setTimeout(() => setShown(true), 5000)}>
+					{shown ? "Shown" : "Go"}
+				</button>
+			);
+		}
+		const { user } = renderAdmin(<Later />, { fakeTimers: true });
+		await user.click(screen.getByRole("button", { name: "Go" }));
+		// Only fake time can fire the 5 s timer: waitFor advances it as it polls.
+		await waitFor(() => expect(screen.getByRole("button", { name: "Shown" })).toBeVisible(), {
+			timeout: 6000,
+		});
+	}, 2000);
 });
 
 describe("setup.ts", () => {

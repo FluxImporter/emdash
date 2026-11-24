@@ -1,4 +1,5 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { WizardProvider } from "../../src/admin/wizard/context.js";
@@ -428,7 +429,7 @@ describe("the Run step", () => {
 				return real({ status: "completed", counters: counters(4) });
 			},
 		});
-		renderRun(reopened, { fakeTimers: true });
+		const { user } = renderRun(reopened, { fakeTimers: true });
 		await tick();
 		expect(screen.getByText("Connection lost; retrying (1 of 3)")).toBeVisible();
 		await tick(1000);
@@ -439,8 +440,7 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/next")).toHaveLength(4);
 		expect(screen.getByText("Something went wrong on the server. Try again.")).toBeVisible();
 		expect(screen.queryByText(/retrying/)).toBeNull();
-		// `user` stalls under fake timers in happy-dom, even with `advanceTimers`.
-		fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+		await user.click(screen.getByRole("button", { name: "Try again" }));
 		await tick();
 		expect(screen.getByText("The import is complete.")).toBeVisible();
 		expect(named(calls, "jobs/next")).toHaveLength(5);
@@ -569,18 +569,18 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(JOB_ID);
 	});
-	/** Pauses, or cancels and confirms, with fake timers (`user` stalls under them). */
-	async function stopBy(how: "pause" | "cancel") {
+	/** Pauses, or cancels and confirms, with fake timers. */
+	async function stopBy(user: UserEvent, how: "pause" | "cancel") {
 		if (how === "pause") {
-			fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+			await user.click(screen.getByRole("button", { name: "Pause" }));
 			await tick();
 			expect(screen.getByText("The import is paused.")).toBeVisible();
 			return;
 		}
-		fireEvent.click(screen.getByRole("button", { name: "Cancel import" }));
+		await user.click(screen.getByRole("button", { name: "Cancel import" }));
 		await tick();
 		const dialog = screen.getByRole("alertdialog");
-		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel import" }));
+		await user.click(within(dialog).getByRole("button", { name: "Cancel import" }));
 		await tick();
 		expect(screen.getByText("The import was cancelled.")).toBeVisible();
 	}
@@ -597,7 +597,7 @@ describe("the Run step", () => {
 				"jobs/pause": () => stopped("paused"),
 				"jobs/cancel": () => stopped("cancelled"),
 			});
-			renderRun(reopened, { fakeTimers: true });
+			const { user } = renderRun(reopened, { fakeTimers: true });
 			await tick();
 			await tick(1000);
 			await tick(3000);
@@ -605,7 +605,7 @@ describe("the Run step", () => {
 			expect(screen.getByRole("alert")).toHaveTextContent(
 				"Something went wrong on the server. Try again.",
 			);
-			await stopBy(how);
+			await stopBy(user, how);
 			expect(screen.queryByRole("alert")).toBeNull();
 			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 		},
@@ -628,7 +628,7 @@ describe("the Run step", () => {
 			"jobs/pause": () => stopped("paused"),
 			"jobs/cancel": () => stopped("cancelled"),
 		});
-		renderRun(reopened, { fakeTimers: true });
+		const { user } = renderRun(reopened, { fakeTimers: true });
 		await tick();
 		expect(
 			screen.getByText(
@@ -637,7 +637,7 @@ describe("the Run step", () => {
 					: "Waiting for the previous batch to finish",
 			),
 		).toBeVisible();
-		await stopBy(how);
+		await stopBy(user, how);
 		const sent = named(calls, "jobs/next").length;
 		await tick(60_000);
 		expect(named(calls, "jobs/next")).toHaveLength(sent);

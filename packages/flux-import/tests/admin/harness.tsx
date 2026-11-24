@@ -278,13 +278,29 @@ export function fail(code: string, message: string, status: number, details?: un
 }
 
 /**
+ * Testing Library's fake-timer hook. Its `asyncWrapper` (which every `user` call runs through)
+ * ends by awaiting a `setTimeout(0)`, and advances it only through a global `jest` when the timers
+ * are faked; Vitest has no `jest`, so under `vi.useFakeTimers()` every `user` call hung, and
+ * `waitFor` never advanced the fake clock. Stubbed per test; `setup.ts` unstubs it.
+ */
+function stubJestTimers(): void {
+	vi.stubGlobal("jest", {
+		advanceTimersByTime: (ms: number) => {
+			vi.advanceTimersByTime(ms);
+		},
+	});
+}
+
+/**
  * Renders `ui` as the admin hosts a plugin page: inside `I18nProvider` (English, no catalog) and
- * `QueryClientProvider` (no retries). With `fakeTimers`, `user` advances Vitest's fake timers.
+ * `QueryClientProvider` (no retries). With `fakeTimers`, `user` and `waitFor` advance Vitest's
+ * fake timers (call `vi.useFakeTimers()` first).
  */
 export function renderAdmin(
 	ui: ReactElement,
 	opts: { fakeTimers?: boolean } = {},
 ): RenderResult & { user: UserEvent; queryClient: QueryClient } {
+	if (opts.fakeTimers) stubJestTimers();
 	const i18n = setupI18n({ locale: "en", messages: { en: {} } });
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
