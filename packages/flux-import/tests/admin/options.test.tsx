@@ -354,6 +354,9 @@ describe("the Options step", () => {
 			{ type: "rowSet", row: "taxonomy:tag", mapping: { from: "title" } },
 		]);
 		const { user, seen } = renderOptions(state);
+		// One per line, spaced like Kumo's own group (Task 16 polish: they ran together).
+		const list = (await screen.findByRole("checkbox", { name: "Slug" })).closest(".max-h-96");
+		expect(list).toHaveClass("flex", "flex-col", "gap-2", "overflow-y-auto");
 		await user.click(await screen.findByRole("checkbox", { name: "Slug" }));
 		// The taxonomy's label, from the site's manifest.
 		await user.click(await screen.findByRole("checkbox", { name: "Tags" }));

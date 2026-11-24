@@ -308,7 +308,8 @@ export function OptionsStep() {
 						onValueChange={(value: string[]) => set({ updateFields: value })}
 						{...(tooMany ? { error: t(M.updateFieldsTooMany, { max: MAX_UPDATE_FIELDS }) } : {})}
 					>
-						<div className="max-h-96 overflow-y-auto">
+						{/* Kumo spaces the group's own children; this list spaces its items the same way. */}
+						<div className="flex max-h-96 flex-col gap-2 overflow-y-auto">
 							{names.map((n) => (
 								<Checkbox.Item
 									key={n}
