@@ -12,7 +12,7 @@ import type { ApplyResult, FieldRequest } from "../plugin/schema-apply.js";
 import type { Page } from "../plugin/service.js";
 import type { FetchOutcome, SourceRow } from "../plugin/sources.js";
 import type { SuggestReply } from "../plugin/suggest.js";
-import type { JobListItem } from "../plugin/summaries.js";
+import type { ClearDryRunsReply, JobListItem } from "../plugin/summaries.js";
 import type { TemplateFile } from "../plugin/template-files.js";
 import type { SavedResult, SavedTemplate, TemplateSummary } from "../plugin/templates.js";
 import type { CsvSample } from "../sources/csv.js";
@@ -279,6 +279,12 @@ export const api = {
 	/** One page of the Jobs table: real imports, or the dry runs (`jobs/summaries`, never `jobs/list`). */
 	jobSummaries: (i: { dryRun: boolean; cursor?: string }, signal?: AbortSignal) =>
 		callRoute<Page<JobListItem>>("jobs/summaries", i, signal),
+	/** One bounded step of clearing the dry runs; the caller repeats it while `more`. */
+	clearDryRuns: (i: { cursor?: string }) =>
+		callRoute<ClearDryRunsReply>(
+			"jobs/clear-dry-runs",
+			i.cursor === undefined ? {} : { cursor: i.cursor },
+		),
 	rollback: (i: { id: string; dryRun: boolean }) => callRoute<Job>("jobs/rollback", i),
 	/** `GET /_emdash/api/manifest` (any signed-in user), mapped (plan Ruling 5). */
 	site: async (): Promise<SiteInfo> => toSiteInfo(await getJson<Manifest>(MANIFEST_URL)),

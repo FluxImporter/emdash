@@ -117,6 +117,7 @@ const ROUTE_INPUTS: Record<string, [method: keyof typeof api, call: () => Promis
 	"jobs/retry": ["retry", () => api.retry({ id: "J1" })],
 	"jobs/records": ["records", () => api.records({ id: "J1", status: "failed", cursor: "c1" })],
 	"jobs/summaries": ["jobSummaries", () => api.jobSummaries({ dryRun: true, cursor: "c1" })],
+	"jobs/clear-dry-runs": ["clearDryRuns", () => api.clearDryRuns({ cursor: "c1" })],
 	"jobs/rollback": ["rollback", () => api.rollback({ id: "J1", dryRun: false })],
 	"templates/delete": ["deleteTemplate", () => api.deleteTemplate({ id: "T1", revision: 3 })],
 	"templates/export": ["exportTemplate", () => api.exportTemplate({ id: "T1" })],
