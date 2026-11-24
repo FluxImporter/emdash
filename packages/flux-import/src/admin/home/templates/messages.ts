@@ -2,7 +2,6 @@ import type { Msg } from "../../i18n.js";
 
 /** The Templates tab's own messages. */
 export const M = {
-	title: { id: "flux-import.home-templates.title", message: "Templates" },
 	loading: { id: "flux-import.home-templates.loading", message: "Loading templates" },
 	empty: { id: "flux-import.home-templates.empty", message: "No saved templates yet." },
 	emptyHint: {

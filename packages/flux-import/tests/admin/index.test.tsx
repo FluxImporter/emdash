@@ -69,6 +69,28 @@ describe("the admin entry", () => {
 		expect(await screen.findByText("No imports yet.")).toBeVisible();
 	});
 
+	it.each([
+		["templates", "Templates", "Import a template"],
+		["sources", "Sources", "Add a source"],
+		["schedules", "Schedules", "New schedule"],
+	])("heads the %s tab once, with its own <h2> (Task 16)", async (tab, title, action) => {
+		window.history.replaceState(null, "", `/?tab=${tab}`);
+		mockRoutes({
+			"credentials/list": () => [],
+			"templates/list": () => ({ items: [], hasMore: false }),
+			"sources/list": () => ({ items: [], hasMore: false }),
+			"schedules/list": () => ({ items: [], hasMore: false }),
+			"schedules/fence": () => ({ fence: "clear" }),
+		});
+		const ImportsPage = pages?.["/imports"];
+		if (!ImportsPage) throw new Error("no Imports page");
+		renderAdmin(<ImportsPage />);
+		expect(await screen.findByRole("button", { name: action })).toBeVisible();
+		expect(screen.getAllByRole("heading", { name: title })).toHaveLength(1);
+		expect(screen.getByRole("heading", { level: 2, name: title })).toBeVisible();
+		window.history.replaceState(null, "", "/");
+	});
+
 	it("exports the New import page: the wizard, opening on its Source step", async () => {
 		mockRoutes({
 			"credentials/list": () => [],

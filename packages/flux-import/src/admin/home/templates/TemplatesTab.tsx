@@ -191,8 +191,8 @@ export function TemplatesTab() {
 
 	return (
 		<div className="space-y-4">
-			<div className="flex items-center justify-between gap-3">
-				<h2 className="text-lg font-semibold">{t(M.title)}</h2>
+			{/* The home heads the tab with its <h2>; this row holds the tab's own action. */}
+			<div className="flex items-center justify-end gap-3">
 				<Button variant="secondary" onClick={() => setImporting(true)}>
 					{t(M.importButton)}
 				</Button>
