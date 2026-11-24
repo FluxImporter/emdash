@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useCredentials } from "../../src/admin/queries.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
+import { StepBar } from "../../src/admin/wizard/StepBar.js";
 import { StepFooter } from "../../src/admin/wizard/StepFooter.js";
 import type { StepId } from "../../src/admin/wizard/state.js";
 import { type StepComponents, Wizard } from "../../src/admin/wizard/Wizard.js";
@@ -306,11 +307,21 @@ describe("Wizard", () => {
 		expect(unloadPrevented()).toBe(false);
 	});
 
-	it("keeps the current step a link with aria-current even when it is not reachable", async () => {
+	it("ignores a jump to a step the draft cannot show (final review 5)", async () => {
 		granted();
 		const { user } = renderAdmin(<Wizard steps={DUMMY} />);
 		await user.click(await screen.findByRole("button", { name: "Jump to Options" }));
-		expect(await stepHeading()).toHaveTextContent("Options");
+		expect(await stepHeading()).toHaveTextContent("Source");
+		expect(screen.getByText("source body")).toBeInTheDocument();
+		expect(window.location.search).toBe("?step=source");
+	});
+
+	it("keeps the current step a link with aria-current even when it is not reachable", () => {
+		renderAdmin(
+			<WizardProvider initial={{ step: "options" }}>
+				<StepBar />
+			</WizardProvider>,
+		);
 		const options = screen.getByRole("link", { name: /Options/ });
 		expect(options).toHaveAttribute("aria-current", "step");
 	});

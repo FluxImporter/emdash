@@ -1168,6 +1168,30 @@ describe("reachable (F2)", () => {
 	});
 });
 
+describe("stepChanged and runStarted (final review 5)", () => {
+	it("ignores a step change to a step the draft cannot show", () => {
+		expect(reducer(initialState, { type: "stepChanged", step: "map" })).toBe(initialState);
+		expect(reducer(initialState, { type: "stepChanged", step: "run" })).toBe(initialState);
+		const sampled = run([SOURCE_READY]);
+		expect(reducer(sampled, { type: "stepChanged", step: "target" }).step).toBe("target");
+		expect(reducer(sampled, { type: "stepChanged", step: "options" }).step).toBe(sampled.step);
+		// Back to an earlier step stays open.
+		const onPreview = { ...withDryRun, step: "preview" as const };
+		expect(reducer(onPreview, { type: "stepChanged", step: "map" }).step).toBe("map");
+		expect(reducer(onPreview, { type: "stepChanged", step: "source" }).step).toBe("source");
+	});
+
+	it("shows Run once the run starts, and no other step after it", () => {
+		const left = reducer(withDryRun, { type: "stepChanged", step: "map" });
+		const started = reducer(left, { type: "runStarted", jobId: "R1" });
+		expect(started.step).toBe("run");
+		expect(started.run).toEqual({ jobId: "R1" });
+		for (const step of STEPS.filter((s) => s !== "run")) {
+			expect(reducer(started, { type: "stepChanged", step }).step).toBe("run");
+		}
+	});
+});
+
 describe("optionsBlockers (the step bar can skip Options' Next)", () => {
 	const opt = (patch: Partial<Options>, from: WizardState = filled) =>
 		reducer(from, { type: "optionsChanged", patch });

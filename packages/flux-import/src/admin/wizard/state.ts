@@ -100,6 +100,7 @@ export interface WizardState {
 	generation: number;
 }
 export type WizardAction =
+	/** Ignored unless the step is `reachable` (final review 5). */
 	| { type: "stepChanged"; step: StepId }
 	| { type: "sourceReady"; source: SourceChoice; sourceBlock: SourceBlock; columns: SampleColumn[] }
 	| { type: "sourceBlockChanged"; sourceBlock: SourceBlock; columns: SampleColumn[] | null }
@@ -131,6 +132,7 @@ export type WizardAction =
 	/** Ignored unless `generation` is still the state's: an edit made meanwhile wins. */
 	| { type: "dryRunStarted"; jobId: string; uploadId: string; generation: number }
 	| { type: "dryRunFinished"; total: number }
+	/** Also shows Run: a run started while the step bar showed another step returns to it. */
 	| { type: "runStarted"; jobId: string }
 	| { type: "jobReopened"; jobId: string };
 
@@ -290,7 +292,9 @@ function without<K extends string, V>(record: Partial<Record<K, V>>, key: K) {
 function reduce(state: WizardState, action: WizardAction): WizardState {
 	switch (action.type) {
 		case "stepChanged":
-			return { ...state, step: action.step };
+			// Whatever sent it: a step bar or button that rendered before the draft changed, or a
+			// step left while its request was in flight (final review 5).
+			return reachable(state, action.step) ? { ...state, step: action.step } : state;
 		case "sourceReady":
 			return {
 				...state,
@@ -410,7 +414,7 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				? state
 				: { ...state, dryRun: { ...state.dryRun, total: action.total } };
 		case "runStarted":
-			return { ...state, run: { jobId: action.jobId } };
+			return { ...state, step: "run", run: { jobId: action.jobId } };
 		case "jobReopened":
 			return { ...state, step: "run", run: { jobId: action.jobId }, dirty: false };
 	}

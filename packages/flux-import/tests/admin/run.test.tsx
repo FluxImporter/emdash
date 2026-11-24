@@ -2,9 +2,13 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { WizardProvider } from "../../src/admin/wizard/context.js";
+import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { RunStep } from "../../src/admin/wizard/run/RunStep.js";
-import { DEFAULT_OPTIONS, type WizardState } from "../../src/admin/wizard/state.js";
+import {
+	DEFAULT_OPTIONS,
+	type WizardAction,
+	type WizardState,
+} from "../../src/admin/wizard/state.js";
 import { templateSchema } from "../../src/engine/template.js";
 import type { Counters, Job } from "../../src/engine/types.js";
 import { job, UPLOAD_ID } from "./fixtures.js";
@@ -686,6 +690,38 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(JOB_ID);
 	});
+	it("returns to Run when jobs/create answers after the step bar left it (final review 5)", async () => {
+		const held = gate();
+		const { calls } = mockRoutes({
+			"jobs/create": () => held.promise,
+			"jobs/get": () => real({ counters: counters(0) }),
+			"jobs/next": () => real({ status: "completed", counters: counters(4) }),
+		});
+		const probe: { state?: WizardState; dispatch?: (a: WizardAction) => void } = {};
+		function Steps() {
+			const { state, dispatch } = useWizard();
+			probe.state = state;
+			probe.dispatch = dispatch;
+			return state.step === "run" ? <RunStep /> : <p>{`step: ${state.step}`}</p>;
+		}
+		renderAdmin(
+			<WizardProvider initial={draft()}>
+				<Steps />
+			</WizardProvider>,
+		);
+		await waitFor(() => expect(named(calls, "jobs/create")).toHaveLength(1));
+		act(() => probe.dispatch?.({ type: "stepChanged", step: "preview" }));
+		expect(screen.getByText("step: preview")).toBeVisible();
+		held.open(real({ status: "created" }));
+		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(probe.state?.step).toBe("run");
+		// Once a run exists, only Run can be shown.
+		act(() => probe.dispatch?.({ type: "stepChanged", step: "preview" }));
+		expect(probe.state?.step).toBe("run");
+		expect(screen.getByText("The import is complete.")).toBeVisible();
+		expect(named(calls, "jobs/create")).toHaveLength(1);
+	});
+
 	describe("says how the entries will go live (final review 1)", () => {
 		it("says it from the options before the job starts, then from the job while it runs", async () => {
 			const created = gate();
