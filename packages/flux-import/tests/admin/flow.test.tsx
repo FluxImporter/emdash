@@ -254,6 +254,13 @@ function renderPage() {
 }
 
 const heading = (name: string) => screen.findByRole("heading", { level: 2, name });
+
+/** A `beforeunload` the page may cancel; true when the page asked to stay. */
+function unloadPrevented(): boolean {
+	const event = new Event("beforeunload", { cancelable: true });
+	window.dispatchEvent(event);
+	return event.defaultPrevented;
+}
 const next = () => screen.getByRole("button", { name: "Next" });
 const stepLink = (n: number, name: string) => screen.getByRole("link", { name: `${n} ${name}` });
 
@@ -429,6 +436,7 @@ describe("the import wizard, end to end", () => {
 			"01JZ00000000000000000JOB02",
 		);
 
+		expect(unloadPrevented()).toBe(false);
 		await user.click(screen.getByRole("button", { name: "Start a new import" }));
 		// Source, focused, with nothing of the last import: no sample, no later step linked.
 		const source = await heading("Source");
@@ -439,10 +447,13 @@ describe("the import wizard, end to end", () => {
 		const params = new URLSearchParams(window.location.search);
 		expect(params.get("job")).toBeNull();
 		expect(params.get("step")).toBe("source");
+		// The empty draft has nothing to lose, so leaving the page asks nothing until it changes.
+		expect(unloadPrevented()).toBe(false);
 
 		// A second import runs as a new job, from its own dry run.
 		const before = calls.length;
 		await upload(user);
+		expect(unloadPrevented()).toBe(true);
 		await user.click(next());
 		await target(user);
 		await mapped();
