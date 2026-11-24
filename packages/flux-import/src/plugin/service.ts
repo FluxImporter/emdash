@@ -472,6 +472,20 @@ export async function releaseUploadIfUnused(
 	keep: UploadKeeper = keepNone,
 ): Promise<boolean> {
 	if (uploadNeeded(job)) return false;
+	return releaseFiles(deps, uploads, job, keep);
+}
+
+/**
+ * Deletes the job's staged file and its XLSX workbook unless another job may still read them or
+ * `keep` holds them, without asking whether the job itself still needs them (the caller decided
+ * that, or deleted the job: M7b `jobs/clear-dry-runs`). Returns whether the job's file was deleted.
+ */
+export async function releaseFiles(
+	deps: Pick<EngineDeps, "jobs">,
+	uploads: UploadStore,
+	job: Pick<Job, "id" | "uploadId" | "sourceUploadId">,
+	keep: UploadKeeper = keepNone,
+): Promise<boolean> {
 	let released = false;
 	for (const uploadId of [job.uploadId, job.sourceUploadId]) {
 		if (uploadId === undefined) continue;

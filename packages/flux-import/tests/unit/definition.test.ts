@@ -32,6 +32,7 @@ const ROUTES = [
 	"jobs/get",
 	"jobs/list",
 	"jobs/summaries",
+	"jobs/clear-dry-runs",
 	"jobs/pause",
 	"jobs/resume",
 	"jobs/cancel",

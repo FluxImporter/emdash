@@ -101,8 +101,11 @@ function slim(job: Job): Scanned {
 	return out as Scanned;
 }
 
-/** Counts each method call on `target` against the run's budget (plan Ruling 16). */
-function metered<T extends object>(target: T, meter: { used: number }): T {
+/**
+ * Counts each method call on `target` against the run's budget (plan Ruling 16); also bounds
+ * `jobs/clear-dry-runs` (M7b).
+ */
+export function metered<T extends object>(target: T, meter: { used: number }): T {
 	return new Proxy(target, {
 		get(t, key, receiver) {
 			const value = Reflect.get(t, key, receiver);
@@ -139,6 +142,49 @@ async function deleteRows(
 		// Nothing deleted means the same page would come back forever; the next run tries again.
 		if (n === 0) return "stuck";
 	}
+}
+
+/** How one job's purge ended (`purgeJob`). */
+export type PurgeOutcome = "purged" | "skipped" | "stuck" | "out";
+
+/**
+ * Deletes one job with its record, journal and journalMedia rows (M7b: extracted from
+ * `purgeExpired`, shared with `jobs/clear-dry-runs`). The job is marked purging before any of its
+ * rows go, so a rollback cannot start on a half-deleted journal. `skipped`: the job is gone, is
+ * not `due` on the row read now (it was resumed or retried, took a lease, or a `jobs/start` claim
+ * landed since the caller's scan), changed before the mark, or is an original whose rollback job
+ * exists. The re-check comes first, so even a job already marked purging keeps its rows while a
+ * batch holds its lease. `stuck`: a page of rows would not delete; `out`: `left` ran out part way.
+ * Either way the job stays marked purging and a later call finishes it.
+ */
+export async function purgeJob(
+	deps: Pick<EngineDeps, "jobs" | "records" | "journal" | "journalMedia">,
+	id: string,
+	due: (job: Job) => boolean,
+	opts: {
+		left?: () => number;
+		counts?: { records: { n: number }; journal: { n: number } };
+	} = {},
+): Promise<PurgeOutcome> {
+	const left = opts.left ?? (() => Number.POSITIVE_INFINITY);
+	const counts = opts.counts ?? { records: { n: 0 }, journal: { n: 0 } };
+	const current = await deps.jobs.getVersioned(id);
+	if (!current || !due(current.value)) return "skipped";
+	if (!isPurging(current.value)) {
+		const job = current.value;
+		if (job.kind !== "rollback" && job.rolledBackBy !== undefined) {
+			if (await deps.jobs.get(job.rolledBackBy)) return "skipped";
+		}
+		const next: Job = { ...job, purging: true };
+		if (!(await deps.jobs.compareAndSet(id, current.revision, next)).applied) return "skipped";
+	}
+	let ended = await deleteRows(deps.records, id, counts.records, left);
+	if (ended === "done") ended = await deleteRows(deps.journal, id, counts.journal, left);
+	if (ended === "done") ended = await deleteRows(deps.journalMedia, id, counts.journal, left);
+	if (ended !== "done") return ended;
+	// "done" ended on a query started with 2 calls left, so the delete stays within the target.
+	await deps.jobs.delete(id);
+	return "purged";
 }
 
 /**
@@ -228,33 +274,16 @@ export async function purgeExpired(
 
 	const pruned = new Set<string>();
 	const counts = { records: { n: 0 }, journal: { n: 0 } };
-	// Marks the job before any of its rows go, so a rollback cannot start on a half-deleted
-	// journal; false when the job changed since the scan (it was resumed or retried, took a
-	// lease, or a rollback was created for it). The re-check comes first, so even a job already
-	// marked purging keeps its rows while a batch holds its lease.
-	const markPurging = async (id: string): Promise<boolean> => {
-		const current = await jobs.getVersioned(id);
-		if (!current || !due(current.value)) return false;
-		if (isPurging(current.value)) return true;
-		const job = current.value;
-		if (job.kind !== "rollback" && job.rolledBackBy !== undefined) {
-			if (await jobs.get(job.rolledBackBy)) return false;
-		}
-		const next: Job = { ...job, purging: true };
-		return (await jobs.compareAndSet(id, current.revision, next)).applied;
-	};
 	/** False only when the budget ran out part way. */
 	const prune = async (id: string): Promise<boolean> => {
-		if (!(await markPurging(id))) return true;
-		let ended = await deleteRows(records, id, counts.records, left);
-		if (ended === "done") ended = await deleteRows(journal, id, counts.journal, left);
-		if (ended === "done") ended = await deleteRows(journalMedia, id, counts.journal, left);
-		// Stuck, the job stays for a later run and this one goes on; out of budget, it stops here.
-		if (ended !== "done") return ended === "stuck";
-		// "done" ended on a query started with 2 calls left, so the delete stays within the target.
-		await jobs.delete(id);
-		pruned.add(id);
-		return true;
+		const ended = await purgeJob({ jobs, records, journal, journalMedia }, id, due, {
+			left,
+			counts,
+		});
+		if (ended === "purged") pruned.add(id);
+		// Skipped or stuck, the job stays for a later run and this one goes on; out of budget, it
+		// stops here.
+		return ended !== "out";
 	};
 	/**
 	 * Spec Ruling 86: past the cap, a rollback (a dry run marks no `rolledBackBy`) may sit on a page

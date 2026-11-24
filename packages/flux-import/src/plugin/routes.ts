@@ -31,6 +31,7 @@ import {
 	listCredentials,
 	setCredential,
 } from "./credentials.js";
+import { clearDryRuns } from "./dry-runs.js";
 import { resolveJobTemplate } from "./job-templates.js";
 import { schedulesOverview, sourcesOverview } from "./overviews.js";
 import { withRuntime } from "./runtime.js";
@@ -877,6 +878,14 @@ export const routes: Record<string, PluginRoute> = {
 				dryRun: ctx.input.dryRun ?? false,
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 			}),
+		),
+	),
+
+	// M7b (plan Ruling 6): clears finished and abandoned dry runs a page at a time; `cursor` is
+	// the last scanned dry run's createdAt from the previous answer.
+	"jobs/clear-dry-runs": route(z.object({ cursor }).strict(), (ctx) =>
+		withServices(ctx, ({ deps, uploads, sources }) =>
+			clearDryRuns(deps, uploads, sources.sources, ctx.input.cursor),
 		),
 	),
 
