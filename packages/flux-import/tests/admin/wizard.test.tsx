@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useCredentials } from "../../src/admin/queries.js";
-import { useWizard } from "../../src/admin/wizard/context.js";
+import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
+import { StepFooter } from "../../src/admin/wizard/StepFooter.js";
 import type { StepId } from "../../src/admin/wizard/state.js";
 import { type StepComponents, Wizard } from "../../src/admin/wizard/Wizard.js";
 import { fail, mockRoutes, renderAdmin } from "./harness.js";
@@ -286,5 +287,18 @@ describe("Wizard", () => {
 		expect(await stepHeading()).toHaveTextContent("Options");
 		const options = screen.getByRole("link", { name: /Options/ });
 		expect(options).toHaveAttribute("aria-current", "step");
+	});
+});
+
+describe("StepFooter", () => {
+	it("keeps Next's accessible name while busy: the spinner adds no English 'Loading'", () => {
+		renderAdmin(
+			<WizardProvider>
+				<StepFooter canNext busy onNext={() => undefined} />
+				<StepFooter canNext busy nextLabel="Run the import" onNext={() => undefined} />
+			</WizardProvider>,
+		);
+		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Run the import" })).toBeDisabled();
 	});
 });

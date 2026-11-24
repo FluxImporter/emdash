@@ -27,6 +27,7 @@ export function StepFooter(props: {
 	const showBack = previous !== undefined && reachable(state, previous);
 	const busy = props.busy === true;
 	const blocked = !props.canNext && props.reason !== undefined && props.reason !== "";
+	const label = props.nextLabel ?? t(M.next);
 	return (
 		<div className="mt-6 flex items-center justify-between gap-3 border-t border-kumo-line pt-4">
 			<div>
@@ -49,12 +50,14 @@ export function StepFooter(props: {
 					variant="primary"
 					disabled={!props.canNext || busy}
 					loading={busy}
+					// Kumo's spinner is labelled "Loading" in English; the label alone names the button.
+					aria-label={label}
 					aria-describedby={blocked ? reasonId : undefined}
 					onClick={() => {
 						void props.onNext();
 					}}
 				>
-					{props.nextLabel ?? t(M.next)}
+					{label}
 				</Button>
 			</div>
 		</div>
