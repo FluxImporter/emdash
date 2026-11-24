@@ -291,6 +291,12 @@ describe("describeRecordWarning (a dry run's per-record warnings)", () => {
 		expect(RECORD_WARNING_CODES).toHaveLength(18);
 	});
 
+	it("says what to do about an entry that is not linked as a translation", () => {
+		expect(RECORD_WARNING_MESSAGES.translation_not_linked?.message).toBe(
+			"The entry is not linked as a translation, and an existing entry cannot be linked. Trash the existing entry so the next run creates it as a translation.",
+		);
+	});
+
 	it("says why an entry was left alone, without the engine's message for a fixed one", () => {
 		const d = describeRecordWarning({ code: "missing_edited", message: "Left alone: …" });
 		expect(d).toEqual({ msg: RECORD_WARNING_MESSAGES.missing_edited });

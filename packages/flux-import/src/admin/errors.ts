@@ -440,7 +440,7 @@ export const RECORD_WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
 	translation_not_linked: {
 		id: "flux-import.record-warning.translation-not-linked",
 		message:
-			"The entry is not linked as a translation, and an existing entry cannot be linked. Trash it so the next run creates it as one.",
+			"The entry is not linked as a translation, and an existing entry cannot be linked. Trash the existing entry so the next run creates it as a translation.",
 	},
 	unknown_markup: {
 		id: "flux-import.record-warning.unknown-markup",
