@@ -1343,12 +1343,13 @@ describe("workerd parity (D1, R2)", () => {
 	});
 	it("lists, clears, fences and splits M7b's additions on D1 and R2", async () => {
 		await client.createProducts("cf_m7b");
-		const create = async (csv: string, dryRun: boolean) => {
+		const create = async (csv: string, dryRun: boolean, batchSize = 50) => {
 			const { uploadId } = await client.upload(csv);
 			const job = await client.plugin("jobs/create", {
 				uploadId,
 				template: template("cf_m7b"),
 				dryRun,
+				batchSize,
 				budgetMs: 20_000,
 			});
 			return { job, uploadId };
@@ -1359,18 +1360,19 @@ describe("workerd parity (D1, R2)", () => {
 			);
 		type Items = { items: { id: string; dryRun: boolean; kind: string }[]; hasMore: boolean };
 		const summaries = (dryRun: boolean) => client.plugin<Items>("jobs/summaries", { dryRun });
-		// A job whose file is gone cannot be created over again: the read answers an error.
+		// Creating a job over a missing upload answers INVALID_SOURCE (400). A probe that finds the
+		// file creates a dry run, which is cancelled so it does not outlive the test.
+		const probe = (uploadId: string) =>
+			client.plugin<Job>("jobs/create", { uploadId, template: template("cf_m7b"), dryRun: true });
 		const fileGone = async (uploadId: string) => {
-			try {
-				await client.plugin("jobs/create", {
-					uploadId,
-					template: template("cf_m7b"),
-					dryRun: true,
-				});
-				return false;
-			} catch {
-				return true;
-			}
+			await expect(probe(uploadId)).rejects.toMatchObject({
+				status: 400,
+				code: "INVALID_SOURCE",
+			});
+		};
+		const fileKept = async (uploadId: string) => {
+			const stray = await probe(uploadId);
+			await client.plugin("jobs/cancel", { id: stray.id });
 		};
 
 		// Summaries without dry runs.
@@ -1379,6 +1381,8 @@ describe("workerd parity (D1, R2)", () => {
 		const fresh = await create(productsCsv(2), true);
 		await client.runToEnd(aged.job.id);
 		await client.runToEnd(fresh.job.id);
+		const running = await create(productsCsv(3), true, 1);
+		expect((await client.plugin<Job>("jobs/next", { id: running.job.id })).status).toBe("running");
 		const realList = await summaries(false);
 		expect(realList.items.map((j) => j.id)).toContain(real.job.id);
 		expect(realList.items.every((j) => !j.dryRun)).toBe(true);
@@ -1402,8 +1406,11 @@ describe("workerd parity (D1, R2)", () => {
 		expect(left).not.toContain(aged.job.id);
 		expect(left).not.toContain(fresh.job.id);
 		expect((await summaries(false)).items.map((j) => j.id)).toContain(real.job.id);
-		expect(await fileGone(aged.uploadId)).toBe(true);
-		expect(await fileGone(fresh.uploadId)).toBe(false);
+		await fileGone(aged.uploadId);
+		await fileKept(fresh.uploadId);
+		// A running dry run and a real import survive the clear.
+		expect((await summaries(false)).items.map((j) => j.id)).toContain(real.job.id);
+		expect((await summaries(true)).items.map((j) => j.id)).toContain(running.job.id);
 
 		// The fence, with a running export row (never an import row, F3).
 		expect(await client.plugin("schedules/fence", {})).toEqual({ fence: "clear" });
@@ -1436,5 +1443,18 @@ describe("workerd parity (D1, R2)", () => {
 			counters: { reverted: 3 },
 			undo: { deleted: 2, restored: 1, recovered: 0 },
 		});
+		// Leave no dry run behind for later tests: finish the running one, then clear them all.
+		await client.runToEnd(running.job.id);
+		await client.plugin("jobs/cancel", { id: rollback.id }).catch(() => undefined);
+		const leftover = (await summaries(true)).items.map((j) => j.id);
+		for (const id of leftover) {
+			d1(
+				`UPDATE _plugin_storage SET data = json_set(data, '$.updatedAt', '2000-01-01T00:00:00.000Z') WHERE plugin_id = 'flux-import' AND collection = 'jobs' AND id = '${id}'`,
+			);
+		}
+		for (let i = 0, again = true; again && i < 50; i++) {
+			again = (await client.plugin<{ more: boolean }>("jobs/clear-dry-runs", {})).more;
+		}
+		expect((await summaries(true)).items).toEqual([]);
 	});
 });

@@ -9,7 +9,7 @@ import { productsCsv, template } from "./fixtures.js";
 import { runScheduled } from "./schedules-client.js";
 import { type DevServer, startServer, stopServer } from "./server.js";
 
-const PORT = 4399;
+const PORT = 4389;
 const HOUR_MS = 60 * 60 * 1000;
 const COLLECTION = "it_home";
 const INDEX = "idx_plugin_flux-import_jobs_dryRun_createdAt";
