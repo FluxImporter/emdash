@@ -51,8 +51,9 @@ describe("DryRuns", () => {
 		const { user } = show();
 		await user.click(await screen.findByText("Dry runs: 3"));
 		expect(await screen.findByText("Name of D1")).toBeVisible();
-		expect(screen.getByText("pages (fr)")).toBeVisible();
-		expect(screen.getAllByText("posts (en)").length).toBeGreaterThan(0);
+		// Written as the Jobs table writes it (Task 16), not "pages (fr)".
+		expect(screen.getByText("pages \u00b7 fr")).toBeVisible();
+		expect(screen.getAllByText("posts \u00b7 en").length).toBeGreaterThan(0);
 		expect(screen.getByText("Failed")).toBeVisible();
 		expect(screen.getAllByText("Completed").length).toBe(2);
 		expect(document.querySelectorAll("time").length).toBe(3);

@@ -4,7 +4,7 @@ import type { Msg } from "../../../i18n.js";
 export const M = {
 	count: { id: "flux-import.home-dry-runs.count", message: "Dry runs: {count}" },
 	countMore: { id: "flux-import.home-dry-runs.count-more", message: "Dry runs: more than {count}" },
-	where: { id: "flux-import.home-dry-runs.where", message: "{collection} ({locale})" },
+	where: { id: "flux-import.home-dry-runs.where", message: "{collection} · {locale}" },
 	clear: { id: "flux-import.home-dry-runs.clear", message: "Clear dry runs" },
 	confirm: {
 		id: "flux-import.home-dry-runs.confirm",
