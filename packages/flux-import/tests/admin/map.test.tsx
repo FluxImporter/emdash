@@ -370,7 +370,7 @@ describe("MapStep", () => {
 		await fieldsLoaded();
 		const cost = within(keysPane()).getByRole("button", { name: /^Cost/ });
 		expect(cost).toHaveTextContent("not in the sample");
-		expect(cost).toHaveClass("opacity-50");
+		expect(within(cost).getByText("Cost")).toHaveClass("text-kumo-subtle");
 		expect(within(keysPane()).getByRole("heading")).toHaveTextContent("Source keys · 6");
 	});
 
@@ -535,8 +535,11 @@ describe("MapStep", () => {
 		await fieldsLoaded();
 		const name = within(keysPane()).getByRole("button", { name: /^Name/ });
 		const price = within(keysPane()).getByRole("button", { name: /^Price/ });
-		expect(name).toHaveClass("opacity-50");
-		expect(price).not.toHaveClass("opacity-50");
+		// Dimmed by colour (AA contrast), never by opacity (Task 16 polish).
+		expect(within(name).getByText("Name")).toHaveClass("text-kumo-subtle");
+		expect(within(price).getByText("Price")).not.toHaveClass("text-kumo-subtle");
+		expect(name).not.toHaveClass("opacity-50");
+		expect(within(name).getByText("used")).toHaveClass("sr-only");
 		const restore = withRects({
 			// @dnd-kit measures the `DragOverlay` by its content.
 			"drag-overlay": new DOMRect(0, 0, 100, 20),

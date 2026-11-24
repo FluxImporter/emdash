@@ -96,12 +96,18 @@ function KeyRow(p: { name: string; sample: string | null; used: boolean }) {
 				className={
 					isDragging
 						? "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-dashed border-kumo-brand bg-kumo-base px-2 py-1 text-sm"
-						: p.used
-							? "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm opacity-50"
-							: "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm"
+						: "flex cursor-grab touch-none items-center justify-between gap-2 rounded-md border border-kumo-line bg-kumo-base px-2 py-1 text-sm"
 				}
 			>
-				<span className="max-w-full shrink-0 truncate font-medium" title={p.name}>
+				{/* A used key is dimmed by its colour, not by opacity, so its text keeps AA contrast. */}
+				<span
+					className={
+						p.used
+							? "max-w-full shrink-0 truncate font-medium text-kumo-subtle"
+							: "max-w-full shrink-0 truncate font-medium"
+					}
+					title={p.name}
+				>
 					{p.name}
 				</span>
 				<span className="min-w-0 truncate text-xs text-kumo-subtle">
