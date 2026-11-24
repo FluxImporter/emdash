@@ -311,6 +311,11 @@ describe("describeRecordWarning (a dry run's per-record warnings)", () => {
 		expect(describeRecordWarning({ code: "toString", message: "x" }).msg).toBe(
 			RECORD_WARNING_MESSAGES.other,
 		);
+		// `other` is the wizard's own key, not an engine code: its message still shows.
+		expect(describeRecordWarning({ code: "other", message: "x" })).toEqual({
+			msg: RECORD_WARNING_MESSAGES.other,
+			detail: "x",
+		});
 	});
 });
 
