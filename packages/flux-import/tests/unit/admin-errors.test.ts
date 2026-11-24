@@ -11,11 +11,13 @@ import {
 	RECORD_WARNING_CODES,
 	RECORD_WARNING_MESSAGES,
 	SUGGEST_WARNING_CODES,
+	scheduleNames,
 	WARNING_MESSAGES,
 	WIZARD_ERROR_CODES,
 } from "../../src/admin/errors.js";
 import { interpolate } from "../../src/admin/i18n.js";
 import { MISSING_MESSAGES } from "../../src/engine/missing.js";
+import type { ScheduleView } from "../../src/plugin/schedules.js";
 
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -33,13 +35,98 @@ describe("the wizard's error and warning sentences", () => {
 	});
 
 	it("pins the code lists (F22, the M6d warnings table)", () => {
-		expect(WIZARD_ERROR_CODES).toHaveLength(37);
+		expect(WIZARD_ERROR_CODES).toHaveLength(51);
 		expect(WIZARD_ERROR_CODES).toContain("NOT_AUTHENTICATED");
 		expect(WIZARD_ERROR_CODES).toContain("UNSUPPORTED_TEMPLATE_VERSION");
 		expect(WIZARD_ERROR_CODES).toContain("INVALID_TRANSITION");
+		// M7b (plan Ruling 16, F3): the home's twelve codes and the two fence codes.
+		for (const c of [
+			"TEMPLATE_IN_USE",
+			"SOURCE_IN_USE",
+			"SCHEDULE_CHANGED",
+			"SCHEDULE_BUSY",
+			"SCHEDULE_DISABLED",
+			"SCHEDULE_LIMIT",
+			"TEMPLATE_PROBLEMS",
+			"INVALID_CRON",
+			"MISSING_REQUIRED",
+			"INVALID_FILE",
+			"UNSUPPORTED_FILE_VERSION",
+			"OWNER_IN_USE",
+			"TRANSFER_IMPORT_IN_PROGRESS",
+			"TRANSFER_FENCE_CHECK_FAILED",
+		]) {
+			expect(WIZARD_ERROR_CODES, c).toContain(c);
+		}
 		expect(SUGGEST_WARNING_CODES).toHaveLength(33);
 		expect(new Set(WIZARD_ERROR_CODES).size).toBe(WIZARD_ERROR_CODES.length);
 		expect(new Set(SUGGEST_WARNING_CODES).size).toBe(SUGGEST_WARNING_CODES.length);
+	});
+
+	it("says why the site's fence refuses, in the sentences the coordinator fixed (F3)", () => {
+		expect(ERROR_MESSAGES.TRANSFER_IMPORT_IN_PROGRESS?.message).toBe(
+			"A site import is running, so imports and their schedules wait until it ends.",
+		);
+		expect(ERROR_MESSAGES.TRANSFER_FENCE_CHECK_FAILED?.message).toBe(
+			"flux-import couldn't check whether the site is busy. Try again shortly.",
+		);
+		const d = describeError(new ApiError("TRANSFER_IMPORT_IN_PROGRESS", "Import abc running", 503));
+		expect(d).toEqual({ msg: ERROR_MESSAGES.TRANSFER_IMPORT_IN_PROGRESS });
+	});
+
+	it("keeps TEMPLATE_CHANGED's global sentence and gives SCHEDULE_CHANGED its own (F17)", () => {
+		expect(ERROR_MESSAGES.TEMPLATE_CHANGED?.message).toBe(
+			"Someone else changed this template. Open it again to see their changes.",
+		);
+		expect(ERROR_MESSAGES.SCHEDULE_CHANGED?.message).toMatch(/schedule/i);
+		expect(ERROR_MESSAGES.SCHEDULE_CHANGED).not.toBe(ERROR_MESSAGES.TEMPLATE_CHANGED);
+	});
+
+	it("shows the specifics of INVALID_FILE and INVALID_CRON, and the list of TEMPLATE_PROBLEMS", () => {
+		expect(
+			describeError(new ApiError("INVALID_FILE", "The file is not a flux-import template", 400)),
+		).toEqual({
+			msg: ERROR_MESSAGES.INVALID_FILE,
+			detail: "The file is not a flux-import template",
+		});
+		expect(describeError(new ApiError("INVALID_CRON", "Expected five fields", 400)).detail).toBe(
+			"Expected five fields",
+		);
+		const problems = describeError(
+			new ApiError("TEMPLATE_PROBLEMS", "Does not fit", 409, { problems: ["fields.x: gone"] }),
+		);
+		expect(problems.detail).toBeUndefined();
+		expect(problems.problems).toEqual(["fields.x: gone"]);
+		// The other new codes keep the route's message off the screen.
+		for (const code of ["OWNER_IN_USE", "SCHEDULE_BUSY", "TEMPLATE_IN_USE"]) {
+			expect(describeError(new ApiError(code, "internal words", 409)).detail, code).toBeUndefined();
+		}
+	});
+
+	it("names the schedules of an in-use refusal from details.scheduleIds", () => {
+		const schedules = [
+			{ id: "S1", name: "Nightly" },
+			{ id: "S2", name: "Hourly" },
+			{ id: "S3", name: "Other" },
+		] as ScheduleView[];
+		const refusal = new ApiError("TEMPLATE_IN_USE", "In use", 409, { scheduleIds: ["S1", "S2"] });
+		expect(scheduleNames(refusal, schedules)).toBe("Nightly, Hourly");
+		// An ID the list lacks is skipped; none known, or no IDs, or no ApiError: null.
+		expect(
+			scheduleNames(
+				new ApiError("SOURCE_IN_USE", "x", 409, { scheduleIds: ["S9", "S3"] }),
+				schedules,
+			),
+		).toBe("Other");
+		expect(
+			scheduleNames(new ApiError("SOURCE_IN_USE", "x", 409, { scheduleIds: ["S9"] }), schedules),
+		).toBeNull();
+		expect(scheduleNames(new ApiError("SOURCE_IN_USE", "x", 409), schedules)).toBeNull();
+		expect(
+			scheduleNames(new ApiError("SOURCE_IN_USE", "x", 409, { scheduleIds: "S1" }), schedules),
+		).toBeNull();
+		expect(scheduleNames(new Error("boom"), schedules)).toBeNull();
+		expect(scheduleNames(refusal, [])).toBeNull();
 	});
 
 	it("says 'Only administrators can import.' for any 403", () => {

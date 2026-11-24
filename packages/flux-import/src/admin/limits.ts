@@ -15,9 +15,26 @@ export const TEMPLATE_NAME_MAX = 100;
 export const MAX_UPDATE_FIELDS = 200;
 /** `src/engine/types.ts`: the largest job batch size. */
 export const BATCH_SIZE_MAX = 500;
+/** `src/plugin/service.ts`: the jobs one `jobs/summaries` page holds. */
+export const JOB_PAGE = 8;
+/** `src/plugin/schedules.ts`: the most schedules a site holds; one `schedules/list` page holds all. */
+export const MAX_SCHEDULES = 20;
+/** `src/plugin/templates.ts`: the longest template description. */
+export const TEMPLATE_DESCRIPTION_MAX = 2000;
+/** `src/plugin/routes.ts`: the largest template body, and so the largest import file, in bytes. */
+export const TEMPLATE_BODY_MAX_BYTES = 2_097_152;
+/**
+ * `src/plugin/routes.ts`' `sourceName`, which keeps 100 inline: pinned through the route's schema
+ * in `admin-limits.test.ts`. A schedule's batch size is `BATCH_SIZE_MAX` (coordinator note F8).
+ */
+export const SOURCE_NAME_MAX = 100;
 
 /** `src/engine/template.ts`: a template's `owner`. */
 export const OWNER_PATTERN = /^[A-Za-z0-9._:-]{1,100}$/;
+
+/** `src/plugin/credentials.ts`: a credential's name and the header it is sent in. */
+export const CREDENTIAL_NAME = /^[a-z0-9-]{1,64}$/;
+export const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,100}$/;
 
 /** `src/emdash/uploads.ts`: an upload ID, which the wizard never shows (preflight F15). */
 export const UPLOAD_ID_PATTERN = "[0-9A-HJKMNP-TV-Z]{26}[0-9a-f]{32}";

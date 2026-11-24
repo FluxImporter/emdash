@@ -1,11 +1,19 @@
 import type { Field } from "emdash";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import type { Fence } from "../emdash/fence.js";
 import type { Job, RecordRow, RecordStatus } from "../engine/types.js";
 import type { CredentialInfo } from "../plugin/credentials.js";
+import type {
+	CreateScheduleInput,
+	ScheduleView,
+	UpdateScheduleInput,
+} from "../plugin/schedules.js";
 import type { ApplyResult, FieldRequest } from "../plugin/schema-apply.js";
 import type { Page } from "../plugin/service.js";
 import type { FetchOutcome, SourceRow } from "../plugin/sources.js";
 import type { SuggestReply } from "../plugin/suggest.js";
+import type { JobListItem } from "../plugin/summaries.js";
+import type { TemplateFile } from "../plugin/template-files.js";
 import type { SavedResult, SavedTemplate, TemplateSummary } from "../plugin/templates.js";
 import type { CsvSample } from "../sources/csv.js";
 import type { SourceFormat, ValueSample } from "../sources/reader.js";
@@ -215,8 +223,37 @@ export const api = {
 	getTemplate: (i: ById) => callRoute<SavedTemplate>("templates/get", i),
 	createTemplate: (i: { name: string; template: unknown }) =>
 		callRoute<SavedResult>("templates/create", i),
-	updateTemplate: (i: { id: string; revision: number; template: unknown }) =>
-		callRoute<SavedResult>("templates/update", i),
+	/** The wizard sends `template`; the Templates tab renames and describes (`null` clears). */
+	updateTemplate: (i: {
+		id: string;
+		revision: number;
+		name?: string;
+		description?: string | null;
+		template?: unknown;
+	}) => callRoute<SavedResult>("templates/update", i),
+	deleteTemplate: (i: { id: string; revision: number }) =>
+		callRoute<{ deleted: true }>("templates/delete", i),
+	exportTemplate: (i: ById) =>
+		callRoute<{ filename: string; file: TemplateFile }>("templates/export", i),
+	importTemplate: (i: { file: unknown; name?: string; owner?: string }) =>
+		callRoute<SavedResult>("templates/import", i),
+	updateSource: (i: { id: string; name?: string; url?: string; credential?: string | null }) =>
+		callRoute<SourceRow>("sources/update", i),
+	deleteSource: (i: ById) => callRoute<{ deleted: true }>("sources/delete", i),
+	setCredential: (i: { name: string; header: string; value: string }) =>
+		callRoute<CredentialInfo>("credentials/set", i),
+	deleteCredential: (i: { name: string }) => callRoute<{ deleted: true }>("credentials/delete", i),
+	listSchedules: (i: { cursor?: string }, signal?: AbortSignal) =>
+		callRoute<Page<ScheduleView>>("schedules/list", i, signal),
+	createSchedule: (i: CreateScheduleInput) =>
+		callRoute<{ schedule: ScheduleView }>("schedules/create", i),
+	updateSchedule: (i: UpdateScheduleInput) =>
+		callRoute<{ schedule: ScheduleView }>("schedules/update", i),
+	deleteSchedule: (i: { id: string; revision: number }) =>
+		callRoute<{ deleted: true }>("schedules/delete", i),
+	runSchedule: (i: { id: string; force?: boolean }) =>
+		callRoute<{ queued: true; schedule: ScheduleView }>("schedules/run", i),
+	fence: () => callRoute<{ fence: Fence }>("schedules/fence", {}),
 	/**
 	 * Never sends `ai`: the route then uses the configured provider, if any, and warns of nothing
 	 * when the setting is "none" (spec "Suggestions"). The body is built field by field.
@@ -239,6 +276,10 @@ export const api = {
 	retry: (i: ById) => callRoute<Job>("jobs/retry", i),
 	records: (i: { id: string; status?: RecordStatus; cursor?: string }) =>
 		callRoute<Page<RecordRow>>("jobs/records", i),
+	/** One page of the Jobs table: real imports, or the dry runs (`jobs/summaries`, never `jobs/list`). */
+	jobSummaries: (i: { dryRun: boolean; cursor?: string }, signal?: AbortSignal) =>
+		callRoute<Page<JobListItem>>("jobs/summaries", i, signal),
+	rollback: (i: { id: string; dryRun: boolean }) => callRoute<Job>("jobs/rollback", i),
 	/** `GET /_emdash/api/manifest` (any signed-in user), mapped (plan Ruling 5). */
 	site: async (): Promise<SiteInfo> => toSiteInfo(await getJson<Manifest>(MANIFEST_URL)),
 	/**
@@ -270,7 +311,12 @@ export async function downloadLog(id: string, status?: "failed"): Promise<void> 
 	const res = await apiFetch(`${PLUGIN_BASE}/jobs/log.csv?${query}`);
 	if (!res.ok) throw await readError(res);
 	const name = dispositionName(res.headers.get("content-disposition")) ?? `flux-import-${id}.csv`;
-	const url = URL.createObjectURL(await res.blob());
+	saveBlob(await res.blob(), name);
+}
+
+/** Saves `blob` as a download named `name`, through a temporary link. */
+function saveBlob(blob: Blob, name: string): void {
+	const url = URL.createObjectURL(blob);
 	try {
 		const anchor = document.createElement("a");
 		anchor.href = url;
@@ -282,4 +328,9 @@ export async function downloadLog(id: string, status?: "failed"): Promise<void> 
 		// After the click has been handled: some browsers lose a download revoked at once.
 		setTimeout(() => URL.revokeObjectURL(url), 0);
 	}
+}
+
+/** Saves `value` as pretty JSON under `filename` (plan Ruling 17), as `downloadLog` saves a log. */
+export function saveJson(value: unknown, filename: string): void {
+	saveBlob(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }), filename);
 }
