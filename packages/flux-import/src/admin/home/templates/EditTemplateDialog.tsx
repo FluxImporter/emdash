@@ -1,6 +1,6 @@
-import { Button, Dialog, Input, InputArea } from "@cloudflare/kumo";
-import { useQueryClient } from "@tanstack/react-query";
-import { type ChangeEvent, useState } from "react";
+import { Button, Dialog, Input, InputArea, Loader } from "@cloudflare/kumo";
+import { type UseQueryResult, useQueryClient } from "@tanstack/react-query";
+import { type ChangeEvent, useId, useState } from "react";
 import type { ScheduleView } from "../../../plugin/schedules.js";
 import type { TemplateSummary } from "../../../plugin/templates.js";
 import { api } from "../../api.js";
@@ -8,6 +8,7 @@ import { ApiError } from "../../api-error.js";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { TEMPLATE_DESCRIPTION_MAX, TEMPLATE_NAME_MAX } from "../../limits.js";
+import { M as PAGE } from "../../messages.js";
 import { queryKeys } from "../../queries.js";
 import { useHome } from "../Home.js";
 import { PinnedFailures, PinnedSchedules } from "../pinned/PinnedSchedules.js";
@@ -24,7 +25,7 @@ const nameOk = (name: string) =>
  */
 export function EditTemplateDialog(props: {
 	row: TemplateSummary;
-	schedules: readonly ScheduleView[];
+	schedules: UseQueryResult<ScheduleView[]>;
 	onClose(): void;
 	onReload(): void;
 }) {
@@ -41,7 +42,11 @@ export function EditTemplateDialog(props: {
 	const [saved, setSaved] = useState(false);
 
 	const change: PinChange = { kind: "template", templateId: row.id };
-	const rows = pinnedSchedules(props.schedules, change);
+	const noteId = useId();
+	const known = props.schedules.data;
+	const rows = known === undefined ? [] : pinnedSchedules(known, change);
+	const failedToCheck = props.schedules.isError;
+	const checking = known === undefined;
 	const anyEnabled = rows.some((s) => s.enabled);
 	const descriptionOk = description.length <= TEMPLATE_DESCRIPTION_MAX;
 	const nameChanged = name !== row.name;
@@ -90,6 +95,11 @@ export function EditTemplateDialog(props: {
 		}
 	};
 
+	const checkError = props.schedules.isError ? describeError(props.schedules.error) : null;
+	const checkText = checkError === null ? "" : t(checkError.msg, checkError.values);
+	const retryable = !(
+		props.schedules.error instanceof ApiError && props.schedules.error.status === 403
+	);
 	const missing = failed.filter(
 		(f) => f.error instanceof ApiError && f.error.code === "MISSING_REQUIRED",
 	);
@@ -125,7 +135,21 @@ export function EditTemplateDialog(props: {
 					onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
 					{...(descriptionOk ? {} : { error: t(M.descriptionHint) })}
 				/>
-				{saved ? null : (
+				{saved || !checking ? null : failedToCheck ? (
+					<div role="alert" className="space-y-2 text-sm text-kumo-danger">
+						<p>
+							{t(M.schedulesFailed)} {checkText}
+						</p>
+						{retryable ? (
+							<Button variant="secondary" onClick={() => void props.schedules.refetch()}>
+								{t(PAGE.tryAgain)}
+							</Button>
+						) : null}
+					</div>
+				) : (
+					<Loader aria-label={t(M.schedulesLoading)} />
+				)}
+				{saved || checking ? null : (
 					<PinnedSchedules
 						rows={rows}
 						kind="template"
@@ -134,7 +158,9 @@ export function EditTemplateDialog(props: {
 					/>
 				)}
 				{!saved && alsoUpdate && anyEnabled ? (
-					<p className="text-sm text-kumo-subtle">{t(M.runAsYou)}</p>
+					<p id={noteId} className="text-sm text-kumo-subtle">
+						{t(M.runAsYou)}
+					</p>
 				) : null}
 				{missing.map((f) => (
 					<p key={f.name} className="text-sm text-kumo-danger">
@@ -153,7 +179,7 @@ export function EditTemplateDialog(props: {
 					<p role="alert" className="text-sm text-kumo-danger">
 						{(() => {
 							const d = describeError(error);
-							return t(d.msg, d.values);
+							return `${t(d.msg, d.values)}${d.detail === undefined ? "" : ` ${d.detail}`}`;
 						})()}
 					</p>
 				)}
@@ -167,7 +193,8 @@ export function EditTemplateDialog(props: {
 							loading={busy}
 							aria-label={t(M.save)}
 							aria-busy={busy || undefined}
-							disabled={busy || !nameOk(name) || !descriptionOk}
+							disabled={busy || checking || !nameOk(name) || !descriptionOk}
+							{...(!saved && alsoUpdate && anyEnabled ? { "aria-describedby": noteId } : {})}
 							onClick={() => void save()}
 						>
 							{t(M.save)}

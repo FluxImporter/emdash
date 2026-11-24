@@ -58,6 +58,14 @@ export const M = {
 		id: "flux-import.home-templates.run-as-you",
 		message: "Enabled schedules will run as you from now on.",
 	},
+	schedulesLoading: {
+		id: "flux-import.home-templates.schedules-loading",
+		message: "Checking the schedules",
+	},
+	schedulesFailed: {
+		id: "flux-import.home-templates.schedules-failed",
+		message: "Couldn't check which schedules run this template.",
+	},
 	missingRequired: {
 		id: "flux-import.home-templates.missing-required",
 		message:

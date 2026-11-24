@@ -36,7 +36,9 @@ export function ImportTemplateDialog(props: { onClose(): void }) {
 
 	const ownerOk = owner === "" || OWNER_PATTERN.test(owner);
 
+	const pick = useRef(0);
 	const choose = async (chosen: File | undefined) => {
+		const mine = ++pick.current;
 		setFile(undefined);
 		setFileProblem(null);
 		setError(null);
@@ -46,9 +48,10 @@ export function ImportTemplateDialog(props: { onClose(): void }) {
 			return;
 		}
 		try {
-			setFile(JSON.parse(await chosen.text()) as unknown);
+			const parsed = JSON.parse(await chosen.text()) as unknown;
+			if (mine === pick.current) setFile(parsed);
 		} catch {
-			setFileProblem(M.fileNotJson);
+			if (mine === pick.current) setFileProblem(M.fileNotJson);
 		}
 	};
 

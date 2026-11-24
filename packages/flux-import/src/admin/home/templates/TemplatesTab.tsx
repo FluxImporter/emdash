@@ -26,7 +26,8 @@ export function TemplatesTab() {
 	const [editing, setEditing] = useState<TemplateSummary | null>(null);
 	const [deleting, setDeleting] = useState<TemplateSummary | null>(null);
 	const [importing, setImporting] = useState(false);
-	const [busy, setBusy] = useState(false);
+	const [exporting, setExporting] = useState<string | null>(null);
+	const [deleteBusy, setDeleteBusy] = useState(false);
 	const [deleteError, setDeleteError] = useState<unknown>(null);
 	const [exportError, setExportError] = useState<unknown>(null);
 
@@ -38,7 +39,7 @@ export function TemplatesTab() {
 	};
 
 	const exportRow = async (row: TemplateSummary) => {
-		setBusy(true);
+		setExporting(row.id);
 		setExportError(null);
 		try {
 			const { file, filename } = await api.exportTemplate({ id: row.id });
@@ -47,12 +48,12 @@ export function TemplatesTab() {
 		} catch (e) {
 			setExportError(e);
 		} finally {
-			setBusy(false);
+			setExporting(null);
 		}
 	};
 
 	const confirmDelete = async (row: TemplateSummary) => {
-		setBusy(true);
+		setDeleteBusy(true);
 		setDeleteError(null);
 		try {
 			await api.deleteTemplate({ id: row.id, revision: row.revision });
@@ -62,7 +63,7 @@ export function TemplatesTab() {
 		} catch (e) {
 			setDeleteError(e);
 		} finally {
-			setBusy(false);
+			setDeleteBusy(false);
 		}
 	};
 
@@ -131,7 +132,8 @@ export function TemplatesTab() {
 										</LinkButton>
 										<Button
 											variant="secondary"
-											disabled={busy}
+											disabled={exporting !== null}
+											aria-busy={exporting === row.id || undefined}
 											aria-label={t(M.exportRow, { name: row.name })}
 											onClick={() => void exportRow(row)}
 										>
@@ -205,7 +207,7 @@ export function TemplatesTab() {
 				<EditTemplateDialog
 					key={`${editing.id}-${editing.revision}`}
 					row={editing}
-					schedules={schedules.data ?? []}
+					schedules={schedules}
 					onClose={() => setEditing(null)}
 					onReload={reload}
 				/>
@@ -218,7 +220,7 @@ export function TemplatesTab() {
 					sentence={t(M.deleteSentence, { name: deleting.name })}
 					confirmLabel={t(M.delete)}
 					danger
-					busy={busy}
+					busy={deleteBusy}
 					error={deleteMessage()}
 					onConfirm={() => void confirmDelete(deleting)}
 					onClose={() => setDeleting(null)}

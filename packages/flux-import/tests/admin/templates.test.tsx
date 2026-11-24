@@ -20,7 +20,10 @@ function show() {
 
 const page = (items: unknown[]) => ({ items, hasMore: false });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
 
 describe("Templates tab", () => {
 	it("lists every template with collection and locale, description, revision and last change", async () => {
@@ -330,6 +333,84 @@ describe("Templates tab", () => {
 		await waitFor(() => expect(bodies).toEqual([{ id: "T1", revision: 1, description: null }]));
 	});
 
+	it("keeps Save disabled while the schedules load, with a named Loader", async () => {
+		mockRoutes({
+			"templates/list": () => page([templateRow()]),
+			"schedules/list": () => new Promise(() => {}),
+		});
+		const { user } = show();
+		await user.click(
+			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		expect(within(dialog).getByRole("status", { name: "Checking the schedules" })).toBeTruthy();
+		await user.type(within(dialog).getByLabelText(/Description/), "x");
+		expect(
+			(within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+		).toBe(true);
+	});
+
+	it("says when the schedules could not be checked, and Try again lists them and enables Save", async () => {
+		let n = 0;
+		mockRoutes({
+			"templates/list": () => page([templateRow()]),
+			"schedules/list": () =>
+				++n === 1
+					? fail("VALIDATION_ERROR", "x", 400)
+					: page([schedule({ id: "S1", name: "Nightly" }), schedule({ id: "S2", name: "Hourly" })]),
+		});
+		const { user } = show();
+		await user.click(
+			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		expect(
+			await within(dialog).findByText(/couldn't check which schedules run this template/i),
+		).toBeTruthy();
+		await user.type(within(dialog).getByLabelText(/Description/), "x");
+		expect(
+			(within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+		).toBe(true);
+		await user.click(within(dialog).getByRole("button", { name: "Try again" }));
+		expect(
+			await within(dialog).findByText("These schedules run this template: Nightly, Hourly."),
+		).toBeTruthy();
+		expect(
+			(within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+		).toBe(false);
+	});
+
+	it("offers no Try again after a 403 on the schedules", async () => {
+		mockRoutes({
+			"templates/list": () => page([templateRow()]),
+			"schedules/list": () => fail("FORBIDDEN", "x", 403),
+		});
+		const { user } = show();
+		await user.click(
+			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		expect(await within(dialog).findByText(/couldn't check which schedules/i)).toBeTruthy();
+		expect(within(dialog).queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
+	it("keeps the newer file when an older read finishes last", async () => {
+		const { user, dialog, bodies } = await openImport();
+		const input = within(dialog).getByLabelText("Template file (.json)");
+		const slow = new File(["{}"], "a.json", { type: "application/json" });
+		Object.defineProperty(slow, "text", {
+			value: () => new Promise((r) => setTimeout(() => r(JSON.stringify({ v: "old" })), 50)),
+		});
+		await user.upload(input, slow);
+		await user.upload(
+			input,
+			new File([JSON.stringify({ v: "new" })], "b.json", { type: "application/json" }),
+		);
+		await new Promise((r) => setTimeout(r, 120));
+		await user.click(within(dialog).getByRole("button", { name: "Import" }));
+		await waitFor(() => expect(bodies).toEqual([{ file: { v: "new" } }]));
+	});
+
 	it("shows the empty state with the pointer to Save as template", async () => {
 		mockRoutes({ "templates/list": () => page([]), "schedules/list": () => page([]) });
 		show();
@@ -348,6 +429,9 @@ describe("Templates tab", () => {
 			"schedules/list": () => page([]),
 		});
 		const { user } = show();
+		expect(
+			await screen.findByText("The request was not valid. Check your entries and try again."),
+		).toBeTruthy();
 		await user.click(await screen.findByRole("button", { name: "Try again" }));
 		expect(await screen.findByText("Products feed")).toBeTruthy();
 	});
