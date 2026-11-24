@@ -1442,10 +1442,12 @@ describe("url (Ruling 12)", () => {
 	afterEach(() => vi.unstubAllGlobals());
 
 	it("reads ?step and ?job, and writes them with replaceState keeping history.state", () => {
-		expect(readUrl("?step=map&job=J1")).toEqual({ step: "map", job: "J1" });
-		expect(readUrl("?step=nowhere")).toEqual({ step: null, job: null });
-		expect(readUrl("")).toEqual({ step: null, job: null });
-		expect(readUrl("?job=")).toEqual({ step: null, job: null });
+		expect(readUrl("?step=map&job=J1")).toEqual({ step: "map", job: "J1", template: null });
+		expect(readUrl("?step=nowhere")).toEqual({ step: null, job: null, template: null });
+		expect(readUrl("")).toEqual({ step: null, job: null, template: null });
+		expect(readUrl("?job=")).toEqual({ step: null, job: null, template: null });
+		expect(readUrl("?template=T1")).toEqual({ step: null, job: null, template: "T1" });
+		expect(readUrl("?template=")).toEqual({ step: null, job: null, template: null });
 
 		const state = { key: "router" };
 		const replaceState = vi.fn();
