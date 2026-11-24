@@ -43,16 +43,17 @@ function StateProbe() {
 				target: state.target,
 				rows: state.rows,
 				generation: state.generation,
+				dirty: state.dirty,
+				dryRun: state.dryRun,
 			})}
 		</output>
 	);
 }
 
-function readState(): Pick<WizardState, "step" | "target" | "rows" | "generation"> {
-	return JSON.parse(screen.getByTestId("state").textContent ?? "{}") as Pick<
-		WizardState,
-		"step" | "target" | "rows" | "generation"
-	>;
+type Seen = Pick<WizardState, "step" | "target" | "rows" | "generation" | "dirty" | "dryRun">;
+
+function readState(): Seen {
+	return JSON.parse(screen.getByTestId("state").textContent ?? "{}") as Seen;
 }
 
 function renderTarget(initial: Partial<WizardState> = {}) {
@@ -229,27 +230,69 @@ describe("TargetStep", () => {
 		});
 	});
 
-	it("says before the change that a new collection clears the mapping, then clears it", async () => {
+	it("holds another collection until Next while a mapping exists, so re-picking undoes it", async () => {
+		mockRoutes({
+			"GET manifest": () => MANIFEST,
+			"GET collection:posts": () => POSTS,
+			"GET collection:pages": () => PAGES,
+		});
+		const target = { collection: "posts", locale: "en", translationLocale: null };
+		const { user } = renderTarget({ target, rows: { key: { from: "id" } } });
+		await screen.findByRole("combobox", { name: "Collection" });
+		const notice = "Changing the collection clears the mapping.";
+		expect(screen.queryByText(notice)).toBeNull();
+		await choose(user, "Collection", "Pages");
+		expect(screen.getByText(notice)).toBeVisible();
+		expect(readState().target).toEqual(target);
+		expect(readState().rows).toEqual({ key: { from: "id" } });
+		// The locale still commits, to the collection the draft has.
+		await choose(user, "Locale", "fr");
+		await waitFor(() => expect(readState().target).toEqual({ ...target, locale: "fr" }));
+		expect(readState().rows).toEqual({ key: { from: "id" } });
+		await choose(user, "Collection", "Posts");
+		expect(screen.queryByText(notice)).toBeNull();
+		expect(readState().target).toEqual({ ...target, locale: "fr" });
+		expect(readState().rows).toEqual({ key: { from: "id" } });
+	});
+
+	it("clears the mapping when Next takes another collection", async () => {
 		mockRoutes({
 			"GET manifest": () => MANIFEST,
 			"GET collection:posts": () => POSTS,
 			"GET collection:pages": () => PAGES,
 		});
 		const { user } = renderTarget({
+			step: "target",
+			columns: [{ key: "id", values: ["1"] }],
 			target: { collection: "posts", locale: "en", translationLocale: null },
 			rows: { key: { from: "id" } },
 		});
 		await screen.findByRole("combobox", { name: "Collection" });
-		const notice = "Changing the collection clears the mapping.";
-		// Choosing commits at once (final review 6), so the warning comes first.
-		expect(screen.getByText(notice)).toBeVisible();
 		await choose(user, "Collection", "Pages");
-		await waitFor(() => expect(readState().target?.collection).toBe("pages"));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(readState().target).toEqual({
+			collection: "pages",
+			locale: "en",
+			translationLocale: null,
+		});
 		expect(readState().rows).toEqual({});
-		expect(screen.queryByText(notice)).toBeNull();
-		// The same collection again keeps the mapping.
-		await choose(user, "Collection", "Pages");
-		expect(readState().target?.collection).toBe("pages");
+		expect(readState().step).toBe("map");
+	});
+
+	it("rewrites nothing on a revisit, even an unusual saved target", async () => {
+		mockRoutes({ "GET manifest": () => MANIFEST, "GET collection:posts": () => POSTS });
+		// The default locale with a translation locale: a saved template may hold it.
+		const target = { collection: "posts", locale: "en", translationLocale: "de" };
+		const dryRun = { jobId: "D1", uploadId: "u1", total: 3 };
+		renderTarget({ target, rows: { key: { from: "id" } }, dryRun, dirty: false, generation: 5 });
+		await screen.findByRole("combobox", { name: "Collection" });
+		await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
+		const seen = readState();
+		expect(seen.target).toEqual(target);
+		expect(seen.generation).toBe(5);
+		expect(seen.dirty).toBe(false);
+		expect(seen.dryRun).toEqual(dryRun);
 	});
 
 	it("keeps a mapping when the same collection is chosen again", async () => {
@@ -341,6 +384,45 @@ describe("TargetStep", () => {
 			locale: "fr",
 			translationLocale: null,
 		});
+	});
+
+	it("sends no choice to the draft while a stale saved locale makes it incomplete", async () => {
+		mockRoutes({
+			"GET manifest": () => MANIFEST,
+			"GET collection:posts": () => POSTS,
+			"GET collection:pages": () => PAGES,
+		});
+		const target = { collection: "posts", locale: "es", translationLocale: null };
+		const { user } = renderTarget({ target });
+		await screen.findByRole("combobox", { name: "Collection" });
+		await choose(user, "Collection", "Pages");
+		expect(readState().target).toEqual(target);
+		await choose(user, "Locale", "fr");
+		await waitFor(() =>
+			expect(readState().target).toEqual({ ...target, collection: "pages", locale: "fr" }),
+		);
+	});
+
+	it("holds another collection while only proposed fields make the mapping", async () => {
+		mockRoutes({
+			"GET manifest": () => MANIFEST,
+			"GET collection:posts": () => POSTS,
+			"GET collection:pages": () => PAGES,
+		});
+		const target = { collection: "posts", locale: "en", translationLocale: null };
+		const proposed = {
+			key: "title",
+			slug: "headline",
+			label: "Headline",
+			type: "string",
+			translatable: true,
+			searchable: false,
+		};
+		const { user } = renderTarget({ target, newFields: [proposed] });
+		await screen.findByRole("combobox", { name: "Collection" });
+		await choose(user, "Collection", "Pages");
+		expect(screen.getByText("Changing the collection clears the mapping.")).toBeVisible();
+		expect(readState().target).toEqual(target);
 	});
 
 	it("blocks Next on a stale saved translation locale until a site locale is chosen", async () => {

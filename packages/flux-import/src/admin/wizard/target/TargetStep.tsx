@@ -1,5 +1,5 @@
 import { Banner, Button, Checkbox, Empty, Loader, Select, Text } from "@cloudflare/kumo";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useState } from "react";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
@@ -41,6 +41,46 @@ function originalLocale(site: SiteInfo, locale: string, picked: string | null): 
 	return picked !== null && picked !== locale ? picked : site.defaultLocale;
 }
 
+/** The step's own choices, before they reach the draft. */
+interface Choice {
+	collection: string | null;
+	locale: string | null;
+	translates: boolean;
+	original: string | null;
+}
+
+/**
+ * What `choice` amounts to on `site`: the locale (the default until one is picked), the original
+ * entries' locale when offered and when it applies, the saved locales the site no longer has, and
+ * whether the choice is complete enough for the draft.
+ */
+function resolve(site: SiteInfo | undefined, choice: Choice) {
+	const chosenLocale = choice.locale ?? site?.defaultLocale ?? null;
+	// Only a record in a locale other than the default can translate one (null: not offered).
+	const originalOf =
+		site !== undefined && chosenLocale !== null && chosenLocale !== site.defaultLocale
+			? originalLocale(site, chosenLocale, choice.original)
+			: null;
+	const translationLocale = choice.translates ? originalOf : null;
+	// A saved locale (from a template or a revisit) the site no longer has blocks Next.
+	const staleLocale =
+		site !== undefined && chosenLocale !== null && !site.locales.includes(chosenLocale)
+			? chosenLocale
+			: null;
+	const staleTranslation =
+		site !== undefined && translationLocale !== null && !site.locales.includes(translationLocale)
+			? translationLocale
+			: null;
+	const complete =
+		site !== undefined &&
+		choice.collection !== null &&
+		chosenLocale !== null &&
+		staleLocale === null &&
+		(translationLocale === null ||
+			(staleTranslation === null && translationLocale !== chosenLocale));
+	return { chosenLocale, originalOf, translationLocale, staleLocale, staleTranslation, complete };
+}
+
 /**
  * Step 2: the collection and locale the records go to, and, for a locale other than the default,
  * the locale of the entries they translate (spec "Target"). The collection's fields are read here,
@@ -50,49 +90,45 @@ export function TargetStep() {
 	const t = useT();
 	const { state, dispatch } = useWizard();
 	const site = useSite();
-	const [collection, setCollection] = useState(state.target?.collection ?? null);
-	const [locale, setLocale] = useState(state.target?.locale ?? null);
-	const [translates, setTranslates] = useState((state.target?.translationLocale ?? null) !== null);
-	const [original, setOriginal] = useState(state.target?.translationLocale ?? null);
+	const [choice, setChoice] = useState<Choice>(() => ({
+		collection: state.target?.collection ?? null,
+		locale: state.target?.locale ?? null,
+		translates: (state.target?.translationLocale ?? null) !== null,
+		original: state.target?.translationLocale ?? null,
+	}));
+	const { collection, translates } = choice;
 	const fields = useFields(collection);
 
 	const info = site.data;
-	const chosenLocale = locale ?? info?.defaultLocale ?? null;
-	// Only a record in a locale other than the default can translate one (null: not offered).
-	const originalOf =
-		info !== undefined && chosenLocale !== null && chosenLocale !== info.defaultLocale
-			? originalLocale(info, chosenLocale, original)
-			: null;
-	const translationLocale = translates ? originalOf : null;
-	// A saved locale (from a template or a revisit) the site no longer has blocks Next.
-	const staleLocale =
-		info !== undefined && chosenLocale !== null && !info.locales.includes(chosenLocale)
-			? chosenLocale
-			: null;
-	const staleTranslation =
-		info !== undefined && translationLocale !== null && !info.locales.includes(translationLocale)
-			? translationLocale
-			: null;
-	const complete =
-		info !== undefined &&
-		collection !== null &&
-		chosenLocale !== null &&
-		staleLocale === null &&
-		(translationLocale === null ||
-			(staleTranslation === null && translationLocale !== chosenLocale));
+	const { chosenLocale, originalOf, translationLocale, staleLocale, staleTranslation, complete } =
+		resolve(info, choice);
 	const canNext = complete && !fields.isError;
 	const stale = staleLocale ?? staleTranslation;
 	const staleSentence = stale === null ? null : t(M.staleLocale, { locale: stale });
 	const hasCollections = (info?.collections.length ?? 0) > 0;
-	// A new collection clears the mapping as soon as it is chosen, so this warns beforehand.
-	const hasMapping = state.target !== null && Object.keys(state.rows).length > 0;
+	const mapped = Object.keys(state.rows).length > 0 || state.newFields.length > 0;
+	// A different collection would clear the mapping, so while there is one it waits for Next
+	// (re-picking the draft's collection undoes it), and this says so meanwhile.
+	const held = state.target !== null && mapped ? state.target.collection : null;
+	const changesCollection = held !== null && collection !== held;
 
-	// Each complete choice goes to the draft as it is made, so leaving by the step bar keeps it
-	// (final review 6). The same target again changes nothing (the reducer ignores it).
-	useEffect(() => {
-		if (!complete || collection === null || chosenLocale === null) return;
-		dispatch({ type: "targetChosen", collection, locale: chosenLocale, translationLocale });
-	}, [complete, collection, chosenLocale, translationLocale, dispatch]);
+	/**
+	 * A user's change, sent to the draft at once when complete (final review 6), so leaving by the
+	 * step bar keeps it: never on mount, so a revisit rewrites no saved target. The collection is
+	 * held back as above; the locales still go, to the draft's collection.
+	 */
+	const change = (patch: Partial<Choice>) => {
+		const next = { ...choice, ...patch };
+		setChoice(next);
+		const r = resolve(info, next);
+		if (!r.complete || next.collection === null || r.chosenLocale === null) return;
+		dispatch({
+			type: "targetChosen",
+			collection: held ?? next.collection,
+			locale: r.chosenLocale,
+			translationLocale: r.translationLocale,
+		});
+	};
 
 	const next = () => {
 		if (collection === null || chosenLocale === null) return;
@@ -114,12 +150,12 @@ export function TargetStep() {
 					label={t(M.collection)}
 					placeholder={t(M.collectionPlaceholder)}
 					value={collection}
-					onValueChange={chosen(setCollection)}
+					onValueChange={chosen((value) => change({ collection: value }))}
 					items={info.collections.map((c) => ({
 						value: c.slug,
 						label: c.hidden ? t(M.hiddenCollection, { label: c.label }) : c.label,
 					}))}
-					{...(hasMapping ? { description: t(M.clearsMapping) } : {})}
+					{...(changesCollection ? { description: t(M.clearsMapping) } : {})}
 				/>
 				{fields.isError ? (
 					<ReadError error={fields.error} onRetry={() => void fields.refetch()} />
@@ -128,7 +164,7 @@ export function TargetStep() {
 					<Select
 						label={t(M.locale)}
 						value={chosenLocale}
-						onValueChange={chosen(setLocale)}
+						onValueChange={chosen((value) => change({ locale: value }))}
 						items={info.locales.map((l) => ({ value: l, label: l }))}
 						{...(staleLocale === null ? {} : { error: t(M.staleLocale, { locale: staleLocale }) })}
 					/>
@@ -140,14 +176,14 @@ export function TargetStep() {
 						<Checkbox
 							label={t(M.translates)}
 							checked={translates}
-							onCheckedChange={(checked: boolean) => setTranslates(checked)}
+							onCheckedChange={(checked: boolean) => change({ translates: checked })}
 						/>
 						{translates ? (
 							<>
 								<Select
 									aria-label={t(M.translationLocale)}
 									value={originalOf}
-									onValueChange={chosen(setOriginal)}
+									onValueChange={chosen((value) => change({ original: value }))}
 									items={info.locales
 										.filter((l) => l !== chosenLocale)
 										.map((l) => ({ value: l, label: l }))}
