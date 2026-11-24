@@ -5,6 +5,7 @@ import { api } from "../../api.js";
 import { ApiError, redact } from "../../api-error.js";
 import { describeError, describeJobError, ERROR_MESSAGES } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
+import { M as SHARED } from "../../messages.js";
 import { useJobDriver } from "../../run-driver.js";
 import { DRY_RUN_KEY, useWizard } from "../context.js";
 import { StepFooter } from "../StepFooter.js";
@@ -107,7 +108,7 @@ function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
 			action={
 				p.onRetry === undefined ? undefined : (
 					<Button variant="secondary" onClick={p.onRetry}>
-						{t(M.tryAgain)}
+						{t(SHARED.tryAgain)}
 					</Button>
 				)
 			}
@@ -260,7 +261,7 @@ export function PreviewStep() {
 					action={
 						retryable ? (
 							<Button variant="secondary" disabled={resuming} onClick={() => void tryAgain()}>
-								{t(M.tryAgain)}
+								{t(SHARED.tryAgain)}
 							</Button>
 						) : undefined
 					}

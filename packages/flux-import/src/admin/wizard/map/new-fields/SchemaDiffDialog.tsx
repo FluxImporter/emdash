@@ -7,6 +7,7 @@ import { ApiError, redact } from "../../../api-error.js";
 import { describeError } from "../../../errors.js";
 import { type Msg, useT } from "../../../i18n.js";
 import { MAX_APPLY_FIELDS } from "../../../limits.js";
+import { M as SHARED } from "../../../messages.js";
 import { queryKeys } from "../../../queries.js";
 import type { ProposedField } from "../../state.js";
 import { labelOf } from "./infer.js";
@@ -203,7 +204,7 @@ export function SchemaDiffDialog(p: {
 						error={planError}
 						action={
 							<Button variant="secondary" size="sm" onClick={() => setAttempt((n) => n + 1)}>
-								{t(M.tryAgain)}
+								{t(SHARED.tryAgain)}
 							</Button>
 						}
 					/>

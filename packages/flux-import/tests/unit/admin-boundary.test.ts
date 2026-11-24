@@ -280,6 +280,21 @@ describe("the admin module's boundary", () => {
 		expect(seen.size).toBeGreaterThan(0);
 	});
 
+	it("defines the shared Try again once, in the admin's own messages.ts (Task 7 review)", async () => {
+		const found: string[] = [];
+		for (const file of files.filter(isMessageTable)) {
+			const where = relative(PACKAGE_DIR, file);
+			const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+			const visit = (path: string, value: unknown) => {
+				if (!isPlainObject(value)) return;
+				if (value.message === "Try again") found.push(`${where} ${path}`);
+				else for (const [k, v] of Object.entries(value)) visit(`${path}.${k}`, v);
+			};
+			for (const [name, value] of Object.entries(mod)) visit(name, value);
+		}
+		expect(found).toEqual(["src/admin/messages.ts M.tryAgain"]);
+	});
+
 	it("defines messages only in messages.ts and errors.ts (Ruling 2)", () => {
 		const stray = files
 			.filter((f) => !isMessageTable(f))

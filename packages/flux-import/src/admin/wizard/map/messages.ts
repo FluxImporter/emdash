@@ -11,7 +11,6 @@ export const M = {
 
 	fieldsHeading: { id: "flux-import.map.fields-heading", message: "{collection} fields" },
 	fieldsLoading: { id: "flux-import.map.fields-loading", message: "Loading the fields" },
-	tryAgain: { id: "flux-import.map.try-again", message: "Try again" },
 	keyRow: { id: "flux-import.map.key-row", message: "Key" },
 	keyHint: { id: "flux-import.map.key-hint", message: "unique import key" },
 	slugRow: { id: "flux-import.map.slug-row", message: "Slug" },

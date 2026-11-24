@@ -2,6 +2,7 @@ import { Banner, Button, Checkbox, Empty, Loader, Select, Text } from "@cloudfla
 import { type ReactElement, useState } from "react";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
+import { M as SHARED } from "../../messages.js";
 import { useFields, useSite } from "../../queries.js";
 import type { SiteInfo } from "../../types.js";
 import { useWizard } from "../context.js";
@@ -20,7 +21,7 @@ function ReadError(props: { error: unknown; onRetry(): void }) {
 			{...(detail === undefined ? {} : { description: detail })}
 			action={
 				<Button variant="secondary" onClick={props.onRetry}>
-					{t(M.tryAgain)}
+					{t(SHARED.tryAgain)}
 				</Button>
 			}
 		/>

@@ -6,6 +6,7 @@ import { api } from "../../api.js";
 import { isRetryable, redact } from "../../api-error.js";
 import { describeError, describeRecordWarning } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
+import { M as SHARED } from "../../messages.js";
 import { M } from "./messages.js";
 
 /** The longest value a change shows; longer ones are cut, with "…" as the last character. */
@@ -134,7 +135,7 @@ export function RecordsTable(p: { jobId: string }) {
 				{...(e.detail === undefined ? {} : { description: e.detail })}
 				action={
 					<Button variant="secondary" onClick={() => void query.refetch()}>
-						{t(M.tryAgain)}
+						{t(SHARED.tryAgain)}
 					</Button>
 				}
 			/>

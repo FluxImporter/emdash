@@ -42,7 +42,6 @@ export const M = {
 	},
 	yes: { id: "flux-import.new-fields.yes", message: "yes" },
 	no: { id: "flux-import.new-fields.no", message: "no" },
-	tryAgain: { id: "flux-import.new-fields.try-again", message: "Try again" },
 	conflictsBlock: {
 		id: "flux-import.new-fields.conflicts-block",
 		message: "Remove or change the fields that cannot be added to continue.",

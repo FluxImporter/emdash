@@ -6,6 +6,7 @@ import { api, downloadLog } from "../../api.js";
 import { ApiError } from "../../api-error.js";
 import { describeError, describeJobError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
+import { M as SHARED } from "../../messages.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
 import { useWizard } from "../context.js";
 import {
@@ -411,7 +412,7 @@ function ErrorNotice(props: { error: unknown; onRetry?: (() => void) | undefined
 			action={
 				onRetry && !forbidden ? (
 					<Button variant="secondary" onClick={onRetry}>
-						{t(M.tryAgain)}
+						{t(SHARED.tryAgain)}
 					</Button>
 				) : undefined
 			}

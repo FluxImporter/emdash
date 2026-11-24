@@ -298,7 +298,6 @@ describe("describeRecordWarning (a dry run's per-record warnings)", () => {
 
 	it("keeps the engine's specifics, redacted, where its message carries them", () => {
 		const d = describeRecordWarning({
-			field: "body",
 			code: "image_dropped",
 			message: `invalid_media_url: ${UPLOAD_ID}.png: not a URL`,
 		});

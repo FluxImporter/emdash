@@ -39,7 +39,6 @@ export const M = {
 	downloadFailed: { id: "flux-import.run.download-failed", message: "Download failed records" },
 	retryFailed: { id: "flux-import.run.retry-failed", message: "Retry failed records" },
 	viewEntries: { id: "flux-import.run.view-entries", message: "View the entries" },
-	tryAgain: { id: "flux-import.run.try-again", message: "Try again" },
 	counters: {
 		created: { id: "flux-import.run.counter.created", message: "Created" },
 		updated: { id: "flux-import.run.counter.updated", message: "Updated" },

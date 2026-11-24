@@ -13,6 +13,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { describeError, describeWarning } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
+import { M as SHARED } from "../../messages.js";
 import { queryKeys, useFields, useSite } from "../../queries.js";
 import type { SampleColumn, SchemaField } from "../../types.js";
 import { useWizard } from "../context.js";
@@ -229,7 +230,7 @@ export function MapStep() {
 				{...(detail === undefined ? {} : { description: detail })}
 				action={
 					<Button variant="secondary" onClick={() => void fields.refetch()}>
-						{t(M.tryAgain)}
+						{t(SHARED.tryAgain)}
 					</Button>
 				}
 			/>
@@ -367,7 +368,7 @@ function SuggestionNotices(p: { onRetry(): void }) {
 				description={detail === undefined ? t(M.suggestFailed) : `${detail} ${t(M.suggestFailed)}`}
 				action={
 					<Button variant="secondary" onClick={p.onRetry}>
-						{t(M.tryAgain)}
+						{t(SHARED.tryAgain)}
 					</Button>
 				}
 			/>

@@ -74,7 +74,7 @@ function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void
 			{...(detail === undefined ? {} : { description: detail })}
 			action={
 				<Button variant="secondary" loading={props.retrying} onClick={props.onRetry}>
-					{t(SHELL.tryAgain)}
+					{t(PAGE.tryAgain)}
 				</Button>
 			}
 		/>
