@@ -224,7 +224,7 @@ export function SchedulesTab() {
 				/>
 			)}
 			{rows.length === 0 ? (
-				<Empty title={t(M.empty)} description={t(M.emptyHint)} />
+				<Empty size="sm" title={t(M.empty)} description={t(M.emptyHint)} />
 			) : (
 				<div className="overflow-x-auto">
 					<Table>

@@ -1,4 +1,5 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { Empty } from "@cloudflare/kumo";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
@@ -198,8 +199,17 @@ describe("the Schedules tab", () => {
 	it("says when there are no schedules", async () => {
 		routes();
 		renderTab();
-		expect(await screen.findByText("No schedules yet.")).toBeVisible();
+		const title = await screen.findByText("No schedules yet.");
+		expect(title).toBeVisible();
 		expect(screen.queryByRole("table")).toBeNull();
+		// The small empty state, as Jobs and Templates show theirs (Task 16).
+		const { container } = render(<Empty size="sm" title="x" />);
+		const root = container.firstElementChild as HTMLElement;
+		let mine: HTMLElement = title;
+		while (mine.parentElement && !mine.parentElement.classList.contains("space-y-4")) {
+			mine = mine.parentElement;
+		}
+		expect(mine.className).toBe(root.className);
 	});
 
 	it.each([
