@@ -245,7 +245,10 @@ describe("the Imports home, assembled", () => {
 		});
 		await user.click(screen.getByRole("button", { name: "Import a template" }));
 		const dialog = await screen.findByRole("dialog", { name: "Import a template" });
-		await user.upload(within(dialog).getByLabelText("Template file (.json)"), file);
+		await user.upload(
+			within(dialog).getByLabelText("Template file (.json)", { selector: "input" }),
+			file,
+		);
 		await user.type(within(dialog).getByLabelText("New name (optional)"), "Products feed copy");
 		const go = within(dialog).getByRole("button", { name: "Import" });
 		await waitFor(() => expect(go).toBeEnabled());

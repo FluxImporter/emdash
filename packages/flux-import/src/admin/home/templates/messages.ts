@@ -91,6 +91,7 @@ export const M = {
 		message: "Choose a template file that was exported from flux-import.",
 	},
 	fileLabel: { id: "flux-import.home-templates.file-label", message: "Template file (.json)" },
+	chosenFile: { id: "flux-import.home-templates.chosen-file", message: "Chosen file: {name}" },
 	newNameLabel: { id: "flux-import.home-templates.new-name-label", message: "New name (optional)" },
 	ownerLabel: { id: "flux-import.home-templates.owner-label", message: "Owner (optional)" },
 	ownerHint: {

@@ -1,6 +1,6 @@
 import { Button, Dialog, Input } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, useEffect, useId, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { ApiError } from "../../api-error.js";
 import { describeError } from "../../errors.js";
@@ -8,6 +8,7 @@ import type { Msg } from "../../i18n.js";
 import { useT } from "../../i18n.js";
 import { OWNER_PATTERN, TEMPLATE_BODY_MAX_BYTES } from "../../limits.js";
 import { queryKeys } from "../../queries.js";
+import { M as SOURCE } from "../../wizard/source/messages.js";
 import { useHome } from "../Home.js";
 import { M as SHARED } from "../shared/messages.js";
 import { M } from "./messages.js";
@@ -21,7 +22,11 @@ export function ImportTemplateDialog(props: { onClose(): void }) {
 	const { announce } = useHome();
 	const client = useQueryClient();
 	const ownerRef = useRef<HTMLInputElement>(null);
+	const fileRef = useRef<HTMLInputElement>(null);
+	const labelId = useId();
+	const buttonId = useId();
 	const [file, setFile] = useState<unknown>(undefined);
+	const [fileName, setFileName] = useState<string | null>(null);
 	const [fileProblem, setFileProblem] = useState<Msg | null>(null);
 	const [name, setName] = useState("");
 	const [owner, setOwner] = useState("");
@@ -42,6 +47,7 @@ export function ImportTemplateDialog(props: { onClose(): void }) {
 		setFile(undefined);
 		setFileProblem(null);
 		setError(null);
+		setFileName(chosen?.name ?? null);
 		if (chosen === undefined) return;
 		if (chosen.size > TEMPLATE_BODY_MAX_BYTES) {
 			setFileProblem(M.fileTooLarge);
@@ -89,16 +95,42 @@ export function ImportTemplateDialog(props: { onClose(): void }) {
 					{t(M.importSentence)}
 				</Dialog.Description>
 				<div className="space-y-2">
-					<label htmlFor="flux-import-template-file" className="text-sm font-medium">
+					<label
+						id={labelId}
+						htmlFor="flux-import-template-file"
+						className="block text-sm font-medium"
+					>
 						{t(M.fileLabel)}
 					</label>
+					{/*
+					 * The browser's own file control has no button look in the admin's themes, so a Kumo
+					 * button opens it, as the wizard's Upload tab does (M7a); the label names both.
+					 */}
 					<input
+						ref={fileRef}
 						id="flux-import-template-file"
 						type="file"
 						accept=".json,application/json"
 						disabled={busy}
+						tabIndex={-1}
+						aria-hidden="true"
+						className="sr-only"
 						onChange={(e: ChangeEvent<HTMLInputElement>) => void choose(e.target.files?.[0])}
 					/>
+					<div className="flex flex-wrap items-center gap-3">
+						<Button
+							id={buttonId}
+							variant="secondary"
+							disabled={busy}
+							aria-labelledby={`${labelId} ${buttonId}`}
+							onClick={() => fileRef.current?.click()}
+						>
+							{t(SOURCE.browseFiles)}
+						</Button>
+						{fileName === null ? null : (
+							<p className="text-sm">{t(M.chosenFile, { name: fileName })}</p>
+						)}
+					</div>
 					{fileProblem === null ? null : (
 						<p role="alert" className="text-sm text-kumo-danger">
 							{t(fileProblem)}

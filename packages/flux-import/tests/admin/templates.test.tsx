@@ -254,7 +254,10 @@ describe("Templates tab", () => {
 	it("imports a file with a new name and owner, and shows OWNER_IN_USE and INVALID_FILE in words", async () => {
 		const { user, dialog, bodies, answer } = await openImport();
 		const file = new File([JSON.stringify({ v: 1 })], "t.json", { type: "application/json" });
-		await user.upload(within(dialog).getByLabelText("Template file (.json)"), file);
+		await user.upload(
+			within(dialog).getByLabelText("Template file (.json)", { selector: "input" }),
+			file,
+		);
 		await user.type(within(dialog).getByLabelText("New name (optional)"), "Copy");
 		const owner = within(dialog).getByLabelText(/Owner/);
 		await user.type(owner, "feed:1");
@@ -283,9 +286,30 @@ describe("Templates tab", () => {
 		expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe("Imported Copy.");
 	});
 
+	it("opens the file chooser from a Browse files button and names the chosen file (Task 16)", async () => {
+		const { user, dialog } = await openImport();
+		const input = within(dialog).getByLabelText("Template file (.json)", { selector: "input" });
+		// The browser's own control has no button look in the admin: kept for its label and file only.
+		expect(input).toHaveClass("sr-only");
+		expect(input).toHaveAttribute("tabindex", "-1");
+		expect(input).toHaveAttribute("aria-hidden", "true");
+		const browse = within(dialog).getByRole("button", {
+			name: "Template file (.json) Browse files",
+		});
+		const click = vi.spyOn(input, "click").mockImplementation(() => {});
+		await user.click(browse);
+		expect(click).toHaveBeenCalledTimes(1);
+		click.mockRestore();
+		const file = new File([JSON.stringify({ v: 1 })], "products-feed.json", {
+			type: "application/json",
+		});
+		await user.upload(input, file);
+		expect(await within(dialog).findByText("Chosen file: products-feed.json")).toBeVisible();
+	});
+
 	it("refuses a file that is not JSON or over 2 MiB before sending it", async () => {
 		const { user, dialog, bodies } = await openImport();
-		const input = within(dialog).getByLabelText("Template file (.json)");
+		const input = within(dialog).getByLabelText("Template file (.json)", { selector: "input" });
 		await user.upload(input, new File(["not json"], "t.json", { type: "application/json" }));
 		expect(await within(dialog).findByText("This file is not JSON.")).toBeTruthy();
 		const big = new File(["{}"], "big.json", { type: "application/json" });
@@ -396,7 +420,7 @@ describe("Templates tab", () => {
 
 	it("keeps the newer file when an older read finishes last", async () => {
 		const { user, dialog, bodies } = await openImport();
-		const input = within(dialog).getByLabelText("Template file (.json)");
+		const input = within(dialog).getByLabelText("Template file (.json)", { selector: "input" });
 		const slow = new File(["{}"], "a.json", { type: "application/json" });
 		Object.defineProperty(slow, "text", {
 			value: () => new Promise((r) => setTimeout(() => r(JSON.stringify({ v: "old" })), 50)),
