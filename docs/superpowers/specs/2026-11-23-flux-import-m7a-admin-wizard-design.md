@@ -463,6 +463,11 @@ From the review (`../notes/2026-11-23-m7a-review.md`, which has the details):
 - **The production build is unverified** (carried from M2): the acceptance ran on `astro dev`, so
   Fact V5's production Lingui path and the admin bundle's single copies are proven by tests and
   the dev server's module URLs only.
+- **Small gaps left by the whole-branch review:** a "name taken" flag set in Options can outlive
+  its cause after the Map edits are undone (Options re-checks it when opened); Preview's Run
+  import follows `canRun`, not `reachable(run)` (they agree on every path today); a `?job=` the
+  server refuses as invalid reads "try again" beside "Start a new import"; a 4xx from Run's own
+  `templates/create` or `jobs/create` offers only Try again (the step bar still links Options).
 - **Carried to M7b** from M6: `jobs/list` returns whole job rows (M6a); a fenced site stops
   schedules silently, and the admin should show the fence (M6b final review); abandoned agent dry
   runs make a source busy (M6c, M6b Ruling 54).
