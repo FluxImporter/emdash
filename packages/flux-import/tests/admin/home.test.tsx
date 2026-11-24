@@ -56,6 +56,8 @@ describe("Home", () => {
 		expect(await screen.findAllByText("Only administrators can import.")).toHaveLength(1);
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 		expect(screen.queryByRole("tablist")).toBeNull();
+		expect(screen.queryByRole("link", { name: "New import" })).toBeNull();
+		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
 	});
 
 	it("offers Try again after another failure, which probes again", async () => {
@@ -74,11 +76,11 @@ describe("Home", () => {
 	it("renders Imports, the New import link to the wizard and four tabs with a tabpanel", async () => {
 		granted();
 		renderAdmin(<Home tabs={DUMMY} />);
-		expect(await screen.findByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
-		expect(screen.getByRole("link", { name: "New import" })).toHaveAttribute(
+		expect(await screen.findByRole("link", { name: "New import" })).toHaveAttribute(
 			"href",
 			"/_emdash/admin/plugins/flux-import/import",
 		);
+		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
 		expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
 			"Jobs",
 			"Templates",
@@ -123,6 +125,19 @@ describe("Home", () => {
 		expect(await screen.findByText("schedules-tab")).toBeVisible();
 		expect(window.location.search).toBe("?tab=schedules");
 		expect(screen.getByRole("tab", { name: "Schedules" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("changes the live region each time, even for the same text", async () => {
+		granted();
+		const { user, container } = renderAdmin(<Home tabs={DUMMY} />);
+		const say = await screen.findByRole("button", { name: "Say" });
+		await user.click(say);
+		const first = container.querySelector('[aria-live="polite"] > span');
+		expect(first).toHaveTextContent("said jobs");
+		await user.click(say);
+		const second = container.querySelector('[aria-live="polite"] > span');
+		expect(second).toHaveTextContent("said jobs");
+		expect(second).not.toBe(first);
 	});
 
 	it("announces through one polite live region", async () => {
@@ -261,10 +276,12 @@ describe("times", () => {
 		expect(whenLabel(new Date(2026, 10, 23, 23, 59).toISOString(), now, "en", t)).toBe(
 			"yesterday 23:59",
 		);
-		const older = whenLabel(new Date(2026, 10, 20, 10, 14).toISOString(), now, "en", t);
+		const older = whenLabel(new Date(2026, 10, 20, 15, 30).toISOString(), now, "en", t);
 		expect(older).toContain("Nov 20, 2026");
 		expect(older).not.toContain("today");
 		expect(older).not.toContain("yesterday");
+		expect(older).toContain("15:30");
+		expect(older).not.toMatch(/[AP]M/);
 		expect(SHARED.today.message).toContain("{time}");
 	});
 	it("leaves a value that is not a time as it is", () => {

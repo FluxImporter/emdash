@@ -12,7 +12,6 @@ import { describeError, ERROR_MESSAGES } from "../errors.js";
 import { useT } from "../i18n.js";
 import { M as PAGE } from "../messages.js";
 import { useCredentials } from "../queries.js";
-import { SHELL } from "../wizard/messages.js";
 import { WIZARD_URL } from "./links.js";
 import { M } from "./messages.js";
 import { readTab, TABS, type TabId, writeTab } from "./url.js";
@@ -41,18 +40,22 @@ export function useHome(): HomeValue {
  */
 export function HomeProvider(props: { children: ReactNode; initialTab?: TabId }) {
 	const [tab, setTab] = useState<TabId>(() => props.initialTab ?? readTab(window.location.search));
-	const [announcement, setAnnouncement] = useState("");
+	// A counter beside the text: the same sentence twice is a new element, which is read again.
+	const [announcement, setAnnouncement] = useState({ n: 0, text: "" });
 	const goTo = useCallback((next: TabId) => {
 		writeTab(next);
 		setTab(next);
 	}, []);
-	const announce = useCallback((text: string) => setAnnouncement(text), []);
+	const announce = useCallback(
+		(text: string) => setAnnouncement((a) => ({ n: a.n + 1, text })),
+		[],
+	);
 	const value = useMemo(() => ({ tab, goTo, announce }), [tab, goTo, announce]);
 	return (
 		<HomeContext.Provider value={value}>
 			{props.children}
 			<div aria-live="polite" className="sr-only">
-				{announcement}
+				{announcement.n === 0 ? null : <span key={announcement.n}>{announcement.text}</span>}
 			</div>
 		</HomeContext.Provider>
 	);
@@ -65,9 +68,14 @@ export function HomeProvider(props: { children: ReactNode; initialTab?: TabId })
 export function Home(props: { tabs: TabComponents }) {
 	const t = useT();
 	const access = useCredentials();
+	const granted = access.data !== undefined;
 	return (
 		<div className="space-y-6">
-			{access.data !== undefined ? (
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				<h1 className="text-2xl font-bold">{t(M.title)}</h1>
+				{granted ? <Link href={WIZARD_URL}>{t(M.newImport)}</Link> : null}
+			</div>
+			{granted ? (
 				// Once granted, the page stays: a later failed probe must not drop the open tab.
 				<HomeProvider>
 					<Content tabs={props.tabs} />
@@ -79,7 +87,7 @@ export function Home(props: { tabs: TabComponents }) {
 					onRetry={() => void access.refetch()}
 				/>
 			) : (
-				<Loader aria-label={t(SHELL.checkingAccess)} />
+				<Loader aria-label={t(M.checkingAccess)} />
 			)}
 		</div>
 	);
@@ -119,10 +127,6 @@ function Content(props: { tabs: TabComponents }) {
 	const Tab = props.tabs[tab];
 	return (
 		<>
-			<div className="flex flex-wrap items-center justify-between gap-3">
-				<h1 className="text-2xl font-bold">{t(M.title)}</h1>
-				<Link href={WIZARD_URL}>{t(M.newImport)}</Link>
-			</div>
 			<Tabs
 				tabs={TABS.map((id) => ({ value: id, label: t(M.tabs[id]) }))}
 				value={tab}
