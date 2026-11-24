@@ -1,6 +1,6 @@
 import { Banner, Checkbox, Collapsible, DatePicker, Input, Radio, Select } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ChangeEvent, useEffect, useId, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
@@ -241,8 +241,11 @@ export function OptionsStep() {
 	}, [advancedNeeded]);
 
 	// --- Next ---
-	// Next is what saves the changes to the template, so that choice does not block it here.
-	const blockers = optionsBlockers(state).filter((b) => b.msg !== M.saveUnsaved);
+	// Next is what saves the changes to the template, so that choice does not block it here; the
+	// report of the checks below is shown as each check's own sentence.
+	const blockers = optionsBlockers(state).filter(
+		(b) => b.msg !== M.saveUnsaved && b.msg !== M.inputInvalid,
+	);
 	const tooMany = blockers.some((b) => b.msg === M.updateFieldsTooMany);
 	const local: ({ msg: Msg; values?: Values } | false)[] = [
 		nameTaken && { msg: M.nameTaken },
@@ -252,6 +255,20 @@ export function OptionsStep() {
 		!batchValid && { msg: M.batchSizeInvalid, values: { max: BATCH_SIZE_MAX } },
 	];
 	const blocker = [...blockers, ...local].find((b) => b !== false) ?? null;
+	// These checks read text or templates the draft does not hold, so the step reports them for
+	// the step bar (final review 4).
+	const inputInvalid = local.some((b) => b !== false);
+	useEffect(() => {
+		dispatch({ type: "optionsInputChecked", invalid: inputInvalid });
+	}, [inputInvalid, dispatch]);
+	// Leaving drops the text being typed, so only a taken name, which is the draft's own, stays
+	// reported until Options is shown again.
+	const nameTakenNow = useRef(nameTaken);
+	nameTakenNow.current = nameTaken;
+	useEffect(
+		() => () => dispatch({ type: "optionsInputChecked", invalid: nameTakenNow.current }),
+		[dispatch],
+	);
 	const protectHelpId = useId();
 	const saveHelpId = useId();
 

@@ -85,6 +85,13 @@ export interface WizardState {
 	saved: { warnings: string[] } | null;
 	dryRun: { jobId: string; uploadId: string; total: number | null } | null;
 	run: { jobId: string } | null;
+	/**
+	 * Whether an Options input fails a check only the step can make, on text the draft does not
+	 * hold (a threshold, owner, batch size or timezone being typed) or on the saved templates (a
+	 * name taken). Options reports it, so `optionsBlockers` keeps Preview and Run closed to the
+	 * step bar too (final review 4).
+	 */
+	optionsInputInvalid: boolean;
 	dirty: boolean;
 	/**
 	 * The draft's generation: every action that changes the draft adds one. A dry run is started
@@ -111,6 +118,8 @@ export type WizardAction =
 	| { type: "fieldRemoved"; slug: string }
 	| { type: "fieldsApplied"; slugs: string[] }
 	| { type: "optionsChanged"; patch: Partial<Options> }
+	/** Options' report of its own checks (`optionsInputInvalid`); changes no draft. */
+	| { type: "optionsInputChecked"; invalid: boolean }
 	| {
 			type: "templateSaved";
 			id: string;
@@ -161,6 +170,7 @@ export const initialState: WizardState = {
 	saved: null,
 	dryRun: null,
 	run: null,
+	optionsInputInvalid: false,
 	dirty: false,
 	generation: 0,
 };
@@ -174,6 +184,7 @@ const KEEPS_DRAFT = new Set<WizardAction["type"]>([
 	"runStarted",
 	"jobReopened",
 	"templateSaved",
+	"optionsInputChecked",
 ]);
 
 /**
@@ -309,6 +320,8 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				rows,
 				meta,
 				options: { ...DEFAULT_OPTIONS, ...options },
+				// Options' inputs start again from the template's values.
+				optionsInputInvalid: false,
 				newFields: [],
 				suggestion: IDLE,
 			};
@@ -373,6 +386,10 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 		}
 		case "optionsChanged":
 			return { ...state, options: { ...state.options, ...action.patch } };
+		case "optionsInputChecked":
+			return state.optionsInputInvalid === action.invalid
+				? state
+				: { ...state, optionsInputInvalid: action.invalid };
 		case "templateSaved":
 			return {
 				...state,
@@ -758,7 +775,8 @@ export function saveOffered(state: WizardState): boolean {
  * `MAX_UPDATE_FIELDS`; and, while Options offers them, a new template's name `templates/create`
  * would refuse, or changes to save to the template that are not saved yet (`templateSaved` clears
  * that choice). Preview and Run stay closed while any holds, so the step bar cannot skip Options'
- * Next. Nothing a saved template the engine accepted can hold is refused here: the engine reads
+ * Next; so is an input Options' own checks refuse (`optionsInputInvalid`). Nothing a saved
+ * template the engine accepted can hold is refused here: the engine reads
  * dates and timezones with Luxon, which the browser cannot match, so the Options step checks only
  * a timezone the user types.
  */
@@ -790,6 +808,7 @@ export function optionsBlockers(state: WizardState): Blocker[] {
 			blockers.push({ row: null, msg: OPTIONS.saveUnsaved, values: { name: base.name } });
 		}
 	}
+	if (state.optionsInputInvalid) blockers.push({ row: null, msg: OPTIONS.inputInvalid });
 	return blockers;
 }
 

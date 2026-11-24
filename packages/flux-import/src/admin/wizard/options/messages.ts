@@ -127,6 +127,10 @@ export const M = {
 	saveUpdate: { id: "flux-import.options.save-update", message: "Save the changes to {name}" },
 	saveNew: { id: "flux-import.options.save-new", message: "Save as a new template" },
 	templateName: { id: "flux-import.options.template-name", message: "Template name" },
+	inputInvalid: {
+		id: "flux-import.options.input-invalid",
+		message: "Correct the options marked as not valid",
+	},
 	nameNeeded: {
 		id: "flux-import.options.name-needed",
 		message: "Name the template to save it",

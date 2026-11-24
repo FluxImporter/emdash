@@ -740,6 +740,62 @@ describe("the import wizard, end to end", () => {
 		expect(screen.queryByRole("link", { name: "6 Run" })).toBeNull();
 	});
 
+	it("links no Preview in the step bar while an Options input is refused (final review 4)", async () => {
+		mockRoutes(server());
+		const { user } = renderPage();
+		await upload(user);
+		await user.click(next());
+		await target(user);
+		await mapped();
+		await user.click(next());
+		await heading("Options");
+		expect(stepLink(5, "Preview")).toBeVisible();
+		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
+		await user.type(screen.getByRole("textbox", { name: "Template name" }), "Weekly posts");
+		await user.click(screen.getByRole("radio", { name: "Unpublish them" }));
+		const threshold = screen.getByRole("textbox", { name: /Stop the run/ });
+		await user.clear(threshold);
+		await user.type(threshold, "250");
+		expect(next()).toBeDisabled();
+		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		await user.clear(threshold);
+		await user.type(threshold, "30");
+		expect(stepLink(5, "Preview")).toBeVisible();
+
+		// Leaving Options drops the text it refused: the draft keeps its last valid value.
+		await user.clear(threshold);
+		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		await user.click(stepLink(3, "Map"));
+		await heading("Map");
+		expect(stepLink(5, "Preview")).toBeVisible();
+		await user.click(stepLink(4, "Options"));
+		await heading("Options");
+		expect(screen.getByRole("textbox", { name: /Stop the run/ })).toHaveValue("30");
+	});
+
+	it("keeps Preview unlinked after leaving Options with a template name already taken", async () => {
+		mockRoutes(server({ templates: [SAVED_TEMPLATE] }));
+		const { user } = renderPage();
+		await upload(user);
+		await user.click(next());
+		await target(user);
+		await mapped();
+		await user.click(next());
+		await heading("Options");
+		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
+		await user.type(screen.getByRole("textbox", { name: "Template name" }), "Posts from CSV");
+		await waitFor(() => expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull());
+		// The name is the draft's own, so the check holds away from Options too.
+		await user.click(stepLink(3, "Map"));
+		await heading("Map");
+		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		await user.click(stepLink(4, "Options"));
+		await heading("Options");
+		const name = screen.getByRole("textbox", { name: "Template name" });
+		await user.type(name, " 2");
+		expect(stepLink(5, "Preview")).toBeVisible();
+	});
+
 	it("links no step after Map while a proposed field waits for the schema diff", async () => {
 		mockRoutes(server());
 		const { user } = renderPage();

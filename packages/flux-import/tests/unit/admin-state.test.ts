@@ -1190,6 +1190,25 @@ describe("optionsBlockers (the step bar can skip Options' Next)", () => {
 		filled,
 	);
 
+	it("holds while Options reports an input its own checks refuse (final review 4)", () => {
+		const invalid = reducer(filled, { type: "optionsInputChecked", invalid: true });
+		expect(ids(invalid)).toEqual(["flux-import.options.input-invalid"]);
+		expect(reachable(invalid, "preview")).toBe(false);
+		expect(reachable(invalid, "options")).toBe(true);
+		// A report changes no draft: the dry run, the generation and dirty stay.
+		expect(invalid.generation).toBe(filled.generation);
+		expect(invalid.dirty).toBe(filled.dirty);
+		expect(reducer(invalid, { type: "optionsInputChecked", invalid: true })).toBe(invalid);
+		const valid = reducer(invalid, { type: "optionsInputChecked", invalid: false });
+		expect(optionsBlockers(valid)).toEqual([]);
+		// A loaded template resets Options' inputs, so their report goes too.
+		const reset = reducer(invalid, {
+			type: "templateLoaded",
+			base: { id: "T1", revision: 1, name: "Feed", template: loaded().base!.template },
+		});
+		expect(reset.optionsInputInvalid).toBe(false);
+	});
+
 	it("finds none in a default draft, a loaded template or an edited one run unsaved", () => {
 		expect(optionsBlockers(filled)).toEqual([]);
 		expect(optionsBlockers(loaded())).toEqual([]);
