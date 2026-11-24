@@ -8,6 +8,7 @@ export const M = {
 	tabSaved: { id: "flux-import.source.tab-saved", message: "Saved source" },
 
 	chooseFile: { id: "flux-import.source.choose-file", message: "Choose a file" },
+	browseFiles: { id: "flux-import.source.browse-files", message: "Browse files" },
 	fileTypes: {
 		id: "flux-import.source.file-types",
 		message: "CSV, JSON, JSON Lines (.jsonl or .ndjson), XML or XLSX.",

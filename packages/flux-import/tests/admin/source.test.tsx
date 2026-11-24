@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PASTE_MAX_BYTES, SAMPLE_MAX } from "../../src/admin/limits.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { formatOf, formatOfUrl } from "../../src/admin/wizard/source/SourceSettings.js";
@@ -129,6 +129,22 @@ const SOURCE_ROW = {
 };
 
 describe("the Source step", () => {
+	it("opens the file chooser from a Browse files button, the only control a keyboard reaches", async () => {
+		routes({});
+		const { user } = renderSource();
+		const input = fileInput();
+		// The native control is kept for its label and its files, out of sight and of the tab order.
+		expect(input).toHaveClass("sr-only");
+		expect(input).toHaveAttribute("tabindex", "-1");
+		expect(input).toHaveAttribute("aria-hidden", "true");
+		const browse = screen.getByRole("button", { name: "Browse files" });
+		expect(browse).toHaveAccessibleDescription(/CSV, JSON/);
+		const click = vi.spyOn(input, "click").mockImplementation(() => {});
+		await user.click(browse);
+		expect(click).toHaveBeenCalledTimes(1);
+		click.mockRestore();
+	});
+
 	it("uploads a file with its name, the CSRF header and progress, then samples it", async () => {
 		const reply = deferred<unknown>();
 		const { calls } = routes({ upload: () => reply.promise });

@@ -1,5 +1,5 @@
-import { Meter } from "@cloudflare/kumo";
-import { type ChangeEvent, useId, useState } from "react";
+import { Button, Meter } from "@cloudflare/kumo";
+import { type ChangeEvent, useId, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { ERROR_MESSAGES } from "../../errors.js";
 import { useT } from "../../i18n.js";
@@ -12,6 +12,7 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 	const t = useT();
 	const inputId = useId();
 	const hintId = useId();
+	const input = useRef<HTMLInputElement>(null);
 	const [progress, setProgress] = useState<{ name: string; percent: number } | null>(null);
 
 	const onChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -48,15 +49,32 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 			<label htmlFor={inputId} className="block font-medium">
 				{t(M.chooseFile)}
 			</label>
+			{/*
+			 * The browser's own file control has no button look in the admin's themes, so a Kumo button
+			 * opens it, as the admin's WordPress importer does. The input stays for the label and the
+			 * file; the button is the one control keyboards and screen readers reach.
+			 */}
 			<input
+				ref={input}
 				id={inputId}
 				type="file"
 				accept={ACCEPT}
 				disabled={busy}
-				aria-describedby={hintId}
+				tabIndex={-1}
+				aria-hidden="true"
 				onChange={onChange}
-				className="block text-sm"
+				className="sr-only"
 			/>
+			<div>
+				<Button
+					variant="secondary"
+					disabled={busy}
+					aria-describedby={hintId}
+					onClick={() => input.current?.click()}
+				>
+					{t(M.browseFiles)}
+				</Button>
+			</div>
 			<p id={hintId} className="text-sm text-kumo-subtle">
 				{t(M.fileTypes)}
 			</p>
