@@ -177,8 +177,8 @@ describe("the schedule routes (M6b)", () => {
 	it("caps every schedule route's JSON body at 16 KiB", () => {
 		expect(SCHEDULE_BODY_MAX_BYTES).toBe(16 * 1024);
 		const names = Object.keys(plugin.routes).filter((r) => r.startsWith("schedules/"));
-		// Five M6b routes and M6d's schedules/overview.
-		expect(names).toHaveLength(6);
+		// Five M6b routes, M6d's schedules/overview and M7b's schedules/fence.
+		expect(names).toHaveLength(7);
 		for (const name of names) {
 			expect(plugin.routes[name]?.request, name).toEqual({
 				body: "json",

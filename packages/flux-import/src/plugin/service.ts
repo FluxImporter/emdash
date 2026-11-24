@@ -23,6 +23,7 @@ import {
 	type ValueSample,
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
+import { type JobListItem, listItem } from "./summaries.js";
 
 export const PAGE_SIZE = 50;
 /**
@@ -534,6 +535,36 @@ export async function listJobs(
 		}),
 	);
 	return { ...jobs, items: jobs.items.map(upgradeJob) };
+}
+
+/**
+ * A page of the admin's Jobs table (M7b `jobs/summaries`): real imports or dry runs, newest
+ * first, from one query the `["dryRun", "createdAt"]` index serves, plus one read per
+ * rolled-back import for its rollback's status (at most `JOB_PAGE`).
+ */
+export async function listJobSummaries(
+	deps: Pick<EngineDeps, "jobs" | "now">,
+	opts: { dryRun: boolean; cursor?: string },
+): Promise<Page<JobListItem>> {
+	const jobs = page(
+		await deps.jobs.query({
+			where: { dryRun: opts.dryRun },
+			orderBy: { createdAt: "desc" },
+			limit: JOB_PAGE,
+			...(opts.cursor ? { cursor: opts.cursor } : {}),
+		}),
+	);
+	const now = deps.now();
+	const items = await Promise.all(
+		jobs.items.map(async (job) => {
+			const rollback =
+				job.kind !== "rollback" && job.rolledBackBy !== undefined
+					? await deps.jobs.get(job.rolledBackBy)
+					: null;
+			return listItem(job, rollback?.status, now);
+		}),
+	);
+	return { ...jobs, items };
 }
 
 export async function listRecords(

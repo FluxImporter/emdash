@@ -31,6 +31,7 @@ const ROUTES = [
 	"jobs/next",
 	"jobs/get",
 	"jobs/list",
+	"jobs/summaries",
 	"jobs/pause",
 	"jobs/resume",
 	"jobs/cancel",
@@ -57,6 +58,7 @@ const ROUTES = [
 	"schedules/delete",
 	"schedules/run",
 	"schedules/overview",
+	"schedules/fence",
 ];
 const UPLOAD_ID = `01JZ0000000000000000000000${"0".repeat(32)}`;
 
@@ -125,6 +127,24 @@ describe("createPlugin", () => {
 		expect(input("jobs/start").safeParse({ dryRunId: "D1", budgetMs: 25_001 }).success).toBe(false);
 	});
 
+	it("declares the M7b routes with strict inputs, fence capped at 16 KiB", () => {
+		const summaries = plugin.routes["jobs/summaries"]!.input!;
+		const fence = plugin.routes["schedules/fence"]!.input!;
+		expect(summaries.safeParse({ dryRun: false, extra: 1 }).success).toBe(false);
+		expect(fence.safeParse({ x: 1 }).success).toBe(false);
+		for (const ok of [{}, { dryRun: true }, { cursor: "c" }]) {
+			expect(summaries.safeParse(ok).success, JSON.stringify(ok)).toBe(true);
+		}
+		expect(summaries.safeParse({ dryRun: "yes" }).success).toBe(false);
+		expect(summaries.safeParse({ cursor: "" }).success).toBe(false);
+		expect(fence.safeParse({}).success).toBe(true);
+		expect(plugin.routes["jobs/summaries"]).toMatchObject({ methods: ["POST"] });
+		expect(plugin.routes["schedules/fence"]).toMatchObject({
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 16 * 1024 },
+		});
+	});
+
 	it("declares every API route with import:execute", () => {
 		expect(Object.keys(plugin.routes).sort()).toEqual([...ROUTES].sort());
 		for (const name of ROUTES) expect(plugin.routes[name]?.permission).toBe("import:execute");
@@ -165,6 +185,7 @@ describe("createPlugin", () => {
 			["templateId", "createdAt"],
 			["scheduled", "status", "createdAt"],
 			["feedSourceId", "status"],
+			["dryRun", "createdAt"],
 		]);
 		expect(STORAGE.schedules.indexes).toEqual(["name", "templateId", "sourceId"]);
 		expect(STORAGE.templates.indexes).toEqual(["name", "collection", "owner"]);

@@ -29,7 +29,8 @@ const AI_KEY_DESCRIPTION =
  * schedules (M6b): `name` serves the uniqueness check, `templateId` and `sourceId` the in-use
  * checks of `templates/delete` and `sources/delete`; `jobs` `["scheduled", "status", "createdAt"]`
  * serves the pump's finalization and batch queries, `["feedSourceId", "status"]` the busy check
- * (plan Ruling 2).
+ * (plan Ruling 2). `jobs` `["dryRun", "createdAt"]` serves `jobs/summaries` and
+ * `jobs/clear-dry-runs` (M7b), built by EmDash at its first scheduler tick (Fact V3).
  */
 export const STORAGE = {
 	jobs: {
@@ -41,6 +42,7 @@ export const STORAGE = {
 			["templateId", "createdAt"],
 			["scheduled", "status", "createdAt"],
 			["feedSourceId", "status"],
+			["dryRun", "createdAt"],
 		],
 	},
 	templates: { indexes: ["name", "collection", "owner"] },

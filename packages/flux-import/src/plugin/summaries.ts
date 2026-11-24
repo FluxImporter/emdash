@@ -1,10 +1,19 @@
 /**
  * What the M6c routes return instead of job rows (spec "JobSummary", "StepReply",
- * "RecordSummary", "Redaction"). Pure: no storage reads, the clock is an argument.
+ * "RecordSummary", "Redaction"), and M7b's `jobs/summaries` list items. Pure: no storage reads,
+ * the clock is an argument.
  */
 import { UPLOAD_ID_PATTERN, UPLOAD_PREFIX } from "../emdash/uploads.js";
 import { upgradeJob } from "../engine/jobs.js";
-import type { Job, JobStatus, RecordError, RecordRow, RecordStatus } from "../engine/types.js";
+import { rollbackRefusal } from "../engine/rollback.js";
+import type {
+	Counters,
+	Job,
+	JobStatus,
+	RecordError,
+	RecordRow,
+	RecordStatus,
+} from "../engine/types.js";
 
 export const RECORD_PAGE = 10;
 export const WARNINGS_SHOWN = 10;
@@ -225,6 +234,95 @@ export function summarize(stored: Job, now: number): JobSummary {
 		...(busyUntil === undefined ? {} : { busyUntil }),
 		...(retryAfterMs === undefined ? {} : { retryAfterMs }),
 		next,
+		createdAt: job.createdAt,
+		updatedAt: job.updatedAt,
+	};
+}
+
+/**
+ * A row of the admin's Jobs table (M7b `jobs/summaries`, plan Ruling 3): the fields the table
+ * shows and nothing else. No template, upload IDs, lease holder, cursor or error message; the
+ * error's code only (Review Focus 3).
+ */
+export interface JobListItem {
+	id: string;
+	kind: "import" | "rollback";
+	status: JobStatus;
+	dryRun: boolean;
+	origin?: "agent" | "schedule";
+	scheduleId?: string;
+	collection: string;
+	locale: string;
+	templateId?: string;
+	rollbackOf?: string;
+	rolledBackBy?: string;
+	/** The rollback job's status; absent when it is gone. */
+	rollbackStatus?: JobStatus;
+	startedAs?: string;
+	/** `rollbackRefusal(job, now) === null`. */
+	rollbackable: boolean;
+	counters: Required<
+		Pick<
+			Counters,
+			| "created"
+			| "updated"
+			| "unchanged"
+			| "failed"
+			| "conflict"
+			| "locked"
+			| "filtered"
+			| "reverted"
+			| "removed"
+		>
+	>;
+	/** `job.error.code` only. */
+	errorCode?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** What `jobs/clear-dry-runs` answers (M7b Task 5). */
+export interface ClearDryRunsReply {
+	cleared: number;
+	more: boolean;
+	cursor?: string;
+}
+
+/** A job as the Jobs table lists it; counters absent on old jobs read as 0. */
+export function listItem(
+	stored: Job,
+	rollbackStatus: JobStatus | undefined,
+	now: number,
+): JobListItem {
+	const job = upgradeJob(stored);
+	const { counters } = job;
+	return {
+		id: job.id,
+		kind: job.kind ?? "import",
+		status: job.status,
+		dryRun: job.dryRun,
+		...(job.origin === undefined ? {} : { origin: job.origin }),
+		...(job.scheduleId === undefined ? {} : { scheduleId: job.scheduleId }),
+		collection: job.template.collection,
+		locale: job.template.locale,
+		...(job.templateId === undefined ? {} : { templateId: job.templateId }),
+		...(job.rollbackOf === undefined ? {} : { rollbackOf: job.rollbackOf }),
+		...(job.rolledBackBy === undefined ? {} : { rolledBackBy: job.rolledBackBy }),
+		...(rollbackStatus === undefined ? {} : { rollbackStatus }),
+		...(job.startedAs === undefined ? {} : { startedAs: job.startedAs }),
+		rollbackable: rollbackRefusal(job, now) === null,
+		counters: {
+			created: counters.created,
+			updated: counters.updated,
+			unchanged: counters.unchanged,
+			failed: counters.failed,
+			conflict: counters.conflict,
+			locked: counters.locked,
+			filtered: counters.filtered,
+			reverted: counters.reverted ?? 0,
+			removed: counters.removed ?? 0,
+		},
+		...(job.error === null ? {} : { errorCode: job.error.code }),
 		createdAt: job.createdAt,
 		updatedAt: job.updatedAt,
 	};

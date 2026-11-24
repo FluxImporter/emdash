@@ -2,6 +2,7 @@ import { z } from "astro/zod";
 import type { ActorInfo, PluginRoute, RouteContext } from "emdash";
 import { PluginRouteError, pluginResponse, ulid } from "emdash";
 import { allowPrivateNetwork } from "../astro/config.js";
+import { readFence } from "../emdash/fence.js";
 import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js";
 import { listSchemaFields, readSuggestCollection } from "../emdash/schema.js";
 import { readSiteTimezone } from "../emdash/timezone.js";
@@ -59,6 +60,7 @@ import {
 	changeJob,
 	getJob,
 	jobLogCsv,
+	listJobSummaries,
 	listJobs,
 	listRecords,
 	nextBatch,
@@ -138,6 +140,10 @@ const headerValue = z
 const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
+
+/** `jobs/summaries` (M7b): real imports by default, or dry runs, a page at a time. */
+export const JOB_SUMMARIES_INPUT = z.object({ dryRun: z.boolean().optional(), cursor }).strict();
+
 const format = z.enum(SOURCE_FORMATS);
 const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template ID");
 /** Checked as the service stores it (NFC); the service normalises (spec "Names"). */
@@ -864,6 +870,16 @@ export const routes: Record<string, PluginRoute> = {
 			),
 	),
 
+	// M7b: the admin's Jobs table: list items, not job rows, of real imports or of dry runs.
+	"jobs/summaries": route(JOB_SUMMARIES_INPUT, (ctx) =>
+		withServices(ctx, ({ deps }) =>
+			listJobSummaries(deps, {
+				dryRun: ctx.input.dryRun ?? false,
+				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
+			}),
+		),
+	),
+
 	// A real rollback marks the original rolled back and frees its URL source for a re-import.
 	"jobs/rollback": route(
 		z.object({
@@ -1112,6 +1128,15 @@ export const routes: Record<string, PluginRoute> = {
 					ctx.input.cursor,
 				),
 			),
+		),
+		request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES },
+	},
+
+	// M7b (plan Ruling 8): the site fence for the Schedules tab, read-only. A plain route, so no
+	// reconciliation; capped as every schedules/* route is.
+	"schedules/fence": {
+		...route(z.object({}).strict(), (ctx) =>
+			withServices(ctx, async ({ runtime }) => ({ fence: await readFence(runtime.db) })),
 		),
 		request: { body: "json", maxBytes: SCHEDULE_BODY_MAX_BYTES },
 	},
