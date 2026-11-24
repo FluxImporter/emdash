@@ -331,6 +331,7 @@ describe("the Run step", () => {
 
 		await user.click(screen.getByRole("button", { name: "Cancel import" }));
 		const dialog = await screen.findByRole("alertdialog");
+		expect(within(dialog).getByText("Cancel this import?")).toHaveClass("text-lg", "font-semibold");
 		expect(named(calls, "jobs/cancel")).toEqual([]);
 		await user.click(within(dialog).getByRole("button", { name: "Keep importing" }));
 		await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());

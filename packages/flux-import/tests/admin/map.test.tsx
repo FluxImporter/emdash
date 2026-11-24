@@ -571,6 +571,10 @@ describe("MapStep", () => {
 		const dialog = await screen.findByRole("dialog", {
 			name: "Replace the fields you mapped yourself?",
 		});
+		expect(within(dialog).getByText("Replace the fields you mapped yourself?")).toHaveClass(
+			"text-lg",
+			"font-semibold",
+		);
 		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(suggests()).toHaveLength(0);

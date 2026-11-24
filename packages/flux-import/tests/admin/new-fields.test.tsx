@@ -121,6 +121,13 @@ describe("SchemaDiffDialog", () => {
 				]),
 		});
 		renderDialog();
+		// Titled like the admin's own dialogs (Task 16 polish: it read as body text).
+		const heading = within(await dialog()).getByText("Add these fields to the collection?");
+		expect(heading).toHaveClass("text-lg", "font-semibold");
+		expect(within(await dialog()).getByText(/This changes the schema of/)).toHaveClass(
+			"text-sm",
+			"text-kumo-subtle",
+		);
 		const list = within(await dialog()).getByRole("list");
 		await within(list).findByText("Released (released): a new datetime field");
 		expect(within(list).getByText("Translatable: yes · Searchable: no")).toBeInTheDocument();

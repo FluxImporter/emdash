@@ -153,8 +153,8 @@ export function SchemaDiffDialog(p: {
 			}}
 		>
 			<Dialog size="lg" className="space-y-4 p-6">
-				<Dialog.Title>{t(M.dialogTitle)}</Dialog.Title>
-				<Dialog.Description>
+				<Dialog.Title className="text-lg font-semibold">{t(M.dialogTitle)}</Dialog.Title>
+				<Dialog.Description className="text-sm text-kumo-subtle">
 					{t(M.dialogDescription, { collection: p.collection })}
 				</Dialog.Description>
 				{tooMany ? (

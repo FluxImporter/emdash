@@ -310,8 +310,10 @@ export function RunStep() {
 							}
 						/>
 						<Dialog className="p-6">
-							<Dialog.Title>{t(M.cancelTitle)}</Dialog.Title>
-							<Dialog.Description>{t(M.cancelBody)}</Dialog.Description>
+							<Dialog.Title className="text-lg font-semibold">{t(M.cancelTitle)}</Dialog.Title>
+							<Dialog.Description className="mt-2 text-sm text-kumo-subtle">
+								{t(M.cancelBody)}
+							</Dialog.Description>
 							<div className="mt-4 flex justify-end gap-3">
 								<Dialog.Close render={<Button variant="secondary">{t(M.cancelKeep)}</Button>} />
 								<Button

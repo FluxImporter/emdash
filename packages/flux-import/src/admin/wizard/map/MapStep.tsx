@@ -424,8 +424,10 @@ function AskAgainDialog(p: { open: boolean; onClose(): void; onAsk(overwrite: bo
 			}}
 		>
 			<Dialog className="space-y-4 p-6">
-				<Dialog.Title>{t(M.replaceTitle)}</Dialog.Title>
-				<Dialog.Description>{t(M.replaceDescription)}</Dialog.Description>
+				<Dialog.Title className="text-lg font-semibold">{t(M.replaceTitle)}</Dialog.Title>
+				<Dialog.Description className="text-sm text-kumo-subtle">
+					{t(M.replaceDescription)}
+				</Dialog.Description>
 				<div className="flex justify-end gap-3">
 					<Button variant="secondary" onClick={p.onClose}>
 						{t(M.cancel)}
