@@ -1,4 +1,4 @@
-import { Banner, Button, Dialog, Input, Select } from "@cloudflare/kumo";
+import { Banner, Button, Dialog, Input, Loader, Select } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ChangeEvent, useState } from "react";
 import type { SourceRow } from "../../../plugin/sources.js";
@@ -7,6 +7,7 @@ import { ApiError } from "../../api-error.js";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { SOURCE_NAME_MAX } from "../../limits.js";
+import { M as PAGE } from "../../messages.js";
 import { queryKeys, useCredentials, useSchedules } from "../../queries.js";
 import { useHome } from "../Home.js";
 import { PinnedFailures, PinnedSchedules } from "../pinned/PinnedSchedules.js";
@@ -20,6 +21,8 @@ import { M } from "./messages.js";
  * named, and "Also update these schedules" (checked) re-pins them one at a time after the save
  * (plan Ruling 14). A failure keeps the dialog open to name the schedules left to pause.
  */
+const isForbidden = (e: unknown) => e instanceof ApiError && e.status === 403;
+
 export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 	const { source } = props;
 	const t = useT();
@@ -34,6 +37,7 @@ export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<unknown>(null);
 	const [taken, setTaken] = useState(false);
+	const [savedName, setSavedName] = useState("");
 	const [failed, setFailed] = useState<{ name: string; error: unknown }[]>([]);
 
 	const trimmedName = name.trim();
@@ -106,8 +110,10 @@ export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 		}
 		announce(outcome);
 		setBusy(false);
-		if (failures.length > 0) setFailed(failures);
-		else props.onClose();
+		if (failures.length > 0) {
+			setSavedName(row.name);
+			setFailed(failures);
+		} else props.onClose();
 	};
 
 	const close = () => {
@@ -124,7 +130,7 @@ export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 			<Dialog size="lg" className="space-y-4 p-6">
 				<Dialog.Title className="text-lg font-semibold">{title}</Dialog.Title>
 				<Dialog.Description className="text-sm text-kumo-subtle">
-					{saved ? t(M.savedFailures, { name }) : t(M.dialogSentence)}
+					{saved ? t(M.savedFailures, { name: savedName }) : t(M.dialogSentence)}
 				</Dialog.Description>
 				{saved ? (
 					<PinnedFailures failed={failed} />
@@ -162,6 +168,27 @@ export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 								</Select.Option>
 							))}
 						</Select>
+						{pinChanged && schedules.isPending ? (
+							<Loader aria-label={t(M.checkingSchedules)} />
+						) : null}
+						{pinChanged && schedules.isError ? (
+							<Banner
+								variant="alert"
+								description={t(M.schedulesUnchecked, {
+									reason: t(
+										describeError(schedules.error).msg,
+										describeError(schedules.error).values,
+									),
+								})}
+								action={
+									isForbidden(schedules.error) ? undefined : (
+										<Button variant="secondary" onClick={() => void schedules.refetch()}>
+											{t(PAGE.tryAgain)}
+										</Button>
+									)
+								}
+							/>
+						) : null}
 						<PinnedSchedules
 							rows={pinned}
 							kind="source"
@@ -192,7 +219,7 @@ export function SourceDialog(props: { source?: SourceRow; onClose(): void }) {
 								loading={busy}
 								aria-label={t(M.save)}
 								aria-busy={busy || undefined}
-								disabled={busy || !ready || (source !== undefined && schedules.isPending)}
+								disabled={busy || !ready || (pinChanged && !schedules.isSuccess)}
 								onClick={() => void save()}
 							>
 								{t(M.save)}

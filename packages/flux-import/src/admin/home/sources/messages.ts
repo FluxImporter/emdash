@@ -70,6 +70,14 @@ export const M = {
 	},
 	deleted: { id: "flux-import.home-sources.deleted", message: "Deleted {name}." },
 	// Credentials
+	checkingSchedules: {
+		id: "flux-import.home-sources.checking-schedules",
+		message: "Checking the schedules that read this source",
+	},
+	schedulesUnchecked: {
+		id: "flux-import.home-sources.schedules-unchecked",
+		message: "Couldn't check which schedules read this source: {reason}",
+	},
 	credentialsTitle: { id: "flux-import.home-sources.credentials-title", message: "Credentials" },
 	credentialsEmpty: {
 		id: "flux-import.home-sources.credentials-empty",
@@ -96,8 +104,14 @@ export const M = {
 	},
 	credSave: { id: "flux-import.home-sources.cred-save", message: "Save credential" },
 	credSaved: { id: "flux-import.home-sources.cred-saved", message: "Saved the credential {name}." },
-	credReplace: { id: "flux-import.home-sources.cred-replace", message: "Replace {name}" },
-	credDeleteRow: { id: "flux-import.home-sources.cred-delete-row", message: "Delete {name}" },
+	credReplace: {
+		id: "flux-import.home-sources.cred-replace",
+		message: "Replace the credential {name}",
+	},
+	credDeleteRow: {
+		id: "flux-import.home-sources.cred-delete-row",
+		message: "Delete the credential {name}",
+	},
 	credDeleteTitle: {
 		id: "flux-import.home-sources.cred-delete-title",
 		message: "Delete the credential {name}",
@@ -109,7 +123,7 @@ export const M = {
 	credUsedBy: {
 		id: "flux-import.home-sources.cred-used-by",
 		message:
-			"Sources that use it: {names}. Their fetches will fail until they use another credential.",
+			"Sources that use it: {names}. Their fetches will fail until the credential is set again.",
 	},
 	credUnused: {
 		id: "flux-import.home-sources.cred-unused",

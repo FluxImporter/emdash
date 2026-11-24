@@ -1,6 +1,6 @@
 import { Banner, Button, Input, Table } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ChangeEvent, type FormEvent, useState } from "react";
+import { type ChangeEvent, type FormEvent, useRef, useState } from "react";
 import type { CredentialInfo } from "../../../plugin/credentials.js";
 import type { SourceRow } from "../../../plugin/sources.js";
 import { api } from "../../api.js";
@@ -28,6 +28,7 @@ export function Credentials(props: {
 	const [value, setValue] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<unknown>(null);
+	const valueRef = useRef<HTMLInputElement>(null);
 	const [deleting, setDeleting] = useState<string | null>(null);
 	const [deleteError, setDeleteError] = useState<unknown>(null);
 
@@ -100,6 +101,7 @@ export function Credentials(props: {
 											onClick={() => {
 												setName(c.name);
 												setHeader(c.header);
+												valueRef.current?.focus();
 											}}
 										>
 											{t(M.credReplace, { name: c.name })}
@@ -143,6 +145,7 @@ export function Credentials(props: {
 					<Input
 						label={t(M.credValue)}
 						description={t(M.credValueHint)}
+						ref={valueRef}
 						type="password"
 						autoComplete="off"
 						value={value}

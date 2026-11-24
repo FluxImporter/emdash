@@ -310,16 +310,91 @@ describe("SourcesTab", () => {
 			],
 			"credentials/delete": () => ({ deleted: true }),
 		});
-		await user.click(await screen.findByRole("button", { name: "Delete feed-token" }));
+		await user.click(
+			await screen.findByRole("button", { name: "Delete the credential feed-token" }),
+		);
 		let dialog = await screen.findByRole("dialog");
-		expect(within(dialog).getByText(/Sources that use it: Feed\./)).toBeVisible();
+		expect(
+			within(dialog).getByText(
+				"Sources that use it: Feed. Their fetches will fail until the credential is set again.",
+			),
+		).toBeVisible();
 		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(bodies(calls, "credentials/delete")).toEqual([{ name: "feed-token" }]);
 
-		await user.click(screen.getByRole("button", { name: "Delete spare" }));
+		await user.click(screen.getByRole("button", { name: "Delete the credential spare" }));
 		dialog = await screen.findByRole("dialog");
 		expect(within(dialog).getByText("No source uses it.")).toBeVisible();
+	});
+
+	it("says the schedules could not be checked when they cannot be read, and offers Try again", async () => {
+		let failing = true;
+		const { calls, user } = setup({
+			"schedules/list": () => (failing ? fail("VALIDATION_ERROR", "bad", 400) : page([schedule()])),
+			"sources/update": () => sourceRow(),
+		});
+		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		const dialog = await screen.findByRole("dialog");
+		// A name-only edit needs no schedules, so there is nothing to say.
+		expect(within(dialog).queryByText(/Couldn't check/)).toBeNull();
+		const url = within(dialog).getByRole("textbox", { name: "Address" });
+		await user.clear(url);
+		await user.type(url, "https://feed.example.com/new.json");
+		expect(
+			await within(dialog).findByText(
+				"Couldn't check which schedules read this source: The request was not valid. Check your entries and try again.",
+			),
+		).toBeVisible();
+		expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+		failing = false;
+		await user.click(within(dialog).getByRole("button", { name: "Try again" }));
+		expect(
+			await within(dialog).findByText("These schedules read this source: Nightly."),
+		).toBeVisible();
+		expect(within(dialog).queryByText(/Couldn't check/)).toBeNull();
+		expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled();
+		expect(bodies(calls, "sources/update")).toEqual([]);
+	});
+
+	it("names the saved source, trimmed, when schedules failed to update", async () => {
+		const { user } = setup({
+			"schedules/list": () => page([schedule()]),
+			"sources/update": () => sourceRow({ name: "Feed" }),
+			"schedules/update": () => fail("SCHEDULE_BUSY", "busy", 409),
+		});
+		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		const dialog = await screen.findByRole("dialog");
+		const name = within(dialog).getByRole("textbox", { name: "Name" });
+		await user.clear(name);
+		await user.type(name, "  Feed  ");
+		const url = within(dialog).getByRole("textbox", { name: "Address" });
+		await user.clear(url);
+		await user.type(url, "https://feed.example.com/new.json");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+		expect(
+			await within(dialog).findByText("Saved Feed, but some schedules could not be updated."),
+		).toBeVisible();
+	});
+
+	it("moves focus to the Value input when Replace is pressed", async () => {
+		const { user } = setup({
+			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "Replace the credential feed-token" }),
+		);
+		expect(screen.getByLabelText("Value")).toHaveFocus();
+		expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("feed-token");
+	});
+
+	it("names a source and a credential with one name apart", async () => {
+		setup({
+			"sources/list": () => page([sourceRow({ name: "shared" })]),
+			"credentials/list": () => [{ name: "shared", header: "X-Key" }],
+		});
+		expect(await screen.findByRole("button", { name: "Delete shared" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Delete the credential shared" })).toBeVisible();
 	});
 
 	it("lists credentials by name and header only", async () => {
