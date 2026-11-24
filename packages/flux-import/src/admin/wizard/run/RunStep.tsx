@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
-import { ApiError, isRetryable } from "../../api-error.js";
+import { ApiError, isForbidden, isRetryable } from "../../api-error.js";
 import { describeError, describeJobError, FINAL_JOB_ERRORS } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
@@ -423,11 +423,6 @@ function duration(seconds: number, locale: string): string {
 /** A failed job no resume can cure (final review 2). */
 function finalError(job: Job): boolean {
 	return job.error !== null && FINAL_JOB_ERRORS.has(job.error.code);
-}
-
-/** A 403 that is not a CSRF refusal: the user may not import (preflight F29). */
-function isForbidden(error: unknown): boolean {
-	return error instanceof ApiError && error.status === 403 && error.code !== "CSRF_REJECTED";
 }
 
 /** A failed job's error, never with an upload ID in it (preflight F15). */

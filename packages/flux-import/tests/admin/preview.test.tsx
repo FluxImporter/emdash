@@ -768,6 +768,97 @@ describe("PreviewStep", () => {
 		expect(created(calls)).toHaveLength(1);
 	});
 
+	describe("announces its errors, and offers no Try again on a 403 (final review 7)", () => {
+		it("announces a failed jobs/create", async () => {
+			mockRoutes({ "jobs/create": () => fail("INTERNAL_ERROR", "boom", 500) });
+			renderPreview();
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Something went wrong on the server. Try again.",
+			);
+		});
+
+		it("announces a failed jobs/next", async () => {
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () => fail("INVALID_TRANSITION", "Cannot do that", 409),
+			});
+			renderPreview();
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"The import cannot do that in its current state.",
+			);
+		});
+
+		it("announces a stopped dry run", async () => {
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () => job({ status: "paused" }),
+			});
+			renderPreview();
+			expect(await screen.findByRole("alert")).toHaveTextContent("The dry run is paused.");
+		});
+
+		it("announces a failed resume", async () => {
+			mockRoutes({
+				"jobs/create": () => job(),
+				"jobs/next": () => job({ status: "paused" }),
+				"jobs/resume": () => fail("INTERNAL_ERROR", "boom", 500),
+			});
+			const { user } = renderPreview();
+			await user.click(await screen.findByRole("button", { name: "Try again" }));
+			const alerts = await screen.findAllByRole("alert");
+			expect(alerts.map((a) => a.textContent)).toContainEqual(
+				expect.stringContaining("Something went wrong on the server. Try again."),
+			);
+		});
+
+		it.each<[string, Record<string, RouteHandler>]>([
+			["jobs/create", { "jobs/create": () => fail("FORBIDDEN", "Insufficient permissions", 403) }],
+			[
+				"jobs/next",
+				{
+					"jobs/create": () => job(),
+					"jobs/next": () => fail("FORBIDDEN", "Insufficient permissions", 403),
+				},
+			],
+			[
+				"jobs/resume",
+				{
+					"jobs/create": () => job(),
+					"jobs/next": () => job({ status: "paused" }),
+					"jobs/resume": () => fail("FORBIDDEN", "Insufficient permissions", 403),
+				},
+			],
+		])("shows a 403 from %s with no Try again", async (route, routes) => {
+			mockRoutes(routes);
+			const { user } = renderPreview();
+			if (route === "jobs/resume") {
+				await user.click(await screen.findByRole("button", { name: "Try again" }));
+			}
+			expect(await screen.findByText("Only administrators can import.")).toBeVisible();
+			// Trying again cannot change the user's role (Review Focus 2).
+			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+			expect(screen.queryByText("Insufficient permissions")).toBeNull();
+		});
+	});
+
+	it("keeps Try again for a CSRF refusal, which a reload can cure", async () => {
+		let creates = 0;
+		mockRoutes({
+			"jobs/create": () => {
+				creates += 1;
+				return creates === 1 ? fail("CSRF_REJECTED", "Missing header", 403) : job();
+			},
+			"jobs/next": () => completed({ created: 1 }),
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderPreview();
+		expect(
+			await screen.findByText("The request was refused as unsafe. Reload the page and try again."),
+		).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
+	});
+
 	describe("says how the entries will go live (final review 1)", () => {
 		const routes = () =>
 			mockRoutes({

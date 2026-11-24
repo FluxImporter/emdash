@@ -38,6 +38,14 @@ export function isRetryable(e: unknown): boolean {
 	return e instanceof ApiError && (e.status === 429 || e.status >= 500);
 }
 
+/**
+ * A 403 that is not a CSRF refusal: the user may not import (preflight F29). Trying again cannot
+ * change the user's role, so no "Try again" follows it (Review Focus 2).
+ */
+export function isForbidden(e: unknown): boolean {
+	return e instanceof ApiError && e.status === 403 && e.code !== "CSRF_REJECTED";
+}
+
 const UPLOAD_ID = new RegExp(UPLOAD_ID_PATTERN, "g");
 
 /** Server text with every upload ID replaced, as the wizard shows no upload ID (preflight F15). */

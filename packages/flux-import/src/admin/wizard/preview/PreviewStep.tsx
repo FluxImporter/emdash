@@ -2,7 +2,7 @@ import { Banner, Button, Empty, Loader } from "@cloudflare/kumo";
 import { useEffect, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api } from "../../api.js";
-import { ApiError, redact } from "../../api-error.js";
+import { ApiError, isForbidden, redact } from "../../api-error.js";
 import { describeError, describeJobError, ERROR_MESSAGES, FINAL_JOB_ERRORS } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
@@ -81,7 +81,10 @@ function Counts(p: { job: Job }) {
 	);
 }
 
-/** A failed request in plain words, with its problems, and "Try again" when it may help. */
+/**
+ * A failed request in plain words, with its problems, and "Try again" when it may help: never
+ * after a 403 (Review Focus 2). Announced, as Run's are (final review 7).
+ */
 function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
 	const t = useT();
 	const e = describeError(p.error);
@@ -89,6 +92,7 @@ function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
 	return (
 		<Banner
 			variant="error"
+			role="alert"
 			title={t(e.msg, e.values)}
 			description={
 				hasBody ? (
@@ -105,7 +109,7 @@ function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
 				) : undefined
 			}
 			action={
-				p.onRetry === undefined ? undefined : (
+				p.onRetry === undefined || isForbidden(p.error) ? undefined : (
 					<Button variant="secondary" onClick={p.onRetry}>
 						{t(SHARED.tryAgain)}
 					</Button>
@@ -256,10 +260,12 @@ export function PreviewStep() {
 			{stoppedMsg === null ? null : (
 				<Banner
 					variant="error"
+					role="alert"
 					title={t(stoppedMsg.msg)}
 					{...(stoppedMsg.detail === undefined ? {} : { description: stoppedMsg.detail })}
 					action={
-						retryable ? (
+						// A resume refused with 403 would be refused again.
+						retryable && !isForbidden(resumeError) ? (
 							<Button variant="secondary" disabled={resuming} onClick={() => void tryAgain()}>
 								{t(SHARED.tryAgain)}
 							</Button>
