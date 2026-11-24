@@ -427,9 +427,10 @@ export function OptionsStep() {
 					onValueChange={(value: string) => chooseMissing(value)}
 					disabled={!missingAllowed}
 				>
-					<Radio.Item label={t(M.missingLeave)} value="leave" />
-					<Radio.Item label={t(M.missingUnpublish)} value="unpublish" />
-					<Radio.Item label={t(M.missingTrash)} value="trash" />
+					{/* Each item too: only Kumo's item-level disabled style is in the admin's CSS. */}
+					<Radio.Item label={t(M.missingLeave)} value="leave" disabled={!missingAllowed} />
+					<Radio.Item label={t(M.missingUnpublish)} value="unpublish" disabled={!missingAllowed} />
+					<Radio.Item label={t(M.missingTrash)} value="trash" disabled={!missingAllowed} />
 				</Radio.Group>
 				{options.missing === null ? null : (
 					<Input

@@ -294,12 +294,17 @@ describe("the Options step", () => {
 		const { user, seen } = renderOptions(oneOff());
 		const trash = screen.getByRole("radio", { name: "Move them to the trash" });
 		expect(isDisabled(trash)).toBe(true);
+		// Shown disabled: the group's own disabled style is missing from the admin's CSS, the
+		// item's is not (Task 16 polish).
+		const trashLabel = () => screen.getByText("Move them to the trash").closest("label");
+		expect(trashLabel()).toHaveClass("opacity-50");
 		expect(
 			screen.getByText("Saved templates only: a one-off run has nothing to find missing"),
 		).toBeInTheDocument();
 		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
 		await user.type(screen.getByRole("textbox", { name: "Template name" }), "Feed");
 		expect(isDisabled(trash)).toBe(false);
+		expect(trashLabel()).not.toHaveClass("opacity-50");
 		expect(screen.queryByText(/a one-off run has nothing/)).not.toBeInTheDocument();
 		await user.click(trash);
 		expect(seen.state.options.missing).toEqual({ action: "trash", maxPercent: 25 });
