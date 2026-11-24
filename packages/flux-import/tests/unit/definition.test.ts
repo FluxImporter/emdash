@@ -157,15 +157,17 @@ describe("createPlugin", () => {
 		});
 	});
 
-	it("sets FLUX_IMPORT_VERSION to 0.6.0", () => {
-		expect(FLUX_IMPORT_VERSION).toBe("0.6.0");
+	it("sets FLUX_IMPORT_VERSION to 0.7.0", () => {
+		expect(FLUX_IMPORT_VERSION).toBe("0.7.0");
 	});
 
-	it("declares the React admin entry and the Import page (M7a)", () => {
+	it("declares the React admin entry, then Imports and New import in one Imports folder (M7b)", () => {
 		expect(fluxImport().adminEntry).toBe("flux-import/admin");
 		expect(plugin.admin.entry).toBe("flux-import/admin");
+		// The home first: the plugin's root opens the first page (Fact V1).
 		expect(plugin.admin.pages).toEqual([
-			{ path: "/import", label: "Import", icon: "upload-simple" },
+			{ path: "/imports", label: "Imports", icon: "clock-counter-clockwise", group: "Imports" },
+			{ path: "/import", label: "New import", icon: "upload-simple", group: "Imports" },
 		]);
 	});
 

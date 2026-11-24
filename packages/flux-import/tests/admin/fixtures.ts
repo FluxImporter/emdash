@@ -82,14 +82,21 @@ export const MANIFEST: unknown = {
 	},
 	plugins: {
 		"flux-import": {
-			version: "0.6.0",
+			version: "0.7.0",
 			enabled: true,
 			adminMode: "react",
 			adminPages: [
 				{
+					path: "/imports",
+					label: "Imports",
+					icon: "clock-counter-clockwise",
+					group: "Imports",
+				},
+				{
 					path: "/import",
-					label: "Import",
+					label: "New import",
 					icon: "upload-simple",
+					group: "Imports",
 				},
 			],
 			dashboardWidgets: [],

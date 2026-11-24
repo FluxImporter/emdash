@@ -101,7 +101,7 @@ describe("Wizard", () => {
 		expect(screen.queryByRole("list", { name: /steps/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 		expect(screen.queryByText(/Insufficient permissions/)).toBeNull();
-		expect(screen.getByRole("heading", { level: 1, name: "Import" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { level: 1, name: "New import" })).toBeInTheDocument();
 		expect(calls.map((c) => c.route)).toEqual(["credentials/list"]);
 	});
 

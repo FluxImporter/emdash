@@ -1,5 +1,10 @@
 import type { PluginAdminExports } from "emdash";
 import { SOURCE_ID_WIDGET, SourceIdField } from "./fields/SourceIdField.js";
+import { Home, type TabComponents } from "./home/Home.js";
+import { JobsTab } from "./home/jobs/JobsTab.js";
+import { SchedulesTab } from "./home/schedules/SchedulesTab.js";
+import { SourcesTab } from "./home/sources/SourcesTab.js";
+import { TemplatesTab } from "./home/templates/TemplatesTab.js";
 import { MapStep } from "./wizard/map/MapStep.js";
 import { OptionsStep } from "./wizard/options/OptionsStep.js";
 import { PreviewStep } from "./wizard/preview/PreviewStep.js";
@@ -22,12 +27,28 @@ const STEPS: StepComponents = {
 	run: RunStep,
 };
 
-/** The import wizard, at `/_emdash/admin/plugins/flux-import/import`. */
+const TABS: TabComponents = {
+	jobs: JobsTab,
+	templates: TemplatesTab,
+	sources: SourcesTab,
+	schedules: SchedulesTab,
+};
+
+/** The Imports home, at `/_emdash/admin/plugins/flux-import/imports` (each tab inside `HomeProvider`). */
+function ImportsPage() {
+	return <Home tabs={TABS} />;
+}
+
+/** The import wizard ("New import"), at `/_emdash/admin/plugins/flux-import/import`. */
 function ImportPage() {
 	return <Wizard steps={STEPS} />;
 }
 
-export const pages: PluginAdminExports["pages"] = { "/import": ImportPage };
+/** The home first, as in the descriptor's `admin.pages` (Fact V1). */
+export const pages: PluginAdminExports["pages"] = {
+	"/imports": ImportsPage,
+	"/import": ImportPage,
+};
 
 /** `flux_source_id`'s editor widget, `"flux-import:source-id"` (plan Ruling 1). */
 export const fields: PluginAdminExports["fields"] = { [SOURCE_ID_WIDGET]: SourceIdField };
