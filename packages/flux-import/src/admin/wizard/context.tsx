@@ -68,11 +68,17 @@ interface WizardContextValue {
 	state: WizardState;
 	dispatch: Dispatch<WizardAction>;
 	once: Once["once"];
+	/** Starts a new import from an empty draft, when the page offers that; null otherwise. */
+	restart: (() => void) | null;
 }
 
 const WizardContext = createContext<WizardContextValue | null>(null);
 
-export function WizardProvider(props: { initial?: Partial<WizardState>; children: ReactNode }) {
+export function WizardProvider(props: {
+	initial?: Partial<WizardState>;
+	restart?: () => void;
+	children: ReactNode;
+}) {
 	const [start] = useState(() => ({ ...initialState, ...props.initial }));
 	const [state, rawDispatch] = useReducer(reducer, start);
 	const tasks = useRef<Once | null>(null);
@@ -82,7 +88,11 @@ export function WizardProvider(props: { initial?: Partial<WizardState>; children
 	const dispatchRef = useRef<Dispatch<WizardAction> | null>(null);
 	dispatchRef.current ??= draftDispatch(rawDispatch, once, start);
 	const dispatch = dispatchRef.current;
-	const value = useMemo(() => ({ state, dispatch, once: once.once }), [state, dispatch, once]);
+	const restart = props.restart ?? null;
+	const value = useMemo(
+		() => ({ state, dispatch, once: once.once, restart }),
+		[state, dispatch, once, restart],
+	);
 	return <WizardContext.Provider value={value}>{props.children}</WizardContext.Provider>;
 }
 

@@ -421,6 +421,51 @@ describe("the import wizard, end to end", () => {
 		);
 	});
 
+	it("starts a new import from a finished run, with an empty draft and a URL without the job", async () => {
+		const { calls } = mockRoutes(server());
+		const { user } = renderPage();
+		await csvFlow(user);
+		expect(new URLSearchParams(window.location.search).get("job")).toBe(
+			"01JZ00000000000000000JOB02",
+		);
+
+		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		// Source, focused, with nothing of the last import: no sample, no later step linked.
+		const source = await heading("Source");
+		await waitFor(() => expect(source).toHaveFocus());
+		expect(screen.queryByRole("table")).toBeNull();
+		expect(screen.getAllByRole("link", { name: /^\d / })).toEqual([stepLink(1, "Source")]);
+		expect(next()).toBeDisabled();
+		const params = new URLSearchParams(window.location.search);
+		expect(params.get("job")).toBeNull();
+		expect(params.get("step")).toBe("source");
+
+		// A second import runs as a new job, from its own dry run.
+		const before = calls.length;
+		await upload(user);
+		await user.click(next());
+		await target(user);
+		await mapped();
+		await user.click(next());
+		await heading("Options");
+		await user.click(next());
+		await previewed();
+		await run(user);
+		expect(actions(calls.slice(before))).toEqual([
+			"upload",
+			"sources/sample",
+			"templates/suggest",
+			"jobs/create dryRun:true",
+			"jobs/next",
+			"jobs/records",
+			"jobs/create dryRun:false",
+			"jobs/next",
+		]);
+		expect(new URLSearchParams(window.location.search).get("job")).toBe(
+			"01JZ00000000000000000JOB04",
+		);
+	});
+
 	it("starts from a saved template, runs it unedited by id and revision", async () => {
 		const { calls } = mockRoutes(server({ templates: [SAVED_TEMPLATE] }));
 		const { user } = renderPage();

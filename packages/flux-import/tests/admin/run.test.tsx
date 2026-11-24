@@ -72,12 +72,16 @@ function gate<T = unknown>() {
 
 const named = (calls: RouteCall[], route: string) => calls.filter((c) => c.route === route);
 
-function renderRun(initial: Partial<WizardState>, opts: { fakeTimers?: boolean } = {}) {
+function renderRun(
+	initial: Partial<WizardState>,
+	opts: { fakeTimers?: boolean; restart?: () => void } = {},
+) {
+	const { restart, ...rest } = opts;
 	return renderAdmin(
-		<WizardProvider initial={initial}>
+		<WizardProvider initial={initial} {...(restart === undefined ? {} : { restart })}>
 			<RunStep />
 		</WizardProvider>,
-		opts,
+		rest,
 	);
 }
 
@@ -318,9 +322,13 @@ describe("the Run step", () => {
 			"jobs/resume": () => real({ status: "running", counters: counters(1) }),
 			"jobs/cancel": () => real({ status: "cancelled", counters: counters(1) }),
 		});
-		const { user } = renderRun(reopened);
+		const restart = vi.fn();
+		const { user } = renderRun(reopened, { restart });
+		const startNew = () => screen.queryByRole("button", { name: "Start a new import" });
 		await user.click(await screen.findByRole("button", { name: "Pause" }));
 		expect(await screen.findByText("The import is paused.")).toBeVisible();
+		// A paused job can still be resumed here: no new import is offered over it.
+		expect(startNew()).toBeNull();
 		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
 		const nextsWhilePaused = named(calls, "jobs/next").length;
@@ -348,6 +356,9 @@ describe("the Run step", () => {
 		for (const route of controls) expect(named(calls, route)[0]!.body).toEqual({ id: JOB_ID });
 		expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+		// A finished job offers a new import, which the page restarts (Task 16: it was a dead end).
+		await user.click(startNew() as HTMLElement);
+		expect(restart).toHaveBeenCalledTimes(1);
 	});
 
 	it("downloads the failed-records log through apiFetch", async () => {
@@ -418,6 +429,8 @@ describe("the Run step", () => {
 			CONTENT_LINK,
 		);
 		expect(screen.getByRole("button", { name: "Download log" })).toBeVisible();
+		// Only a page that can restart the wizard offers a new import.
+		expect(screen.queryByRole("button", { name: "Start a new import" })).toBeNull();
 		await user.click(screen.getByRole("button", { name: "Retry failed records" }));
 		expect(await screen.findByText("Retrying failed records")).toBeVisible();
 		await waitFor(() => expect(named(calls, "jobs/next")).toHaveLength(4));

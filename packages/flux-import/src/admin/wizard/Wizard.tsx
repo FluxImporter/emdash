@@ -1,5 +1,5 @@
 import { Banner, Button, Loader } from "@cloudflare/kumo";
-import { type ComponentType, useEffect, useRef, useState } from "react";
+import { type ComponentType, useCallback, useEffect, useRef, useState } from "react";
 import { describeError, ERROR_MESSAGES } from "../errors.js";
 import { useT } from "../i18n.js";
 import { M as PAGE } from "../messages.js";
@@ -88,23 +88,40 @@ function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void
 	);
 }
 
+/**
+ * The wizard, opened from the URL. "Start a new import" (a finished run) remounts it with an empty
+ * draft: a new reducer and a new `once`, so nothing of the last import carries over. The host's own
+ * link to this page does not remount it (see Shell), so without this a finished run was a dead end.
+ */
 function OpenedWizard(props: { steps: StepComponents }) {
 	const [initial] = useState(() => openingState(window.location.search));
+	const [round, setRound] = useState(0);
+	const restart = useCallback(() => {
+		writeUrl({ step: "source", job: null });
+		setRound((n) => n + 1);
+	}, []);
 	return (
-		<WizardProvider initial={initial}>
-			<Shell steps={props.steps} />
+		<WizardProvider key={round} {...(round === 0 ? { initial } : {})} restart={restart}>
+			<Shell steps={props.steps} focusHeading={round > 0} />
 		</WizardProvider>
 	);
 }
 
 /** The step bar, the current step's heading and the step itself. */
-function Shell(props: { steps: StepComponents }) {
+function Shell(props: { steps: StepComponents; focusHeading?: boolean }) {
 	const t = useT();
 	const { state } = useWizard();
 	const heading = useRef<HTMLHeadingElement>(null);
 	const shown = useRef(state.step);
 
 	useUnloadGuard(state.dirty && state.run === null);
+
+	// A restarted wizard starts on Source with focus on its heading: the button that restarted it
+	// is gone.
+	const focusHeading = props.focusHeading === true;
+	useEffect(() => {
+		if (focusHeading) heading.current?.focus();
+	}, [focusHeading]);
 
 	// The URL names the current step (Ruling 12); on the first render this also rewrites an
 	// unreachable `?step=` and adds `step=run` to a reopened job's URL. The URL is read once, at

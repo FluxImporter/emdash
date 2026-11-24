@@ -53,7 +53,7 @@ interface Problem {
 export function RunStep() {
 	const t = useT();
 	const { i18n } = useLingui();
-	const { state, dispatch, once } = useWizard();
+	const { state, dispatch, once, restart } = useWizard();
 	const latest = useRef(state);
 	latest.current = state;
 	const runId = state.run?.jobId ?? null;
@@ -298,6 +298,11 @@ export function RunStep() {
 				{job.counters.failed > 0 ? (
 					<Button variant="secondary" onClick={() => void download("failed")}>
 						{t(M.downloadFailed)}
+					</Button>
+				) : null}
+				{restart !== null && (job.status === "completed" || job.status === "cancelled") ? (
+					<Button variant="secondary" onClick={restart}>
+						{t(M.startNew)}
 					</Button>
 				) : null}
 				{controllable && (active || job.status === "paused" || job.status === "failed") ? (
