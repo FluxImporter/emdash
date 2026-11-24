@@ -524,14 +524,92 @@ describe("the Run step", () => {
 			error: { code: "source_missing", message: `Upload ${DRY_UPLOAD} not found` },
 		});
 		mockRoutes({ "jobs/get": () => failed, "jobs/next": () => failed });
-		renderRun(reopened);
+		renderRun(reopened, { restart: vi.fn() });
 		expect(
 			await screen.findByText(
 				"The file for this import is no longer available; start a new import.",
 			),
 		).toBeVisible();
-		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 		expect(document.body.textContent).not.toContain(DRY_UPLOAD);
+	});
+
+	it.each([
+		["source_missing", "The file for this import is no longer available; start a new import."],
+		["invalid_template", "The import settings no longer fit the collection."],
+	])(
+		"offers no Resume for a job failed with %s, and starts a new import (final review 2)",
+		async (code, sentence) => {
+			const failed = real({
+				status: "failed",
+				counters: counters(2),
+				error: { code, message: "x" },
+			});
+			const { calls } = mockRoutes({ "jobs/get": () => failed, "jobs/next": () => failed });
+			const restart = vi.fn();
+			const { user } = renderRun(reopened, { restart });
+			expect(await screen.findByText(sentence)).toBeVisible();
+			expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+			await user.click(screen.getByRole("button", { name: "Start a new import" }));
+			expect(restart).toHaveBeenCalledOnce();
+			expect(named(calls, "jobs/resume")).toEqual([]);
+		},
+	);
+
+	it("offers Start a new import beside Resume for a job that failed otherwise", async () => {
+		const failed = real({
+			status: "failed",
+			counters: counters(2),
+			error: { code: "internal", message: "D1 timed out" },
+		});
+		mockRoutes({ "jobs/get": () => failed, "jobs/next": () => failed });
+		renderRun(reopened, { restart: vi.fn() });
+		expect(await screen.findByRole("button", { name: "Resume" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Start a new import" })).toBeVisible();
+	});
+
+	it.each([
+		["NOT_FOUND", 404, "This item no longer exists."],
+		["VALIDATION_ERROR", 400, "The request was not valid. Check your entries and try again."],
+	])(
+		"offers Start a new import, not Try again, when jobs/get answers %s (final review 2)",
+		async (code, status, sentence) => {
+			mockRoutes({ "jobs/get": () => fail(code, "No such job", status) });
+			const restart = vi.fn();
+			const { user } = renderRun(reopened, { restart });
+			expect(await screen.findByText(sentence)).toBeVisible();
+			expect(screen.getByRole("alert")).toHaveTextContent(sentence);
+			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+			await user.click(screen.getByRole("button", { name: "Start a new import" }));
+			expect(restart).toHaveBeenCalledOnce();
+		},
+	);
+
+	it.each([
+		["INTERNAL_ERROR", 500],
+		["RATE_LIMITED", 429],
+		["UNAUTHORIZED", 401],
+	])("keeps Try again when jobs/get answers %s", async (code, status) => {
+		let reads = 0;
+		const { calls } = mockRoutes({
+			"jobs/get": () => {
+				reads += 1;
+				return reads === 1 ? fail(code, "Not now", status) : real({ status: "completed" });
+			},
+			"jobs/next": () => real({ status: "completed" }),
+		});
+		const { user } = renderRun(reopened, { restart: vi.fn() });
+		const again = await screen.findByRole("button", { name: "Try again" });
+		expect(screen.queryByRole("button", { name: "Start a new import" })).toBeNull();
+		await user.click(again);
+		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(named(calls, "jobs/get")).toHaveLength(2);
+	});
+
+	it("shows the administrators-only sentence alone when jobs/get answers 403", async () => {
+		mockRoutes({ "jobs/get": () => fail("FORBIDDEN", "Insufficient permissions", 403) });
+		renderRun(reopened, { restart: vi.fn() });
+		expect(await screen.findByText("Only administrators can import.")).toBeVisible();
+		expect(screen.queryByRole("button")).toBeNull();
 	});
 
 	it("shows a failed job's error and resumes it", async () => {

@@ -527,6 +527,15 @@ export function describeRecordWarning(w: { code: string; message: string }): {
 	return RECORD_WARNING_DETAIL.has(w.code) ? { msg, detail: redact(w.message) } : { msg };
 }
 
+/**
+ * Job errors a resume cannot cure: the file is gone, or the template no longer fits. Preview and
+ * Run offer no resume for them (final review 2).
+ */
+export const FINAL_JOB_ERRORS: ReadonlySet<string> = new Set([
+	"source_missing",
+	"invalid_template",
+]);
+
 /** Job errors the Run step names (preflight F15); any other code shows `unknown`. */
 export const JOB_ERROR_MESSAGES = {
 	source_missing: {

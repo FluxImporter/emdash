@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { ApiError, redact } from "../../api-error.js";
-import { describeError, describeJobError, ERROR_MESSAGES } from "../../errors.js";
+import { describeError, describeJobError, ERROR_MESSAGES, FINAL_JOB_ERRORS } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { useJobDriver } from "../../run-driver.js";
@@ -14,9 +14,6 @@ import { StepFooter } from "../StepFooter.js";
 import { jobInput } from "../state.js";
 import { M } from "./messages.js";
 import { RecordsTable } from "./RecordsTable.js";
-
-/** Job errors a resume cannot cure: the file is gone, or the template no longer fits. */
-const FINAL_JOB_ERRORS: ReadonlySet<string> = new Set(["source_missing", "invalid_template"]);
 
 /** The records a dry run read: every outcome but the missing phase's `removed`. */
 function totalOf(c: Counters): number {

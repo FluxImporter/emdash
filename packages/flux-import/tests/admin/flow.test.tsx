@@ -8,6 +8,7 @@ import type { Job, RecordRow } from "../../src/engine/types.js";
 import type { SuggestReply } from "../../src/plugin/suggest.js";
 import { job, MANIFEST, POSTS, sampleCsv, UPLOAD_ID } from "./fixtures.js";
 import {
+	fail,
 	mockRoutes,
 	type RouteCall,
 	type RouteHandler,
@@ -475,6 +476,27 @@ describe("the import wizard, end to end", () => {
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(
 			"01JZ00000000000000000JOB04",
 		);
+	});
+
+	it("starts a new import from a ?job= the server no longer has (final review 2)", async () => {
+		window.history.replaceState(null, "", "/import?job=01JZ00000000000000000GONE1");
+		mockRoutes({
+			...server(),
+			"jobs/get": () => fail("NOT_FOUND", "Job not found", 404),
+		});
+		const { user } = renderPage();
+		await heading("Run");
+		expect(await screen.findByText("This item no longer exists.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		const source = await heading("Source");
+		await waitFor(() => expect(source).toHaveFocus());
+		const params = new URLSearchParams(window.location.search);
+		expect(params.get("job")).toBeNull();
+		expect(params.get("step")).toBe("source");
+		await upload(user);
+		await user.click(next());
+		await heading("Target");
 	});
 
 	it("starts from a saved template, runs it unedited by id and revision", async () => {

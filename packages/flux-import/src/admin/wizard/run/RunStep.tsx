@@ -3,8 +3,8 @@ import { useLingui } from "@lingui/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
-import { ApiError } from "../../api-error.js";
-import { describeError, describeJobError } from "../../errors.js";
+import { ApiError, isRetryable } from "../../api-error.js";
+import { describeError, describeJobError, FINAL_JOB_ERRORS } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
@@ -46,10 +46,23 @@ const processed = (c: Counters) =>
 
 const isActive = (job: Job) => job.status === "created" || job.status === "running";
 
-/** A failure to show, and how to try the request again when that makes sense. */
+/**
+ * A failure to show, and how to try the request again when that makes sense, or whether only a
+ * new import is left (`restart`).
+ */
 interface Problem {
 	error: unknown;
 	retry?: () => void;
+	restart?: boolean;
+}
+
+/**
+ * Whether reading `?job=` failed for good (final review 2): a route's refusal such as the job not
+ * found, not an offline error, a 429 or a 5xx (`isRetryable`), nor a 401 (signed out: sign in, then
+ * try again). A 403 shows its sentence alone either way (`ErrorNotice`).
+ */
+function unreadable(error: unknown): boolean {
+	return error instanceof ApiError && error.status !== 401 && !isRetryable(error);
 }
 
 export function RunStep() {
@@ -114,7 +127,8 @@ export function RunStep() {
 				setJob(loaded);
 				setDriveId(loaded.id);
 			},
-			(error: unknown) => setProblem({ error, retry: () => load(id) }),
+			(error: unknown) =>
+				setProblem(unreadable(error) ? { error, restart: true } : { error, retry: () => load(id) }),
 		);
 	}, []);
 
@@ -196,7 +210,13 @@ export function RunStep() {
 			<div className="space-y-4">
 				{live}
 				{publishingLine}
-				{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
+				{problem ? (
+					<ErrorNotice
+						error={problem.error}
+						onRetry={problem.retry}
+						onRestart={problem.restart === true ? (restart ?? undefined) : undefined}
+					/>
+				) : null}
 			</div>
 		);
 	}
@@ -283,7 +303,8 @@ export function RunStep() {
 						{t(M.pause)}
 					</Button>
 				) : null}
-				{controllable && (job.status === "paused" || job.status === "failed") ? (
+				{controllable &&
+				(job.status === "paused" || (job.status === "failed" && !finalError(job))) ? (
 					<Button
 						variant="primary"
 						disabled={busy}
@@ -317,7 +338,8 @@ export function RunStep() {
 						{t(M.downloadFailed)}
 					</Button>
 				) : null}
-				{restart !== null && (job.status === "completed" || job.status === "cancelled") ? (
+				{restart !== null &&
+				(job.status === "completed" || job.status === "cancelled" || job.status === "failed") ? (
 					<Button variant="secondary" onClick={restart}>
 						{t(M.startNew)}
 					</Button>
@@ -393,6 +415,11 @@ function duration(seconds: number, locale: string): string {
 	return new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay: "long" }).format(value);
 }
 
+/** A failed job no resume can cure (final review 2). */
+function finalError(job: Job): boolean {
+	return job.error !== null && FINAL_JOB_ERRORS.has(job.error.code);
+}
+
 /** A 403 that is not a CSRF refusal: the user may not import (preflight F29). */
 function isForbidden(error: unknown): boolean {
 	return error instanceof ApiError && error.status === 403 && error.code !== "CSRF_REJECTED";
@@ -406,13 +433,18 @@ function JobError(props: { error: { code: string; message: string } }) {
 }
 
 /**
- * A failed request's sentence, its specifics, and "Try again" when given. A 403 has no retry: the
- * user's role does not change by trying again (Review Focus 2).
+ * A failed request's sentence, its specifics, and "Try again" when given, else "Start a new
+ * import" when given. A 403 has neither: the user's role does not change by trying again, and no
+ * import can start (Review Focus 2).
  */
-function ErrorNotice(props: { error: unknown; onRetry?: (() => void) | undefined }) {
+function ErrorNotice(props: {
+	error: unknown;
+	onRetry?: (() => void) | undefined;
+	onRestart?: (() => void) | undefined;
+}) {
 	const t = useT();
 	const d = describeError(props.error);
-	const { error, onRetry } = props;
+	const { error, onRetry, onRestart } = props;
 	const forbidden = isForbidden(error);
 	const description =
 		d.detail === undefined && d.problems === undefined ? undefined : (
@@ -434,9 +466,13 @@ function ErrorNotice(props: { error: unknown; onRetry?: (() => void) | undefined
 			title={t(d.msg, d.values)}
 			description={description}
 			action={
-				onRetry && !forbidden ? (
+				forbidden ? undefined : onRetry ? (
 					<Button variant="secondary" onClick={onRetry}>
 						{t(SHARED.tryAgain)}
+					</Button>
+				) : onRestart ? (
+					<Button variant="secondary" onClick={onRestart}>
+						{t(M.startNew)}
 					</Button>
 				) : undefined
 			}
