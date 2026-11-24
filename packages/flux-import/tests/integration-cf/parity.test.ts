@@ -1437,5 +1437,4 @@ describe("workerd parity (D1, R2)", () => {
 			undo: { deleted: 2, restored: 1, recovered: 0 },
 		});
 	});
-
 });

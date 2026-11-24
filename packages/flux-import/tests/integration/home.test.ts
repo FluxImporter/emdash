@@ -53,8 +53,7 @@ const stagedFiles = async () =>
 	);
 
 /** The staged file's upload ID, as the file name carries it (`uploads.ts` keys). */
-const hasFile = async (job: Job) =>
-	(await stagedFiles()).some((f) => f.includes(job.uploadId));
+const hasFile = async (job: Job) => (await stagedFiles()).some((f) => f.includes(job.uploadId));
 
 /** Rewrites `updatedAt` of a job row, as an idle dry run would have. */
 function ageJob(id: string, ms: number) {
@@ -205,8 +204,9 @@ describe("M7b server additions on sites/dev", () => {
 			withDb(
 				server.dbPath,
 				(db) =>
-					db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(INDEX) !==
-					undefined,
+					db
+						.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+						.get(INDEX) !== undefined,
 			);
 		for (let i = 0; i < 20 && !indexed(); i++) {
 			await runScheduled(server.baseUrl);
