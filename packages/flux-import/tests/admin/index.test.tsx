@@ -4,8 +4,9 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import { memo, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { SOURCE_ID_WIDGET, SourceIdField } from "../../src/admin/fields/SourceIdField.js";
 import { type Msg, useT } from "../../src/admin/i18n.js";
-import { pages } from "../../src/admin/index.js";
+import { fields, pages } from "../../src/admin/index.js";
 import { M } from "../../src/admin/messages.js";
 import { fail, mockRoutes, renderAdmin, takeViolations, withRects } from "./harness.js";
 
@@ -44,11 +45,24 @@ function deferred<T>() {
 }
 
 describe("the admin entry", () => {
-	it("exports the Import page, which shows its heading", () => {
+	it("exports the Import page: the wizard, opening on its Source step", async () => {
+		mockRoutes({
+			"credentials/list": () => [],
+			"templates/list": () => ({ items: [], hasMore: false }),
+			"sources/list": () => ({ items: [], hasMore: false }),
+		});
 		const ImportPage = pages?.["/import"];
 		expect(ImportPage).toBeTypeOf("function");
 		renderAdmin(<ImportPage />);
 		expect(screen.getByRole("heading", { level: 1, name: "Import" })).toBeInTheDocument();
+		expect(await screen.findByRole("heading", { level: 2, name: "Source" })).toBeVisible();
+		expect(screen.getByRole("list", { name: "Steps" })).toBeVisible();
+		expect(screen.getByRole("link", { name: "1 Source" })).toHaveAttribute("aria-current", "step");
+	});
+
+	it("exports the source-id field widget (Task 13), and nothing else", () => {
+		expect(fields).toEqual({ [SOURCE_ID_WIDGET]: SourceIdField });
+		expect(SOURCE_ID_WIDGET).toBe("source-id");
 	});
 
 	it("gives useT a new t when the locale changes", () => {
