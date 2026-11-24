@@ -6,6 +6,7 @@ import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
 import { ApiError, isForbidden, isRetryable } from "../../api-error.js";
 import { describeError, describeJobError, FINAL_JOB_ERRORS } from "../../errors.js";
+import { HOME_URL } from "../../home/links.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { queryKeys } from "../../queries.js";
@@ -47,6 +48,9 @@ const processed = (c: Counters) =>
 	c.created + c.updated + c.unchanged + c.locked + c.conflict + c.failed + c.filtered;
 
 const isActive = (job: Job) => job.status === "created" || job.status === "running";
+/** A job that has stopped for good: what's left is a new import, or the Imports home (Task 16). */
+const ended = (job: Job) =>
+	job.status === "completed" || job.status === "cancelled" || job.status === "failed";
 
 /**
  * A failure to show, and how to try the request again when that makes sense, or whether only a
@@ -343,11 +347,15 @@ export function RunStep() {
 						{t(M.downloadFailed)}
 					</Button>
 				) : null}
-				{restart !== null &&
-				(job.status === "completed" || job.status === "cancelled" || job.status === "failed") ? (
+				{restart !== null && ended(job) ? (
 					<Button variant="secondary" onClick={restart}>
 						{t(M.startNew)}
 					</Button>
+				) : null}
+				{ended(job) && !job.dryRun ? (
+					<LinkButton variant="secondary" href={HOME_URL}>
+						{t(M.seeAll)}
+					</LinkButton>
 				) : null}
 				{controllable && (active || job.status === "paused" || job.status === "failed") ? (
 					<Dialog.Root role="alertdialog" open={confirming} onOpenChange={setConfirming}>

@@ -559,6 +559,45 @@ describe("the Run step", () => {
 		},
 	);
 
+	it("links to the Imports home beside Start a new import once the job ends (Task 16)", async () => {
+		const held = gate();
+		const answer = replies(real({ counters: counters(1) }), held.promise);
+		mockRoutes({ "jobs/get": () => real({ counters: counters(1) }), "jobs/next": answer });
+		renderRun(reopened, { restart: vi.fn() });
+		const home = () => screen.queryByRole("link", { name: "See all imports" });
+		expect(await screen.findByRole("button", { name: "Pause" })).toBeVisible();
+		// A running job keeps the page on its own controls.
+		expect(home()).toBeNull();
+		held.open(real({ status: "completed", counters: counters(3) }));
+		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(home()).toHaveAttribute("href", "/_emdash/admin/plugins/flux-import/imports");
+		expect(screen.getByRole("button", { name: "Start a new import" })).toBeVisible();
+	});
+
+	it.each([
+		["cancelled", undefined],
+		["failed", { code: "internal", message: "x" }],
+	] as const)(
+		"links to the Imports home for a %s job, also without a restart",
+		async (status, error) => {
+			const done = real({ status, counters: counters(2), ...(error ? { error } : {}) });
+			mockRoutes({ "jobs/get": () => done, "jobs/next": () => done });
+			renderRun(reopened);
+			expect(await screen.findByRole("link", { name: "See all imports" })).toHaveAttribute(
+				"href",
+				"/_emdash/admin/plugins/flux-import/imports",
+			);
+		},
+	);
+
+	it("offers no Imports home link for a dry run", async () => {
+		const dry = real({ status: "completed", dryRun: true, counters: counters(2) });
+		mockRoutes({ "jobs/get": () => dry, "jobs/next": () => dry });
+		renderRun(reopened, { restart: vi.fn() });
+		expect(await screen.findByText("This was a dry run: nothing was written.")).toBeVisible();
+		expect(screen.queryByRole("link", { name: "See all imports" })).toBeNull();
+	});
+
 	it("offers Start a new import beside Resume for a job that failed otherwise", async () => {
 		const failed = real({
 			status: "failed",
