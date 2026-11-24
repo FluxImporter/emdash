@@ -5,14 +5,16 @@ import { M } from "./messages.js";
 
 /**
  * A confirmation before a change that cannot be undone (as `SchemaDiffDialog`): a title, one
- * sentence, optional details, and Cancel and the confirm button. Escape and Cancel close it unless
- * `busy`; the confirm button shows `busy`.
+ * sentence, optional details, and Cancel (or `cancelLabel`) and the confirm button. Escape and
+ * Cancel close it unless `busy`; the confirm button shows `busy`.
  */
 export function ConfirmDialog(props: {
 	open: boolean;
 	title: string;
 	sentence: string;
 	confirmLabel: string;
+	/** The dismiss button's text, when "Cancel" would read as the action itself. */
+	cancelLabel?: string;
 	danger?: boolean;
 	busy: boolean;
 	error?: ReactNode;
@@ -40,7 +42,7 @@ export function ConfirmDialog(props: {
 				{props.error}
 				<div className="flex justify-end gap-3">
 					<Button variant="secondary" disabled={props.busy} onClick={close}>
-						{t(M.cancel)}
+						{props.cancelLabel ?? t(M.cancel)}
 					</Button>
 					<Button
 						variant={props.danger === true ? "destructive" : "primary"}

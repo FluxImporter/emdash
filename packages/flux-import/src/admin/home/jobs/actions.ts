@@ -13,29 +13,45 @@ export type JobAction =
 	| "cancel"
 	| "retry"
 	| "rollback"
-	| "continueRollback";
+	| "continueRollback"
+	| "retryRollback";
 
 const unfinished = (s: JobStatus) =>
 	s === "created" || s === "running" || s === "paused" || s === "failed";
 
 /**
+ * `jobs/retry` takes it (`transitionJob`): completed, not a dry run, with failed, conflict or
+ * locked records to try again, and not rolled back.
+ */
+function retryable(i: JobListItem): boolean {
+	const { failed, conflict, locked } = i.counters;
+	return (
+		i.status === "completed" &&
+		!i.dryRun &&
+		failed + conflict + locked > 0 &&
+		i.rolledBackBy === undefined
+	);
+}
+
+/**
  * The actions a row's state allows. An import: Open and the log always; Pause while it may run;
- * Resume when stopped and not rolled back; Cancel until it ends; Retry once it completed with
- * records to try again; Roll back when the server says it can (`rollbackable`). A rollback job:
- * the log, and Continue the rollback until it ends.
+ * Resume when stopped, and Cancel until it ends, both only while it is not rolled back; Retry
+ * (`retryable`); Roll back when the server says it can (`rollbackable`). A rollback job: the log;
+ * Continue the rollback until it ends; Retry the rollback once it finished with rows it could not
+ * revert.
  */
 export function jobActions(i: JobListItem): JobAction[] {
 	const s = i.status;
 	if (i.kind === "rollback") {
-		return unfinished(s) ? ["log", "continueRollback"] : ["log"];
+		if (unfinished(s)) return ["log", "continueRollback"];
+		return retryable(i) ? ["log", "retryRollback"] : ["log"];
 	}
 	const actions: JobAction[] = ["open", "log"];
 	const rolledBack = i.rolledBackBy !== undefined;
 	if (s === "created" || s === "running") actions.push("pause");
 	if ((s === "paused" || s === "failed") && !rolledBack) actions.push("resume");
-	if (unfinished(s)) actions.push("cancel");
-	const { failed, conflict, locked } = i.counters;
-	if (s === "completed" && failed + conflict + locked > 0 && !rolledBack) actions.push("retry");
+	if (unfinished(s) && !rolledBack) actions.push("cancel");
+	if (retryable(i)) actions.push("retry");
 	if (i.rollbackable) actions.push("rollback");
 	return actions;
 }

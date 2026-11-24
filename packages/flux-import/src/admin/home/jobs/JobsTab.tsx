@@ -19,10 +19,13 @@ import { JobRow, type RowAction } from "./JobRow.js";
 import { M } from "./messages.js";
 import { RollbackDialog, type RollbackTarget } from "./rollback/RollbackDialog.js";
 
+type StartTarget = Extract<RollbackTarget, { kind: "start" }>;
+
 /**
  * The Jobs tab (spec "Jobs"): real imports newest first, a `jobs/summaries` page at a time with
  * "Load more" (never `jobs/list`, Review Focus 5), each row's actions, and the dry-run line below.
  * `useJobPages` refetches the loaded pages every 5 s while a row is unfinished (plan Ruling 15).
+ * The schedules are read only when a scheduled job's rollback dialog opens.
  */
 export function JobsTab() {
 	const t = useT();
@@ -31,13 +34,16 @@ export function JobsTab() {
 	const client = useQueryClient();
 	const jobs = useJobPages();
 	const templates = useAllTemplates();
-	const schedules = useSchedules();
 	const [busy, setBusy] = useState<string | null>(null);
 	const [problem, setProblem] = useState<unknown>(null);
 	const [cancelling, setCancelling] = useState<{ item: JobListItem; name: string } | null>(null);
 	const [cancelBusy, setCancelBusy] = useState(false);
 	const [cancelError, setCancelError] = useState<unknown>(null);
-	const [rollback, setRollback] = useState<RollbackTarget | null>(null);
+	/** The open rollback dialog; `scheduleId` when the job's schedule must be named in it. */
+	const [rollback, setRollback] = useState<{
+		target: RollbackTarget;
+		scheduleId: string | null;
+	} | null>(null);
 
 	const names = useMemo(
 		() => new Map((templates.data ?? []).map((tpl) => [tpl.id, tpl.name])),
@@ -55,8 +61,11 @@ export function JobsTab() {
 		return t(d.msg, d.values);
 	};
 
-	/** A call for one row: its menu is busy meanwhile; a failure shows its sentence above the list. */
-	const call = async (item: JobListItem, work: () => Promise<void>) => {
+	/**
+	 * A call for one row: its menu is busy meanwhile; a failure shows its sentence above the list.
+	 * A call that changes the job refreshes the list after it; a download changes nothing.
+	 */
+	const call = async (item: JobListItem, work: () => Promise<void>, changes = true) => {
 		setBusy(item.id);
 		setProblem(null);
 		try {
@@ -65,8 +74,14 @@ export function JobsTab() {
 			setProblem(error);
 		} finally {
 			setBusy(null);
-			refresh();
+			if (changes) refresh();
 		}
+	};
+
+	/** The dialog's title reads "Roll back {name}?": the original's name, not "Rollback of …". */
+	const originalName = (item: JobListItem) => {
+		const original = templateName(item, names);
+		return t(original.msg, original.values);
 	};
 
 	/** Resume and Retry (plan Ruling 11): the Run screen drives the job, unless a schedule does. */
@@ -82,10 +97,10 @@ export function JobsTab() {
 				openPage(runUrl(item.id));
 				return;
 			case "log":
-				void call(item, () => downloadLog(item.id));
+				void call(item, () => downloadLog(item.id), false);
 				return;
 			case "failedLog":
-				void call(item, () => downloadLog(item.id, "failed"));
+				void call(item, () => downloadLog(item.id, "failed"), false);
 				return;
 			case "pause":
 				void call(item, async () => {
@@ -103,26 +118,45 @@ export function JobsTab() {
 				setCancelError(null);
 				setCancelling({ item, name });
 				return;
-			case "rollback": {
-				const scheduled =
-					item.origin === "schedule" && item.scheduleId !== undefined
-						? (schedules.data?.find((s) => s.id === item.scheduleId)?.name ?? null)
-						: null;
-				setRollback({ kind: "start", jobId: item.id, name, when, scheduleName: scheduled });
-				return;
-			}
-			case "continueRollback": {
-				// The dialog's title reads "Roll back {name}?": the original's name, not "Rollback of …".
-				const original = templateName(item, names);
+			case "rollback":
 				setRollback({
-					kind: "continue",
-					rollbackId: item.id,
-					status: item.status,
-					name: t(original.msg, original.values),
+					target: { kind: "start", jobId: item.id, name, when, scheduleName: null },
+					scheduleId:
+						item.origin === "schedule" && item.scheduleId !== undefined ? item.scheduleId : null,
 				});
 				return;
-			}
+			case "continueRollback":
+				setRollback({
+					target: {
+						kind: "continue",
+						rollbackId: item.id,
+						status: item.status,
+						name: originalName(item),
+					},
+					scheduleId: null,
+				});
+				return;
+			case "retryRollback":
+				// The Run screen is not taught rollbacks: the dialog drives the retried rollback.
+				void call(item, async () => {
+					await api.retry({ id: item.id });
+					setRollback({
+						target: {
+							kind: "continue",
+							rollbackId: item.id,
+							status: "running",
+							name: originalName(item),
+						},
+						scheduleId: null,
+					});
+				});
+				return;
 		}
+	};
+
+	const closeRollback = () => {
+		setRollback(null);
+		refresh();
 	};
 
 	const confirmCancel = async (item: JobListItem, name: string) => {
@@ -140,7 +174,13 @@ export function JobsTab() {
 		}
 	};
 
-	const failed = jobs.isError ? jobs.error : templates.isError ? templates.error : null;
+	// The whole tab fails only without rows to show; a failed poll or Load more keeps the table.
+	const failed =
+		jobs.isError && jobs.data === undefined
+			? jobs.error
+			: templates.isError && templates.data === undefined
+				? templates.error
+				: null;
 	const rows = jobs.data?.pages.flatMap((page) => page.items) ?? [];
 	const now = Date.now();
 
@@ -206,10 +246,20 @@ export function JobsTab() {
 						</Table.Body>
 					</Table>
 				</div>
-				{jobs.isFetchNextPageError ? (
-					<p role="alert" className="text-sm text-kumo-danger">
-						{sentence(jobs.error)}
-					</p>
+				{jobs.isError ? (
+					<div role="alert" className="flex items-center gap-3 text-sm text-kumo-danger">
+						<p>{sentence(jobs.error)}</p>
+						{isForbidden(jobs.error) ? null : (
+							<Button
+								variant="secondary"
+								onClick={() =>
+									void (jobs.isFetchNextPageError ? jobs.fetchNextPage() : jobs.refetch())
+								}
+							>
+								{t(PAGE.tryAgain)}
+							</Button>
+						)}
+					</div>
 				) : null}
 				{jobs.hasNextPage ? (
 					<Button
@@ -243,6 +293,7 @@ export function JobsTab() {
 					title={t(M.cancelTitle, { name: cancelling.name })}
 					sentence={t(M.cancelSentence)}
 					confirmLabel={t(M.cancelConfirm)}
+					cancelLabel={t(M.cancelKeep)}
 					danger
 					busy={cancelBusy}
 					error={
@@ -256,15 +307,33 @@ export function JobsTab() {
 					onClose={() => setCancelling(null)}
 				/>
 			)}
-			{rollback === null ? null : (
-				<RollbackDialog
-					target={rollback}
-					onClose={() => {
-						setRollback(null);
-						refresh();
-					}}
+			{rollback === null ? null : rollback.target.kind === "start" &&
+				rollback.scheduleId !== null ? (
+				<ScheduledRollback
+					target={rollback.target}
+					scheduleId={rollback.scheduleId}
+					onClose={closeRollback}
 				/>
+			) : (
+				<RollbackDialog target={rollback.target} onClose={closeRollback} />
 			)}
 		</div>
 	);
+}
+
+/**
+ * The rollback dialog of a scheduled job, which names the schedule it pauses. The schedules are
+ * read only now. Until they are (or when they cannot be read) the line still says the schedule
+ * will be paused; a schedule no longer listed was deleted, and nothing is paused.
+ */
+function ScheduledRollback(props: { target: StartTarget; scheduleId: string; onClose(): void }) {
+	const t = useT();
+	const schedules = useSchedules();
+	const { target, scheduleId } = props;
+	const scheduleName =
+		schedules.data === undefined
+			? t(M.thisSchedule)
+			: (schedules.data.find((s) => s.id === scheduleId)?.name ?? null);
+	const named = useMemo(() => ({ ...target, scheduleName }), [target, scheduleName]);
+	return <RollbackDialog target={named} onClose={props.onClose} />;
 }

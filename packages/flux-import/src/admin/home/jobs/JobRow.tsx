@@ -27,6 +27,7 @@ const ITEMS: Readonly<Record<RowAction, { text: Msg; row: Msg }>> = {
 	cancel: { text: M.cancel, row: M.cancelRow },
 	rollback: { text: M.rollBack, row: M.rollBackRow },
 	continueRollback: { text: M.continueRollback, row: M.continueRollbackRow },
+	retryRollback: { text: M.retryRollback, row: M.retryRollbackRow },
 };
 
 /** Actions that cannot be undone, shown in the menu's danger colour. */

@@ -92,6 +92,27 @@ async function pick(
 	await user.click(await screen.findByRole("menuitem", { name: `${action} ${name}, ${WHEN}` }));
 }
 
+const zero: Counters = {
+	created: 0,
+	updated: 0,
+	unchanged: 0,
+	locked: 0,
+	conflict: 0,
+	failed: 0,
+	filtered: 0,
+	reverted: 0,
+};
+
+/** A rollback job of `J1`, as `jobs/*` answer it. */
+const rb = (over: Partial<Job>): Job =>
+	job({
+		kind: "rollback",
+		rollbackOf: "J1",
+		counters: zero,
+		undo: { deleted: 0, restored: 0, recovered: 0 },
+		...over,
+	});
+
 /** `window.location.assign`, which `openPage` calls for a full page load. */
 const spyAssign = () => vi.spyOn(window.location, "assign").mockImplementation(() => {});
 
@@ -350,7 +371,7 @@ describe("JobsTab", () => {
 		const { user } = show();
 		await pick(user, "Products feed", "Cancel");
 		const dialog = await screen.findByRole("dialog");
-		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		await user.click(within(dialog).getByRole("button", { name: "Keep the import" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(calls.some((c) => c.route === "jobs/cancel")).toBe(false);
 	});
@@ -368,10 +389,15 @@ describe("JobsTab", () => {
 			}),
 		);
 		const { user } = show();
+		await screen.findByRole("table");
+		await waitFor(() => expect(real(calls)).toHaveLength(1));
 		await pick(user, "Products feed", "Download log");
 		await waitFor(() => expect(calls.filter((c) => c.route === "GET log.csv")).toHaveLength(1));
 		await pick(user, "Products feed", "Download failed records");
 		await waitFor(() => expect(calls.filter((c) => c.route === "GET log.csv")).toHaveLength(2));
+		// A download changes nothing: the list is not read again.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(real(calls)).toHaveLength(1);
 		expect(calls.filter((c) => c.route === "GET log.csv").map((c) => c.path)).toEqual([
 			"/_emdash/api/plugins/flux-import/jobs/log.csv?id=J1",
 			"/_emdash/api/plugins/flux-import/jobs/log.csv?id=J1&status=failed",
@@ -389,24 +415,6 @@ describe("JobsTab", () => {
 	});
 
 	it("opens the rollback dialog, and continues an unfinished rollback from its row (Review Focus 2)", async () => {
-		const zero: Counters = {
-			created: 0,
-			updated: 0,
-			unchanged: 0,
-			locked: 0,
-			conflict: 0,
-			failed: 0,
-			filtered: 0,
-			reverted: 0,
-		};
-		const rb = (over: Partial<Job>): Job =>
-			job({
-				kind: "rollback",
-				rollbackOf: "J1",
-				counters: zero,
-				undo: { deleted: 0, restored: 0, recovered: 0 },
-				...over,
-			});
 		const { calls } = mockRoutes(
 			routes(
 				[
@@ -441,7 +449,7 @@ describe("JobsTab", () => {
 		expect(
 			await within(dialog).findByText("Entries the import created, to delete: 2"),
 		).toBeVisible();
-		expect(within(dialog).getByText("Its schedule Nightly will be paused.")).toBeVisible();
+		expect(await within(dialog).findByText("Its schedule Nightly will be paused.")).toBeVisible();
 		expect(calls.filter((c) => c.route === "jobs/rollback").map((c) => c.body)).toEqual([
 			{ id: "J1", dryRun: true },
 		]);
@@ -462,6 +470,144 @@ describe("JobsTab", () => {
 			["jobs/next", { id: "R1" }],
 		]);
 		await waitFor(() => expect(real(calls).length).toBeGreaterThan(before));
+	});
+
+	it("retries a finished rollback's conflicts, then drives it in the rollback dialog", async () => {
+		const { calls } = mockRoutes(
+			routes(
+				[
+					row({
+						id: "R1",
+						kind: "rollback",
+						rollbackOf: "J1",
+						rollbackable: false,
+						counters: counters({ reverted: 3, conflict: 1 }),
+					}),
+				],
+				{
+					"jobs/retry": () => rb({ id: "R1", status: "running" }),
+					"jobs/next": () => rb({ id: "R1", status: "completed" }),
+				},
+			),
+		);
+		const { user } = show();
+		await pick(user, "Rollback of Products feed", "Retry the rollback");
+		await screen.findByRole("dialog", { name: "Roll back Products feed?" });
+		await waitFor(() => expect(announced()).toContain("Rollback finished."));
+		expect(
+			calls
+				.filter((c) => c.route === "jobs/retry" || c.route === "jobs/next")
+				.map((c) => [c.route, c.body]),
+		).toEqual([
+			["jobs/retry", { id: "R1" }],
+			["jobs/next", { id: "R1" }],
+		]);
+	});
+
+	it("reads the schedules only once a scheduled job's rollback opens", async () => {
+		const { calls } = mockRoutes(
+			routes(
+				[
+					row({ id: "J1" }),
+					row({ id: "J2", templateId: "T9", origin: "schedule", scheduleId: "SC1" }),
+				],
+				{
+					"jobs/rollback": () => rb({ id: "D1", dryRun: true }),
+					"jobs/next": () =>
+						rb({
+							id: "D1",
+							dryRun: true,
+							status: "completed",
+							counters: { ...zero, reverted: 1 },
+							undo: { deleted: 1, restored: 0, recovered: 0 },
+						}),
+				},
+			),
+		);
+		const { user } = show();
+		await screen.findByRole("table");
+		await screen.findByText("Deleted template");
+		expect(calls.some((c) => c.route === "schedules/list")).toBe(false);
+		await pick(user, "Products feed", "Roll back");
+		const dialog = await screen.findByRole("dialog");
+		await within(dialog).findByText("Entries the import created, to delete: 1");
+		expect(within(dialog).queryByText(/will be paused/)).toBeNull();
+		expect(calls.some((c) => c.route === "schedules/list")).toBe(false);
+	});
+
+	it("still says a scheduled job's schedule will be paused when its name cannot be read", async () => {
+		mockRoutes(
+			routes([row({ id: "J1", origin: "schedule", scheduleId: "SC1" })], {
+				"schedules/list": () => fail("INTERNAL_ERROR", "boom", 500),
+				"jobs/rollback": () => rb({ id: "D1", dryRun: true }),
+				"jobs/next": () =>
+					rb({
+						id: "D1",
+						dryRun: true,
+						status: "completed",
+						counters: { ...zero, reverted: 1 },
+						undo: { deleted: 1, restored: 0, recovered: 0 },
+					}),
+			}),
+		);
+		const { user } = show();
+		await pick(user, "Products feed", "Roll back");
+		const dialog = await screen.findByRole("dialog");
+		await within(dialog).findByText("Entries the import created, to delete: 1");
+		expect(within(dialog).getByText("Its schedule for this import will be paused.")).toBeVisible();
+	});
+
+	it("keeps the rows when Load more fails, and tries the page again", async () => {
+		let failing = true;
+		mockRoutes(
+			routes((b) =>
+				b.cursor === "c1"
+					? failing
+						? fail("INTERNAL_ERROR", "boom", 500)
+						: pageOf([row({ id: "J2", templateId: "T9" })])
+					: pageOf([row({ id: "J1" })], "c1"),
+			),
+		);
+		const { user } = show();
+		await screen.findByText("Products feed");
+		await user.click(screen.getByRole("button", { name: "Load more" }));
+		expect(
+			await screen.findByText(
+				"Something went wrong on the server. Try again.",
+				{},
+				{ timeout: 4000 },
+			),
+		).toBeVisible();
+		expect(screen.getByRole("table")).toBeVisible();
+		expect(screen.getByText("Products feed")).toBeVisible();
+		failing = false;
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(await screen.findByText("Deleted template")).toBeVisible();
+		expect(screen.queryByText("Something went wrong on the server. Try again.")).toBeNull();
+	});
+
+	it("keeps the rows when a poll fails", async () => {
+		vi.useFakeTimers({ now: NOW });
+		let n = 0;
+		mockRoutes(
+			routes(() =>
+				n++ === 0
+					? pageOf([row({ id: "J1", status: "running" })])
+					: fail("INTERNAL_ERROR", "boom", 500),
+			),
+		);
+		show({ fakeTimers: true });
+		await screen.findByText("Products feed");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5000);
+		});
+		// The retry of a 5xx, a second later.
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(2000);
+		});
+		expect(await screen.findByText("Something went wrong on the server. Try again.")).toBeVisible();
+		expect(screen.getByRole("table")).toBeVisible();
+		expect(screen.getByText("Products feed")).toBeVisible();
 	});
 
 	it("never shows a job's error message or an upload ID (Review Focus 3)", async () => {

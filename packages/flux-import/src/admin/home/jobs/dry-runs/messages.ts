@@ -20,7 +20,7 @@ export const M = {
 
 /** A job's status in words, for every list that shows one (kept here, in a messages file, for the boundary test; `status.ts` re-exports it, F11). */
 export const STATUS_MESSAGES: Readonly<Record<JobStatus, Msg>> = {
-	created: { id: "flux-import.home-jobs.status-created", message: "Not started" },
+	created: { id: "flux-import.home-jobs.status-created", message: "Waiting to start" },
 	running: { id: "flux-import.home-jobs.status-running", message: "Running" },
 	paused: { id: "flux-import.home-jobs.status-paused", message: "Paused" },
 	completed: { id: "flux-import.home-jobs.status-completed", message: "Completed" },

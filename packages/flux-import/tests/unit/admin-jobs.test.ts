@@ -86,11 +86,20 @@ describe("jobActions (plan Rulings 3-5, 11)", () => {
 			["open", "log"],
 		],
 		[
-			"import failed and rolled back: no resume",
+			"import failed and rolled back: no resume, no cancel",
 			imp("failed", { rolledBackBy: "R1", rollbackStatus: "running" }),
-			["open", "log", "cancel"],
+			["open", "log"],
 		],
-		["dry run (completed)", imp("completed", { dryRun: true }), ["open", "log"]],
+		[
+			"import paused and rolled back: no cancel",
+			imp("paused", { rolledBackBy: "R1", rollbackStatus: "completed" }),
+			["open", "log"],
+		],
+		[
+			"dry run (completed) with failed records: no retry",
+			imp("completed", { dryRun: true, counters: counters({ failed: 1 }) }),
+			["open", "log"],
+		],
 		[
 			"scheduled import, paused",
 			imp("paused", { origin: "schedule", scheduleId: "SC1" }),
@@ -101,7 +110,27 @@ describe("jobActions (plan Rulings 3-5, 11)", () => {
 		["rollback paused", rb("paused"), ["log", "continueRollback"]],
 		["rollback failed", rb("failed"), ["log", "continueRollback"]],
 		["rollback completed", rb("completed"), ["log"]],
-		["rollback cancelled", rb("cancelled"), ["log"]],
+		[
+			"rollback completed with a conflict",
+			rb("completed", { counters: counters({ conflict: 1 }) }),
+			["log", "retryRollback"],
+		],
+		[
+			"rollback completed with a failed row",
+			rb("completed", { counters: counters({ failed: 2 }) }),
+			["log", "retryRollback"],
+		],
+		[
+			"rollback completed with a locked row",
+			rb("completed", { counters: counters({ locked: 1 }) }),
+			["log", "retryRollback"],
+		],
+		[
+			"dry rollback completed with a conflict: no retry",
+			rb("completed", { dryRun: true, counters: counters({ conflict: 1 }) }),
+			["log"],
+		],
+		["rollback cancelled", rb("cancelled", { counters: counters({ conflict: 1 }) }), ["log"]],
 	];
 	it.each(rows)("%s", (_, row, expected) => {
 		expect(jobActions(row)).toEqual(expected);
@@ -140,6 +169,7 @@ describe("jobState (plan Ruling 5)", () => {
 	});
 
 	it("words every state", () => {
+		expect(stateMsg("created").message).toBe("Waiting to start");
 		expect(stateMsg("running").message).toBe("Running");
 		expect(stateMsg("rolling_back").message).toBe("Rolling back");
 		expect(stateMsg("rolled_back").message).toBe("Rolled back");

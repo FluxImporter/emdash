@@ -85,6 +85,11 @@ export const M = {
 		id: "flux-import.home-jobs.continue-rollback",
 		message: "Continue the rollback",
 	},
+	retryRollback: { id: "flux-import.home-jobs.retry-rollback", message: "Retry the rollback" },
+	retryRollbackRow: {
+		id: "flux-import.home-jobs.retry-rollback-row",
+		message: "Retry the rollback {name}, {when}",
+	},
 	continueRollbackRow: {
 		id: "flux-import.home-jobs.continue-rollback-row",
 		message: "Continue the rollback {name}, {when}",
@@ -96,6 +101,13 @@ export const M = {
 		message: "Records already written stay.",
 	},
 	cancelConfirm: { id: "flux-import.home-jobs.cancel-confirm", message: "Cancel the import" },
+	cancelKeep: { id: "flux-import.home-jobs.cancel-keep", message: "Keep the import" },
+
+	/**
+	 * In the rollback dialog's "Its schedule {name} will be paused." when the schedule's name
+	 * cannot be read: the line still says the schedule will be paused.
+	 */
+	thisSchedule: { id: "flux-import.home-jobs.this-schedule", message: "for this import" },
 
 	/** Announcements (the page's one live region). */
 	paused: { id: "flux-import.home-jobs.paused", message: "Paused {name}." },
