@@ -1370,8 +1370,10 @@ describe("workerd parity (D1, R2)", () => {
 				code: "INVALID_SOURCE",
 			});
 		};
+		const strays: string[] = [];
 		const fileKept = async (uploadId: string) => {
 			const stray = await probe(uploadId);
+			strays.push(stray.id);
 			await client.plugin("jobs/cancel", { id: stray.id });
 		};
 
@@ -1443,11 +1445,13 @@ describe("workerd parity (D1, R2)", () => {
 			counters: { reverted: 3 },
 			undo: { deleted: 2, restored: 1, recovered: 0 },
 		});
-		// Leave no dry run behind for later tests: finish the running one, then clear them all.
+		// Leave none of this test's dry runs behind: finish the running one, then age and clear only
+		// our own (the shared D1 may hold other tests' dry runs, e.g. a started agent one, which
+		// jobs/clear-dry-runs keeps by design).
 		await client.runToEnd(running.job.id);
 		await client.plugin("jobs/cancel", { id: rollback.id }).catch(() => undefined);
-		const leftover = (await summaries(true)).items.map((j) => j.id);
-		for (const id of leftover) {
+		const own = [aged.job.id, fresh.job.id, running.job.id, rollback.id, ...strays];
+		for (const id of own) {
 			d1(
 				`UPDATE _plugin_storage SET data = json_set(data, '$.updatedAt', '2000-01-01T00:00:00.000Z') WHERE plugin_id = 'flux-import' AND collection = 'jobs' AND id = '${id}'`,
 			);
@@ -1455,6 +1459,7 @@ describe("workerd parity (D1, R2)", () => {
 		for (let i = 0, again = true; again && i < 50; i++) {
 			again = (await client.plugin<{ more: boolean }>("jobs/clear-dry-runs", {})).more;
 		}
-		expect((await summaries(true)).items).toEqual([]);
+		const remaining = (await summaries(true)).items.map((j) => j.id);
+		for (const id of own) expect(remaining).not.toContain(id);
 	});
 });
