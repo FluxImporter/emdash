@@ -1,4 +1,4 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /**
  * The Jobs tab's messages. The six job statuses' words are `STATUS_MESSAGES` in `status.ts`
@@ -6,14 +6,15 @@ import type { Msg } from "../../i18n.js";
  */
 export const M = {
 	loading: { id: "flux-import.home-jobs.loading", message: "Loading the imports" },
-	empty: { id: "flux-import.home-jobs.empty", message: "No imports yet." },
-	newImport: { id: "flux-import.home-jobs.new-import", message: "New import" },
-	loadMore: { id: "flux-import.home-jobs.load-more", message: "Load more" },
+	loadFailed: { id: "flux-import.home-jobs.load-failed", message: "Imports could not be loaded." },
+	empty: { id: "flux-import.home-jobs.empty", message: "No imports yet" },
+	emptyText: {
+		id: "flux-import.home-jobs.empty-text",
+		message: "Bring in a CSV, JSON, XML or Excel file, or a URL feed. Every run shows up here.",
+	},
 
 	colName: { id: "flux-import.home-jobs.col-name", message: "Import" },
-	colTarget: { id: "flux-import.home-jobs.col-target", message: "Collection" },
 	colStarted: { id: "flux-import.home-jobs.col-started", message: "Started" },
-	colOrigin: { id: "flux-import.home-jobs.col-origin", message: "Started by" },
 	colStatus: { id: "flux-import.home-jobs.col-status", message: "Status" },
 	colCounts: { id: "flux-import.home-jobs.col-counts", message: "Records" },
 	colActions: { id: "flux-import.home-jobs.col-actions", message: "Actions" },
@@ -34,10 +35,9 @@ export const M = {
 
 	target: { id: "flux-import.home-jobs.target", message: "{collection} · {locale}" },
 
-	/** Origins (plan Ruling 4): wizard and API jobs cannot be told apart. */
+	/** Origins (plan Ruling 4): only agents and schedules are recorded; wizard and API jobs carry none. */
 	originAgent: { id: "flux-import.home-jobs.origin-agent", message: "Agent" },
 	originSchedule: { id: "flux-import.home-jobs.origin-schedule", message: "Schedule" },
-	originAdmin: { id: "flux-import.home-jobs.origin-admin", message: "Admin or API" },
 
 	/** The original import's states while and after it is rolled back (plan Ruling 5). */
 	stateRollingBack: { id: "flux-import.home-jobs.state-rolling-back", message: "Rolling back" },
@@ -47,17 +47,7 @@ export const M = {
 		message: "Rollback cancelled",
 	},
 
-	counts: {
-		id: "flux-import.home-jobs.counts",
-		message: "Created {created} · Updated {updated} · Unchanged {unchanged} · Failed {failed}",
-	},
-	rollbackCounts: {
-		id: "flux-import.home-jobs.rollback-counts",
-		message: "Rolled back {reverted} · Kept {kept}",
-	},
-
-	/** The row's menu: visible text, and the accessible name that names the row. */
-	actions: { id: "flux-import.home-jobs.actions", message: "Actions" },
+	/** The row's menu: the trigger's and each item's accessible name names the row. */
 	actionsRow: { id: "flux-import.home-jobs.actions-row", message: "Actions for {name}, {when}" },
 	open: { id: "flux-import.home-jobs.open", message: "Open" },
 	openRow: { id: "flux-import.home-jobs.open-row", message: "Open {name}, {when}" },
@@ -111,6 +101,13 @@ export const M = {
 	cancelConfirm: { id: "flux-import.home-jobs.cancel-confirm", message: "Cancel the import" },
 	cancelKeep: { id: "flux-import.home-jobs.cancel-keep", message: "Keep the import" },
 
+	/** Pages: `jobs/summaries` has no total, so the range says "+" while more pages exist. */
+	pages: { id: "flux-import.home-jobs.pages", message: "Pages" },
+	previousPage: { id: "flux-import.home-jobs.previous-page", message: "Previous page" },
+	nextPage: { id: "flux-import.home-jobs.next-page", message: "Next page" },
+	range: { id: "flux-import.home-jobs.range", message: "{from}–{to} of {total}" },
+	rangeMore: { id: "flux-import.home-jobs.range-more", message: "{from}–{to} of {total}+" },
+
 	/** Announcements (the page's one live region). */
 	paused: { id: "flux-import.home-jobs.paused", message: "Paused {name}." },
 	cancelled: { id: "flux-import.home-jobs.cancelled", message: "Cancelled {name}." },
@@ -119,3 +116,28 @@ export const M = {
 		message: "The schedule runs this job; its status updates here.",
 	},
 } satisfies Record<string, Msg>;
+
+/** The summary line's counts (Jobs.dc.html: "23 imports · 1 running · 1 failed"). */
+export const N = {
+	imports: {
+		id: "flux-import.home-jobs.summary-imports",
+		one: "{count} import",
+		other: "{count} imports",
+	},
+	/** While more pages exist: the counts are of the loaded rows, newest first. */
+	latest: {
+		id: "flux-import.home-jobs.summary-latest",
+		one: "Latest {count} import",
+		other: "Latest {count} imports",
+	},
+	running: {
+		id: "flux-import.home-jobs.summary-running",
+		one: "{count} running",
+		other: "{count} running",
+	},
+	failed: {
+		id: "flux-import.home-jobs.summary-failed",
+		one: "{count} failed",
+		other: "{count} failed",
+	},
+} satisfies Record<string, PluralMsg>;

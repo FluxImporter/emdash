@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EmDash admin frame with Flux Importer</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: {{ w }}px; min-height: {{ h }}px; position: relative; display: flex; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; background: {{ k.canvas }}; color: {{ k.tx }}; overflow: hidden">
+<aside aria-label="EmDash sidebar (not part of the plugin)" style="flex: 0 0 259px; border-right: 1px solid {{ k.hair }}; display: flex; flex-direction: column">
+<div style="height: 57px; display: flex; align-items: center; gap: 10px; padding: 0 24px; border-bottom: 1px solid {{ k.hair }}; font-weight: 700; font-size: 17px"><span style="width: 18px; height: 18px; border: 2px solid #f6821f; border-radius: 4px; box-sizing: border-box"></span>My Blog</div>
+<div style="padding: 18px 14px; display: flex; flex-direction: column; gap: 2px; color: {{ k.tx }}">
+<sc-for list="{{ nav }}" as="n" hint-placeholder-count="12">
+<span style="display: flex; align-items: center; gap: 12px; height: 35px; padding: 0 12px; border-radius: 8px; background: {{ n.bg }}; font-weight: {{ n.fw }}; color: {{ n.fg }}; margin-top: {{ n.mt }}"><span aria-hidden="true" style="width: 14px; height: 14px; border: 1.5px solid currentColor; border-radius: 3px; opacity: {{ n.iop }}"></span>{{ n.label }}</span>
+</sc-for>
+</div>
+</aside>
+<div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column">
+<header style="height: 57px; border-bottom: 1px solid {{ k.hair }}; display: flex; align-items: center; justify-content: flex-end; gap: 28px; padding: 0 24px; font-size: 13px; font-weight: 500"><span>View Site</span><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid currentColor"></span><span style="display: flex; align-items: center; gap: 8px"><span style="width: 20px; height: 20px; border-radius: 50%; background: {{ k.infoBg }}; color: {{ k.infoTx }}; font-size: 11px; display: flex; align-items: center; justify-content: center">D</span>Dev Admin</span></header>
+<main style="flex: 1 1 auto; padding: 24px 24px 40px; min-width: 0">
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}"><dc-import name="Home" theme="{{ theme }}" narrow="{{ narrow }}" tab="{{ tab }}" view="{{ view }}" hint-size="100%,700px"></dc-import></sc-if>
+<sc-if value="{{ isWizard }}" hint-placeholder-val="{{ false }}"><dc-import name="Wizard" theme="{{ theme }}" narrow="{{ narrow }}" step="{{ step }}" hint-size="100%,900px"></dc-import></sc-if>
+</main>
+</div>
+<sc-if value="{{ hasDialog }}" hint-placeholder-val="{{ false }}">
+<div style="position: absolute; inset: 0; background: {{ k.dim }}; animation: ad-fade .2s ease both"></div>
+<div style="position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: flex-start; justify-content: center; padding: 120px 20px 20px; box-sizing: border-box">
+<sc-if value="{{ isRollback }}" hint-placeholder-val="{{ false }}"><dc-import name="Rollback" theme="{{ theme }}" narrow="{{ narrow }}" stage="{{ stage }}" hint-size="560px,420px"></dc-import></sc-if>
+<sc-if value="{{ isRunLog }}" hint-placeholder-val="{{ false }}"><dc-import name="RunLog" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="760px,420px"></dc-import></sc-if>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"width":{"editor":"enum","options":["1280","768"],"default":"1280"},"height":{"editor":"int","default":900},"screen":{"editor":"enum","options":["home","wizard"],"default":"home"},"tab":{"editor":"enum","options":["jobs","templates","sources","schedules","states"],"default":"jobs"},"view":{"editor":"text","default":""},"step":{"editor":"enum","options":["source","map","preview","run"],"default":"source"},"dialog":{"editor":"enum","options":["none","rb-check","rb-summary","rb-progress","runlog"],"default":"none"},"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { canvas: 'oklch(98.75% 0 0)', hair: 'oklch(93.5% 0 0)', tx: 'oklch(21% 0.006 285.885)', sub: 'oklch(55.6% 0 0)', tint: 'oklch(96% 0 0)', infoBg: '#dbeafe', infoTx: '#1e40af', dim: 'rgba(10,10,10,.32)' },
+dark: { canvas: 'oklch(10% 0 0)', hair: 'oklch(26.9% 0 0)', tx: 'oklch(97% 0 0)', sub: 'oklch(70.8% 0 0)', tint: 'oklch(20% 0 0)', infoBg: '#172554', infoTx: '#bfdbfe', dim: 'rgba(0,0,0,.62)' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const w = String(this.props.width || '1280') === '768' ? 768 : 1280;
+const screen = this.props.screen || 'home';
+const dlg = this.props.dialog || 'none';
+const items = [['Dashboard', 0], ['Calendar', 0], ['Pages', 1], ['Posts', 0], ['Media', 0], ['Comments', 1], ['Menus', 0], ['Categories', 0], ['Tags', 0], ['Content Types', 1], ['Users', 0], ['Plugins', 0], ['Imports', 1, true], ['New import', 0, true], ['Settings', 1]];
+const cur = screen === 'wizard' ? 'New import' : 'Imports';
+return {
+theme: theme, k: k, w: w, h: this.props.height || 900, narrow: w === 768,
+isHome: screen === 'home', isWizard: screen === 'wizard',
+tab: this.props.tab || 'jobs', view: this.props.view || '', step: this.props.step || 'source',
+hasDialog: dlg !== 'none', isRollback: dlg.indexOf('rb-') === 0, isRunLog: dlg === 'runlog',
+stage: dlg.replace('rb-', ''),
+nav: items.map((it) => ({ label: it[0], mt: it[1] ? '14px' : '0', bg: it[0] === cur ? k.tint : 'transparent', fw: it[0] === cur ? 600 : 400, fg: it[2] ? k.tx : k.tx, iop: it[2] ? 1 : 0.6 }))
+};
+}
+}
+</script>
+</body>
+</html>

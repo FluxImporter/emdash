@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Flux Importer for EmDash: docs start page</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:inherit;text-underline-offset:3px}
+:focus-visible{outline:2px solid #ffd23f;outline-offset:2px;border-radius:4px}
+.fx-lift{transition:transform .25s ease,border-color .25s ease}
+.fx-lift:hover{transform:translateY(-3px);border-color:#ffd23f}
+.fx-ul{text-decoration:underline;text-decoration-color:#ffd23f;text-decoration-thickness:2px}
+.fx-ul:hover{background:#ffd23f;color:#0f2233}
+@keyframes fx-up{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes fx-blink{50%{opacity:0}}
+@keyframes fx-flow{0%,100%{transform:translateX(-1.5px)}50%{transform:translateX(1.5px)}}
+@keyframes fx-pulse{0%{box-shadow:0 0 0 0 rgba(95,211,154,.6)}100%{box-shadow:0 0 0 8px rgba(95,211,154,0)}}
+@keyframes fx-in{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<div style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: #0b1824; color: #f4f7f9; font-size: 17px; line-height: 28px">
+<dc-import name="Header" theme="dark" variant="docs" current="docs" hint-size="100%,65px"></dc-import>
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+<aside style="flex: 0 0 290px; border-right: 1px solid #24425c; align-self: stretch">
+<dc-import name="Sidebar" theme="dark" current="Install" hint-size="100%,1200px"></dc-import>
+</aside>
+<main style="flex: 999 1 560px; min-width: 0; padding: 40px 56px 64px; display: flex; justify-content: center">
+<div style="width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 44px">
+
+<header id="overview" style="display: flex; flex-direction: column; gap: 16px; animation: fx-up .6s ease both">
+<span style="font-size: 14px; line-height: 20px; color: #93a7b7">EmDash <span aria-hidden="true">/</span> Start here</span>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px">
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 48px; line-height: 56px; letter-spacing: -0.03em">Flux Importer for EmDash</h1>
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; font-weight: 600; padding: 4px 12px 4px 10px; border-radius: 999px; background: rgba(95,211,154,.14); color: #5fd39a"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #5fd39a; animation: fx-pulse 1.8s ease-out infinite"></span>Available · v0.7</span>
+</div>
+<p style="margin: 0; font-size: 20px; line-height: 32px; color: #c9d5de">Bring CSV, JSON, XML, Excel and ZIP files, and live URL feeds, into EmDash. Map columns in a visual wizard, preview a dry run, schedule repeats and roll back any run.</p>
+</header>
+
+<section id="requirements" style="display: flex; flex-direction: column; gap: 16px; animation: fx-up .6s .08s ease both">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Requirements</h2>
+<ul style="margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px">
+<li style="display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border: 1px solid #24425c; border-radius: 12px; background: #0f2233"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span><strong style="font-weight: 600">EmDash 1.2</strong> or later</span></li>
+<li style="display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border: 1px solid #24425c; border-radius: 12px; background: #0f2233"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span><strong style="font-weight: 600">Astro 6</strong> or later</span></li>
+<li style="display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border: 1px solid #24425c; border-radius: 12px; background: #0f2233"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span><strong style="font-weight: 600">Node</strong> or <strong style="font-weight: 600">Cloudflare Workers</strong></span></li>
+</ul>
+</section>
+
+<section id="install" style="display: flex; flex-direction: column; gap: 28px; animation: fx-up .6s .16s ease both">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Install in three steps</h2>
+<ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 32px">
+<li style="display: flex; gap: 20px; align-items: flex-start">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 10px; background: #ffd23f; color: #0f2233; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 700; font-size: 20px">1</span>
+<div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 40px">Add the package</h3>
+<dc-import name="InstallBlock" theme="dark" hint-size="100%,150px"></dc-import>
+</div>
+</li>
+<li style="display: flex; gap: 20px; align-items: flex-start">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 10px; background: #152d42; border: 1px solid #3a5a76; box-sizing: border-box; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 700; font-size: 20px">2</span>
+<div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 40px">Register the plugin</h3>
+<p style="margin: 0; color: #c9d5de">Add <code style="font-family: 'JetBrains Mono', monospace; font-size: 15px; padding: 2px 6px; border-radius: 5px; background: #152d42; border: 1px solid #24425c">fluxImporter()</code> to the EmDash integration.</p>
+<dc-import name="Code" theme="dark" file="astro.config.mjs" lang="js" code="{{ config }}" hl="{{ configHl }}" hint-size="100%,470px"></dc-import>
+</div>
+</li>
+<li style="display: flex; gap: 20px; align-items: flex-start">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 10px; background: #152d42; border: 1px solid #3a5a76; box-sizing: border-box; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 700; font-size: 20px">3</span>
+<div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 40px">Open the importer</h3>
+<p style="margin: 0; color: #c9d5de">Start your site, sign in to the admin at <code style="font-family: 'JetBrains Mono', monospace; font-size: 15px; padding: 2px 6px; border-radius: 5px; background: #152d42; border: 1px solid #24425c">/_emdash/admin</code> and open <strong style="color: #f4f7f9; font-weight: 600">Flux Importer</strong>. The wizard starts with your first file.</p>
+</div>
+</li>
+</ol>
+</section>
+
+<section id="next" style="display: flex; flex-direction: column; gap: 16px; animation: fx-up .6s .24s ease both">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Where next</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px">
+<sc-for list="{{ links }}" as="l" hint-placeholder-count="6">
+<a href="{{ l.href }}" class="fx-lift" style="display: flex; flex-direction: column; gap: 4px; padding: 18px 20px; border: 1px solid #24425c; border-radius: 14px; background: #0f2233; color: #f4f7f9; text-decoration: none">
+<span style="font-size: 13px; line-height: 18px; color: #93a7b7">{{ l.group }}</span>
+<span style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 18px; line-height: 26px">{{ l.title }}<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></span>
+<span style="font-size: 15px; line-height: 22px; color: #c9d5de">{{ l.text }}</span>
+</a>
+</sc-for>
+</div>
+</section>
+
+<div style="display: flex; flex-direction: column; gap: 20px; border-top: 1px solid #24425c; padding-top: 24px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; font-size: 14px; line-height: 20px; color: #93a7b7"><a href="https://github.com/" class="fx-ul" style="color: #c9d5de">Edit this page on GitHub</a><span>Last updated [DATE]</span></div>
+<dc-import name="PrevNext" theme="dark" prev="Home" prev-href="Main.dc.html" next="Your first import" next-href="Guide.dc.html" hint-size="100%,90px"></dc-import>
+</div>
+
+</div>
+</main>
+<aside aria-label="On this page" style="flex: 0 0 240px; padding: 40px 24px 40px 8px; box-sizing: border-box; font-size: 14px; line-height: 20px">
+<span style="display: block; font-weight: 600; margin-bottom: 12px">On this page</span>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid #24425c">
+<li><a href="#overview" aria-current="true" style="display: block; padding: 6px 12px; margin-left: -1px; border-left: 2px solid #ffd23f; color: #f4f7f9; font-weight: 600; text-decoration: none">Overview</a></li>
+<li><a href="#requirements" style="display: block; padding: 6px 12px; color: #c9d5de; text-decoration: none">Requirements</a></li>
+<li><a href="#install" style="display: block; padding: 6px 12px; color: #c9d5de; text-decoration: none">Install in three steps</a></li>
+<li><a href="#next" style="display: block; padding: 6px 12px; color: #c9d5de; text-decoration: none">Where next</a></li>
+</ul>
+</aside>
+</div>
+<dc-import name="Footer" theme="dark" variant="docs" hint-size="100%,120px"></dc-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":2350}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+config: [
+'import { defineConfig } from "astro/config";',
+'import cloudflare from "@astrojs/cloudflare";',
+'import emdash from "emdash/astro";',
+'import { d1, r2 } from "@emdash-cms/cloudflare";',
+'import fluxImporter from "@fluximporter/emdash";',
+'',
+'export default defineConfig({',
+'  output: "server",',
+'  adapter: cloudflare(),',
+'  integrations: [',
+'    emdash({',
+'      database: d1({ binding: "DB" }),',
+'      storage: r2({ binding: "MEDIA" }),',
+'      plugins: [fluxImporter()],',
+'    }),',
+'  ],',
+'});'
+].join('\n'),
+configHl: [5, 14],
+links: [
+{ group: 'Start here', title: 'Your first import', text: 'A CSV into a collection, start to finish.', href: 'Guide.dc.html' },
+{ group: 'Guides', title: 'The import wizard', text: 'Mapping, AI suggestions and the dry run.', href: '#' },
+{ group: 'Guides', title: 'Schedules', text: 'Repeat a URL import on a timetable.', href: 'Guide.dc.html' },
+{ group: 'Reference', title: 'API routes', text: '44 routes: jobs, templates, sources, schedules, credentials, schema.', href: 'ApiJobsCreate.dc.html' },
+{ group: 'Reference', title: 'Agent tools', text: '8 MCP tools for AI agents.', href: '#' },
+{ group: 'Reference', title: 'Error codes', text: 'Every code, its HTTP status and meaning.', href: '#' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

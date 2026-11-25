@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { act, type Dispatch, StrictMode } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SampleColumn } from "../../src/admin/types.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { MapStep } from "../../src/admin/wizard/map/MapStep.js";
@@ -174,7 +174,8 @@ const select = (id: string, label: string) =>
 	within(row(id)).getByRole("button", { name: new RegExp(`^${label}`) });
 const keysPane = () => screen.getByRole("region", { name: /^Source keys/ });
 const details = () => screen.getByRole("complementary", { name: "Details" });
-const next = () => screen.getByRole("button", { name: "Next" });
+const fieldsPane = () => screen.getByRole("region", { name: /fields$/ });
+const next = () => screen.getByRole("button", { name: "Next: Options" });
 
 /** Waits until the fields pane lists the collection's fields. */
 const fieldsLoaded = () => screen.findByTestId("field:title");
@@ -377,8 +378,8 @@ describe("MapStep", () => {
 	it("shows name matching for an AI reply that names no provider", async () => {
 		routes({ "templates/suggest": () => reply({ ai: { available: true } }) });
 		renderMap(DRAFT);
-		expect(await screen.findByText("Name matching")).toBeVisible();
-		expect(screen.queryByText(/^AI \(/)).toBeNull();
+		expect(await screen.findByText("Suggestions by name matching")).toBeVisible();
+		expect(screen.queryByText(/^Suggestions by AI/)).toBeNull();
 	});
 
 	it("does not ask on entry when rows are already mapped", async () => {
@@ -389,7 +390,7 @@ describe("MapStep", () => {
 		expect(probe.state.suggestion.status).toBe("idle");
 	});
 
-	it("fills rows with badges: 'AI · high', 'Name · medium', 'check'", async () => {
+	it("fills rows with badges: 'AI · high', 'Name · medium', and a sentence for each check", async () => {
 		routes();
 		renderMap(DRAFT);
 		await within(await fieldsLoaded()).findByText("AI · high");
@@ -399,10 +400,23 @@ describe("MapStep", () => {
 		expect(within(row("slug")).getByText("Name · medium")).toBeVisible();
 		expect(within(row("field:price")).getByText("Name · medium")).toBeVisible();
 		expect(within(row("field:released")).getByText("Name · low")).toBeVisible();
-		expect(within(row("field:released")).getByText("check")).toBeVisible();
-		expect(within(row("field:title")).queryByText("check")).toBeNull();
+		// Low confidence: the badge says so in words, and in orange.
+		expect(within(row("field:released")).getByText("Name · low")).toHaveClass(
+			"bg-kumo-badge-orange",
+		);
+		expect(within(row("field:title")).getByText("AI · high")).not.toHaveClass(
+			"bg-kumo-badge-orange",
+		);
+		// A check says what to check (Copy: "Check: …"), beside a warning icon.
+		expect(
+			within(row("field:released")).getByText("Check: the suggestion was not sure."),
+		).toBeVisible();
+		expect(within(row("field:title")).queryByText(/^Check:/)).toBeNull();
+		// Required is a badge, not a red asterisk alone.
+		expect(within(row("key")).getByText("required")).toBeVisible();
+		expect(within(row("field:body")).queryByText("required")).toBeNull();
 		// The body was left for the user.
-		expect(within(row("field:body")).getByText("Drop a key")).toBeVisible();
+		expect(within(row("field:body")).getByText("No key")).toBeVisible();
 	});
 
 	it("shows the method and counts in the status line, and warnings as sentences", async () => {
@@ -419,7 +433,8 @@ describe("MapStep", () => {
 		const { calls } = routes({ "templates/suggest": () => replies.shift() });
 		const { user } = renderMap(DRAFT);
 		// Key, slug, title and price are filled; the released date is to check.
-		expect(await screen.findByText("AI (Anthropic) · 4 filled, 1 to check")).toBeVisible();
+		expect(await screen.findByText("Suggestions by AI (Anthropic)")).toBeVisible();
+		expect(screen.getByText("1 to check")).toBeVisible();
 		expect(screen.getByText("About these suggestions")).toBeVisible();
 		expect(
 			screen.getByText("12 source keys past the first 1,000 were not considered."),
@@ -433,13 +448,13 @@ describe("MapStep", () => {
 
 		// Every row is the suggestion's, so Ask again asks at once.
 		await user.click(screen.getByRole("button", { name: "Ask again" }));
-		expect(await screen.findByText("Name matching · AI unavailable")).toBeVisible();
+		expect(await screen.findByText("Suggestions by name matching · AI unavailable")).toBeVisible();
 		// A provider of "none" is not unavailable: nothing was expected.
 		await user.click(screen.getByRole("button", { name: "Ask again" }));
 		await waitFor(() =>
 			expect(calls.filter((c) => c.route === "templates/suggest")).toHaveLength(3),
 		);
-		expect(await screen.findByText("Name matching")).toBeVisible();
+		expect(await screen.findByText("Suggestions by name matching")).toBeVisible();
 		expect(screen.queryByText(/AI unavailable/)).toBeNull();
 	});
 
@@ -508,25 +523,86 @@ describe("MapStep", () => {
 		// The chip's remove button clears the row.
 		await user.click(screen.getByRole("button", { name: "Remove Price from Price" }));
 		expect(probe.state.rows["field:price"]).toBeUndefined();
-		expect(within(row("field:price")).getByText("Drop a key")).toBeVisible();
+		expect(within(row("field:price")).getByText("No key")).toBeVisible();
 	});
 
 	it("puts the panes side by side only where they fit, and keeps field labels and key names whole", async () => {
 		routes();
 		renderMap(MAPPED);
 		await fieldsLoaded();
-		// One column below lg, keys and fields from lg, all three panes from xl (Task 16 polish:
-		// at md the three panes crushed the field labels to one letter).
-		const grid = keysPane().parentElement as HTMLElement;
-		expect(grid).toHaveClass("grid", "lg:grid-cols-2", "xl:grid-cols-12");
-		expect(grid).not.toHaveClass("md:grid-cols-3");
-		for (const pane of grid.children) expect(pane).toHaveClass("min-w-0", "xl:col-span-4");
+		// Wide: three panes in a row, the fields pane taking the room the others leave (Task 16
+		// polish: three equal panes crushed the field labels to one letter).
+		const panes = keysPane().parentElement?.parentElement as HTMLElement;
+		expect(panes).toHaveClass("flex", "items-start");
+		expect(panes).not.toHaveClass("flex-wrap", "flex-col");
+		expect(keysPane().parentElement).toHaveClass("w-56", "shrink-0");
+		expect(fieldsPane().parentElement).toHaveClass("min-w-0", "flex-1");
+		expect(details()).toHaveClass("w-72", "shrink-0");
 		// The label never shrinks below its text (up to 12rem): the chip and badges wrap instead.
 		const label = within(row("field:title")).getByText("Title");
 		expect(label).toHaveClass("max-w-48", "shrink-0", "truncate");
 		expect(label.closest("button")).toHaveClass("shrink-0", "grow");
 		// A key's name goes first; its sample value takes what is left.
 		expect(within(keysPane()).getByText("Name")).toHaveClass("max-w-full", "shrink-0", "truncate");
+	});
+
+	it("opens with a summary of the draft and Next: Options at the top (StepMap.dc.html)", async () => {
+		routes();
+		renderMap(MAPPED);
+		await fieldsLoaded();
+		expect(screen.getByRole("heading", { level: 2, name: "Map" })).toBeVisible();
+		expect(screen.getByText("products.csv · 5 keys → posts · en")).toBeVisible();
+		expect(next()).toBeEnabled();
+		// The summary bar: fields mapped, and the required ones done.
+		expect(screen.getByText(/^2 of \d+ fields mapped\.$/)).toBeVisible();
+		expect(screen.getByText("All 2 required fields are done.")).toBeVisible();
+		expect(screen.queryByText(/to check$/)).toBeNull();
+	});
+
+	it("says how many required fields still need a key", async () => {
+		routes();
+		renderMap({ ...MAPPED, rows: { key: { from: "SKU" } }, meta: { key: USER } });
+		await fieldsLoaded();
+		expect(screen.getByText(/^1 of \d+ fields mapped\.$/)).toBeVisible();
+		expect(screen.getByText("1 required field still needs a key.")).toBeVisible();
+		expect(next()).toBeDisabled();
+	});
+
+	it("shows where each key is used, or that it is unused", async () => {
+		routes();
+		renderMap(MAPPED);
+		await fieldsLoaded();
+		expect(within(keysPane()).getByText("3 unused")).toBeVisible();
+		const name = within(keysPane()).getByRole("button", { name: /^Name/ });
+		expect(name).toHaveTextContent(/Title/);
+		const price = within(keysPane()).getByRole("button", { name: /^Price/ });
+		expect(within(price).getByText("unused")).toBeVisible();
+		// The remove button is an icon named for what it removes.
+		expect(
+			within(row("field:title")).getByRole("button", { name: "Remove Name from Title" }),
+		).toBeEnabled();
+	});
+
+	it("stacks the panes on a narrow page, measured on the step and not the viewport", async () => {
+		routes();
+		class Observer {
+			observe() {}
+			disconnect() {}
+		}
+		vi.stubGlobal("ResizeObserver", Observer);
+		const rect = vi
+			.spyOn(Element.prototype, "getBoundingClientRect")
+			.mockReturnValue(new DOMRect(0, 0, 600, 400));
+		try {
+			renderMap(MAPPED);
+			await fieldsLoaded();
+			const panes = keysPane().parentElement?.parentElement as HTMLElement;
+			expect(panes).toHaveClass("flex", "flex-col");
+			expect(details()).not.toHaveClass("w-72");
+		} finally {
+			rect.mockRestore();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("dims used keys but still lets one key feed a second field", async () => {
@@ -805,7 +881,9 @@ describe("MapStep", () => {
 			],
 		});
 		await fieldsLoaded();
-		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+		await user.click(
+			screen.getByRole("button", { name: "+ Drop a key here to propose a new field" }),
+		);
 		const picker = within(details()).getByRole("combobox", { name: "Key for the new field" });
 		for (const key of ["Weight (g)", "Colour"]) {
 			await user.click(picker);
@@ -837,7 +915,9 @@ describe("MapStep", () => {
 			columns: [...COLUMNS, { key: "Summary", values: ["<p>Short</p>"] }],
 		});
 		await fieldsLoaded();
-		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+		await user.click(
+			screen.getByRole("button", { name: "+ Drop a key here to propose a new field" }),
+		);
 		await user.click(within(details()).getByRole("combobox", { name: "Key for the new field" }));
 		await user.click(await screen.findByRole("option", { name: "Summary" }));
 		act(() => {
@@ -891,7 +971,9 @@ describe("MapStep", () => {
 			columns: [...COLUMNS, { key: "released!", values: ["2024-03-07"] }],
 		});
 		await fieldsLoaded();
-		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+		await user.click(
+			screen.getByRole("button", { name: "+ Drop a key here to propose a new field" }),
+		);
 		const picker = within(details()).getByRole("combobox", { name: "Key for the new field" });
 		await user.click(picker);
 		await user.click(await screen.findByRole("option", { name: "Released" }));

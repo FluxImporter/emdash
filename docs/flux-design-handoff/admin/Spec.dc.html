@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Build notes: Kumo components and Tailwind utilities</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 600px; box-sizing: border-box; padding: 28px; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 13px; line-height: 19px; background: #fffbeb; color: #1c1917; border: 1px solid #fcd34d; border-radius: 14px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 11px; letter-spacing: .06em; color: #92400e">BUILD NOTES</span>
+<h2 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 700">{{ title }}</h2>
+<span style="color: #57534e">Kumo 2.6.0 components · Tailwind utilities · Kumo tokens. Items marked * need checking against the admin's prebuilt CSS.</span>
+</div>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+<div style="display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid #fde68a">
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px"><span style="font-weight: 700">{{ r.el }}</span><code style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; padding: 1px 6px; border-radius: 4px; background: #fef3c7; color: #7c2d12">{{ r.comp }}</code></div>
+<code style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: #44403c; overflow-wrap: anywhere">{{ r.cls }}</code>
+<sc-if value="{{ r.hasNote }}" hint-placeholder-val="{{ false }}"><span style="color: #57534e">{{ r.note }}</span></sc-if>
+</div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"screen":{"editor":"enum","options":["shared","jobs","rollback","schedules","sources","templates","wsource","wmap","wpreview","wrun","states"],"default":"jobs"},"$preview":{"width":600,"height":900}}'>
+class Component extends DCLogic {
+renderVals() {
+const D = {
+shared: ['Imports home: header and tabs', [
+['Page title', 'h1 + inline <svg>', 'flex items-center gap-2.5 · text-2xl font-bold text-kumo-strong · svg size-6 text-kumo-strong (fill/stroke currentColor)', 'The mark is the site logo drawn in currentColor, so it follows the admin theme.'],
+['New import', 'LinkButton variant="primary" icon={PlusIcon}', 'Only primary button on the page.', 'Tab actions (New schedule, Add a source, Import a template) become variant="secondary".'],
+['Tabs with counts', 'Tabs (segmented)', 'count: text-xs tabular-nums* text-kumo-default (light) / text-kumo-subtle (dark)', 'Drop the repeated h2 under the tabs. Unselected labels use text-kumo-default: text-kumo-subtle on bg-kumo-recessed measures 4.2:1. In light mode text-kumo-subtle passes only on bg-kumo-base (4.7:1); on elevated, tint and recessed surfaces it drops to 4.2–4.5:1.'],
+['Tab summary line', 'Text', 'text-sm text-kumo-subtle · lead in font-semibold text-kumo-default', 'One line that answers "what is here": "23 imports · 1 running · 1 failed this week".'],
+['Narrow layout', 'none (layout)', 'Switch to stacked rows from the content width, not the viewport: @container* or a ResizeObserver flag', 'Viewport breakpoints do not know the admin sidebar is 260px wide.']
+]],
+jobs: ['Jobs', [
+['Status filter (proposal)', 'Select size="sm"', 'ml-auto', null],
+['Jobs list', 'Table', 'rounded-lg border border-kumo-hairline bg-kumo-base · row hover:bg-kumo-tint', 'Columns: Import, Started, Status, Records, actions. 8 rows a page.'],
+['Import cell', 'Table cell', 'name font-semibold text-kumo-strong truncate · meta text-sm text-kumo-subtle', 'Collection and locale under the name, not in a column of its own.'],
+['Started cell', 'Table cell + Phosphor icon', 'text-sm tabular-nums* · origin text-kumo-subtle with Clock / MagicWand / Robot / ArrowCounterClockwise', 'Always show UTC, as schedules do.'],
+['Status', 'Badge', 'Completed: teal subtle · Running: info + animate-pulse* dot · Failed: danger · Paused: orange subtle · Cancelled, Rolled back: neutral subtle', 'Check Badge variant names with npx @cloudflare/kumo doc Badge.'],
+['Records', 'Text + Meter', 'flex flex-wrap gap-x-3.5 gap-y-1 text-sm · number font-semibold tabular-nums* · failed text-kumo-danger · Meter while running', 'Hide zero counts. All zero reads "No changes".'],
+['Row menu', 'DropdownMenu · Button variant="ghost" shape="square" icon={DotsThreeIcon}', 'aria-label="Actions for {name}" · DropdownMenu.Separator between groups · Roll back… last in text-kumo-danger', 'Items depend on state: Pause/Cancel while running, Resume when paused, Retry failed only when failed > 0.'],
+['Dry runs line', 'Collapsible · Badge · Button variant="ghost" size="sm"', 'table footer: bg-kumo-elevated rounded-b-lg px-4 py-2 flex items-center justify-between', 'Says why they are separate: "Not written."'],
+['Pages', 'Pagination', 'flex items-center justify-between text-sm text-kumo-subtle', null]
+]],
+rollback: ['Rollback dialog', [
+['Dialog', 'Dialog', 'max-w-[560px]* → or Dialog size prop · p-6 flex flex-col gap-4', 'Title is a question until the user confirms, then "Rolling back …".'],
+['1 · Checking', 'Loader · SkeletonLine', 'grid grid-cols-2 gap-2.5 · Roll back button disabled', 'Copy: "Checking what a rollback would change…"'],
+['2 · Summary tiles', 'LayerCard (or div)', 'rounded-lg border border-kumo-hairline p-3 · number text-2xl font-bold tabular-nums*', 'Four counts: to delete, to restore, to bring back, kept. Delete in text-kumo-danger.'],
+['Kept warning', 'Banner (warning)', 'shown only when kept > 0', 'Use the orange badge text token for warning text: text-kumo-warning is about 4.2:1 on white.'],
+['Confirm', 'Button variant="secondary-destructive"', 'label with the count: "Roll back 13 entries"', 'White on bg-kumo-danger in light mode is about 3.8:1, below AA, so the solid destructive variant is avoided here.'],
+['3 · Progress', 'Meter · Text', 'Meter value={8} max={13} · list text-sm tabular-nums*', 'Close stays enabled: the rollback keeps running and the job row shows it.']
+]],
+schedules: ['Schedules and run log', [
+['Site locked banner', 'Banner (warning) + LockSimple icon', 'role="status" · above the summary line', 'Copy: "The site is locked for an export. Scheduled runs wait until it ends."'],
+['New schedule', 'Button variant="secondary" icon={PlusIcon}', 'size="sm"', null],
+['Source cell', 'Table cell', 'font-mono* text-sm · host font-medium · path text-kumo-subtle truncate', null],
+['When', 'Text', 'text-sm · next run text-kumo-subtle', 'Header line says "times in UTC" once; cells drop the suffix.'],
+['Active', 'Switch', 'aria-label="Active" · checked = running', 'Replaces the Pause and Resume buttons.'],
+['Run now + menu', 'Button variant="ghost" size="sm" · DropdownMenu', 'menu: Edit, Run log, Delete', null],
+['Run log', 'Dialog · Table · Badge · LinkButton variant="ghost"', 'Finished (UTC), Outcome badge, counts as text, Open', 'Counts read like Jobs: "2 created · 10 updated".']
+]],
+sources: ['Sources and credentials', [
+['Section headers', 'h2 + Text', 'text-base font-semibold text-kumo-strong · description text-sm text-kumo-subtle', null],
+['Source cell', 'Table cell', 'name font-semibold · host/path font-mono* text-sm truncate', 'When no name is set, show the host as the name instead of repeating the address.'],
+['Credential cell', 'Text + KeyIcon', 'inline-flex items-center gap-1.5 text-sm · "No credential" text-kumo-subtle', null],
+['Last fetch', 'Text + status dot', 'size-2 rounded-full bg-kumo-success / bg-kumo-danger · error text-kumo-danger', 'Show the failure reason, e.g. "HTTP 503 from the server".'],
+['Fetch now + menu', 'Button variant="ghost" size="sm" · DropdownMenu', 'menu: Edit, Delete', null],
+['Credentials list', 'LayerCard rows', 'masked value font-mono* text-kumo-subtle', 'Replace and Delete stay visible: there are few credentials.'],
+['Add a credential', 'Dialog · Input ×3', 'Value: Input type="password" autoComplete="off"', 'Replaces the always-open form under the tables.']
+]],
+templates: ['Templates', [
+['Template cell', 'Table cell', 'name font-semibold · description text-sm text-kumo-subtle', 'No separate Description column; an empty one reads "Add a description".'],
+['Revision', 'Text', 'text-sm tabular-nums*', 'Header "Revision", cell just the number.'],
+['Use + menu', 'Button variant="secondary" size="sm" · DropdownMenu', 'menu: Export, Rename and describe, Delete (text-kumo-danger)', 'Four buttons that wrapped onto two lines become one button and a menu.'],
+['Import a template', 'Button variant="secondary" icon={UploadSimpleIcon}', null, null]
+]],
+wsource: ['Wizard: Source', [
+['Stepper', 'ol + LinkButton variant="ghost" for done steps', 'flex flex-wrap items-center gap-1 · current: bg-kumo-tint font-semibold aria-current="step" · number in size-5.5* rounded-full bg-kumo-brand text-white', 'Done steps show a check and stay clickable. At 768px only the current label shows; others keep an sr-only label.'],
+['Step header', 'h2 + Text · Button secondary + Button primary', 'flex items-center justify-between border-b border-kumo-hairline pb-3.5', 'Back and Next sit at the top so Next is never below the fold. Next says where it goes: "Next: Target".'],
+['Source type', 'Tabs (segmented)', 'icons UploadSimple, Link, ClipboardText, BookmarkSimple', null],
+['Chosen file', 'LayerCard', 'flex items-center gap-4 p-4 · "Choose another file" Button secondary', 'Shows records, keys and size so the user knows it parsed.'],
+['Reading settings', 'Select ×4', 'grid grid-cols-2 gap-3', null],
+['Row filter', 'Input', 'font-mono* text-sm · help text-sm text-kumo-subtle', null],
+['Sample', 'Table', 'values as code chips: rounded bg-kumo-recessed px-1.5 font-mono* text-xs', '"Looks like" (Text, Number, Date) needs type detection: a proposal.']
+]],
+wmap: ['Wizard: Map', [
+['Summary bar', 'LayerCard.Secondary · Badge · Button variant="outline" size="sm"', 'flex flex-wrap items-center gap-4 bg-kumo-elevated', '"6 of 9 fields mapped. Both required fields are done." and "1 to check".'],
+['Panes', 'LayerCard ×3', 'grid grid-cols-12* gap-3.5 · col-span-3 / col-span-6 / col-span-3; one column at 768px', 'The fields pane gets the most room; the detail pane only matters once a field is selected.'],
+['Source key', 'button (drag source)', 'flex justify-between rounded-md border border-kumo-line bg-kumo-control px-2 py-1.5 font-mono*', 'Shows where each key is used, or "unused".'],
+['Field row', 'button aria-pressed', 'selected: bg-kumo-tint shadow-[inset_3px_0_0]* → or border-l-2 border-kumo-brand*', 'Required is a "required" Badge, not a red asterisk alone.'],
+['Mapped key', 'Badge-like chip + Button variant="ghost" shape="square" size="xs"', 'aria-label="Remove {key} from {field}"', 'Separates the key from its remove action.'],
+['Suggestion', 'Badge', 'AI high/medium: info · Name match: teal · AI low: orange', 'Words, not colour only: "AI · low".'],
+['Check message', 'Text', 'text-xs text-kumo-badge-orange-subtle', 'Says what to check: "a number into a text field".'],
+['Detail pane', 'Select · Banner (warning) · Button secondary/ghost', 'flex flex-col gap-3', 'Keyboard path: select a field, press Enter, choose a key in the existing key picker.']
+]],
+wpreview: ['Wizard: Preview', [
+['Count strip', 'LayerCard', 'flex flex-wrap divide-x* divide-kumo-hairline · number text-2xl font-bold tabular-nums* · zero counts text-kumo-subtle', 'One strip instead of seven cards; non-zero counts stand out.'],
+['Publishing note', 'Banner (info) + LinkButton', 'flex items-center gap-2', '"Entries will be published. Change in Options."'],
+['Filters', 'Tabs (segmented) with counts', 'zero-count tabs disabled', '"Warnings" is a proposed filter.'],
+['Records', 'Table · Badge', 'changes font-mono* text-xs · field name w-16 text-kumo-subtle · empty shown as "—"', 'Warnings sit under the changes they belong to.']
+]],
+wrun: ['Wizard: Run', [
+['Status line', 'Loader + Text', 'role="status" text-base font-semibold', '"Importing · 640 of 1,000 records" and "About 17 s left · 21 records a second".'],
+['Progress', 'Meter', 'h-2.5', null],
+['Live counters', 'Text', 'flex flex-wrap gap-x-5 gap-y-1.5 · number text-lg font-bold tabular-nums*', 'Zero counts are quiet; failed is text-kumo-danger.'],
+['Controls', 'Button variant="secondary" (Pause) · Button variant="secondary-destructive" (Cancel import)', null, 'Retry failed records appears when the run ends.'],
+['Log', 'pre role="log" aria-live="polite" · LinkButton (Download log)', 'rounded-lg border border-kumo-hairline bg-kumo-elevated font-mono* text-xs', 'Newest first; failures in text-kumo-danger.']
+]],
+states: ['States on every tab', [
+['Empty', 'Empty', 'title, description, one link', 'No second "New import" button: the header already has it. Schedules lists what is missing.'],
+['Loading', 'SkeletonLine · Loader (sr)', 'same rows and columns as the loaded table', 'aria-busy="true" on the table.'],
+['Failed to load', 'Banner (danger/error) + Button variant="secondary"', 'role="alert"', 'Says it is safe: "Your imports are not affected." Check the Banner variant name with the Kumo CLI.'],
+['403', 'Empty + LockSimple icon', 'replaces the header button and tabs', '"Only administrators can import."'],
+['Site import running', 'Banner (info) + Loader', 'content below: opacity-50 pointer-events-none aria-busy="true"', 'Header button and tabs disabled; the page polls and recovers by itself.']
+]]
+};
+const s = this.props.screen || 'jobs';
+const d = D[s] || D.jobs;
+return {
+title: d[0],
+rows: d[1].map((r) => ({ el: r[0], comp: r[1], cls: r[2] || '—', note: r[3] || '', hasNote: !!r[3] }))
+};
+}
+}
+</script>
+</body>
+</html>

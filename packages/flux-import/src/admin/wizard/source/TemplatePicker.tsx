@@ -81,6 +81,7 @@ export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "bus
 			<div className="flex flex-wrap items-end gap-3">
 				<Select
 					label={t(M.templateLabel)}
+					placeholder={t(M.templatePlaceholder)}
 					value={id}
 					disabled={disabled}
 					{...(props.enabled
@@ -102,8 +103,10 @@ export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "bus
 		);
 	}
 	return (
-		<section className="space-y-2">
-			<h3 className="font-semibold">{t(M.template)}</h3>
+		<section className="flex flex-col gap-3">
+			<h3 className="font-semibold">
+				{t(M.template)} <span className="font-normal">{t(M.optional)}</span>
+			</h3>
 			{body}
 		</section>
 	);

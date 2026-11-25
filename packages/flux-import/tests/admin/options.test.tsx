@@ -125,7 +125,7 @@ function renderOptions(
 	return { ...result, calls, seen };
 }
 
-const next = () => screen.getByRole("button", { name: "Next" });
+const next = () => screen.getByRole("button", { name: "Next: Preview" });
 
 /** The reason shown beside a disabled Next, which describes it. */
 function reason(): string | null {

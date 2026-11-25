@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Flux Importer component sheet</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:inherit;text-underline-offset:3px}
+:focus-visible{outline:2px solid #ffd23f;outline-offset:2px;border-radius:4px}
+.fx-lift{transition:transform .25s ease,border-color .25s ease}
+.fx-lift:hover{transform:translateY(-3px)}
+.fx-ul{text-decoration:underline;text-decoration-color:#ffd23f;text-decoration-thickness:2px}
+.fx-ul:hover{background:#ffd23f;color:#0f2233}
+@keyframes fx-up{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes fx-blink{50%{opacity:0}}
+@keyframes fx-flow{0%,100%{transform:translateX(-1.5px)}50%{transform:translateX(1.5px)}}
+@keyframes fx-pulse{0%{box-shadow:0 0 0 0 rgba(95,211,154,.6)}100%{box-shadow:0 0 0 8px rgba(95,211,154,0)}}
+@keyframes fx-in{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<div style="font-family: Inter, system-ui, sans-serif; background: #e7edf1; color: #0f2233; font-size: 16px; line-height: 26px">
+<div style="max-width: 1400px; margin: 0 auto; padding: 56px 24px 80px; display: flex; flex-direction: column; gap: 32px">
+<header style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #3a4c5c; text-transform: uppercase; letter-spacing: .05em">Deliverable 3</span>
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 52px; line-height: 60px; letter-spacing: -0.03em">Component sheet</h1>
+<p style="margin: 0; color: #3a4c5c; max-width: 70ch">Every component in both themes. The tabs, copy buttons, nested row, group headers and product switcher all work: try them.</p>
+</header>
+<div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+<div style="flex: 1 1 600px; min-width: 0"><dc-import name="ComponentColumn" theme="dark" hint-size="100%,3700px"></dc-import></div>
+<div style="flex: 1 1 600px; min-width: 0"><dc-import name="ComponentColumn" theme="light" hint-size="100%,3700px"></dc-import></div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":4000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

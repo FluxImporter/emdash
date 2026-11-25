@@ -5,6 +5,7 @@ export const M = {
 	count: { id: "flux-import.home-dry-runs.count", message: "Dry runs: {count}" },
 	countMore: { id: "flux-import.home-dry-runs.count-more", message: "Dry runs: more than {count}" },
 	where: { id: "flux-import.home-dry-runs.where", message: "{collection} · {locale}" },
+	notWritten: { id: "flux-import.home-dry-runs.not-written", message: "Not written to the site." },
 	clear: { id: "flux-import.home-dry-runs.clear", message: "Clear dry runs" },
 	confirm: {
 		id: "flux-import.home-dry-runs.confirm",

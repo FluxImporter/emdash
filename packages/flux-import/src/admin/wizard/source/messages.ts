@@ -1,13 +1,15 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** The Source step's messages. */
 export const M = {
-	tabUpload: { id: "flux-import.source.tab-upload", message: "Upload file" },
-	tabUrl: { id: "flux-import.source.tab-url", message: "From URL" },
+	tabUpload: { id: "flux-import.source.tab-upload", message: "Upload a file" },
+	tabUrl: { id: "flux-import.source.tab-url", message: "From a URL" },
 	tabPaste: { id: "flux-import.source.tab-paste", message: "Paste" },
 	tabSaved: { id: "flux-import.source.tab-saved", message: "Saved source" },
 
 	chooseFile: { id: "flux-import.source.choose-file", message: "Choose a file" },
+	chooseAnother: { id: "flux-import.source.choose-another", message: "Choose another file" },
+	/** Used by the Templates tab's import dialog; the Upload tab says "Choose a file". */
 	browseFiles: { id: "flux-import.source.browse-files", message: "Browse files" },
 	fileTypes: {
 		id: "flux-import.source.file-types",
@@ -80,7 +82,7 @@ export const M = {
 		message:
 			"The address names no format, so CSV was assumed. Change it if the data is another format.",
 	},
-	settings: { id: "flux-import.source.settings", message: "How to read {name}" },
+	settings: { id: "flux-import.source.settings", message: "How to read it" },
 	records: { id: "flux-import.source.records", message: "Records path" },
 	recordsJsonHint: {
 		id: "flux-import.source.records-json-hint",
@@ -104,7 +106,7 @@ export const M = {
 	filter: { id: "flux-import.source.filter", message: "Row filter" },
 	filterHint: {
 		id: "flux-import.source.filter-hint",
-		message: "Optional. A JSONata expression; only records it is true for are imported.",
+		message: "Optional. A JSONata expression. Only records it is true for are imported.",
 	},
 
 	sample: { id: "flux-import.source.sample", message: "Sample" },
@@ -138,8 +140,13 @@ export const M = {
 		message: "Choose data with at least one record",
 	},
 
-	template: { id: "flux-import.source.template", message: "Start from a saved template" },
+	template: { id: "flux-import.source.template", message: "Start from a template" },
+	optional: { id: "flux-import.source.optional", message: "· optional" },
 	templateLabel: { id: "flux-import.source.template-label", message: "Saved template" },
+	templatePlaceholder: {
+		id: "flux-import.source.template-placeholder",
+		message: "Choose a template",
+	},
 	templateOption: { id: "flux-import.source.template-option", message: "{name} ({collection})" },
 	loadTemplate: { id: "flux-import.source.load-template", message: "Load template" },
 	loadingTemplates: {
@@ -174,3 +181,24 @@ export const M = {
 		message: "Use EmDash's WordPress importer",
 	},
 } satisfies Record<string, Msg>;
+
+/** The counts the Source step shows: the sample's records and keys. */
+export const COUNT = {
+	records: {
+		id: "flux-import.source.count-records",
+		one: "{count} record",
+		other: "{count} records",
+	},
+	/** The sample is full: the source may hold more. */
+	recordsAtLeast: {
+		id: "flux-import.source.count-records-at-least",
+		one: "{count}+ record",
+		other: "{count}+ records",
+	},
+	keys: { id: "flux-import.source.count-keys", one: "{count} key", other: "{count} keys" },
+	firstValues: {
+		id: "flux-import.source.count-first-values",
+		one: "First {shown} of {count} record",
+		other: "First {shown} of {count} records",
+	},
+} satisfies Record<string, PluralMsg>;

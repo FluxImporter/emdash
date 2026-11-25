@@ -127,6 +127,18 @@ class Listeners {
 }
 
 /**
+ * What the Imports home reads around whichever tab is open: the fence (the site-import state) and
+ * the four lists behind the tab counts, all empty and clear. Spread it first, then the test's own.
+ */
+export const HOME_ROUTES: Readonly<Record<string, RouteHandler>> = {
+	"schedules/fence": () => ({ fence: "clear" }),
+	"jobs/summaries": () => ({ items: [], hasMore: false }),
+	"templates/list": () => ({ items: [], hasMore: false }),
+	"sources/list": () => ({ items: [], hasMore: false }),
+	"schedules/list": () => ({ items: [], hasMore: false }),
+};
+
+/**
  * Stubs `fetch` and `XMLHttpRequest` with `table`. Keys: a plugin route name (`"jobs/next"`),
  * `"upload"`, `"GET manifest"`, `"GET collection:<slug>"` and `"GET log.csv"`. Any other request,
  * and any request without `X-EmDash-Request: 1`, is refused: thrown, and recorded for `setup.ts`.

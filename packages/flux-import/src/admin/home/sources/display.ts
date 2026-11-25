@@ -30,3 +30,21 @@ export function lastFetchState(
 	if (lastFetch) return { kind: "fetched", at: lastFetch.at };
 	return { kind: "never" };
 }
+
+const SIZE_UNITS = ["byte", "kilobyte", "megabyte", "gigabyte"] as const;
+
+/** A fetch's size in the viewer's words ("4 kB", "1.2 MB"), in steps of 1,024 bytes. */
+export function sizeLabel(bytes: number, locale: string): string {
+	let n = bytes;
+	let unit = 0;
+	while (n >= 1024 && unit < SIZE_UNITS.length - 1) {
+		n /= 1024;
+		unit += 1;
+	}
+	return new Intl.NumberFormat(locale || "en", {
+		style: "unit",
+		unit: SIZE_UNITS[unit],
+		unitDisplay: "short",
+		maximumFractionDigits: unit === 0 ? 0 : 1,
+	}).format(n);
+}

@@ -200,18 +200,32 @@ describe("jobName (plan Ruling 4)", () => {
 });
 
 describe("originMsg and countsOf", () => {
-	it("names the origin: Agent, Schedule, else Admin or API", () => {
-		expect(originMsg(imp("completed", { origin: "agent" })).message).toBe("Agent");
-		expect(originMsg(imp("completed", { origin: "schedule" })).message).toBe("Schedule");
-		expect(originMsg(imp("completed")).message).toBe("Admin or API");
+	it("names the origin: Agent, Schedule, else nothing (wizard and API jobs carry none)", () => {
+		expect(originMsg(imp("completed", { origin: "agent" }))?.message).toBe("Agent");
+		expect(originMsg(imp("completed", { origin: "schedule" }))?.message).toBe("Schedule");
+		expect(originMsg(imp("completed"))).toBeNull();
 	});
 
-	it("counts an import's four and a rollback's reverted and kept", () => {
-		const c = counters({ created: 3, updated: 2, unchanged: 1, failed: 4, conflict: 5 });
-		expect(text(countsOf(imp("completed", { counters: c })))).toBe(
-			"Created 3 · Updated 2 · Unchanged 1 · Failed 4",
-		);
+	it("counts an import's writes and records to retry, and a rollback's restored and kept", () => {
+		const c = counters({
+			created: 3,
+			updated: 2,
+			unchanged: 1,
+			failed: 4,
+			conflict: 5,
+			locked: 6,
+			filtered: 7,
+			removed: 8,
+		});
+		expect(countsOf(imp("completed", { counters: c }))).toEqual({
+			created: 3,
+			updated: 2,
+			unchanged: 1,
+			failed: 4,
+			conflict: 5,
+			locked: 6,
+		});
 		const r = counters({ reverted: 7, conflict: 1, failed: 1, locked: 1, unchanged: 9 });
-		expect(text(countsOf(rb("completed", { counters: r })))).toBe("Rolled back 7 · Kept 3");
+		expect(countsOf(rb("completed", { counters: r }))).toEqual({ reverted: 7, kept: 3 });
 	});
 });

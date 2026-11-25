@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Search modal over the docs</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+:focus-visible{outline:2px solid #ffd23f;outline-offset:2px;border-radius:4px}
+@keyframes fx-in{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes fx-fade{from{opacity:0}to{opacity:1}}
+@keyframes fx-blink{50%{opacity:0}}
+@keyframes fx-flow{0%,100%{transform:translateX(-1.5px)}50%{transform:translateX(1.5px)}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; background: #0b1824; color: #f4f7f9; font-size: 15px; line-height: 22px">
+<dc-import name="Header" theme="dark" variant="docs" current="docs" hint-size="100%,65px"></dc-import>
+<div aria-hidden="true" style="display: flex; gap: 56px; padding: 40px 0 0 0">
+<div style="width: 290px; padding: 20px 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px"><span style="height: 48px; border-radius: 10px; background: #0f2233"></span><span style="width: 60%; height: 12px; border-radius: 6px; background: #152d42"></span><span style="width: 80%; height: 12px; border-radius: 6px; background: #152d42"></span><span style="width: 70%; height: 12px; border-radius: 6px; background: #152d42"></span><span style="width: 76%; height: 12px; border-radius: 6px; background: #152d42"></span></div>
+<div style="width: 740px; display: flex; flex-direction: column; gap: 16px"><span style="width: 55%; height: 40px; border-radius: 8px; background: #152d42"></span><span style="width: 90%; height: 14px; border-radius: 6px; background: #152d42"></span><span style="width: 84%; height: 14px; border-radius: 6px; background: #152d42"></span><span style="height: 180px; border-radius: 12px; background: #0f2233"></span></div>
+</div>
+
+<div style="position: absolute; inset: 0; background: rgba(4, 12, 20, .72); backdrop-filter: blur(3px); animation: fx-fade .25s ease both"></div>
+
+<div role="dialog" aria-modal="true" aria-label="Search docs" style="position: absolute; left: 50%; top: 88px; width: 680px; margin-left: -340px; background: #0f2233; border: 1px solid #3a5a76; border-radius: 16px; box-shadow: 0 40px 100px rgba(0,0,0,.6); overflow: hidden; animation: fx-in .3s cubic-bezier(.2,.8,.2,1) both">
+<div style="display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid #24425c">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.2" stroke-linecap="round"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4"></path></svg>
+<label style="flex: 1 1 auto; display: flex"><span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Search</span>
+<input type="search" value="{{ q }}" onChange="{{ onType }}" onKeyDown="{{ onKey }}" placeholder="Search guides and reference" style="flex: 1 1 auto; min-height: 60px; border: 0; outline: none; background: transparent; color: #f4f7f9; font: 500 19px/28px Inter, system-ui, sans-serif"></label>
+<kbd style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 2px 7px; border: 1px solid #3a5a76; border-bottom-width: 2px; border-radius: 6px; color: #c9d5de">esc</kbd>
+</div>
+<div style="max-height: 520px; overflow-y: auto; padding: 8px 8px 12px">
+<sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+<p style="margin: 0; padding: 28px 16px; text-align: center; color: #93a7b7">No results for “{{ q }}”. Try a route name like <code style="font-family: 'JetBrains Mono', monospace; color: #f4f7f9">jobs/create</code>.</p>
+</sc-if>
+<sc-for list="{{ groups }}" as="g" hint-placeholder-count="2">
+<div style="display: flex; flex-direction: column; gap: 2px; padding-top: 8px">
+<span style="padding: 6px 12px; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #93a7b7">{{ g.title }}</span>
+<sc-for list="{{ g.items }}" as="r" hint-placeholder-count="3">
+<a href="{{ r.href }}" onMouseEnter="{{ r.hover }}" style="display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-radius: 10px; background: {{ r.bg }}; color: #f4f7f9; text-decoration: none; transition: background-color .15s ease; animation: fx-in .25s {{ r.delay }} ease both">
+<span aria-hidden="true" style="flex: none; width: 34px; height: 34px; border-radius: 8px; background: {{ r.icoBg }}; color: {{ r.icoFg }}; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ r.icon }}"></path></svg></span>
+<span style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column">
+<span style="font-weight: 600; font-family: {{ r.font }}">{{ r.pre }}<mark style="background: rgba(255,210,63,.28); color: #ffffff; border-radius: 3px; padding: 0 1px; box-shadow: inset 0 -2px 0 #ffd23f">{{ r.hit }}</mark>{{ r.post }}</span>
+<span style="font-size: 13px; line-height: 18px; color: #93a7b7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ r.path }}</span>
+</span>
+<sc-if value="{{ r.active }}" hint-placeholder-val="{{ false }}"><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 1px 7px; border: 1px solid #ffd23f; border-radius: 6px; color: #ffd23f">↵</kbd></sc-if>
+</a>
+</sc-for>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; align-items: center; gap: 18px; padding: 10px 16px; border-top: 1px solid #24425c; background: #0c1c2b; font-size: 13px; line-height: 18px; color: #93a7b7">
+<span style="display: inline-flex; align-items: center; gap: 6px"><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 0 5px; border: 1px solid #3a5a76; border-radius: 4px">↑</kbd><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 0 5px; border: 1px solid #3a5a76; border-radius: 4px">↓</kbd>to move</span>
+<span style="display: inline-flex; align-items: center; gap: 6px"><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 0 5px; border: 1px solid #3a5a76; border-radius: 4px">↵</kbd>to open</span>
+<span style="margin-left: auto">Search by Pagefind</span>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { q: '', active: 0, typed: false }; this.target = 'sched'; }
+componentDidMount() {
+const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+if (reduce) { this.setState({ q: this.target, typed: true }); return; }
+let i = 0;
+this.timer = setInterval(() => {
+if (this.state.typed) { clearInterval(this.timer); return; }
+i += 1; this.setState({ q: this.target.slice(0, i) });
+if (i >= this.target.length) { this.setState({ typed: true }); clearInterval(this.timer); }
+}, 140);
+}
+componentWillUnmount() { clearInterval(this.timer); }
+renderVals() {
+const DOC = 'M6 3h8l4 4v14H6zM14 3v4h4M9 13h6M9 17h4';
+const API = 'M8 4c-2 0-2 2-2 4s-2 4-2 4 2 2 2 4 0 4 2 4M16 4c2 0 2 2 2 4s2 4 2 4-2 2-2 4 0 4-2 4';
+const HASH = 'M5 9h14M5 15h14M10 4l-2 16M16 4l-2 16';
+const all = [
+{ g: 'Guides', title: 'Schedules', path: 'Guides', href: 'Guide.dc.html', icon: DOC },
+{ g: 'Guides', title: 'Schedule a URL import', path: 'Guides › Schedules', href: 'Guide.dc.html', icon: DOC },
+{ g: 'Guides', title: 'Schedule times are in UTC', path: 'Guides › Schedule a URL import › Note', href: 'Guide.dc.html', icon: HASH },
+{ g: 'Guides', title: 'URL sources and credentials', path: 'Guides', href: '#', icon: DOC },
+{ g: 'Reference', title: 'schedules', path: 'Reference › API routes', href: '#', icon: API, mono: true },
+{ g: 'Reference', title: 'jobs/create', path: 'Reference › API routes › jobs', href: 'ApiJobsCreate.dc.html', icon: API, mono: true },
+{ g: 'Reference', title: 'Job states and record outcomes', path: 'Reference', href: '#', icon: DOC },
+{ g: 'Guides', title: 'Permissions', path: 'Start here', href: 'Permissions.dc.html', icon: DOC }
+];
+const q = this.state.q.trim().toLowerCase();
+const hits = q ? all.filter((r) => r.title.toLowerCase().indexOf(q) >= 0) : all.slice(0, 5);
+const act = Math.min(this.state.active, Math.max(0, hits.length - 1));
+let n = 0;
+const groups = ['Guides', 'Reference'].map((g) => ({
+title: g,
+items: hits.filter((r) => r.g === g).map((r) => {
+const idx = n++;
+const at = q ? r.title.toLowerCase().indexOf(q) : -1;
+const on = idx === act;
+return {
+href: r.href, path: r.path, icon: r.icon,
+font: r.mono ? "'JetBrains Mono', monospace" : 'inherit',
+pre: at >= 0 ? r.title.slice(0, at) : r.title,
+hit: at >= 0 ? r.title.slice(at, at + q.length) : '',
+post: at >= 0 ? r.title.slice(at + q.length) : '',
+active: on,
+bg: on ? '#1d3a55' : 'transparent',
+icoBg: on ? '#ffd23f' : '#152d42',
+icoFg: on ? '#0f2233' : '#c9d5de',
+delay: (0.03 * idx).toFixed(2) + 's',
+hover: () => this.setState({ active: idx })
+};
+})
+})).filter((g) => g.items.length);
+return {
+q: this.state.q,
+empty: hits.length === 0,
+groups: groups,
+onType: (e) => this.setState({ q: e.target.value, active: 0, typed: true }),
+onKey: (e) => {
+if (e.key === 'ArrowDown') { e.preventDefault(); this.setState({ active: Math.min(act + 1, hits.length - 1) }); }
+if (e.key === 'ArrowUp') { e.preventDefault(); this.setState({ active: Math.max(act - 1, 0) }); }
+}
+};
+}
+}
+</script>
+</body>
+</html>

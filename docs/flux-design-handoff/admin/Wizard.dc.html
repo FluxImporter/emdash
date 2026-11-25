@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New import wizard</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" style="color: {{ k.strong }}"><rect x="1" y="1" width="22" height="22" rx="5.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect><rect x="5" y="6.6" width="5" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="5" y="10.9" width="7.3" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="5" y="15.2" width="5" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="13.8" y="5.6" width="5" height="12.8" rx="1.4" fill="currentColor"></rect></svg>
+<h1 style="margin: 0; font-size: 24px; line-height: 32px; font-weight: 700; color: {{ k.strong }}">New import</h1>
+</div>
+<span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; font-weight: 500">{{ exitLabel }}</span>
+</div>
+
+<ol aria-label="Steps" style="margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px">
+<sc-for list="{{ steps }}" as="s" hint-placeholder-count="6">
+<li style="display: flex; align-items: center; gap: 4px">
+<span aria-current="{{ s.cur }}" style="display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 4px; border-radius: 999px; background: {{ s.bg }}; color: {{ s.fg }}; font-weight: {{ s.fw }}"><span style="width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: {{ s.dotBg }}; color: {{ s.dotFg }}; border: 1.5px solid {{ s.dotLn }}; box-sizing: border-box">{{ s.mark }}</span><span style="display: {{ s.labelDisplay }}">{{ s.label }}</span></span>
+<sc-if value="{{ s.notLast }}" hint-placeholder-val="{{ true }}"><span aria-hidden="true" style="width: {{ sepW }}; height: 1px; background: {{ k.line }}"></span></sc-if>
+</li>
+</sc-for>
+</ol>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid {{ k.hair }}">
+<div style="display: flex; flex-direction: column; min-width: 0">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; color: {{ k.strong }}">{{ title }}</h2>
+<span style="color: {{ k.sub }}">{{ summary }}</span>
+</div>
+<div style="display: flex; gap: 8px">
+<sc-if value="{{ hasBack }}" hint-placeholder-val="{{ true }}"><span style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600">Back</span></sc-if>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 8px; background: {{ nextBg }}; color: {{ nextFg }}; border: 1px solid {{ nextLn }}; font-weight: 600">{{ next }}<sc-if value="{{ nextArrow }}" hint-placeholder-val="{{ true }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></sc-if></span>
+</div>
+</div>
+
+<sc-if value="{{ isSource }}" hint-placeholder-val="{{ true }}"><dc-import name="StepSource" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,700px"></dc-import></sc-if>
+<sc-if value="{{ isMap }}" hint-placeholder-val="{{ false }}"><dc-import name="StepMap" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,700px"></dc-import></sc-if>
+<sc-if value="{{ isPreview }}" hint-placeholder-val="{{ false }}"><dc-import name="StepPreview" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,700px"></dc-import></sc-if>
+<sc-if value="{{ isRun }}" hint-placeholder-val="{{ false }}"><dc-import name="StepRun" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,700px"></dc-import></sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"step":{"editor":"enum","options":["source","map","preview","run"],"default":"source"},"$preview":{"width":1020,"height":800}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', ctrl: '#ffffff', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', brand: 'oklch(0.5772 0.2324 260)', tint: 'oklch(96% 0 0)', okBg: '#ccfbf1', okTx: '#115e59', bad: 'oklch(50.5% 0.213 27.518)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', ctrl: 'oklch(21% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', brand: 'oklch(0.52 0.21 260)', tint: 'oklch(21% 0 0)', okBg: '#042f2e', okTx: '#99f6e4', bad: 'oklch(70.4% 0.191 22.216)' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const n = !!this.props.narrow;
+const step = this.props.step || 'source';
+const names = ['Source', 'Target', 'Map', 'Options', 'Preview', 'Run'];
+const idx = { source: 0, map: 2, preview: 4, run: 5 }[step];
+const info = {
+source: ['Source', 'Choose a file, a URL, pasted text or a saved source.', 'Next: Target'],
+map: ['Map', 'products-10.csv · 5 keys → posts · en', 'Next: Options'],
+preview: ['Preview', 'Dry run of 10 records. Nothing is written yet.', 'Run import'],
+run: ['Run', 'Products feed → posts · en · started 18:42 UTC', 'Pause']
+}[step];
+const isRun = step === 'run';
+return {
+theme: theme, k: k, narrow: n,
+exitLabel: isRun ? 'See all imports' : 'Cancel',
+sepW: n ? '6px' : '20px',
+steps: names.map((nm, i) => {
+const done = i < idx; const cur = i === idx;
+return {
+label: nm, notLast: i < names.length - 1, cur: cur ? 'step' : 'false',
+mark: done ? '✓' : String(i + 1),
+bg: cur ? k.tint : 'transparent', fg: cur ? k.strong : (done ? k.tx : k.sub), fw: cur ? 600 : 500,
+dotBg: cur ? k.brand : (done ? k.okBg : 'transparent'), dotFg: cur ? '#ffffff' : (done ? k.okTx : k.sub), dotLn: cur ? k.brand : (done ? k.okBg : k.line),
+labelDisplay: n && !cur ? 'none' : 'inline'
+};
+}),
+title: info[0], summary: info[1], next: info[2],
+hasBack: step !== 'source' && !isRun,
+nextBg: isRun ? k.ctrl : k.brand, nextFg: isRun ? k.tx : '#ffffff', nextLn: isRun ? k.line : k.brand, nextArrow: !isRun && step !== 'preview',
+isSource: step === 'source', isMap: step === 'map', isPreview: step === 'preview', isRun: isRun
+};
+}
+}
+</script>
+</body>
+</html>

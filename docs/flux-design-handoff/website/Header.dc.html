@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Flux Importer header</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<header style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: {{ t.bg }}; color: {{ t.tx }}; border-bottom: 1px solid {{ t.ln }}; font-size: 15px; line-height: 22px; transition: background-color .3s ease">
+<div style="max-width: {{ maxW }}; margin: 0 auto; padding: 0 {{ padX }}; min-height: 64px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px">
+
+<a href="Main.dc.html" aria-label="fluximporter home" style="display: inline-flex; align-items: center; gap: 10px; min-height: 44px; text-decoration: none; color: {{ t.tx }}">
+<svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#ffd23f"></rect><rect x="4" y="6.2" width="6" height="2.6" rx="1.3" fill="#0f2233" style="transform-box: fill-box; animation: fx-flow 2.4s ease-in-out infinite"></rect><rect x="4" y="10.7" width="8.5" height="2.6" rx="1.3" fill="#0f2233" style="transform-box: fill-box; animation: fx-flow 2.4s .2s ease-in-out infinite"></rect><rect x="4" y="15.2" width="6" height="2.6" rx="1.3" fill="#0f2233" style="transform-box: fill-box; animation: fx-flow 2.4s .4s ease-in-out infinite"></rect><rect x="13.8" y="5.2" width="6.2" height="13.6" rx="1.6" fill="#0f2233"></rect></svg>
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; line-height: 28px; letter-spacing: -0.02em"><span style="font-weight: 700">flux</span><span style="font-weight: 500; color: {{ t.tx2 }}">importer</span></span>
+</a>
+
+<sc-if value="{{ showSearch }}" hint-placeholder-val="{{ false }}">
+<a href="Search.dc.html" style="flex: 1 1 260px; max-width: 420px; min-height: 40px; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 12px; border: 1px solid {{ t.ln }}; border-radius: 8px; background: {{ t.b1 }}; color: {{ t.tx3 }}; text-decoration: none; margin-left: 12px">
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4"></path></svg>
+<span>Search docs</span>
+<kbd style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 18px; padding: 1px 6px; border: 1px solid {{ t.ln2 }}; border-bottom-width: 2px; border-radius: 5px; color: {{ t.tx2 }}">⌘K</kbd>
+</a>
+</sc-if>
+
+<sc-if value="{{ desktop }}" hint-placeholder-val="{{ true }}">
+<nav aria-label="Main" style="margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px">
+<a href="EmDash.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: {{ t.tx }}; text-decoration: none; font-weight: 500; box-shadow: inset 0 -2px 0 {{ uDocs }}">Docs</a>
+<a href="ApiJobsCreate.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: {{ t.tx }}; text-decoration: none; font-weight: 500; box-shadow: inset 0 -2px 0 {{ uRef }}">Reference</a>
+<a href="https://github.com/" style="display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; color: {{ t.tx }}; text-decoration: none; font-weight: 500"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"></path></svg>GitHub</a>
+<div role="group" aria-label="Colour theme" style="display: flex; margin-left: 8px; padding: 3px; border: 1px solid {{ t.ln }}; border-radius: 10px; background: {{ t.b1 }}">
+<button type="button" aria-label="Dark theme" aria-pressed="{{ pDark }}" onClick="{{ setDark }}" style="width: 40px; height: 38px; border: 0; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ bgDark }}; color: {{ fgDark }}; transition: background-color .25s ease"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg></button>
+<button type="button" aria-label="Light theme" aria-pressed="{{ pLight }}" onClick="{{ setLight }}" style="width: 40px; height: 38px; border: 0; border-radius: 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ bgLight }}; color: {{ fgLight }}; transition: background-color .25s ease"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg></button>
+</div>
+</nav>
+</sc-if>
+
+<sc-if value="{{ mobile }}" hint-placeholder-val="{{ false }}">
+<div style="margin-left: auto; display: flex; gap: 4px">
+<a href="Search.dc.html" aria-label="Search docs" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: {{ t.tx }}; border-radius: 8px"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4"></path></svg></a>
+<button type="button" aria-label="Open menu" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: {{ t.tx }}; background: {{ t.b1 }}; border: 1px solid {{ t.ln }}; border-radius: 8px; cursor: pointer"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"></path></svg></button>
+</div>
+</sc-if>
+
+</div>
+</header>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"variant":{"editor":"enum","options":["home","docs"],"default":"home"},"current":{"editor":"enum","options":["none","docs","reference"],"default":"none"},"mobile":{"editor":"boolean","default":false},"onToggle":{"editor":null},"$preview":{"width":1440,"height":72}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { local: null }; }
+renderVals() {
+const T = {
+dark: { bg: '#0b1824', b1: '#0f2233', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7' },
+light: { bg: '#ffffff', b1: '#f2f5f7', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a' }
+};
+const theme = this.state.local || (this.props.theme === 'light' ? 'light' : 'dark');
+const t = T[theme];
+const docs = this.props.variant === 'docs';
+const m = !!this.props.mobile;
+const cur = this.props.current || 'none';
+const set = (v) => { if (this.props.onToggle) this.props.onToggle(v); else this.setState({ local: v }); };
+const on = { bg: '#ffd23f', fg: '#0f2233' };
+const off = { bg: 'transparent', fg: t.tx2 };
+const d = theme === 'dark' ? on : off;
+const l = theme === 'light' ? on : off;
+return {
+t: t,
+maxW: docs ? 'none' : '1200px',
+padX: m ? '16px' : '24px',
+showSearch: docs && !m,
+desktop: !m,
+mobile: m,
+uDocs: cur === 'docs' ? '#ffd23f' : 'transparent',
+uRef: cur === 'reference' ? '#ffd23f' : 'transparent',
+pDark: theme === 'dark' ? 'true' : 'false',
+pLight: theme === 'light' ? 'true' : 'false',
+bgDark: d.bg, fgDark: d.fg, bgLight: l.bg, fgLight: l.fg,
+setDark: () => set('dark'),
+setLight: () => set('light')
+};
+}
+}
+</script>
+</body>
+</html>

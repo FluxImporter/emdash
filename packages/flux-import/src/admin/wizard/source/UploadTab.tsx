@@ -3,6 +3,8 @@ import { type ChangeEvent, useId, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { ERROR_MESSAGES } from "../../errors.js";
 import { useT } from "../../i18n.js";
+import { UploadSimpleIcon } from "../../ui/icons.js";
+import { useWizard } from "../context.js";
 import { M } from "./messages.js";
 import { ACCEPT, formatOf } from "./SourceSettings.js";
 import type { TabProps } from "./SourceStep.js";
@@ -12,8 +14,7 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 	const t = useT();
 	const inputId = useId();
 	const hintId = useId();
-	const labelId = useId();
-	const buttonId = useId();
+	const { state } = useWizard();
 	const input = useRef<HTMLInputElement>(null);
 	const [progress, setProgress] = useState<{ name: string; percent: number } | null>(null);
 
@@ -47,16 +48,16 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 	};
 
 	return (
-		<div className="space-y-2">
-			<label id={labelId} htmlFor={inputId} className="block font-medium">
-				{t(M.chooseFile)}
-			</label>
+		<div className="flex flex-col items-start gap-2">
 			{/*
 			 * The browser's own file control has no button look in the admin's themes, so a Kumo button
-			 * opens it, as the admin's WordPress importer does. The input stays for the label and the
-			 * file; the button is the one control keyboards and screen readers reach, so the label names
-			 * it too, followed by its own text.
+			 * opens it, as the admin's WordPress importer does. The input stays, out of sight and of the
+			 * tab order, for its label and its files; the button is the one control keyboards and screen
+			 * readers reach.
 			 */}
+			<label htmlFor={inputId} className="sr-only">
+				{t(M.chooseFile)}
+			</label>
 			<input
 				ref={input}
 				id={inputId}
@@ -68,23 +69,22 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 				onChange={onChange}
 				className="sr-only"
 			/>
-			<div>
-				<Button
-					id={buttonId}
-					variant="secondary"
-					disabled={busy}
-					aria-labelledby={`${labelId} ${buttonId}`}
-					aria-describedby={hintId}
-					onClick={() => input.current?.click()}
-				>
-					{t(M.browseFiles)}
-				</Button>
-			</div>
-			<p id={hintId} className="text-sm text-kumo-subtle">
+			<Button
+				variant="secondary"
+				icon={<UploadSimpleIcon aria-hidden="true" />}
+				disabled={busy}
+				aria-describedby={hintId}
+				onClick={() => input.current?.click()}
+			>
+				{t(state.source?.kind === "upload" ? M.chooseAnother : M.chooseFile)}
+			</Button>
+			<p id={hintId} className="text-sm text-kumo-default">
 				{t(M.fileTypes)}
 			</p>
 			{progress === null ? null : (
-				<Meter label={t(M.uploading, { name: progress.name })} value={progress.percent} />
+				<div className="w-full">
+					<Meter label={t(M.uploading, { name: progress.name })} value={progress.percent} />
+				</div>
 			)}
 		</div>
 	);

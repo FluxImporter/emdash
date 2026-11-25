@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Templates tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<span style="color: {{ k.sub }}"><strong style="color: {{ k.tx }}; font-weight: 600">3 templates</strong> · saved mappings you can reuse or share</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"></path></svg>Import a template</span>
+</div>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><div style="display: grid; grid-template-columns: {{ cols }}; gap: 16px; padding: 10px 16px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600"><span>Template</span><span>Collection</span><span>Revision</span><span>Last change</span><span></span></div></sc-if>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="3">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: {{ rowGap }}; align-items: center; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}">
+<span style="display: flex; flex-direction: column; min-width: 0; grid-column: {{ c1 }}"><span style="font-weight: 600; color: {{ k.strong }}">{{ r.name }}</span><span style="font-size: 13px; color: {{ r.dFg }}">{{ r.desc }}</span></span>
+<span style="font-size: 13px; grid-column: {{ c1 }}">{{ r.coll }}<sc-if value="{{ narrowOn }}" hint-placeholder-val="{{ false }}"> · Rev. {{ r.rev }} · {{ r.when }}</sc-if></span>
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><span style="font-size: 13px; font-variant-numeric: tabular-nums">{{ r.rev }}</span><span style="font-size: 13px">{{ r.when }}</span></sc-if>
+<span style="justify-self: end; display: flex; gap: 4px; grid-column: {{ c2 }}; grid-row: {{ aRow }}"><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600">Use</span><span role="button" aria-label="More actions for {{ r.name }}" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></span></span>
+</div>
+</sc-for>
+</div>
+<span style="font-size: 13px; color: {{ k.sub }}">More actions: Export, Rename and describe, Delete.</span>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":300}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', base: '#ffffff', ctrl: '#ffffff', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', ctrl: 'oklch(21% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(32% 0 0)' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const n = !!this.props.narrow;
+return {
+k: k, wide: !n, narrowOn: n,
+cols: n ? 'minmax(0, 1fr) auto' : 'minmax(0, 2.2fr) minmax(0, 1fr) 90px minmax(0, 1fr) 100px',
+rowGap: n ? '6px 12px' : '16px', c1: n ? '1' : 'auto', c2: n ? '2' : 'auto', aRow: n ? '1' : 'auto',
+rows: [
+{ name: 'Products feed', desc: 'Shop JSON feed. Key: sku.', dFg: k.sub, coll: 'posts · en', rev: '3', when: 'Today 18:38 UTC' },
+{ name: 'Stock', desc: 'ERP CSV export, prices and stock.', dFg: k.sub, coll: 'products · en', rev: '1', when: '20 Nov 10:02 UTC' },
+{ name: 'Events', desc: 'Add a description', dFg: k.sub, coll: 'events · de', rev: '2', when: '12 Nov 14:47 UTC' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

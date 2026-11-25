@@ -1,5 +1,5 @@
 import type { PauseReason } from "../../../plugin/schedules.js";
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** Why a schedule paused (`pause.reason`), read after "Paused: " (spec "Schedules"). */
 export const PAUSE_MESSAGES = {
@@ -65,23 +65,22 @@ export const PAUSE_MESSAGES = {
 	},
 } as const satisfies Readonly<Record<PauseReason, Msg>>;
 
-/** The fence banner (plan Ruling 8): one sentence per kind but `clear`. */
+/**
+ * The fence banner (plan Ruling 8), titled by the kind of fence. Neither `clear` nor `import`:
+ * while a site import runs, the home itself says so and waits.
+ */
 export const FENCE_MESSAGES = {
-	import: {
-		id: "flux-import.home-schedules.fence-import",
-		message: "An import into this site is running, so scheduled runs wait until it ends.",
-	},
 	export: {
 		id: "flux-import.home-schedules.fence-export",
-		message: "An export of this site is running, so scheduled runs wait until it ends.",
+		message: "The site is locked for an export.",
 	},
 	media: {
 		id: "flux-import.home-schedules.fence-media",
-		message: "EmDash is turning on media tracking, so scheduled runs wait until it ends.",
+		message: "EmDash is turning on media tracking.",
 	},
 	error: {
 		id: "flux-import.home-schedules.fence-error",
-		message: "flux-import couldn't check whether the site is busy, so scheduled runs wait.",
+		message: "flux-import couldn't check whether the site is busy.",
 	},
 } satisfies Record<string, Msg>;
 
@@ -127,6 +126,15 @@ export const RUN_OUTCOMES = {
 
 /** The Schedules tab, its dialogs and its run log. */
 export const M = {
+	// The fence banner's second sentence
+	fenceWait: {
+		id: "flux-import.home-schedules.fence-wait",
+		message: "Scheduled runs wait until it ends.",
+	},
+	fenceCheckWait: {
+		id: "flux-import.home-schedules.fence-check-wait",
+		message: "Scheduled runs wait until the check succeeds.",
+	},
 	// Timing (plan Ruling 13)
 	hourly: { id: "flux-import.home-schedules.hourly", message: "Every hour at minute {minute}" },
 	daily: { id: "flux-import.home-schedules.daily", message: "Every day at {time} UTC" },
@@ -150,43 +158,55 @@ export const M = {
 		message: "Couldn't start: {reason}",
 	},
 	neverLaunched: { id: "flux-import.home-schedules.never-launched", message: "Never launched" },
-	// The table
+	// The list
 	loading: { id: "flux-import.home-schedules.loading", message: "Loading schedules" },
+	loadFailed: {
+		id: "flux-import.home-schedules.load-failed",
+		message: "Schedules could not be loaded.",
+	},
 	newSchedule: { id: "flux-import.home-schedules.new", message: "New schedule" },
 	atLimit: {
 		id: "flux-import.home-schedules.at-limit",
 		message: "The site holds at most {max} schedules. Delete one to add another.",
 	},
-	empty: { id: "flux-import.home-schedules.empty", message: "No schedules yet." },
+	empty: { id: "flux-import.home-schedules.empty", message: "No schedules yet" },
 	emptyHint: {
 		id: "flux-import.home-schedules.empty-hint",
-		message: "A schedule imports from a saved URL source with a saved template, on a timer.",
+		message: "A schedule runs a saved template on a saved URL source, on a timer.",
 	},
-	colName: { id: "flux-import.home-schedules.col-name", message: "Name" },
-	colTemplate: { id: "flux-import.home-schedules.col-template", message: "Template" },
+	noTemplate: { id: "flux-import.home-schedules.no-template", message: "No template saved yet" },
+	noSource: { id: "flux-import.home-schedules.no-source", message: "No URL source yet" },
+	addSource: { id: "flux-import.home-schedules.add-source", message: "Add a source" },
+	colSchedule: { id: "flux-import.home-schedules.col-schedule", message: "Schedule" },
 	colSource: { id: "flux-import.home-schedules.col-source", message: "Source" },
-	colTiming: { id: "flux-import.home-schedules.col-timing", message: "When it runs" },
-	colNext: { id: "flux-import.home-schedules.col-next", message: "Next run" },
-	colLast: { id: "flux-import.home-schedules.col-last", message: "Last launch" },
-	colState: { id: "flux-import.home-schedules.col-state", message: "State" },
+	colWhen: { id: "flux-import.home-schedules.col-when", message: "When" },
+	colLast: { id: "flux-import.home-schedules.col-last", message: "Last run" },
+	colActive: { id: "flux-import.home-schedules.col-active", message: "Active" },
 	colActions: { id: "flux-import.home-schedules.col-actions", message: "Actions" },
+	templateTarget: {
+		id: "flux-import.home-schedules.template-target",
+		message: "{template} → {collection} · {locale}",
+	},
 	deletedTemplate: {
 		id: "flux-import.home-schedules.deleted-template",
 		message: "Deleted template",
 	},
 	deletedSource: { id: "flux-import.home-schedules.deleted-source", message: "Deleted source" },
-	utcTime: { id: "flux-import.home-schedules.utc-time", message: "{time} UTC" },
+	next: { id: "flux-import.home-schedules.next", message: "Next: {when}" },
 	notScheduled: { id: "flux-import.home-schedules.not-scheduled", message: "Not scheduled" },
 	stateQueued: { id: "flux-import.home-schedules.state-queued", message: "Queued" },
-	stateActive: { id: "flux-import.home-schedules.state-active", message: "Active" },
-	statePausedFor: {
-		id: "flux-import.home-schedules.state-paused-for",
-		message: "Paused: {reason}",
-	},
 	statePaused: { id: "flux-import.home-schedules.state-paused", message: "Paused" },
+	pausedBecause: {
+		id: "flux-import.home-schedules.paused-because",
+		message: "Because {reason}.",
+	},
+	pausedUnknown: {
+		id: "flux-import.home-schedules.paused-unknown",
+		message: "For a reason this version does not know.",
+	},
 	resumeRepins: {
 		id: "flux-import.home-schedules.resume-repins",
-		message: "Resume runs the template's current version.",
+		message: "Switched on, it runs the template's current version.",
 	},
 	resumeTemplateGone: {
 		id: "flux-import.home-schedules.resume-template-gone",
@@ -202,10 +222,8 @@ export const M = {
 		message: "Use the current version for {name}",
 	},
 	// Row actions: the visible label, and the accessible name that names the row
-	pause: { id: "flux-import.home-schedules.pause", message: "Pause" },
-	pauseRow: { id: "flux-import.home-schedules.pause-row", message: "Pause {name}" },
-	resume: { id: "flux-import.home-schedules.resume", message: "Resume" },
-	resumeRow: { id: "flux-import.home-schedules.resume-row", message: "Resume {name}" },
+	activeRow: { id: "flux-import.home-schedules.active-row", message: "Active: {name}" },
+	actionsRow: { id: "flux-import.home-schedules.actions-row", message: "Actions for {name}" },
 	runNow: { id: "flux-import.home-schedules.run-now", message: "Run now" },
 	runNowRow: { id: "flux-import.home-schedules.run-now-row", message: "Run now {name}" },
 	edit: { id: "flux-import.home-schedules.edit", message: "Edit" },
@@ -239,26 +257,12 @@ export const M = {
 	},
 	deleteConfirm: { id: "flux-import.home-schedules.delete-confirm", message: "Delete schedule" },
 	// The run log
-	runLogTitle: { id: "flux-import.home-schedules.run-log-title", message: "Run log of {name}" },
-	runLogSentence: {
-		id: "flux-import.home-schedules.run-log-sentence",
-		message: "The schedule's latest runs, newest first.",
-	},
+	runLogTitle: { id: "flux-import.home-schedules.run-log-title", message: "{name}: run log" },
 	noRuns: { id: "flux-import.home-schedules.no-runs", message: "No runs yet." },
 	colFinished: { id: "flux-import.home-schedules.col-finished", message: "Finished" },
 	colOutcome: { id: "flux-import.home-schedules.col-outcome", message: "Outcome" },
-	colCounts: { id: "flux-import.home-schedules.col-counts", message: "Counts" },
+	colCounts: { id: "flux-import.home-schedules.col-counts", message: "Records" },
 	colImport: { id: "flux-import.home-schedules.col-import", message: "Import" },
-	counts: {
-		id: "flux-import.home-schedules.counts",
-		message: "Created: {created}. Updated: {updated}. Unchanged: {unchanged}. Failed: {failed}.",
-	},
-	countRemoved: { id: "flux-import.home-schedules.count-removed", message: "Removed: {count}." },
-	countConflict: {
-		id: "flux-import.home-schedules.count-conflict",
-		message: "Conflicts: {count}.",
-	},
-	countLocked: { id: "flux-import.home-schedules.count-locked", message: "Locked: {count}." },
 	runUnknown: { id: "flux-import.home-schedules.run-unknown", message: "Unknown outcome" },
 	rolledBack: { id: "flux-import.home-schedules.rolled-back", message: "Rolled back" },
 	openRun: { id: "flux-import.home-schedules.open-run", message: "Open" },
@@ -373,3 +377,37 @@ export const M = {
 		message: "Enter a whole number from {min} to {max}.",
 	},
 } satisfies Record<string, Msg>;
+
+/** Counts in words, with plural forms. */
+export const N = {
+	schedules: {
+		id: "flux-import.home-schedules.count-schedules",
+		one: "{count} schedule",
+		other: "{count} schedules",
+	},
+	active: {
+		id: "flux-import.home-schedules.count-active",
+		one: "{count} active",
+		other: "{count} active",
+	},
+	paused: {
+		id: "flux-import.home-schedules.count-paused",
+		one: "{count} paused",
+		other: "{count} paused",
+	},
+	templatesSaved: {
+		id: "flux-import.home-schedules.templates-saved",
+		one: "{count} template saved",
+		other: "{count} templates saved",
+	},
+	sourcesSaved: {
+		id: "flux-import.home-schedules.sources-saved",
+		one: "{count} URL source saved",
+		other: "{count} URL sources saved",
+	},
+	runLogSentence: {
+		id: "flux-import.home-schedules.run-log-sentence",
+		one: "{timing} \u00b7 {count} run",
+		other: "{timing} \u00b7 last {count} runs, newest first",
+	},
+} satisfies Record<string, PluralMsg>;

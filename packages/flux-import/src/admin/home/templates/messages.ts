@@ -1,22 +1,34 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** The Templates tab's own messages. */
 export const M = {
 	loading: { id: "flux-import.home-templates.loading", message: "Loading templates" },
-	empty: { id: "flux-import.home-templates.empty", message: "No saved templates yet." },
+	loadFailed: {
+		id: "flux-import.home-templates.load-failed",
+		message: "Templates could not be loaded.",
+	},
+	summary: {
+		id: "flux-import.home-templates.summary",
+		message: "saved mappings you can reuse or share",
+	},
+	empty: { id: "flux-import.home-templates.empty", message: "No templates yet" },
 	emptyHint: {
 		id: "flux-import.home-templates.empty-hint",
 		message: "Save one from the wizard: Options, Save as template.",
 	},
 	openWizard: { id: "flux-import.home-templates.open-wizard", message: "Open the wizard" },
-	colName: { id: "flux-import.home-templates.col-name", message: "Name" },
-	colTarget: { id: "flux-import.home-templates.col-target", message: "Collection and locale" },
-	colDescription: { id: "flux-import.home-templates.col-description", message: "Description" },
+	colTemplate: { id: "flux-import.home-templates.col-template", message: "Template" },
+	colTarget: { id: "flux-import.home-templates.col-target", message: "Collection" },
 	colRevision: { id: "flux-import.home-templates.col-revision", message: "Revision" },
 	colChanged: { id: "flux-import.home-templates.col-changed", message: "Last change" },
 	colActions: { id: "flux-import.home-templates.col-actions", message: "Actions" },
 	target: { id: "flux-import.home-templates.target", message: "{collection} \u00b7 {locale}" },
-	revision: { id: "flux-import.home-templates.revision", message: "Revision {revision}" },
+	revisionShort: {
+		id: "flux-import.home-templates.revision-short",
+		message: "Rev. {revision}",
+	},
+	noDescription: { id: "flux-import.home-templates.no-description", message: "No description" },
+	actionsRow: { id: "flux-import.home-templates.actions-row", message: "Actions for {name}" },
 	use: { id: "flux-import.home-templates.use", message: "Use" },
 	useRow: { id: "flux-import.home-templates.use-row", message: "Use {name}" },
 	exportRow: { id: "flux-import.home-templates.export-row", message: "Export {name}" },
@@ -113,3 +125,12 @@ export const M = {
 	import: { id: "flux-import.home-templates.import", message: "Import" },
 	imported: { id: "flux-import.home-templates.imported", message: "Imported {name}." },
 } satisfies Record<string, Msg>;
+
+/** Counts in words, with plural forms. */
+export const N = {
+	templates: {
+		id: "flux-import.home-templates.count",
+		one: "{count} template",
+		other: "{count} templates",
+	},
+} satisfies Record<string, PluralMsg>;

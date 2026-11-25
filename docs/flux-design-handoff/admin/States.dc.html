@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shared states for every tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 28px">
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: {{ k.note }}">1 · EMPTY (Jobs, then Schedules with what's missing)</span>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<div style="flex: 1 1 300px; border: 1px dashed {{ k.line }}; border-radius: 10px; padding: 28px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center">
+<svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="{{ k.sub }}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h7M4 12h9M4 17h7M15 5h5v14h-5z"></path></svg>
+<span style="font-weight: 600; font-size: 15px; color: {{ k.strong }}">No imports yet</span>
+<span style="color: {{ k.sub }}; max-width: 36ch">Bring in a CSV, JSON, XML or Excel file, or a URL feed. Every run shows up here.</span>
+<span style="color: {{ k.link }}; font-weight: 500">How imports work</span>
+</div>
+<div style="flex: 1 1 300px; border: 1px dashed {{ k.line }}; border-radius: 10px; padding: 24px 20px; display: flex; flex-direction: column; gap: 10px">
+<span style="font-weight: 600; font-size: 15px; color: {{ k.strong }}">No schedules yet</span>
+<span style="color: {{ k.sub }}">A schedule runs a saved template on a saved URL source, on a timer.</span>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px">
+<li style="display: flex; align-items: center; gap: 8px"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ k.ok }}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>1 template saved</li>
+<li style="display: flex; align-items: center; gap: 8px"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ k.sub }}" stroke-width="2" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z"></path></svg>No URL source yet · <span style="color: {{ k.link }}; font-weight: 500">Add a source</span></li>
+</ul>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; font-weight: 600; opacity: .5">New schedule</span>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: {{ k.note }}">2 · LOADING (the table keeps its shape)</span>
+<div role="status" aria-label="Loading imports" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-for list="{{ skel }}" as="s" hint-placeholder-count="4">
+<div style="display: grid; grid-template-columns: {{ skCols }}; gap: 16px; align-items: center; padding: 14px 16px; border-bottom: 1px solid {{ k.hair }}">
+<span style="display: flex; flex-direction: column; gap: 6px"><span style="height: 10px; width: {{ s.a }}; border-radius: 4px; background: {{ k.tint }}; animation: ad-pulse 1.4s {{ s.d }} ease-in-out infinite"></span><span style="height: 8px; width: 40%; border-radius: 4px; background: {{ k.tint }}; animation: ad-pulse 1.4s {{ s.d }} ease-in-out infinite"></span></span>
+<span style="height: 10px; width: 70%; border-radius: 4px; background: {{ k.tint }}; animation: ad-pulse 1.4s {{ s.d }} ease-in-out infinite"></span>
+<span style="height: 18px; width: 72px; border-radius: 999px; background: {{ k.tint }}; animation: ad-pulse 1.4s {{ s.d }} ease-in-out infinite"></span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: {{ k.note }}">3 · FAILED TO LOAD</span>
+<div role="alert" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid {{ k.badLn }}; background: {{ k.badBg }}; color: {{ k.badTx }}">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 8v5M12 16v.5"></path></svg>
+<span style="flex: 1 1 260px"><strong style="font-weight: 600">Imports could not be loaded.</strong> The server did not answer. Your imports are not affected.</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; color: {{ k.tx }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"></path></svg>Try again</span>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: {{ k.note }}">4 · 403 (replaces header actions and tabs)</span>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; padding: 32px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center">
+<svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="{{ k.sub }}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h12v10H6zM8.5 11V7.5a3.5 3.5 0 0 1 7 0V11"></path></svg>
+<span style="font-weight: 600; font-size: 15px; color: {{ k.strong }}">Only administrators can import.</span>
+<span style="color: {{ k.sub }}">Ask an administrator of this site for access.</span>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; color: {{ k.note }}">5 · A SITE IMPORT IS RUNNING (the whole home waits)</span>
+<div role="status" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid {{ k.infoLn }}; background: {{ k.infoBg }}; color: {{ k.infoTx }}">
+<span aria-hidden="true" style="flex: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: ad-spin .9s linear infinite"></span>
+<span style="flex: 1 1 260px"><strong style="font-weight: 600">A site import is running.</strong> Imports, schedules and the wizard wait until it ends. This page updates by itself.</span>
+</div>
+<div aria-hidden="true" style="opacity: .45; border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-for list="{{ ghost }}" as="g" hint-placeholder-count="2"><div style="display: flex; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}"><span style="font-weight: 600">{{ g.a }}</span><span style="color: {{ k.sub }}">{{ g.b }}</span></div></sc-for>
+</div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":1150}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', note: '#9a3412', base: '#ffffff', ctrl: '#ffffff', tint: 'oklch(94% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', link: 'oklch(42.4% 0.199 265.638)', ok: 'oklch(43.2% 0.095 166.913)', badBg: '#fee2e2', badTx: '#991b1b', badLn: '#fca5a5', infoBg: '#dbeafe', infoTx: '#1e40af', infoLn: '#93c5fd' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', note: '#fdba74', base: 'oklch(17% 0 0)', ctrl: 'oklch(21% 0 0)', tint: 'oklch(26.9% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', link: 'oklch(70.7% 0.165 254.624)', ok: 'oklch(90.5% 0.093 164.15)', badBg: '#450a0a', badTx: '#fca5a5', badLn: '#7f1d1d', infoBg: '#172554', infoTx: '#bfdbfe', infoLn: '#1e3a8a' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+return {
+k: k,
+skCols: this.props.narrow ? 'minmax(0, 1fr) minmax(0, .6fr) 72px' : 'minmax(0, 1.5fr) minmax(0, 1fr) 120px',
+skel: [{ a: '55%', d: '0s' }, { a: '40%', d: '.1s' }, { a: '62%', d: '.2s' }, { a: '48%', d: '.3s' }],
+ghost: [{ a: 'Products feed', b: 'Today 18:40 UTC' }, { a: 'One-off import', b: 'Yesterday 18:38 UTC' }]
+};
+}
+}
+</script>
+</body>
+</html>

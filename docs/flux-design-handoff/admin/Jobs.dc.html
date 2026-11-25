@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jobs tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 12px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<span style="color: {{ k.sub }}"><strong style="color: {{ k.tx }}; font-weight: 600">23 imports</strong> · 1 running · 1 failed this week</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-size: 13px">All statuses<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span>
+</div>
+
+<div style="position: relative; border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+<div role="row" style="display: grid; grid-template-columns: {{ cols }}; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600; color: {{ k.sub2 }}">
+<span>Import</span><span>Started</span><span>Status</span><span>Records</span><span><span style="position: absolute; width: 1px; height: 1px; overflow: hidden">Actions</span></span>
+</div>
+</sc-if>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+<div role="row" style="display: grid; grid-template-columns: {{ cols }}; gap: {{ rowGap }}; align-items: center; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}; background: {{ r.bg }}">
+<span style="display: flex; flex-direction: column; min-width: 0; grid-column: {{ nameCol }}">
+<span style="display: flex; align-items: center; gap: 6px; font-weight: 600; color: {{ k.strong }}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><sc-if value="{{ r.isRb }}" hint-placeholder-val="{{ false }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4"></path></svg></sc-if>{{ r.name }}</span>
+<span style="font-size: 13px; color: {{ k.sub }}">{{ r.coll }}<sc-if value="{{ narrowOn }}" hint-placeholder-val="{{ false }}"> · {{ r.time }} · {{ r.origin }}</sc-if></span>
+</span>
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+<span style="display: flex; flex-direction: column; font-size: 13px"><span style="font-variant-numeric: tabular-nums">{{ r.time }}</span><span style="display: inline-flex; align-items: center; gap: 5px; color: {{ k.sub }}"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ r.oIcon }}"></path></svg>{{ r.origin }}</span></span>
+</sc-if>
+<span style="display: flex; align-items: center; gap: 8px; justify-self: start; grid-column: {{ statusCol }}"><span style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: {{ r.sBg }}; color: {{ r.sFg }}; font-size: 12px; font-weight: 600; white-space: nowrap"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: {{ r.sAnim }}"></span>{{ r.status }}</span></span>
+<span style="display: flex; flex-direction: column; gap: 6px; min-width: 0; grid-column: {{ recCol }}">
+<sc-if value="{{ r.hasMeter }}" hint-placeholder-val="{{ false }}"><span role="meter" aria-label="Progress" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100" style="display: block; height: 6px; border-radius: 6px; background: {{ k.tint }}; overflow: hidden; max-width: 220px"><span style="display: block; width: 64%; height: 100%; background: {{ k.brand }}; border-radius: 6px"></span></span></sc-if>
+<span style="display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px">
+<sc-for list="{{ r.counts }}" as="c" hint-placeholder-count="3"><span style="display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; color: {{ c.fg }}"><strong style="font-weight: 600; font-variant-numeric: tabular-nums; color: {{ c.nfg }}">{{ c.n }}</strong>{{ c.label }}</span></sc-for>
+</span>
+</span>
+<span style="justify-self: end; position: relative; grid-column: {{ menuCol }}; grid-row: {{ menuRow }}">
+<span role="button" aria-label="Actions for {{ r.name }}" aria-haspopup="menu" aria-expanded="{{ r.menuStr }}" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; border: 1px solid {{ r.btnLn }}; background: {{ r.btnBg }}; color: {{ k.tx }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></span>
+<sc-if value="{{ r.menu }}" hint-placeholder-val="{{ false }}">
+<span role="menu" style="position: absolute; right: 0; top: 38px; z-index: 3; width: 236px; padding: 4px; border-radius: 10px; background: {{ k.overlay }}; border: 1px solid {{ k.line }}; box-shadow: {{ k.sh }}; display: flex; flex-direction: column; animation: ad-in .16s ease both; text-align: left">
+<sc-for list="{{ menuItems }}" as="m" hint-placeholder-count="7">
+<sc-if value="{{ m.sep }}" hint-placeholder-val="{{ false }}"><span role="separator" style="height: 1px; margin: 4px 6px; background: {{ k.hair }}"></span></sc-if>
+<sc-if value="{{ m.item }}" hint-placeholder-val="{{ true }}"><span role="menuitem" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 6px; background: {{ m.bg }}; color: {{ m.fg }}"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ m.icon }}"></path></svg>{{ m.label }}</span></sc-if>
+</sc-for>
+</span>
+</sc-if>
+</span>
+</div>
+</sc-for>
+
+<div style="display: flex; flex-direction: column; background: {{ k.elev }}; border-radius: 0 0 10px 10px; border-top: 1px solid {{ k.hair }}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 8px 16px">
+<span role="button" aria-expanded="{{ dryStr }}" style="display: inline-flex; align-items: center; gap: 8px; height: 32px; color: {{ k.tx }}; font-weight: 500"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ dryRot }})"><path d="M9 6l6 6-6 6"></path></svg>Dry runs<span style="font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 999px; background: {{ k.neuBg }}; color: {{ k.neuTx }}">3</span><span style="color: {{ k.sub }}; font-weight: 400">Not written to the site.</span></span>
+<span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; color: {{ k.tx }}; font-weight: 500">Clear dry runs</span>
+</div>
+<sc-if value="{{ dryOpen }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; padding: 0 16px 10px 38px; animation: ad-in .2s ease both">
+<sc-for list="{{ dry }}" as="d" hint-placeholder-count="3">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 8px 0; border-top: 1px solid {{ k.hair }}; font-size: 13px">
+<span style="font-weight: 600; min-width: 140px">{{ d.name }}</span><span style="color: {{ k.sub }}">{{ d.meta }}</span><span style="margin-left: auto">{{ d.result }}</span><span style="color: {{ k.link }}; font-weight: 500">Open</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+</div>
+</div>
+
+<nav aria-label="Pages" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px">
+<span style="color: {{ k.sub }}; font-variant-numeric: tabular-nums">1–8 of 23</span>
+<span style="display: flex; gap: 6px"><span style="height: 32px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid {{ k.line }}; border-radius: 8px; color: {{ k.sub }}">Previous</span><span style="height: 32px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 500">Next</span></span>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"view":{"editor":"text","default":"menu,dry"},"$preview":{"width":1020,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', sub2: 'oklch(21% 0.006 285.885)', base: '#ffffff', elev: '#ffffff', ctrl: '#ffffff', overlay: '#ffffff', tint: 'oklch(94% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)', brand: 'oklch(0.5772 0.2324 260)', link: 'oklch(42.4% 0.199 265.638)', bad: 'oklch(50.5% 0.213 27.518)', okBg: '#ccfbf1', okTx: '#115e59', neuBg: '#f5f5f5', neuTx: '#262626', warnBg: '#ffedd5', warnTx: '#9a3412', badBg: '#fee2e2', badTx: '#991b1b', infoBg: '#dbeafe', infoTx: '#1e40af', hl: '#ffffff', sh: '0 12px 32px rgba(0,0,0,.14)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', sub2: 'oklch(97% 0 0)', base: 'oklch(17% 0 0)', elev: 'oklch(14% 0 0)', ctrl: 'oklch(21% 0 0)', overlay: 'oklch(21% 0 0)', tint: 'oklch(26.9% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(32% 0 0)', brand: 'oklch(0.52 0.21 260)', link: 'oklch(70.7% 0.165 254.624)', bad: 'oklch(70.4% 0.191 22.216)', okBg: '#042f2e', okTx: '#99f6e4', neuBg: '#262626', neuTx: '#e5e5e5', warnBg: '#431407', warnTx: '#fed7aa', badBg: '#450a0a', badTx: '#fca5a5', infoBg: '#172554', infoTx: '#bfdbfe', hl: 'oklch(21% 0 0)', sh: '0 12px 32px rgba(0,0,0,.5)' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const narrow = !!this.props.narrow;
+const view = String(this.props.view ?? 'menu,dry');
+const menuOn = view.indexOf('menu') >= 0;
+const dryOn = view.indexOf('dry') >= 0;
+const O = { Schedule: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2', Wizard: 'M4 20L15 9M14 4l1.5 3L19 8.5 15.5 10 14 13l-1.5-3L9 8.5 12.5 7z', Agent: 'M5 8h14v11H5zM12 4v4M9 13h.01M15 13h.01M9 16.5h6', Rollback: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4' };
+const S = { Running: [k.infoBg, k.infoTx, 'ad-pulse 1.4s ease-in-out infinite'], Completed: [k.okBg, k.okTx, 'none'], Failed: [k.badBg, k.badTx, 'none'], Paused: [k.warnBg, k.warnTx, 'none'], Cancelled: [k.neuBg, k.neuTx, 'none'], 'Rolled back': [k.neuBg, k.neuTx, 'none'] };
+const c = (n, label, bad) => ({ n: n, label: label, fg: k.sub, nfg: bad ? k.bad : k.tx });
+const data = [
+{ name: 'Products feed', coll: 'posts · en', time: 'Today 18:42 UTC', origin: 'Schedule', status: 'Running', meter: true, counts: [c('640', 'of 1,000'), c('412', 'updated'), c('228', 'unchanged')] },
+{ name: 'Authors', coll: 'bylines · en', time: 'Today 18:20 UTC', origin: 'Agent', status: 'Failed', counts: [c('INVALID_SOURCE', '', true)] },
+{ name: 'Products feed', coll: 'posts · en', time: 'Today 06:00 UTC', origin: 'Schedule', status: 'Completed', counts: [c('12', 'created'), c('30', 'updated'), c('3', 'failed', true)] },
+{ name: 'Rollback of Products feed', coll: 'posts · en', time: 'Yesterday 18:39 UTC', origin: 'Wizard', status: 'Completed', rb: true, counts: [c('10', 'restored'), c('0', 'kept')] },
+{ name: 'Products feed', coll: 'posts · en', time: 'Yesterday 18:38 UTC', origin: 'Wizard', status: 'Rolled back', counts: [c('10', 'updated')] },
+{ name: 'Events', coll: 'events · de', time: 'Yesterday 09:12 UTC', origin: 'Wizard', status: 'Paused', counts: [c('200', 'of 540'), c('200', 'created')] },
+{ name: 'One-off import', coll: 'posts · en', time: '24 Nov 18:38 UTC', origin: 'Wizard', status: 'Completed', counts: [c('10', 'created')] },
+{ name: 'Products feed', coll: 'posts · en', time: '24 Nov 06:00 UTC', origin: 'Schedule', status: 'Cancelled', counts: [c('0', 'written')] }
+];
+const menuRow = 2;
+const it = (label, icon, danger, hover) => ({ item: true, sep: false, label: label, icon: icon, fg: danger ? k.bad : k.tx, bg: hover ? k.tint : 'transparent' });
+const sep = { sep: true, item: false };
+return {
+k: k, wide: !narrow, narrowOn: narrow,
+cols: narrow ? 'minmax(0, 1fr) auto' : 'minmax(0, 1.5fr) minmax(0, 1fr) 120px minmax(0, 1.6fr) 32px',
+rowGap: narrow ? '8px 12px' : '16px',
+nameCol: narrow ? '1' : 'auto', statusCol: narrow ? '1' : 'auto', recCol: narrow ? '1 / span 2' : 'auto', menuCol: narrow ? '2' : 'auto', menuRow: narrow ? '1' : 'auto',
+rows: data.map((d, i) => {
+const s = S[d.status];
+const open = menuOn && i === menuRow;
+return {
+name: d.name, coll: d.coll, time: d.time, origin: d.origin, oIcon: O[d.origin], status: d.status, isRb: !!d.rb,
+sBg: s[0], sFg: s[1], sAnim: s[2], hasMeter: !!d.meter, counts: d.counts,
+bg: open ? k.hl : 'transparent', menu: open, menuStr: open ? 'true' : 'false',
+btnLn: open ? k.line : 'transparent', btnBg: open ? k.ctrl : 'transparent'
+};
+}),
+menuItems: [it('Open', 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6', false, true), it('Download log', 'M12 4v11M7 10l5 5 5-5M5 20h14'), sep, it('Retry 3 failed records', 'M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5'), sep, it('Roll back…', 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4', true)],
+dryOpen: dryOn, dryStr: dryOn ? 'true' : 'false', dryRot: dryOn ? '90deg' : '0deg',
+dry: [
+{ name: 'Products feed', meta: 'posts · en · Today 18:35 UTC', result: '10 would be created' },
+{ name: 'Products feed', meta: 'posts · en · Today 18:31 UTC', result: '2 would fail' },
+{ name: 'Authors', meta: 'bylines · en · Today 18:19 UTC', result: '48 would be created' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

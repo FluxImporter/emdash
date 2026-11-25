@@ -6,13 +6,16 @@ import type { Counters, Job } from "../../../engine/types.js";
 import { api, downloadLog } from "../../api.js";
 import { ApiError, isForbidden, isRetryable } from "../../api-error.js";
 import { describeError, describeJobError, FINAL_JOB_ERRORS } from "../../errors.js";
-import { HOME_URL } from "../../home/links.js";
-import { type Msg, useT, type Values } from "../../i18n.js";
+import { whenLabel } from "../../home/shared/When.js";
+import { type Msg, useT, useTn, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { queryKeys } from "../../queries.js";
 import { RETRY_DELAYS_MS, useJobDriver } from "../../run-driver.js";
+import { PauseIcon, PlayIcon } from "../../ui/icons.js";
+import { RecordCounts } from "../../ui/RecordCounts.js";
 import { useWizard } from "../context.js";
 import { PublishingLine } from "../Publishing.js";
+import { StepHeader } from "../StepHeader.js";
 import {
 	jobInput,
 	ownerOf,
@@ -23,7 +26,7 @@ import {
 	type WizardAction,
 } from "../state.js";
 import { writeUrl } from "../url.js";
-import { M } from "./messages.js";
+import { COUNT, M } from "./messages.js";
 
 /**
  * The Run step: creates the real job (after saving a new template, when asked) or reopens
@@ -33,16 +36,6 @@ import { M } from "./messages.js";
 
 /** The `once` key of the real job's creation (preflight F14). */
 const RUN_KEY = "run";
-/** The counters every job has, in the order shown; `removed` follows when the job has it. */
-const SHOWN: readonly Exclude<keyof Counters, "reverted" | "removed">[] = [
-	"created",
-	"updated",
-	"unchanged",
-	"failed",
-	"locked",
-	"conflict",
-	"filtered",
-];
 /** What the dry run's total counts (Preview's `dryRunFinished`): records read, not removals. */
 const processed = (c: Counters) =>
 	c.created + c.updated + c.unchanged + c.locked + c.conflict + c.failed + c.filtered;
@@ -73,6 +66,7 @@ function unreadable(error: unknown): boolean {
 
 export function RunStep() {
 	const t = useT();
+	const tn = useTn();
 	const { i18n } = useLingui();
 	const { state, dispatch, once, restart } = useWizard();
 	const queryClient = useQueryClient();
@@ -189,13 +183,13 @@ export function RunStep() {
 	// The live region stays mounted while its text changes (review minor 3).
 	const live = (
 		<div className="flex items-center gap-3">
-			{job === null && status ? (
+			{status && (job === null || isActive(job)) ? (
 				// Beside its visible text, the spinner is not announced a second time.
 				<span aria-hidden="true">
 					<Loader size="sm" />
 				</span>
 			) : null}
-			<p className="text-lg font-medium" aria-live="polite">
+			<p className="text-base font-semibold text-kumo-default" aria-live="polite">
 				{status ? t(status.msg, status.values) : null}
 			</p>
 		</div>
@@ -214,11 +208,32 @@ export function RunStep() {
 				: null;
 	const publishingLine = publishing === null ? null : <PublishingLine publishing={publishing} />;
 
+	// A job reopened by URL has no draft, so its source's name is not known here.
+	const sourceName = state.source?.label ?? state.base?.name ?? null;
+	const summary =
+		job === null
+			? undefined
+			: t(sourceName === null ? M.summaryNoSource : M.summary, {
+					...(sourceName === null ? {} : { source: sourceName }),
+					collection: job.template.collection,
+					locale: job.template.locale,
+					when: whenLabel(job.createdAt, Date.now(), i18n.locale || "en", t),
+				});
+	const header = <StepHeader {...(summary === undefined ? {} : { summary })} />;
+
 	if (job === null) {
 		return (
-			<div className="space-y-4">
-				{live}
-				{publishingLine}
+			// The same shape as below, so the live region stays mounted when the job arrives.
+			<div className="flex flex-col gap-4">
+				{header}
+				{null}
+				<section
+					aria-label={t(M.progress)}
+					className="flex flex-col gap-3 rounded-lg border border-kumo-hairline bg-kumo-base p-4"
+				>
+					<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">{live}</div>
+					{publishingLine}
+				</section>
 				{problem ? (
 					<ErrorNotice
 						error={problem.error}
@@ -246,151 +261,157 @@ export function RunStep() {
 		(driverFailed && isForbidden(driver.error)) ||
 		(problem !== null && isForbidden(problem.error))
 	);
+	const c = job.counters;
+	const completed = job.status === "completed" && !job.dryRun;
 
 	return (
-		<div className="space-y-4">
-			{live}
-			{publishingLine}
+		<div className="flex flex-col gap-4">
+			{header}
 			{job.status === "failed" && job.error ? <JobError error={job.error} /> : null}
-			{job.dryRun ? <p className="text-sm text-kumo-subtle">{t(M.dryRun)}</p> : null}
-
-			{job.status === "completed" || job.status === "cancelled" ? null : total !== null &&
-				total > 0 ? (
-				<Meter
-					label={t(M.progress)}
-					value={Math.min(done, total)}
-					max={total}
-					customValue={t(M.progressCount, {
-						done: number(Math.min(done, total)),
-						total: number(total),
-					})}
-				/>
-			) : active ? (
-				// A job reopened by URL has no known total (Coordinator's call 5).
-				<div className="flex w-full flex-col gap-2">
-					<span id={progressId} className="text-xs text-kumo-subtle">
-						{t(M.progress)}
-					</span>
-					<progress className="w-full" aria-labelledby={progressId} />
-				</div>
-			) : null}
-
-			{showRate || secondsLeft !== null ? (
-				<div className="flex flex-wrap gap-4 text-sm text-kumo-subtle">
-					{showRate ? <span>{t(M.rate, { rate: number(rate, 1) })}</span> : null}
-					{secondsLeft !== null ? (
-						<span>{t(M.timeLeft, { time: duration(secondsLeft, i18n.locale) })}</span>
+			<section
+				aria-label={t(M.progress)}
+				className="flex flex-col gap-3 rounded-lg border border-kumo-hairline bg-kumo-base p-4"
+			>
+				<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+					{live}
+					{showRate || secondsLeft !== null ? (
+						<p className="flex flex-wrap gap-x-3 text-sm text-kumo-subtle tabular-nums">
+							{secondsLeft !== null ? (
+								<span>{t(M.timeLeft, { time: duration(secondsLeft, i18n.locale) })}</span>
+							) : null}
+							{showRate ? <span>{tn(COUNT.rate, Math.round(rate * 10) / 10)}</span> : null}
+						</p>
 					) : null}
 				</div>
-			) : null}
+				{publishingLine}
+				{job.dryRun ? <p className="text-sm text-kumo-subtle">{t(M.dryRun)}</p> : null}
 
-			<dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-				{SHOWN.map((name) => (
-					<div key={name}>
-						<dt className="text-sm text-kumo-subtle">{t(M.counters[name])}</dt>
-						<dd className="text-2xl font-semibold tabular-nums">{number(job.counters[name])}</dd>
+				{job.status === "completed" || job.status === "cancelled" ? null : total !== null &&
+					total > 0 ? (
+					<Meter
+						label={t(M.progress)}
+						value={Math.min(done, total)}
+						max={total}
+						customValue={t(M.progressCount, {
+							done: number(Math.min(done, total)),
+							total: number(total),
+						})}
+					/>
+				) : active ? (
+					// A job reopened by URL has no known total (Coordinator's call 5).
+					<div className="flex w-full flex-col gap-2">
+						<span id={progressId} className="text-xs text-kumo-subtle">
+							{t(M.progress)}
+						</span>
+						<progress className="w-full" aria-labelledby={progressId} />
 					</div>
-				))}
-				{job.counters.removed === undefined ? null : (
-					<div>
-						<dt className="text-sm text-kumo-subtle">{t(M.counters.removed)}</dt>
-						<dd className="text-2xl font-semibold tabular-nums">{number(job.counters.removed)}</dd>
-					</div>
+				) : null}
+
+				<section aria-label={t(M.counts)}>
+					<RecordCounts
+						counts={{
+							created: c.created,
+							updated: c.updated,
+							unchanged: c.unchanged,
+							failed: c.failed,
+							locked: c.locked,
+							conflict: c.conflict,
+							filtered: c.filtered,
+							...(c.removed === undefined ? {} : { removed: c.removed }),
+						}}
+					/>
+				</section>
+
+				<div className="flex flex-wrap items-center gap-2 pt-1">
+					{controllable && active ? (
+						<Button
+							variant="secondary"
+							icon={<PauseIcon aria-hidden="true" />}
+							disabled={busy}
+							onClick={() => void control(api.pause, "stop")}
+						>
+							{t(M.pause)}
+						</Button>
+					) : null}
+					{controllable &&
+					(job.status === "paused" || (job.status === "failed" && !finalError(job))) ? (
+						<Button
+							variant="primary"
+							icon={<PlayIcon aria-hidden="true" />}
+							disabled={busy}
+							onClick={() => void control(api.resume, "start")}
+						>
+							{t(M.resume)}
+						</Button>
+					) : null}
+					{completed ? (
+						<LinkButton
+							variant="primary"
+							href={`/_emdash/admin/content/${encodeURIComponent(job.template.collection)}`}
+						>
+							{t(M.viewEntries)}
+						</LinkButton>
+					) : null}
+					{controllable && completed && c.failed > 0 ? (
+						<Button
+							variant="secondary"
+							disabled={busy}
+							onClick={() => void control(api.retry, "start")}
+						>
+							{t(M.retryFailed)}
+						</Button>
+					) : null}
+					<Button variant="secondary" onClick={() => void download()}>
+						{t(M.downloadLog)}
+					</Button>
+					{c.failed > 0 ? (
+						<Button variant="secondary" onClick={() => void download("failed")}>
+							{t(M.downloadFailed)}
+						</Button>
+					) : null}
+					{restart !== null && ended(job) ? (
+						<Button variant="secondary" onClick={restart}>
+							{t(M.startNew)}
+						</Button>
+					) : null}
+					{controllable && (active || job.status === "paused" || job.status === "failed") ? (
+						<Dialog.Root role="alertdialog" open={confirming} onOpenChange={setConfirming}>
+							<Dialog.Trigger
+								render={
+									<Button variant="secondary-destructive" disabled={busy}>
+										{t(M.cancel)}
+									</Button>
+								}
+							/>
+							<Dialog className="p-6">
+								<Dialog.Title className="text-lg font-semibold">{t(M.cancelTitle)}</Dialog.Title>
+								<Dialog.Description className="mt-2 text-sm text-kumo-subtle">
+									{t(M.cancelBody)}
+								</Dialog.Description>
+								<div className="mt-4 flex justify-end gap-3">
+									<Dialog.Close render={<Button variant="secondary">{t(M.cancelKeep)}</Button>} />
+									<Button
+										variant="secondary-destructive"
+										onClick={() => {
+											setConfirming(false);
+											void control(api.cancel, "stop");
+										}}
+									>
+										{t(M.cancel)}
+									</Button>
+								</div>
+							</Dialog>
+						</Dialog.Root>
+					) : null}
+				</div>
+
+				{job.status === "completed" || job.status === "cancelled" ? null : (
+					<p className="text-sm text-kumo-subtle">{t(M.leaving)}</p>
 				)}
-			</dl>
+			</section>
 
 			{driverFailed ? <ErrorNotice error={driver.error} onRetry={driver.start} /> : null}
 			{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
-
-			<div className="flex flex-wrap items-center gap-3">
-				{controllable && active ? (
-					<Button
-						variant="secondary"
-						disabled={busy}
-						onClick={() => void control(api.pause, "stop")}
-					>
-						{t(M.pause)}
-					</Button>
-				) : null}
-				{controllable &&
-				(job.status === "paused" || (job.status === "failed" && !finalError(job))) ? (
-					<Button
-						variant="primary"
-						disabled={busy}
-						onClick={() => void control(api.resume, "start")}
-					>
-						{t(M.resume)}
-					</Button>
-				) : null}
-				{controllable && job.status === "completed" && !job.dryRun && job.counters.failed > 0 ? (
-					<Button
-						variant="primary"
-						disabled={busy}
-						onClick={() => void control(api.retry, "start")}
-					>
-						{t(M.retryFailed)}
-					</Button>
-				) : null}
-				{job.status === "completed" && !job.dryRun ? (
-					<LinkButton
-						variant="secondary"
-						href={`/_emdash/admin/content/${encodeURIComponent(job.template.collection)}`}
-					>
-						{t(M.viewEntries)}
-					</LinkButton>
-				) : null}
-				<Button variant="secondary" onClick={() => void download()}>
-					{t(M.downloadLog)}
-				</Button>
-				{job.counters.failed > 0 ? (
-					<Button variant="secondary" onClick={() => void download("failed")}>
-						{t(M.downloadFailed)}
-					</Button>
-				) : null}
-				{restart !== null && ended(job) ? (
-					<Button variant="secondary" onClick={restart}>
-						{t(M.startNew)}
-					</Button>
-				) : null}
-				{ended(job) && !job.dryRun ? (
-					<LinkButton variant="secondary" href={HOME_URL}>
-						{t(M.seeAll)}
-					</LinkButton>
-				) : null}
-				{controllable && (active || job.status === "paused" || job.status === "failed") ? (
-					<Dialog.Root role="alertdialog" open={confirming} onOpenChange={setConfirming}>
-						<Dialog.Trigger
-							render={
-								<Button variant="secondary" disabled={busy}>
-									{t(M.cancel)}
-								</Button>
-							}
-						/>
-						<Dialog className="p-6">
-							<Dialog.Title className="text-lg font-semibold">{t(M.cancelTitle)}</Dialog.Title>
-							<Dialog.Description className="mt-2 text-sm text-kumo-subtle">
-								{t(M.cancelBody)}
-							</Dialog.Description>
-							<div className="mt-4 flex justify-end gap-3">
-								<Dialog.Close render={<Button variant="secondary">{t(M.cancelKeep)}</Button>} />
-								<Button
-									variant="destructive"
-									onClick={() => {
-										setConfirming(false);
-										void control(api.cancel, "stop");
-									}}
-								>
-									{t(M.cancel)}
-								</Button>
-							</div>
-						</Dialog>
-					</Dialog.Root>
-				) : null}
-			</div>
-
-			{job.status === "completed" || job.status === "cancelled" ? null : (
-				<p className="text-sm text-kumo-subtle">{t(M.leaving)}</p>
-			)}
 		</div>
 	);
 }

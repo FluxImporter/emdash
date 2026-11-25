@@ -1,36 +1,46 @@
-import { Button, Empty, LinkButton, Loader, Table } from "@cloudflare/kumo";
+import { Button, Empty, Pagination, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { JobListItem } from "../../../plugin/summaries.js";
 import { api, downloadLog } from "../../api.js";
 import { isForbidden } from "../../api-error.js";
 import { describeError } from "../../errors.js";
-import { useT } from "../../i18n.js";
+import { useT, useTn } from "../../i18n.js";
+import { JOB_PAGE } from "../../limits.js";
 import { M as PAGE } from "../../messages.js";
 import { queryKeys, useAllTemplates, useJobPages, useSchedules } from "../../queries.js";
+import { FileTextIcon } from "../../ui/icons.js";
+import { Forbidden, LoadFailed, LoadingRows } from "../../ui/states.js";
+import { useNarrow } from "../../ui/use-narrow.js";
 import { useHome } from "../Home.js";
-import { openPage, runUrl, WIZARD_URL } from "../links.js";
+import { openPage, runUrl } from "../links.js";
 import { ConfirmDialog } from "../shared/ConfirmDialog.js";
+import { TabSummary } from "../shared/TabSummary.js";
 import { whenLabel } from "../shared/When.js";
 import { jobName, templateName } from "./actions.js";
 import { DryRuns } from "./dry-runs/DryRuns.js";
-import { JobRow, type RowAction } from "./JobRow.js";
-import { M } from "./messages.js";
+import { JobItem, JobRow, type RowAction, type RowProps } from "./JobRow.js";
+import { M, N } from "./messages.js";
 import { RollbackDialog, type RollbackTarget } from "./rollback/RollbackDialog.js";
 
 type StartTarget = Extract<RollbackTarget, { kind: "start" }>;
 
 /**
- * The Jobs tab (spec "Jobs"): real imports newest first, a `jobs/summaries` page at a time with
- * "Load more" (never `jobs/list`, Review Focus 5), each row's actions, and the dry-run line below.
+ * The Jobs tab (Jobs.dc.html): the summary line, then real imports newest first in pages of
+ * `jobs/summaries` (never `jobs/list`, Review Focus 5), each row's menu of actions, the dry runs
+ * as the table's footer, and Previous / Next. Stacked rows below about 700px of content.
  * `useJobPages` refetches the loaded pages every 5 s while a row is unfinished (plan Ruling 15).
- * The schedules are read only when a scheduled job's rollback dialog opens.
+ * The schedules are read only when a scheduled job's cancel or rollback dialog opens.
  */
 export function JobsTab() {
 	const t = useT();
+	const tn = useTn();
 	const { i18n } = useLingui();
+	const number = (n: number) => new Intl.NumberFormat(i18n.locale || "en").format(n);
 	const { announce } = useHome();
+	const [ref, narrow] = useNarrow<HTMLDivElement>();
+	const [page, setPage] = useState(1);
 	const client = useQueryClient();
 	const jobs = useJobPages();
 	const templates = useAllTemplates();
@@ -176,81 +186,129 @@ export function JobsTab() {
 		}
 	};
 
-	// The whole tab fails only without rows to show; a failed poll or Load more keeps the table.
+	// The whole tab fails only without rows to show; a failed poll or page keeps the table.
 	const failed =
 		jobs.isError && jobs.data === undefined
 			? jobs.error
 			: templates.isError && templates.data === undefined
 				? templates.error
 				: null;
-	const rows = jobs.data?.pages.flatMap((page) => page.items) ?? [];
-	const now = Date.now();
 
-	let body: React.ReactNode;
+	// Pages are `jobs/summaries` pages (`JOB_PAGE` rows each). It has no total (TODO: a total
+	// count in jobs/summaries), so while more pages exist the last page is the one after those
+	// loaded, and going to it loads it. A page answered empty (the list ended on a page boundary)
+	// is not a page to show.
+	const loaded = (jobs.data?.pages ?? []).filter((p, i) => i === 0 || p.items.length > 0);
+	const more = jobs.hasNextPage;
+	const maxPage = Math.max(1, loaded.length + (more ? 1 : 0));
+	const current = Math.min(page, maxPage);
+	const shown = Math.max(0, Math.min(current, loaded.length) - 1);
+	const waitingForPage = current > loaded.length;
+	const rows = loaded[shown]?.items ?? [];
+	const all = loaded.flatMap((p) => p.items);
+	const from = loaded.slice(0, shown).reduce((n, p) => n + p.items.length, 0) + 1;
+	const { fetchNextPage, isFetching, isFetchNextPageError } = jobs;
+	useEffect(() => {
+		if (waitingForPage && more && !isFetching && !isFetchNextPageError) void fetchNextPage();
+	}, [waitingForPage, more, isFetching, isFetchNextPageError, fetchNextPage]);
+
+	const now = Date.now();
+	const rowProps = (item: JobListItem): RowProps => {
+		const name = nameOf(item);
+		const when = whenLabel(item.createdAt, now, i18n.locale, t);
+		return {
+			item,
+			name,
+			when,
+			busy: busy === item.id,
+			onAction: (action) => onAction(item, name, when, action),
+		};
+	};
+
+	let body: ReactNode;
 	if (failed !== null) {
 		body = (
-			<div role="alert" className="flex items-center gap-3 text-kumo-danger">
-				<p>{sentence(failed)}</p>
-				{isForbidden(failed) ? null : (
-					<Button
-						variant="secondary"
-						onClick={() => {
+			<>
+				{isForbidden(failed) ? (
+					<Forbidden />
+				) : (
+					<LoadFailed
+						title={t(M.loadFailed)}
+						error={failed}
+						retrying={jobs.isFetching || templates.isFetching}
+						onRetry={() => {
 							if (jobs.isError) void jobs.refetch();
 							if (templates.isError) void templates.refetch();
 						}}
-					>
-						{t(PAGE.tryAgain)}
-					</Button>
+					/>
 				)}
-			</div>
+				<DryRuns names={nameOf} standalone />
+			</>
 		);
 	} else if (jobs.isPending || templates.isPending) {
-		body = <Loader aria-label={t(M.loading)} />;
-	} else if (rows.length === 0) {
-		body = (
-			<Empty
-				size="sm"
-				title={t(M.empty)}
-				contents={
-					<LinkButton variant="primary" href={WIZARD_URL}>
-						{t(M.newImport)}
-					</LinkButton>
-				}
-			/>
-		);
-	} else {
+		body = <LoadingRows label={t(M.loading)} columns={4} />;
+	} else if (all.length === 0) {
 		body = (
 			<>
-				<div className="overflow-x-auto">
-					<Table>
-						<Table.Header>
-							<Table.Row>
-								<Table.Head>{t(M.colName)}</Table.Head>
-								<Table.Head>{t(M.colTarget)}</Table.Head>
-								<Table.Head>{t(M.colStarted)}</Table.Head>
-								<Table.Head>{t(M.colOrigin)}</Table.Head>
-								<Table.Head>{t(M.colStatus)}</Table.Head>
-								<Table.Head>{t(M.colCounts)}</Table.Head>
-								<Table.Head>{t(M.colActions)}</Table.Head>
-							</Table.Row>
-						</Table.Header>
-						<Table.Body>
-							{rows.map((item) => {
-								const name = nameOf(item);
-								const when = whenLabel(item.createdAt, now, i18n.locale, t);
-								return (
-									<JobRow
-										key={item.id}
-										item={item}
-										name={name}
-										when={when}
-										busy={busy === item.id}
-										onAction={(action) => onAction(item, name, when, action)}
-									/>
-								);
-							})}
-						</Table.Body>
-					</Table>
+				<div className="rounded-lg border border-dashed border-kumo-line bg-kumo-base">
+					<Empty
+						size="sm"
+						icon={<FileTextIcon aria-hidden="true" size={28} />}
+						title={t(M.empty)}
+						description={t(M.emptyText)}
+					/>
+				</div>
+				<DryRuns names={nameOf} standalone />
+			</>
+		);
+	} else {
+		const running = all.filter((i) => i.status === "running").length;
+		const failures = all.filter((i) => i.status === "failed").length;
+		body = (
+			<>
+				<TabSummary
+					lead={tn(more ? N.latest : N.imports, all.length)}
+					rest={[
+						running > 0 ? tn(N.running, running) : "",
+						failures > 0 ? tn(N.failed, failures) : "",
+					]}
+				/>
+				{problem === null ? null : (
+					<p role="alert" className="text-sm text-kumo-danger">
+						{sentence(problem)}
+					</p>
+				)}
+				<div
+					className="overflow-hidden rounded-lg border border-kumo-hairline bg-kumo-base"
+					aria-busy={waitingForPage || undefined}
+				>
+					{narrow ? (
+						<ul className="divide-y divide-kumo-line">
+							{rows.map((item) => (
+								<JobItem key={item.id} {...rowProps(item)} />
+							))}
+						</ul>
+					) : (
+						<Table>
+							<Table.Header>
+								<Table.Row>
+									<Table.Head>{t(M.colName)}</Table.Head>
+									<Table.Head>{t(M.colStarted)}</Table.Head>
+									<Table.Head>{t(M.colStatus)}</Table.Head>
+									<Table.Head>{t(M.colCounts)}</Table.Head>
+									<Table.Head>
+										<span className="sr-only">{t(M.colActions)}</span>
+									</Table.Head>
+								</Table.Row>
+							</Table.Header>
+							<Table.Body>
+								{rows.map((item) => (
+									<JobRow key={item.id} {...rowProps(item)} />
+								))}
+							</Table.Body>
+						</Table>
+					)}
+					<DryRuns names={nameOf} />
 				</div>
 				{jobs.isError ? (
 					<div role="alert" className="flex items-center gap-3 text-sm text-kumo-danger">
@@ -258,41 +316,47 @@ export function JobsTab() {
 						{isForbidden(jobs.error) ? null : (
 							<Button
 								variant="secondary"
-								onClick={() =>
-									void (jobs.isFetchNextPageError ? jobs.fetchNextPage() : jobs.refetch())
-								}
+								onClick={() => void (isFetchNextPageError ? fetchNextPage() : jobs.refetch())}
 							>
 								{t(PAGE.tryAgain)}
 							</Button>
 						)}
 					</div>
 				) : null}
-				{jobs.hasNextPage ? (
-					<Button
-						variant="secondary"
-						loading={jobs.isFetchingNextPage}
-						// Kumo's spinner is labelled "Loading" in English: the label names the button.
-						aria-label={t(M.loadMore)}
-						aria-busy={jobs.isFetchingNextPage || undefined}
-						disabled={jobs.isFetchingNextPage}
-						onClick={() => void jobs.fetchNextPage()}
+				{maxPage > 1 ? (
+					<Pagination
+						page={current}
+						setPage={setPage}
+						perPage={JOB_PAGE}
+						// Kumo counts pages from a total: this one gives `maxPage`, never a total shown.
+						totalCount={maxPage * JOB_PAGE}
+						labels={{
+							navigation: t(M.pages),
+							previousPage: t(M.previousPage),
+							nextPage: t(M.nextPage),
+						}}
 					>
-						{t(M.loadMore)}
-					</Button>
+						<Pagination.Info className="text-kumo-default">
+							{() =>
+								waitingForPage
+									? t(M.loading)
+									: t(more ? M.rangeMore : M.range, {
+											from: number(from),
+											to: number(from + rows.length - 1),
+											total: number(all.length),
+										})
+							}
+						</Pagination.Info>
+						<Pagination.Controls controls="simple" />
+					</Pagination>
 				) : null}
 			</>
 		);
 	}
 
 	return (
-		<div className="space-y-4">
-			{problem === null ? null : (
-				<p role="alert" className="text-sm text-kumo-danger">
-					{sentence(problem)}
-				</p>
-			)}
+		<div ref={ref} className="flex flex-col gap-3">
 			{body}
-			<DryRuns names={nameOf} />
 			{cancelling === null ? null : (
 				<CancelDialog
 					name={cancelling.name}

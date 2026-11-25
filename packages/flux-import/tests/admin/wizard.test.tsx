@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { useCredentials } from "../../src/admin/queries.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { StepBar } from "../../src/admin/wizard/StepBar.js";
-import { StepFooter } from "../../src/admin/wizard/StepFooter.js";
-import type { StepId } from "../../src/admin/wizard/state.js";
+import { StepHeader, type StepNext } from "../../src/admin/wizard/StepHeader.js";
+import type { StepId, WizardState } from "../../src/admin/wizard/state.js";
 import { type StepComponents, Wizard } from "../../src/admin/wizard/Wizard.js";
 import { fail, mockRoutes, renderAdmin } from "./harness.js";
 
@@ -16,6 +16,7 @@ function dummy(id: StepId) {
 		const { state, dispatch } = useWizard();
 		return (
 			<div>
+				<StepHeader />
 				<p>{`${id} body`}</p>
 				{state.run === null ? null : <p>{`job ${state.run.jobId}`}</p>}
 				{id === "source" ? (
@@ -177,6 +178,59 @@ describe("Wizard", () => {
 		expect(screen.queryByText("Only administrators can import.")).toBeNull();
 	});
 
+	it("puts the product mark beside the page title, and Cancel back to the Imports home", async () => {
+		granted();
+		renderAdmin(<Wizard steps={DUMMY} />);
+		const title = screen.getByRole("heading", { level: 1, name: "New import" });
+		const mark = title.parentElement?.querySelector("svg");
+		expect(mark).toHaveAttribute("aria-hidden", "true");
+		await stepHeading();
+		expect(screen.getByRole("link", { name: "Cancel" })).toHaveAttribute(
+			"href",
+			"/_emdash/admin/plugins/flux-import/imports",
+		);
+		expect(screen.queryByRole("link", { name: "See all imports" })).toBeNull();
+	});
+
+	it("offers See all imports instead of Cancel on the Run step", async () => {
+		window.history.replaceState(null, "", "/import?job=J1");
+		granted();
+		renderAdmin(<Wizard steps={DUMMY} />);
+		expect(await stepHeading()).toHaveTextContent("Run");
+		expect(screen.getByRole("link", { name: "See all imports" })).toHaveAttribute(
+			"href",
+			"/_emdash/admin/plugins/flux-import/imports",
+		);
+		expect(screen.queryByRole("link", { name: "Cancel" })).toBeNull();
+	});
+
+	it("marks steps done (a check), current (filled, aria-current) or upcoming (Critique 4)", async () => {
+		granted();
+		const { user } = renderAdmin(<Wizard steps={DUMMY} />);
+		await user.click(await screen.findByRole("button", { name: "Load sample" }));
+		const list = screen.getByRole("list", { name: /steps/i });
+		await user.click(within(list).getByRole("link", { name: /Target/ }));
+		await stepHeading();
+		// Source is done: a check, its number for screen readers, and still a link back.
+		const source = within(list).getByRole("link", { name: "1 Source (done)" });
+		expect(source).not.toHaveAttribute("aria-current");
+		expect(source.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+		expect(within(source).getByText("1")).toHaveClass("sr-only");
+		expect(within(source).getByText("(done)")).toHaveClass("sr-only");
+		// Target is current: its number in the filled circle.
+		const target = within(list).getByRole("link", { name: "2 Target" });
+		expect(target).toHaveAttribute("aria-current", "step");
+		expect(within(target).getByText("2")).toHaveClass("bg-kumo-badge-inverted");
+		// Map is upcoming and not available: an outlined number, no link.
+		const map = within(list).getByText("Map").closest("[aria-disabled]") as HTMLElement;
+		expect(map).toHaveAttribute("aria-disabled", "true");
+		expect(within(map).getByText("3")).toHaveClass("border", "border-kumo-line");
+		expect(within(list).getAllByRole("link")).toHaveLength(2);
+		// Every step is reached by keyboard while it is a link.
+		await user.click(source);
+		expect(await stepHeading()).toHaveTextContent("Source");
+	});
+
 	it("renders six steps as a list of links with aria-current=step on the current one", async () => {
 		granted();
 		const { user } = renderAdmin(<Wizard steps={DUMMY} />);
@@ -207,9 +261,9 @@ describe("Wizard", () => {
 		expect(target).toHaveAttribute("href", "?step=target");
 		expect(target).not.toHaveAttribute("aria-current");
 		expect(target).toHaveTextContent(/^2 Target$/);
-		// The admin's link colour: text-kumo-brand is the orange accent, below AA on the light theme.
-		expect(target).toHaveClass("text-kumo-link");
-		expect(target).not.toHaveClass("text-kumo-brand");
+		// Steps are pills, not underlined links (Critique 4); text on the page canvas keeps AA.
+		expect(target).toHaveClass("no-underline", "text-kumo-default");
+		expect(target).not.toHaveClass("underline");
 		expect(within(list).getAllByRole("link")).toHaveLength(2);
 	});
 
@@ -253,10 +307,14 @@ describe("Wizard", () => {
 		renderAdmin(<Wizard steps={DUMMY} />);
 		expect(await stepHeading()).toHaveTextContent("Run");
 		expect(screen.getByText("job J1")).toBeInTheDocument();
-		const run = screen.getByRole("link", { name: /Run/ });
+		const steps = screen.getByRole("list", { name: /steps/i });
+		const run = within(steps).getByRole("link", { name: /Run/ });
 		expect(run).toHaveAttribute("aria-current", "step");
-		// Once a run exists, every earlier step is unreachable.
-		expect(screen.getAllByRole("link")).toHaveLength(1);
+		// Once a run exists, every earlier step is unreachable, though done.
+		expect(within(steps).getAllByRole("link")).toHaveLength(1);
+		const source = within(steps).getByText("Source").closest("[aria-disabled]") as HTMLElement;
+		expect(source).toHaveTextContent("1 Source (done)");
+		expect(within(source).queryByText("(not available yet)")).toBeNull();
 		const params = new URLSearchParams(window.location.search);
 		expect(params.get("step")).toBe("run");
 		expect(params.get("job")).toBe("J1");
@@ -358,25 +416,95 @@ describe("Wizard", () => {
 	});
 });
 
-describe("StepFooter", () => {
+/** Renders a step's header in a draft on `step`, with `next` as its Next. */
+function header(initial: Partial<WizardState> | undefined, next?: StepNext) {
+	return renderAdmin(
+		<WizardProvider {...(initial === undefined ? {} : { initial })}>
+			<StepHeader summary="What this step is for." {...(next === undefined ? {} : { next })} />
+		</WizardProvider>,
+	);
+}
+
+const READY: Partial<WizardState> = {
+	source: { kind: "paste", uploadId: "u1", label: "Pasted" },
+	columns: [{ key: "id", values: ["1"] }],
+	target: { collection: "posts", locale: "en", translationLocale: null },
+	rows: { key: { from: "id" } },
+};
+
+describe("StepHeader", () => {
+	it("puts the step's heading, its summary, Back and Next: {step} at the top (Critique 4)", async () => {
+		const { user } = header({ ...READY, step: "map" }, { canNext: true, onNext: () => undefined });
+		const heading = screen.getByRole("heading", { level: 2, name: "Map" });
+		expect(heading).toHaveAttribute("tabindex", "-1");
+		expect(screen.getByText("What this step is for.")).toBeVisible();
+		const back = screen.getByRole("button", { name: "Back" });
+		const next = screen.getByRole("button", { name: "Next: Options" });
+		// Heading, Back, then Next: the order a keyboard reaches them in.
+		expect(heading.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(back.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		await user.click(back);
+		expect(await screen.findByRole("heading", { level: 2, name: "Target" })).toBeVisible();
+	});
+
+	it("names the next step through the translation, and takes a step's own label", () => {
+		header({ step: "source" }, { canNext: false, onNext: () => undefined });
+		expect(screen.getByRole("button", { name: "Next: Target" })).toBeDisabled();
+		// No step before Source: no Back.
+		expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+	});
+
+	it("names Next from each step to the one after it", () => {
+		const cases = [
+			["target", "Next: Map"],
+			["map", "Next: Options"],
+			["options", "Next: Preview"],
+		] as const;
+		for (const [step, name] of cases) {
+			const { unmount } = header({ ...READY, step }, { canNext: true, onNext: () => undefined });
+			expect(screen.getByRole("button", { name })).toBeEnabled();
+			unmount();
+		}
+	});
+
+	it("shows why Next is disabled beside it, and describes Next with it", () => {
+		header(
+			{ ...READY, step: "map" },
+			{ canNext: false, reason: "Map at least one field", onNext: () => undefined },
+		);
+		const next = screen.getByRole("button", { name: "Next: Options" });
+		expect(next).toBeDisabled();
+		const reason = screen.getByText("Map at least one field");
+		expect(next).toHaveAttribute("aria-describedby", reason.id);
+		// On the page canvas, not a card: the default text colour keeps AA contrast.
+		expect(reason).toHaveClass("text-kumo-default");
+	});
+
+	it("has no Back or Next without `next`, as on Run", () => {
+		header({ ...READY, step: "run", run: { jobId: "R" } });
+		expect(screen.getByRole("heading", { level: 2, name: "Run" })).toBeVisible();
+		expect(screen.queryByRole("button")).toBeNull();
+	});
+
 	it("keeps Next's accessible name while busy: the spinner adds no English 'Loading'", () => {
 		renderAdmin(
 			<WizardProvider>
-				<StepFooter canNext busy onNext={() => undefined} />
-				<StepFooter canNext busy nextLabel="Run the import" onNext={() => undefined} />
+				<StepHeader next={{ canNext: true, busy: true, onNext: () => undefined }} />
+				<StepHeader
+					next={{ canNext: true, busy: true, nextLabel: "Run the import", onNext: () => undefined }}
+				/>
 			</WizardProvider>,
 		);
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
-		expect(screen.getByRole("button", { name: "Next" })).toHaveAttribute("aria-busy", "true");
+		expect(screen.getByRole("button", { name: "Next: Target" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Target" })).toHaveAttribute(
+			"aria-busy",
+			"true",
+		);
 		expect(screen.getByRole("button", { name: "Run the import" })).toBeDisabled();
 	});
 
 	it("is not marked busy when idle", () => {
-		renderAdmin(
-			<WizardProvider>
-				<StepFooter canNext onNext={() => undefined} />
-			</WizardProvider>,
-		);
-		expect(screen.getByRole("button", { name: "Next" })).not.toHaveAttribute("aria-busy");
+		header(undefined, { canNext: true, onNext: () => undefined });
+		expect(screen.getByRole("button", { name: "Next: Target" })).not.toHaveAttribute("aria-busy");
 	});
 });

@@ -1,13 +1,20 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** The Sources tab's messages: URL sources and the credentials below them. */
 export const M = {
 	loading: { id: "flux-import.home-sources.loading", message: "Loading sources" },
+	loadFailed: {
+		id: "flux-import.home-sources.load-failed",
+		message: "Sources could not be loaded.",
+	},
 	sourcesTitle: { id: "flux-import.home-sources.sources-title", message: "URL sources" },
+	sourcesHint: {
+		id: "flux-import.home-sources.sources-hint",
+		message: "Feeds that imports and schedules fetch.",
+	},
 	add: { id: "flux-import.home-sources.add", message: "Add a source" },
-	empty: { id: "flux-import.home-sources.empty", message: "No URL sources yet." },
-	colName: { id: "flux-import.home-sources.col-name", message: "Name" },
-	colAddress: { id: "flux-import.home-sources.col-address", message: "Address" },
+	empty: { id: "flux-import.home-sources.empty", message: "No URL sources yet" },
+	colSource: { id: "flux-import.home-sources.col-source", message: "Source" },
 	colCredential: { id: "flux-import.home-sources.col-credential", message: "Credential" },
 	colLastFetch: { id: "flux-import.home-sources.col-last-fetch", message: "Last fetch" },
 	colActions: { id: "flux-import.home-sources.col-actions", message: "Actions" },
@@ -17,10 +24,11 @@ export const M = {
 		message: "{name} (missing)",
 	},
 	fetched: { id: "flux-import.home-sources.fetched", message: "Fetched {when}" },
-	failed: { id: "flux-import.home-sources.failed", message: "Failed {when}: {reason}" },
+	failed: { id: "flux-import.home-sources.failed", message: "Failed {when}" },
 	never: { id: "flux-import.home-sources.never", message: "Never fetched" },
 	fetchNow: { id: "flux-import.home-sources.fetch-now", message: "Fetch now" },
 	fetchNowRow: { id: "flux-import.home-sources.fetch-now-row", message: "Fetch now {name}" },
+	actionsRow: { id: "flux-import.home-sources.actions-row", message: "Actions for {name}" },
 	edit: { id: "flux-import.home-sources.edit", message: "Edit" },
 	editRow: { id: "flux-import.home-sources.edit-row", message: "Edit {name}" },
 	deleteRow: { id: "flux-import.home-sources.delete-row", message: "Delete {name}" },
@@ -84,10 +92,21 @@ export const M = {
 		message: "Couldn't check which schedules read this source: {reason}",
 	},
 	credentialsTitle: { id: "flux-import.home-sources.credentials-title", message: "Credentials" },
+	credentialsHint: {
+		id: "flux-import.home-sources.credentials-hint",
+		message: "Write-only. Values are stored on the site and never shown again.",
+	},
 	credentialsEmpty: {
 		id: "flux-import.home-sources.credentials-empty",
-		message: "No credentials yet.",
+		message: "No credentials yet",
 	},
+	credAdd: { id: "flux-import.home-sources.cred-add", message: "Add a credential" },
+	credSentIn: {
+		id: "flux-import.home-sources.cred-sent-in",
+		message: "Sent in the {header} header",
+	},
+	credNotUsed: { id: "flux-import.home-sources.cred-not-used", message: "not used yet" },
+	valueHidden: { id: "flux-import.home-sources.value-hidden", message: "Value hidden" },
 	credName: { id: "flux-import.home-sources.cred-name", message: "Name" },
 	credHeader: { id: "flux-import.home-sources.cred-header", message: "Header" },
 	credValue: { id: "flux-import.home-sources.cred-value", message: "Value" },
@@ -102,10 +121,6 @@ export const M = {
 	credValueHint: {
 		id: "flux-import.home-sources.cred-value-hint",
 		message: "Stored on the site and never shown again.",
-	},
-	credFormTitle: {
-		id: "flux-import.home-sources.cred-form-title",
-		message: "Add or replace a credential",
 	},
 	credSave: { id: "flux-import.home-sources.cred-save", message: "Save credential" },
 	credSaved: { id: "flux-import.home-sources.cred-saved", message: "Saved the credential {name}." },
@@ -140,3 +155,22 @@ export const M = {
 		message: "Deleted the credential {name}.",
 	},
 } satisfies Record<string, Msg>;
+
+/** Counts in words, with plural forms. */
+export const N = {
+	sources: {
+		id: "flux-import.home-sources.count-sources",
+		one: "{count} URL source",
+		other: "{count} URL sources",
+	},
+	credentials: {
+		id: "flux-import.home-sources.count-credentials",
+		one: "{count} credential",
+		other: "{count} credentials",
+	},
+	usedBy: {
+		id: "flux-import.home-sources.used-by",
+		one: "used by {count} source",
+		other: "used by {count} sources",
+	},
+} satisfies Record<string, PluralMsg>;

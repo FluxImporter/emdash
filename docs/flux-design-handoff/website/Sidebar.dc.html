@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Docs sidebar with product switcher</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<nav aria-label="Docs" style="font-family: Inter, system-ui, sans-serif; color: {{ t.tx }}; font-size: 15px; line-height: 22px; display: flex; flex-direction: column; gap: 20px; padding: 20px 16px 32px; box-sizing: border-box">
+
+<div style="position: relative">
+<button type="button" aria-expanded="{{ openStr }}" aria-haspopup="true" onClick="{{ toggleMenu }}" style="width: 100%; min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 1px solid {{ t.ln2 }}; border-radius: 10px; background: {{ t.b1 }}; color: {{ t.tx }}; font: 600 15px/22px Inter, system-ui, sans-serif; cursor: pointer; text-align: left">
+<span aria-hidden="true" style="width: 26px; height: 26px; border-radius: 7px; background: #ffd23f; color: #0f2233; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700">E</span>
+<span style="display: flex; flex-direction: column; line-height: 18px"><span style="font-size: 12px; font-weight: 500; color: {{ t.tx3 }}">Product</span><span>EmDash</span></span>
+<span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: {{ t.tx3 }}">v0.7</span>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ menuRot }}); transition: transform .2s ease"><path d="M6 9l6 6 6-6"></path></svg>
+</button>
+<sc-if value="{{ open }}" hint-placeholder-val="{{ false }}">
+<ul role="menu" style="position: absolute; left: 0; right: 0; top: 54px; z-index: 2; margin: 0; padding: 6px; list-style: none; background: {{ t.b1 }}; border: 1px solid {{ t.ln2 }}; border-radius: 12px; box-shadow: {{ t.sh }}; animation: fx-in .18s ease both">
+<li role="none"><a role="menuitem" href="EmDash.dc.html" style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 10px; border-radius: 8px; background: {{ t.b2 }}; color: {{ t.tx }}; text-decoration: none; font-weight: 600">EmDash<span style="margin-left: auto; font-size: 12px; font-weight: 600; color: {{ t.ok }}">Available</span></a></li>
+<li role="none"><span role="menuitem" aria-disabled="true" style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 10px; border-radius: 8px; color: {{ t.tx3 }}">WordPress<span style="margin-left: auto; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px dashed {{ t.ln2 }}">soon</span></span></li>
+</ul>
+</sc-if>
+</div>
+
+<sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<button type="button" aria-expanded="{{ g.exp }}" onClick="{{ g.toggle }}" style="display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 10px; border: 0; background: transparent; color: {{ t.tx }}; font: 600 13px/18px Inter, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; cursor: pointer">{{ g.title }}<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ g.rot }}); transition: transform .2s ease"><path d="M6 9l6 6 6-6"></path></svg></button>
+<sc-if value="{{ g.isOpen }}" hint-placeholder-val="{{ true }}">
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 1px">
+<sc-for list="{{ g.items }}" as="it" hint-placeholder-count="4">
+<li style="display: flex; flex-direction: column; gap: 1px">
+<a href="{{ it.href }}" aria-current="{{ it.cur }}" style="display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border-radius: 8px; background: {{ it.bg }}; color: {{ it.fg }}; font-weight: {{ it.fw }}; text-decoration: none; transition: background-color .2s ease">{{ it.label }}<sc-if value="{{ it.hasCount }}" hint-placeholder-val="{{ false }}"><span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: {{ it.countFg }}">{{ it.count }}</span></sc-if></a>
+<sc-if value="{{ it.hasKids }}" hint-placeholder-val="{{ false }}">
+<ul style="margin: 0 0 4px 14px; padding: 0 0 0 10px; list-style: none; border-left: 1px solid {{ t.ln }}; display: flex; flex-direction: column; gap: 1px">
+<sc-for list="{{ it.kids }}" as="k" hint-placeholder-count="6">
+<li><a href="{{ k.href }}" aria-current="{{ k.cur }}" style="display: flex; align-items: center; min-height: 32px; padding: 0 10px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 13px; background: {{ k.bg }}; color: {{ k.fg }}; font-weight: {{ k.fw }}; text-decoration: none">{{ k.label }}</a></li>
+</sc-for>
+</ul>
+</sc-if>
+</li>
+</sc-for>
+</ul>
+</sc-if>
+</div>
+</sc-for>
+
+<div style="display: flex; flex-direction: column; gap: 2px; border-top: 1px solid {{ t.ln }}; padding-top: 16px">
+<span aria-disabled="true" style="display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; color: {{ t.tx3 }}">WordPress docs<span style="margin-left: auto; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px dashed {{ t.ln2 }}">soon</span></span>
+</div>
+
+</nav>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"current":{"editor":"text","default":"Install"},"menuOpen":{"editor":"boolean","default":false},"$preview":{"width":300,"height":1200}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { open: null, closed: {} }; }
+renderVals() {
+const T = {
+dark: { b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7', ok: '#5fd39a', sh: '0 20px 50px rgba(0,0,0,.45)' },
+light: { b1: '#ffffff', b2: '#eef2f5', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a', ok: '#146c3f', sh: '0 18px 40px rgba(15,34,51,.14)' }
+};
+const t = T[this.props.theme === 'light' ? 'light' : 'dark'];
+const cur = this.props.current || 'Install';
+const open = this.state.open === null ? !!this.props.menuOpen : this.state.open;
+const hrefs = { 'Install': 'EmDash.dc.html', 'Schedules': 'Guide.dc.html', 'API routes': 'ApiJobsCreate.dc.html', 'Permissions': 'Permissions.dc.html', 'jobs': 'ApiJobsCreate.dc.html' };
+const style = (on) => ({ bg: on ? '#ffd23f' : 'transparent', fg: on ? '#0f2233' : t.tx2, fw: on ? 600 : 400, cur: on ? 'page' : 'false' });
+const data = [
+{ title: 'Start here', items: ['Install', 'Your first import', 'Configuration and settings', 'Permissions'] },
+{ title: 'Guides', items: ['The import wizard', 'Templates', 'URL sources and credentials', 'Schedules', 'Rollback', 'Record rules', 'Missing entries', 'Media', 'Taxonomies', 'Translations', 'AI mapping', 'Imports from AI agents'] },
+{ title: 'Reference', items: ['API routes', 'Agent tools', 'Template format', 'Source formats', 'Hooks', 'Error codes', 'Job states and record outcomes', 'Storage'] }
+];
+const counts = { 'API routes': '44', 'Agent tools': '8' };
+const apiKids = ['jobs', 'templates', 'sources', 'schedules', 'credentials', 'schema'];
+const apiOpen = cur === 'API routes' || apiKids.indexOf(cur) >= 0;
+return {
+t: t,
+open: open,
+openStr: open ? 'true' : 'false',
+menuRot: open ? '180deg' : '0deg',
+toggleMenu: () => this.setState({ open: !open }),
+groups: data.map((g) => {
+const isOpen = !this.state.closed[g.title];
+return {
+title: g.title, isOpen: isOpen, exp: isOpen ? 'true' : 'false', rot: isOpen ? '0deg' : '-90deg',
+toggle: () => this.setState({ closed: { ...this.state.closed, [g.title]: isOpen } }),
+items: g.items.map((l) => {
+const s = style(l === cur);
+const kids = l === 'API routes' && apiOpen;
+return {
+label: l, href: hrefs[l] || '#', ...s,
+hasCount: !!counts[l], count: counts[l] || '', countFg: l === cur ? '#0f2233' : t.tx3,
+hasKids: kids,
+kids: kids ? apiKids.map((k) => ({ label: k, href: hrefs[k] || '#', ...style(k === cur) })) : []
+};
+})
+};
+})
+};
+}
+}
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { type ReactNode, useId } from "react";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import type { SchemaField, TaxonomyInfo } from "../../types.js";
+import { WarningIcon, XIcon } from "../../ui/icons.js";
 import {
 	type Blocker,
 	mappable,
@@ -11,7 +12,6 @@ import {
 	type WizardState,
 } from "../state.js";
 import { badgeText, type DetailRow } from "./detail/DetailPanel.js";
-import { M as DETAIL } from "./detail/messages.js";
 import { M } from "./messages.js";
 
 /** The drop target and selection of "+ Add a new field" (preflight F25). */
@@ -74,8 +74,9 @@ function unmappableReason(t: T, field: SchemaField | undefined): string | null {
 }
 
 /**
- * The Map step's middle pane: one drop target per row, each also a button that selects it for
- * the detail panel. `pending` replaces the rows while the fields load or fail.
+ * The Map step's fields pane (StepMap.dc.html): one drop target per row, each also a button that
+ * selects it for the detail panel. `pending` replaces the rows while the fields load or fail.
+ * `keys` are the sample's keys, for the sentence that says what to check.
  */
 export function FieldsPane(p: {
 	heading: string;
@@ -83,22 +84,27 @@ export function FieldsPane(p: {
 	mappings: WizardState["rows"];
 	meta: WizardState["meta"];
 	blockers: readonly Blocker[];
+	keys: ReadonlySet<string>;
 	selected: Selection | null;
 	onSelect(id: Selection): void;
 	onClear(id: DetailRow["id"]): void;
 	pending: ReactNode;
 }) {
+	const t = useT();
 	const headingId = useId();
 	return (
 		<section
 			aria-labelledby={headingId}
-			className="min-w-0 space-y-3 rounded-lg border border-kumo-line p-3 xl:col-span-4"
+			className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-kumo-hairline bg-kumo-base"
 		>
-			<h3 id={headingId} className="truncate text-base font-semibold" title={p.heading}>
-				{p.heading}
-			</h3>
-			{p.pending ?? (
-				<ul>
+			<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 pt-3 pb-2">
+				<h3 id={headingId} className="truncate font-semibold" title={p.heading}>
+					{p.heading}
+				</h3>
+				<span className="text-xs text-kumo-subtle">{t(M.fieldsHint)}</span>
+			</div>
+			{p.pending === null ? (
+				<ul className="divide-y divide-kumo-line border-t border-kumo-hairline">
 					{p.rows.map((row) => (
 						<FieldRow
 							key={row.id}
@@ -106,6 +112,7 @@ export function FieldsPane(p: {
 							mapping={p.mappings[row.id]}
 							meta={p.meta[row.id]}
 							blockers={p.blockers.filter((b) => b.row === row.id)}
+							keys={p.keys}
 							selected={p.selected === row.id}
 							onSelect={() => p.onSelect(row.id)}
 							onClear={() => p.onClear(row.id)}
@@ -113,12 +120,17 @@ export function FieldsPane(p: {
 					))}
 					<AddFieldRow selected={p.selected === NEW_FIELD} onSelect={() => p.onSelect(NEW_FIELD)} />
 				</ul>
+			) : (
+				<div className="p-3">{p.pending}</div>
 			)}
 		</section>
 	);
 }
 
-/** A row's type, as the mockup shows it beside the label. */
+/**
+ * A row's type, as the mockup shows it beside the label. A selected row keeps the pane's base
+ * colour, with the brand bar on its left: the quiet text keeps AA contrast only on the base.
+ */
 function typeOf(t: T, row: DetailRow): string | null {
 	if (row.kind === "field") return row.field?.type ?? null;
 	if (row.kind === "taxonomy") return t(M.taxonomyType);
@@ -126,9 +138,36 @@ function typeOf(t: T, row: DetailRow): string | null {
 	return null;
 }
 
-function isRequired(row: DetailRow): boolean {
+/** Whether a row must be mapped: the key, `translationOf`, and a required field. */
+export function isRequired(row: DetailRow): boolean {
 	if (row.kind === "key" || row.kind === "translationOf") return true;
 	return row.field?.required === true;
+}
+
+/** Whether no mapping can write the row's field (it is then disabled). */
+export function isUnmappable(row: DetailRow): boolean {
+	return row.field !== undefined && !mappable(row.field);
+}
+
+/**
+ * The suggestion's badge colour (Spec "Suggestion"): AI with high or medium confidence in info,
+ * a name match in teal, anything with low confidence in orange, a template's in neutral. The
+ * words say the same, so colour is never the only sign.
+ */
+function badgeVariant(meta: RowMeta): "info" | "teal" | "orange" | "neutral" {
+	if (meta.origin === "template") return "neutral";
+	if (meta.confidence !== undefined && meta.confidence < 0.5) return "orange";
+	return meta.origin === "ai" ? "info" : "teal";
+}
+
+/**
+ * What a "check" asks the user to look at (Copy: "Check: …"): a key the sample lacks, a
+ * suggestion that was not sure, or else (the suggestion flagged its format) the values' format.
+ */
+function checkText(t: T, meta: RowMeta, from: string | null, keys: ReadonlySet<string>): string {
+	if (from !== null && !keys.has(from)) return t(M.checkMissing, { key: from });
+	if (meta.confidence !== undefined && meta.confidence < 0.5) return t(M.checkUnsure);
+	return t(M.checkFormat);
 }
 
 function FieldRow(p: {
@@ -136,6 +175,7 @@ function FieldRow(p: {
 	mapping: RowMapping | undefined;
 	meta: RowMeta | undefined;
 	blockers: readonly Blocker[];
+	keys: ReadonlySet<string>;
 	selected: boolean;
 	onSelect(): void;
 	onClear(): void;
@@ -154,10 +194,10 @@ function FieldRow(p: {
 			data-testid={row.id}
 			className={
 				isOver
-					? "space-y-1 rounded-md border border-kumo-brand bg-kumo-tint px-2 py-2"
+					? "flex flex-col gap-1 border-l-2 border-kumo-brand bg-kumo-tint px-3 py-2"
 					: p.selected
-						? "space-y-1 rounded-md border border-kumo-line bg-kumo-tint px-2 py-2"
-						: "space-y-1 rounded-md border border-transparent px-2 py-2"
+						? "flex flex-col gap-1 border-l-2 border-kumo-brand px-3 py-2"
+						: "flex flex-col gap-1 border-l-2 border-transparent px-3 py-2"
 			}
 		>
 			<div className="flex flex-wrap items-center gap-2">
@@ -168,51 +208,58 @@ function FieldRow(p: {
 					onClick={p.onSelect}
 					className={
 						reason === null
-							? "flex max-w-full shrink-0 grow items-baseline gap-2 rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-kumo-focus"
-							: "flex max-w-full shrink-0 grow cursor-not-allowed items-baseline gap-2 text-left text-sm text-kumo-subtle"
+							? "flex max-w-full shrink-0 grow flex-wrap items-baseline gap-x-2 rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-kumo-focus"
+							: "flex max-w-full shrink-0 grow cursor-not-allowed flex-wrap items-baseline gap-x-2 text-left text-sm text-kumo-subtle"
 					}
 				>
-					<span className="max-w-48 shrink-0 truncate font-medium" title={row.label}>
+					<span
+						className={
+							reason === null
+								? "max-w-48 shrink-0 truncate font-semibold text-kumo-default"
+								: "max-w-48 shrink-0 truncate font-semibold"
+						}
+						title={row.label}
+					>
 						{row.label}
 					</span>
-					{isRequired(row) ? (
-						<>
-							<span aria-hidden="true" className="text-kumo-danger">
-								*
-							</span>
-							<span className="sr-only">{t(M.required)}</span>
-						</>
-					) : null}
 					{type === null ? null : <span className="shrink-0 text-xs text-kumo-subtle">{type}</span>}
+					{isRequired(row) ? <Badge variant="neutral">{t(M.required)}</Badge> : null}
 				</button>
-				{chip !== null ? (
-					<span className="flex min-w-0 items-center gap-1 rounded-full border border-kumo-line bg-kumo-base pl-2 text-xs">
-						<span className="min-w-0 truncate" title={chip}>
-							{chip}
+				<span className="flex flex-wrap items-center justify-end gap-1.5">
+					{chip !== null ? (
+						<span className="flex h-7 min-w-0 items-center gap-1 rounded-md border border-kumo-line bg-kumo-recessed ps-2">
+							<code className="min-w-0 truncate font-mono text-xs font-medium" title={chip}>
+								{chip}
+							</code>
+							<Button
+								variant="ghost"
+								shape="square"
+								size="xs"
+								icon={<XIcon aria-hidden="true" />}
+								aria-label={
+									from === null
+										? t(M.removeExpression, { field: row.label })
+										: t(M.removeKey, { key: from, field: row.label })
+								}
+								onClick={p.onClear}
+							/>
 						</span>
-						<Button
-							variant="ghost"
-							size="xs"
-							aria-label={
-								from === null
-									? t(M.removeExpression, { field: row.label })
-									: t(M.removeKey, { key: from, field: row.label })
-							}
-							onClick={p.onClear}
-						>
-							{t(M.remove)}
-						</Button>
-					</span>
-				) : reason === null ? (
-					<span className="rounded-full border border-dashed border-kumo-line px-2 text-xs text-kumo-subtle">
-						{t(M.dropKey)}
-					</span>
-				) : null}
-				{chip !== null && badge !== null ? <Badge variant="secondary">{badge}</Badge> : null}
-				{chip !== null && meta?.check === true ? (
-					<Badge variant="warning">{t(DETAIL.check)}</Badge>
-				) : null}
+					) : reason === null ? (
+						<span className="flex h-7 items-center rounded-md border border-dashed border-kumo-line px-2 text-xs text-kumo-subtle">
+							{t(M.dropKey)}
+						</span>
+					) : null}
+					{chip !== null && meta !== undefined && badge !== null ? (
+						<Badge variant={badgeVariant(meta)}>{badge}</Badge>
+					) : null}
+				</span>
 			</div>
+			{chip !== null && meta?.check === true ? (
+				<p className="flex items-center gap-1.5 text-xs">
+					<WarningIcon aria-hidden="true" className="shrink-0 text-kumo-warning" />
+					{checkText(t, meta, from, p.keys)}
+				</p>
+			) : null}
 			{reason === null ? null : <p className="text-xs text-kumo-subtle">{reason}</p>}
 			{p.blockers.map((b) => (
 				<p key={b.msg.id} className="text-xs text-kumo-danger">
@@ -223,7 +270,10 @@ function FieldRow(p: {
 	);
 }
 
-/** "+ Add a new field": a drop target, and a button that opens the key picker (preflight F25). */
+/**
+ * "+ Drop a key here to propose a new field": a drop target, and a button that opens the key
+ * picker, the keyboard path (preflight F25).
+ */
 function AddFieldRow(p: { selected: boolean; onSelect(): void }) {
 	const t = useT();
 	const { setNodeRef, isOver } = useDroppable({ id: NEW_FIELD });
@@ -233,21 +283,20 @@ function AddFieldRow(p: { selected: boolean; onSelect(): void }) {
 			data-testid={NEW_FIELD}
 			className={
 				isOver
-					? "mt-2 space-y-1 rounded-md border border-dashed border-kumo-brand bg-kumo-tint px-2 py-2"
+					? "border-t border-dashed border-kumo-brand bg-kumo-tint px-3 py-2"
 					: p.selected
-						? "mt-2 space-y-1 rounded-md border border-dashed border-kumo-line bg-kumo-tint px-2 py-2"
-						: "mt-2 space-y-1 rounded-md border border-dashed border-kumo-line px-2 py-2"
+						? "border-t border-dashed border-kumo-brand px-3 py-2 font-semibold"
+						: "border-t border-dashed border-kumo-line px-3 py-2"
 			}
 		>
 			<button
 				type="button"
 				aria-pressed={p.selected}
 				onClick={p.onSelect}
-				className="rounded-sm text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-kumo-focus"
+				className="rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-kumo-focus"
 			>
 				{t(M.addField)}
 			</button>
-			<p className="text-xs text-kumo-subtle">{t(M.addFieldHint)}</p>
 		</li>
 	);
 }

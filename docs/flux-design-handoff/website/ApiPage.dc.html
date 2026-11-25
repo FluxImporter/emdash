@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>API route reference: jobs/create</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="fx-{{ theme }}" style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: {{ t.bg }}; color: {{ t.tx }}; font-size: 16px; line-height: 26px">
+<dc-import name="Header" theme="{{ theme }}" variant="docs" current="reference" mobile="{{ mobile }}" on-toggle="{{ onToggle }}" hint-size="100%,65px"></dc-import>
+
+<sc-if value="{{ mobile }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; border-bottom: 1px solid {{ t.ln }}; background: {{ t.b1 }}">
+<button type="button" aria-expanded="{{ tocStr }}" onClick="{{ toggleToc }}" style="display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 16px; border: 0; background: transparent; color: {{ t.tx }}; font: 600 15px/22px Inter, system-ui, sans-serif; cursor: pointer">On this page<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ tocRot }}); transition: transform .2s ease"><path d="M6 9l6 6 6-6"></path></svg></button>
+<sc-if value="{{ tocOpen }}" hint-placeholder-val="{{ false }}">
+<ul style="margin: 0; padding: 0 16px 12px; list-style: none; display: flex; flex-direction: column; animation: fx-in .2s ease both">
+<sc-for list="{{ outline }}" as="o" hint-placeholder-count="5"><li><a href="{{ o.href }}" style="display: flex; align-items: center; min-height: 40px; color: {{ t.tx2 }}; text-decoration: none">{{ o.label }}</a></li></sc-for>
+</ul>
+</sc-if>
+</div>
+</sc-if>
+
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+<sc-if value="{{ desktop }}" hint-placeholder-val="{{ true }}">
+<aside style="flex: 0 0 290px; border-right: 1px solid {{ t.ln }}; align-self: stretch">
+<dc-import name="Sidebar" theme="{{ theme }}" current="jobs" hint-size="100%,1300px"></dc-import>
+</aside>
+</sc-if>
+<main style="flex: 999 1 560px; min-width: 0; padding: {{ mainPad }}; display: flex; justify-content: center">
+<article style="width: 100%; max-width: 900px; min-width: 0; display: flex; flex-direction: column; gap: 36px">
+
+<header id="route" style="display: flex; flex-direction: column; gap: 16px; animation: fx-up .6s ease both">
+<span style="font-size: 14px; line-height: 20px; color: {{ t.tx3 }}">Reference <span aria-hidden="true">/</span> API routes <span aria-hidden="true">/</span> jobs</span>
+<h1 style="margin: 0; font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: {{ h1Size }}; line-height: 1.15; letter-spacing: -0.02em">jobs/create</h1>
+<p style="margin: 0; font-size: 19px; line-height: 30px; color: {{ t.tx2 }}">Create an import job from an uploaded file and a template.</p>
+<div style="display: flex; align-items: stretch; border: 1px solid {{ t.ln2 }}; border-radius: 10px; overflow: hidden; background: {{ t.b1 }}; min-width: 0">
+<span style="flex: none; display: flex; align-items: center; padding: 0 12px; background: #ffd23f; color: #0f2233; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 13px; letter-spacing: .04em">POST</span>
+<code style="flex: 1 1 auto; min-width: 0; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 22px; overflow-wrap: anywhere"><span style="color: {{ t.tx3 }}">/_emdash/api/plugins/flux-import/</span><span style="font-weight: 600">jobs/create</span></code>
+<button type="button" onClick="{{ copyPath }}" aria-label="{{ pathLabel }}" style="flex: none; width: 44px; border: 0; border-left: 1px solid {{ t.ln }}; background: {{ pathBg }}; color: {{ pathFg }}; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background-color .2s ease"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ pathIcon }}"></path></svg></button>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 10px">
+<span style="display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; background: {{ t.b1 }}; border: 1px solid {{ t.ln }}; font-size: 15px; line-height: 22px"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{ t.tx2 }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"></path></svg><span><strong style="font-weight: 600">Administrator</strong>; requires header <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; padding: 1px 6px; border-radius: 5px; background: {{ t.b2 }}">X-EmDash-Request: 1</code></span></span>
+<a href="#agent" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 10px; border: 1px dashed {{ t.ln2 }}; font-size: 15px; line-height: 22px; color: {{ t.tx2 }}; text-decoration: none"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8l-5 4 5 4M16 8l5 4-5 4"></path></svg>Also available as agent tool <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: {{ t.tx }}">[tool]</code></a>
+</div>
+</header>
+
+<section id="body" style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px"><h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 26px; line-height: 34px; letter-spacing: -0.02em">Request body</h2><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.tx3 }}">application/json</span></div>
+
+<sc-if value="{{ desktop }}" hint-placeholder-val="{{ true }}">
+<div role="region" aria-label="Request body fields" tabindex="0" style="overflow-x: auto; border: 1px solid {{ t.ln }}; border-radius: 12px">
+<table style="border-collapse: collapse; width: 100%; min-width: 680px; font-size: 15px; line-height: 22px">
+<thead><tr style="background: {{ t.b1 }}; text-align: left">
+<th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Field</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Type</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Required</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Default</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Description</th>
+</tr></thead>
+<tbody>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+<tr style="background: {{ r.bg }}; animation: {{ r.anim }}">
+<td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; vertical-align: top; white-space: nowrap"><span style="display: inline-flex; align-items: center; gap: 6px; padding-left: {{ r.indent }}"><sc-if value="{{ r.isChild }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="color: {{ t.ln2 }}; font-family: 'JetBrains Mono', monospace">└</span></sc-if><sc-if value="{{ r.canExpand }}" hint-placeholder-val="{{ false }}"><button type="button" aria-expanded="{{ r.exp }}" aria-label="{{ r.expLabel }}" onClick="{{ r.toggle }}" style="width: 28px; height: 28px; margin: -3px 0; border: 1px solid {{ t.ln2 }}; border-radius: 6px; background: transparent; color: {{ t.tx }}; cursor: pointer; display: inline-flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ r.rot }}); transition: transform .2s ease"><path d="M9 6l6 6-6 6"></path></svg></button></sc-if><code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600">{{ r.name }}</code></span></td>
+<td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; vertical-align: top"><code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.type }}">{{ r.type }}</code></td>
+<td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; vertical-align: top"><sc-if value="{{ r.req }}" hint-placeholder-val="{{ false }}"><span style="font-size: 12px; line-height: 18px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: {{ t.reqBg }}; color: {{ t.reqFg }}">required</span></sc-if><sc-if value="{{ r.opt }}" hint-placeholder-val="{{ true }}"><span style="color: {{ t.tx3 }}">optional</span></sc-if></td>
+<td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; vertical-align: top"><code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.tx2 }}">{{ r.def }}</code></td>
+<td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; vertical-align: top; color: {{ t.tx2 }}">{{ r.desc }}<sc-if value="{{ r.hasLink }}" hint-placeholder-val="{{ false }}"> See <a href="#" class="fx-ul" style="color: {{ t.tx }}">{{ r.link }}</a>.</sc-if></td>
+</tr>
+</sc-for>
+</tbody>
+</table>
+</div>
+</sc-if>
+
+<sc-if value="{{ mobile }}" hint-placeholder-val="{{ false }}">
+<dl style="margin: 0; display: flex; flex-direction: column; border: 1px solid {{ t.ln }}; border-radius: 12px; overflow: hidden">
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+<div style="padding: 14px 16px 14px {{ r.mIndent }}; border-bottom: 1px solid {{ t.ln }}; background: {{ r.bg }}; display: flex; flex-direction: column; gap: 6px; animation: {{ r.anim }}">
+<dt style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px"><sc-if value="{{ r.canExpand }}" hint-placeholder-val="{{ false }}"><button type="button" aria-expanded="{{ r.exp }}" aria-label="{{ r.expLabel }}" onClick="{{ r.toggle }}" style="width: 32px; height: 32px; border: 1px solid {{ t.ln2 }}; border-radius: 6px; background: transparent; color: {{ t.tx }}; cursor: pointer; display: inline-flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ r.rot }}); transition: transform .2s ease"><path d="M9 6l6 6-6 6"></path></svg></button></sc-if><code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600">{{ r.name }}</code><code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.type }}">{{ r.type }}</code><sc-if value="{{ r.req }}" hint-placeholder-val="{{ false }}"><span style="font-size: 12px; line-height: 18px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: {{ t.reqBg }}; color: {{ t.reqFg }}">required</span></sc-if></dt>
+<dd style="margin: 0; font-size: 15px; line-height: 22px; color: {{ t.tx2 }}">{{ r.desc }} <span style="color: {{ t.tx3 }}">Default: <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px">{{ r.def }}</code></span></dd>
+</div>
+</sc-for>
+</dl>
+</sc-if>
+<p style="margin: 0; font-size: 14px; line-height: 20px; color: {{ t.tx3 }}">Generated from the route's schema. Nested rows open in place.</p>
+</section>
+
+<section id="examples" style="display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 26px; line-height: 34px; letter-spacing: -0.02em">Examples</h2>
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<div style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 13px; line-height: 18px; font-weight: 600; color: {{ t.tx3 }}; text-transform: uppercase; letter-spacing: .05em">Request</span>
+<dc-import name="Code" theme="{{ theme }}" tabs="{{ reqTabs }}" hint-size="100%,380px"></dc-import>
+</div>
+<div style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 13px; line-height: 18px; font-weight: 600; color: {{ t.tx3 }}; text-transform: uppercase; letter-spacing: .05em">Response <span style="margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: {{ t.okBg }}; color: {{ t.ok }}; letter-spacing: 0">200</span></span>
+<dc-import name="Code" theme="{{ theme }}" tabs="{{ resTabs }}" hint-size="100%,300px"></dc-import>
+</div>
+</div>
+</section>
+
+<section id="errors" style="display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 26px; line-height: 34px; letter-spacing: -0.02em">Errors</h2>
+<div role="region" aria-label="Errors" tabindex="0" style="overflow-x: auto; border: 1px solid {{ t.ln }}; border-radius: 12px">
+<table style="border-collapse: collapse; width: 100%; min-width: 520px; font-size: 15px; line-height: 22px">
+<thead><tr style="background: {{ t.b1 }}; text-align: left"><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Code</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">HTTP status</th><th scope="col" style="padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Meaning</th></tr></thead>
+<tbody>
+<sc-for list="{{ errors }}" as="e" hint-placeholder-count="3">
+<tr><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}"><code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600">{{ e.code }}</code></td><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}"><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: {{ t.warnBg }}; color: {{ t.warn }}">{{ e.status }}</span></td><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; color: {{ t.tx2 }}">{{ e.meaning }}</td></tr>
+</sc-for>
+</tbody>
+</table>
+</div>
+<a href="#" class="fx-ul" style="align-self: flex-start; font-weight: 600; color: {{ t.tx }}">All error codes</a>
+</section>
+
+<section id="agent" style="display: flex; flex-direction: column; gap: 12px; padding: 20px 22px; border: 1px solid {{ t.ln }}; border-radius: 14px; background: {{ t.b1 }}">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 28px">Also available as agent tool</h2>
+<p style="margin: 0; color: {{ t.tx2 }}">AI agents can call this route as <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; padding: 1px 6px; border-radius: 5px; background: {{ t.b2 }}; color: {{ t.tx }}">[tool]</code> over MCP. Shown only on routes that have one; for example, <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px">jobs/plan</code> is <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px">dry_run</code>.</p>
+<a href="#" class="fx-ul" style="align-self: flex-start; font-weight: 600; color: {{ t.tx }}">Agent tools reference</a>
+</section>
+
+<dc-import name="PrevNext" theme="{{ theme }}" prev="jobs/cancel" prev-href="#" next="jobs/plan" next-href="#" hint-size="100%,90px"></dc-import>
+
+</article>
+</main>
+<sc-if value="{{ desktop }}" hint-placeholder-val="{{ true }}">
+<aside aria-label="On this page" style="flex: 0 0 220px; padding: 40px 24px 40px 8px; box-sizing: border-box; font-size: 14px; line-height: 20px">
+<span style="display: block; font-weight: 600; margin-bottom: 12px">On this page</span>
+<ul style="margin: 0; padding: 0; list-style: none; border-left: 1px solid {{ t.ln }}">
+<sc-for list="{{ outline }}" as="o" hint-placeholder-count="5"><li><a href="{{ o.href }}" style="display: block; padding: 6px 12px; margin-left: -1px; border-left: 2px solid {{ o.bar }}; color: {{ o.fg }}; font-weight: {{ o.fw }}; text-decoration: none">{{ o.label }}</a></li></sc-for>
+</ul>
+</aside>
+</sc-if>
+</div>
+<dc-import name="Footer" theme="{{ theme }}" variant="docs" hint-size="100%,120px"></dc-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"mobile":{"editor":"boolean","default":false},"onToggle":{"editor":null},"$preview":{"width":1440,"height":2300}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { open: { template: true }, toc: false, copied: false }; }
+componentWillUnmount() { clearTimeout(this.ct); }
+renderVals() {
+const T = {
+dark: { bg: '#0b1824', b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7', type: '#8fd6ff', reqBg: 'rgba(255,210,63,.16)', reqFg: '#ffd23f', ok: '#5fd39a', okBg: 'rgba(95,211,154,.14)', warn: '#ffa257', warnBg: 'rgba(255,162,87,.14)', child: '#0d1f2f' },
+light: { bg: '#ffffff', b1: '#f2f5f7', b2: '#e7edf1', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a', type: '#0a5c6b', reqBg: '#fff1bf', reqFg: '#6b5000', ok: '#146c3f', okBg: '#e3f4ea', warn: '#b45309', warnBg: '#fff3e8', child: '#f7f9fa' }
+};
+const theme = this.props.theme === 'light' ? 'light' : 'dark';
+const t = T[theme];
+const m = !!this.props.mobile;
+const s = this.state;
+const fields = [
+{ name: 'uploadId', type: 'string', req: true, def: '—', desc: 'ID of the uploaded source file.' },
+{ name: 'template', type: 'object', req: true, def: '—', desc: 'How source columns map to fields.', link: 'Template format', kids: [
+{ name: 'collection', type: 'string', req: true, def: '—', desc: 'Target collection slug. [EXAMPLE CHILD ROW]' },
+{ name: 'mappings', type: 'array', req: true, def: '—', desc: 'Column-to-field pairs. [EXAMPLE CHILD ROW]' },
+{ name: 'recordRule', type: 'string', req: false, def: '"create"', desc: 'create, update, or never overwrite edits. [EXAMPLE CHILD ROW]' }
+] },
+{ name: 'dryRun', type: 'boolean', req: false, def: 'false', desc: 'Plan the job without writing entries.' },
+{ name: 'publish', type: 'boolean', req: false, def: 'true', desc: 'Publish the entries the job writes.' },
+{ name: 'batchSize', type: 'integer · 1–500', req: false, def: '—', desc: 'Records per batch.' },
+{ name: 'budgetMs', type: 'integer · 500–25,000', req: false, def: '—', desc: 'Time budget per batch, in milliseconds.' }
+];
+const rows = [];
+fields.forEach((f) => {
+const exp = !!s.open[f.name];
+rows.push({ ...f, opt: !f.req, isChild: false, indent: '0px', mIndent: '16px', bg: 'transparent', anim: 'none', canExpand: !!f.kids, exp: exp ? 'true' : 'false', expLabel: (exp ? 'Collapse ' : 'Expand ') + f.name, rot: exp ? '90deg' : '0deg', hasLink: !!f.link, link: f.link || '', toggle: () => this.setState({ open: { ...this.state.open, [f.name]: !exp } }) });
+if (f.kids && exp) f.kids.forEach((k) => rows.push({ ...k, name: k.name, opt: !k.req, isChild: true, indent: '22px', mIndent: '32px', bg: t.child, anim: 'fx-in .25s ease both', canExpand: false, exp: 'false', expLabel: '', rot: '0deg', hasLink: false, link: '', toggle: null }));
+});
+const curl = ['curl -X POST "https://example.com/_emdash/api/plugins/flux-import/jobs/create" \\', '  -H "Content-Type: application/json" \\', '  -H "X-EmDash-Request: 1" \\', '  -b "$ADMIN_SESSION" \\', '  -d \'{"uploadId":"upl_8f2c","template":{…},"dryRun":false}\''].join('\n');
+const fetchJs = ['const res = await fetch(', '  "/_emdash/api/plugins/flux-import/jobs/create",', '  {', '    method: "POST",', '    headers: {', '      "Content-Type": "application/json",', '      "X-EmDash-Request": "1",', '    },', '    body: JSON.stringify({', '      uploadId: "upl_8f2c",', '      template,', '      dryRun: false,', '      batchSize: 100,', '    }),', '  },', ');', 'const job = await res.json();'].join('\n');
+const res = ['{', '  "job": {', '    "id": "job_7d1e",', '    "state": "queued",', '    "dryRun": false', '  }', '}'].join('\n');
+const outline = [['Route', '#route'], ['Request body', '#body'], ['Examples', '#examples'], ['Errors', '#errors'], ['Agent tool', '#agent']];
+return {
+theme: theme, t: t, mobile: m, desktop: !m, onToggle: this.props.onToggle,
+mainPad: m ? '24px 16px 48px' : '40px 48px 64px',
+h1Size: m ? '30px' : '40px',
+rows: rows,
+reqTabs: [{ label: 'curl', code: curl, lang: 'sh' }, { label: 'fetch', code: fetchJs, lang: 'js' }],
+resTabs: [{ label: 'response.json · example', code: res, lang: 'json' }],
+errors: [
+{ code: 'INVALID_SOURCE', status: '400', meaning: 'The uploaded file cannot be read as the template’s source format.' },
+{ code: 'NOT_FOUND', status: '404', meaning: 'The upload or a referenced item does not exist.' },
+{ code: 'CONFLICT', status: '409', meaning: 'The request conflicts with the current state of the job or source.' }
+],
+outline: outline.map((o, i) => ({ label: o[0], href: o[1], bar: i === 1 ? '#ffd23f' : 'transparent', fg: i === 1 ? t.tx : t.tx2, fw: i === 1 ? 600 : 400 })),
+tocOpen: s.toc, tocStr: s.toc ? 'true' : 'false', tocRot: s.toc ? '180deg' : '0deg',
+toggleToc: () => this.setState({ toc: !this.state.toc }),
+pathIcon: s.copied ? 'M5 12.5l4.5 4.5L19 7.5' : 'M9 9h10v11H9zM5 15V4h10',
+pathLabel: s.copied ? 'Copied' : 'Copy path',
+pathBg: s.copied ? '#5fd39a' : 'transparent',
+pathFg: s.copied ? '#0f2233' : t.tx,
+copyPath: () => {
+try { if (navigator.clipboard) navigator.clipboard.writeText('/_emdash/api/plugins/flux-import/jobs/create').catch(() => {}); } catch (e) {}
+this.setState({ copied: true }); clearTimeout(this.ct); this.ct = setTimeout(() => this.setState({ copied: false }), 1600);
+}
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import type { UserEvent } from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { SourcesTab } from "../../src/admin/home/sources/SourcesTab.js";
 import { UPLOAD_ID } from "./fixtures.js";
@@ -22,6 +23,12 @@ function setup(table: Record<string, RouteHandler>) {
 		</HomeProvider>,
 	);
 	return { ...routes, ...view };
+}
+
+/** Opens the source's menu and picks `item` (its accessible name names the row). */
+async function pick(user: UserEvent, name: string, item: string) {
+	await user.click(await screen.findByRole("button", { name: `Actions for ${name}` }));
+	await user.click(await screen.findByRole("menuitem", { name: `${item} ${name}` }));
 }
 
 const bodies = (calls: { route: string; body: unknown }[], route: string) =>
@@ -56,8 +63,18 @@ describe("SourcesTab", () => {
 		expect(screen.getByText("plain.example.com/x.csv")).toBeVisible();
 		expect(screen.getAllByText("feed-token").length).toBeGreaterThan(0);
 		expect(screen.getByText("No credential")).toBeVisible();
-		expect(screen.getByText(/^Failed .*: The address answered with an error\.$/)).toBeVisible();
+		// The newer failure, with its code in words under the time (never its message).
+		const failed = screen.getByText(/^Failed /);
+		expect(failed).toHaveTextContent(/^Failed (Today|Yesterday|.+) 10:00 UTC$/);
+		expect(failed.nextElementSibling).toHaveTextContent(/^The address answered with an error\.$/);
 		expect(screen.getByText("Never fetched")).toBeVisible();
+		for (const head of ["Source", "Credential", "Last fetch"]) {
+			expect(screen.getByRole("columnheader", { name: head })).toBeVisible();
+		}
+		// The summary line: the sources, then the credentials.
+		expect(screen.getByText("2 URL sources").parentElement).toHaveTextContent(
+			/^2 URL sources · 1 credential$/,
+		);
 		for (const secret of ["s3cret", "u:p", UPLOAD_ID, "HTTP 500 from"]) {
 			expect(document.body.textContent).not.toContain(secret);
 		}
@@ -73,7 +90,7 @@ describe("SourcesTab", () => {
 			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
 		});
 		expect(await screen.findByText("gone-token (missing)")).toBeVisible();
-		const kept = screen.getByRole("cell", { name: "Kept" }).closest("tr")!;
+		const kept = screen.getByText("Kept").closest("tr")!;
 		expect(within(kept).getByText("feed-token")).toBeVisible();
 		expect(screen.queryByText("feed-token (missing)")).toBeNull();
 	});
@@ -102,6 +119,8 @@ describe("SourcesTab", () => {
 		});
 		expect(await screen.findByText(/^Fetched /)).toBeVisible();
 		expect(screen.queryByText(/^Failed /)).toBeNull();
+		// The fetch's size, in the viewer's words.
+		expect(screen.getByText("10 byte")).toBeVisible();
 	});
 
 	it("adds a source with name, URL and credential", async () => {
@@ -153,7 +172,7 @@ describe("SourcesTab", () => {
 			"schedules/update": () => ({ schedule: schedules[0] }),
 		});
 		// A name-only edit offers nothing and updates no schedule.
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		let dialog = await screen.findByRole("dialog");
 		const name = within(dialog).getByRole("textbox", { name: "Name" });
 		await user.clear(name);
@@ -165,7 +184,7 @@ describe("SourcesTab", () => {
 		expect(bodies(calls, "schedules/update")).toEqual([]);
 
 		// A URL edit names the enabled schedule and updates it after the save.
-		await user.click(screen.getByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		dialog = await screen.findByRole("dialog");
 		const url = within(dialog).getByRole("textbox", { name: "Address" });
 		await user.clear(url);
@@ -189,7 +208,7 @@ describe("SourcesTab", () => {
 			"schedules/list": () => page([schedule()]),
 			"sources/update": () => sourceRow(),
 		});
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		const url = within(dialog).getByRole("textbox", { name: "Address" });
 		await user.clear(url);
@@ -211,7 +230,7 @@ describe("SourcesTab", () => {
 			"sources/update": () => sourceRow(),
 			"schedules/update": () => ({ schedule: schedule() }),
 		});
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		await user.click(within(dialog).getByRole("combobox", { name: "Credential" }));
 		await user.click(await screen.findByRole("option", { name: "No credential" }));
@@ -228,7 +247,7 @@ describe("SourcesTab", () => {
 			"sources/update": () => sourceRow(),
 			"schedules/update": () => fail("SCHEDULE_BUSY", "busy", 409),
 		});
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		const url = within(dialog).getByRole("textbox", { name: "Address" });
 		await user.clear(url);
@@ -248,7 +267,7 @@ describe("SourcesTab", () => {
 
 	it("uses the global conflict sentence for a CONFLICT from an update that kept the name", async () => {
 		const { user } = setup({ "sources/update": () => fail("CONFLICT", "x", 409) });
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		const url = within(dialog).getByRole("textbox", { name: "Address" });
 		await user.clear(url);
@@ -279,7 +298,7 @@ describe("SourcesTab", () => {
 			"schedules/list": () => page([schedule()]),
 			"sources/delete": () => fail("SOURCE_IN_USE", "in use", 409, { scheduleIds: ["SC1"] }),
 		});
-		await user.click(await screen.findByRole("button", { name: "Delete Feed" }));
+		await pick(user, "Feed", "Delete");
 		const dialog = await screen.findByRole("dialog");
 		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 		expect(
@@ -294,32 +313,53 @@ describe("SourcesTab", () => {
 
 	it("deletes a source", async () => {
 		const { calls, user } = setup({ "sources/delete": () => ({ deleted: true }) });
-		await user.click(await screen.findByRole("button", { name: "Delete Feed" }));
+		await pick(user, "Feed", "Delete");
 		const dialog = await screen.findByRole("dialog");
 		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(bodies(calls, "sources/delete")).toEqual([{ id: "S1" }]);
 	});
 
-	it("adds a credential through a password input and never shows the value again (Review Focus 3)", async () => {
+	it("adds a credential in a dialog through a password input and never shows the value again (Review Focus 3)", async () => {
 		const { calls, user } = setup({
 			"credentials/set": () => ({ name: "feed-token", header: "Authorization" }),
 		});
 		await screen.findByText("Feed");
-		const value = screen.getByLabelText("Value");
+		// No form until it is asked for (Critique 9).
+		expect(screen.queryByLabelText("Value")).toBeNull();
+		const add = screen.getByRole("button", { name: "Add a credential" });
+		await user.click(add);
+		const dialog = await screen.findByRole("dialog", { name: "Add a credential" });
+		const value = within(dialog).getByLabelText("Value");
 		expect(value).toHaveAttribute("type", "password");
 		expect(value).toHaveAttribute("autocomplete", "off");
-		await user.type(screen.getByRole("textbox", { name: "Name", hidden: false }), "feed-token");
-		await user.type(screen.getByRole("textbox", { name: "Header" }), "Authorization");
+		const save = within(dialog).getByRole("button", { name: "Save credential" });
+		expect(save).toBeDisabled();
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "feed-token");
+		await user.type(within(dialog).getByRole("textbox", { name: "Header" }), "Authorization");
+		expect(save).toBeDisabled();
 		await user.type(value, "Bearer k-123");
-		await user.click(screen.getByRole("button", { name: "Save credential" }));
-		await waitFor(() => expect(bodies(calls, "credentials/set")).toHaveLength(1));
+		await user.click(save);
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(bodies(calls, "credentials/set")).toEqual([
 			{ name: "feed-token", header: "Authorization", value: "Bearer k-123" },
 		]);
-		await waitFor(() => expect(screen.getByLabelText("Value")).toHaveValue(""));
+		expect(await screen.findByText("Saved the credential feed-token.")).toBeInTheDocument();
+		await waitFor(() => expect(add).toHaveFocus());
 		expect(document.body.textContent).not.toContain("k-123");
 		expect((document.body as HTMLElement).innerHTML).not.toContain("k-123");
+	});
+
+	it("refuses a credential name or header outside the pattern before sending it", async () => {
+		const { calls, user } = setup({});
+		await user.click(await screen.findByRole("button", { name: "Add a credential" }));
+		const dialog = await screen.findByRole("dialog", { name: "Add a credential" });
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Feed Token");
+		await user.type(within(dialog).getByRole("textbox", { name: "Header" }), "Authorization");
+		await user.type(within(dialog).getByLabelText("Value"), "x");
+		expect(within(dialog).getByRole("button", { name: "Save credential" })).toBeDisabled();
+		await user.keyboard("{Enter}");
+		expect(bodies(calls, "credentials/set")).toEqual([]);
 	});
 
 	it("deletes a credential after naming the sources that use it", async () => {
@@ -355,7 +395,7 @@ describe("SourcesTab", () => {
 			"schedules/list": () => (failing ? fail("VALIDATION_ERROR", "bad", 400) : page([schedule()])),
 			"sources/update": () => sourceRow(),
 		});
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		// A name-only edit needs no schedules, so there is nothing to say.
 		expect(within(dialog).queryByText(/Couldn't check/)).toBeNull();
@@ -384,7 +424,7 @@ describe("SourcesTab", () => {
 			"sources/update": () => sourceRow({ name: "Feed" }),
 			"schedules/update": () => fail("SCHEDULE_BUSY", "busy", 409),
 		});
-		await user.click(await screen.findByRole("button", { name: "Edit Feed" }));
+		await pick(user, "Feed", "Edit");
 		const dialog = await screen.findByRole("dialog");
 		const name = within(dialog).getByRole("textbox", { name: "Name" });
 		await user.clear(name);
@@ -398,36 +438,84 @@ describe("SourcesTab", () => {
 		).toBeVisible();
 	});
 
-	it("moves focus to the Value input when Replace is pressed", async () => {
-		const { user } = setup({
+	it("replaces a credential in a dialog with its name and header filled in and the value focused", async () => {
+		const { calls, user } = setup({
 			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
+			"credentials/set": () => ({ name: "feed-token", header: "Authorization" }),
 		});
-		await user.click(
-			await screen.findByRole("button", { name: "Replace the credential feed-token" }),
-		);
-		expect(screen.getByLabelText("Value")).toHaveFocus();
-		expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("feed-token");
+		const replace = await screen.findByRole("button", {
+			name: "Replace the credential feed-token",
+		});
+		await user.click(replace);
+		const dialog = await screen.findByRole("dialog", {
+			name: "Replace the credential feed-token",
+		});
+		await waitFor(() => expect(within(dialog).getByLabelText("Value")).toHaveFocus());
+		expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("feed-token");
+		expect(within(dialog).getByRole("textbox", { name: "Header" })).toHaveValue("Authorization");
+		await user.keyboard("new-secret{Enter}");
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(bodies(calls, "credentials/set")).toEqual([
+			{ name: "feed-token", header: "Authorization", value: "new-secret" },
+		]);
+		// Closed, focus is back on the button that opened it.
+		await waitFor(() => expect(replace).toHaveFocus());
+	});
+
+	it("closes the credential dialog with Cancel, sending nothing, and opens it empty again", async () => {
+		const { calls, user } = setup({});
+		const add = await screen.findByRole("button", { name: "Add a credential" });
+		await user.click(add);
+		let dialog = await screen.findByRole("dialog", { name: "Add a credential" });
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "draft");
+		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		await waitFor(() => expect(add).toHaveFocus());
+		await user.click(add);
+		dialog = await screen.findByRole("dialog", { name: "Add a credential" });
+		expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("");
+		expect(bodies(calls, "credentials/set")).toEqual([]);
+	});
+
+	it("keeps the credential dialog open with the refusal in words, and clears the value", async () => {
+		const { user } = setup({
+			"credentials/set": () => fail("VALIDATION_ERROR", "bad", 400),
+		});
+		await user.click(await screen.findByRole("button", { name: "Add a credential" }));
+		const dialog = await screen.findByRole("dialog", { name: "Add a credential" });
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "feed-token");
+		await user.type(within(dialog).getByRole("textbox", { name: "Header" }), "Authorization");
+		await user.type(within(dialog).getByLabelText("Value"), "Bearer k-123");
+		await user.click(within(dialog).getByRole("button", { name: "Save credential" }));
+		expect(
+			await within(dialog).findByText(
+				"The request was not valid. Check your entries and try again.",
+			),
+		).toBeVisible();
+		expect(within(dialog).getByLabelText("Value")).toHaveValue("");
+		expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("feed-token");
+		expect(document.body.innerHTML).not.toContain("k-123");
 	});
 
 	it("names a source and a credential with one name apart", async () => {
-		setup({
+		const { user } = setup({
 			"sources/list": () => page([sourceRow({ name: "shared" })]),
 			"credentials/list": () => [{ name: "shared", header: "X-Key" }],
 		});
-		expect(await screen.findByRole("button", { name: "Delete shared" })).toBeVisible();
+		expect(await screen.findByRole("button", { name: "Actions for shared" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Delete the credential shared" })).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Actions for shared" }));
+		expect(await screen.findByRole("menuitem", { name: "Delete shared" })).toBeVisible();
 	});
 
-	it("keeps row buttons short, names the row in each accessible name, and scrolls the table (Task 16)", async () => {
+	it("keeps row actions short, names the row in each accessible name, and scrolls the table (Task 16)", async () => {
 		const name = "127.0.0.1:4602/products.json";
-		setup({
+		const { user } = setup({
 			"sources/list": () => page([sourceRow({ name })]),
 			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
 		});
 		const cases: [string, string][] = [
 			[`Fetch now ${name}`, "Fetch now"],
-			[`Edit ${name}`, "Edit"],
-			[`Delete ${name}`, "Delete"],
 			["Replace the credential feed-token", "Replace"],
 			["Delete the credential feed-token", "Delete"],
 		];
@@ -436,30 +524,79 @@ describe("SourcesTab", () => {
 				new RegExp(`^${visible}$`),
 			);
 		}
+		// Edit and Delete sit in the row's menu, Delete last in the danger colour.
+		await user.click(screen.getByRole("button", { name: `Actions for ${name}` }));
+		const items = await screen.findAllByRole("menuitem");
+		expect(items.map((i) => [i.getAttribute("aria-label"), i.textContent])).toEqual([
+			[`Edit ${name}`, "Edit"],
+			[`Delete ${name}`, "Delete"],
+		]);
+		expect(items[1]).toHaveClass("text-kumo-danger");
 		// A long name widens the table, never the page: it scrolls in its own box.
 		const table = screen.getAllByRole("table")[0] as HTMLElement;
 		expect(table.parentElement).toHaveClass("overflow-x-auto");
 	});
 
-	it("lays the credential form out in three columns only from lg up (Task 16)", async () => {
+	it("stacks the source rows when the tab is narrow", async () => {
+		// The width is measured on the tab (ResizeObserver), not the viewport.
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe() {}
+				disconnect() {}
+			},
+		);
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+			width: 460,
+		} as DOMRect);
 		setup({});
-		const name = await screen.findByRole("textbox", { name: "Name" });
-		// At 768 px the page beside the sidebar is about 460 px wide: three columns overlapped.
-		const grid = name.closest("form")?.querySelector(":scope > .grid") as HTMLElement;
-		expect(grid).toHaveClass("lg:grid-cols-3");
-		expect(grid).not.toHaveClass("md:grid-cols-3");
+		const row = (await screen.findByText("Feed")).closest("li") as HTMLElement;
+		expect(row).not.toBeNull();
+		expect(screen.queryByRole("table")).toBeNull();
+		expect(within(row).getByRole("button", { name: "Fetch now Feed" })).toBeVisible();
+		expect(within(row).getByRole("button", { name: "Actions for Feed" })).toBeVisible();
 	});
 
-	it("lists credentials by name and header only", async () => {
-		setup({ "credentials/list": () => [{ name: "feed-token", header: "Authorization" }] });
-		const heading = await screen.findByRole("heading", { level: 3, name: "Credentials" });
+	it("lists credentials by name, header and use, with the value masked", async () => {
+		setup({
+			"sources/list": () => page([sourceRow({ credential: "feed-token" })]),
+			"credentials/list": () => [
+				{ name: "feed-token", header: "Authorization" },
+				{ name: "spare", header: "X-Key" },
+			],
+		});
+		const heading = await screen.findByRole("heading", { level: 2, name: "Credentials" });
 		expect(heading).toBeVisible();
-		expect(await screen.findByText("Authorization")).toBeVisible();
+		expect(
+			screen.getByText("Write-only. Values are stored on the site and never shown again."),
+		).toBeVisible();
+		const used = screen.getByText("Sent in the Authorization header · used by 1 source");
+		expect(used).toBeVisible();
+		expect(screen.getByText("Sent in the X-Key header · not used yet")).toBeVisible();
+		expect(screen.getAllByText("Value hidden")).toHaveLength(2);
+		expect(screen.getByRole("heading", { level: 2, name: "URL sources" })).toBeVisible();
 	});
 
 	it("shows both empty states", async () => {
 		setup({ "sources/list": () => page([]) });
-		expect(await screen.findByText("No URL sources yet.")).toBeVisible();
-		expect(await screen.findByText("No credentials yet.")).toBeVisible();
+		expect(await screen.findByText("No URL sources yet")).toBeVisible();
+		expect(await screen.findByText("No credentials yet")).toBeVisible();
+		expect(screen.getByText("0 URL sources")).toBeVisible();
+	});
+
+	it("shows a failed list with Try again", async () => {
+		let failing = true;
+		const { user } = setup({
+			"sources/list": () => (failing ? fail("VALIDATION_ERROR", "bad", 400) : page([sourceRow()])),
+		});
+		expect(await screen.findByText("Sources could not be loaded.")).toBeVisible();
+		expect(
+			screen.getByText(
+				"The request was not valid. Check your entries and try again. Your imports are not affected.",
+			),
+		).toBeVisible();
+		failing = false;
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(await screen.findByText("Feed")).toBeVisible();
 	});
 });

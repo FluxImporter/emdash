@@ -117,8 +117,9 @@ function TextSetting(props: {
 }
 
 /**
- * How the chosen data is read: its format (detected, and overridable) and the template's
- * `source` settings. Every change re-samples.
+ * How the chosen data is read ("How to read it"): its format (detected, and overridable) and the
+ * template's `source` settings for that format. Every change re-samples. The row filter is
+ * `RowFilter`, beside it.
  */
 export function SourceSettings(props: {
 	choice: SourceChoice;
@@ -137,9 +138,9 @@ export function SourceSettings(props: {
 	const formats = props.choice.kind === "paste" ? PASTE_FORMATS : SOURCE_FORMATS;
 	const set = (patch: Partial<Settings>) => onChange(blockOf({ ...block, ...patch }));
 	return (
-		<section className="space-y-4">
-			<h3 className="font-semibold">{t(M.settings, { name: props.choice.label })}</h3>
-			<div className="grid gap-4 md:grid-cols-2">
+		<section className="flex min-w-0 flex-1 flex-col gap-3">
+			<h3 className="font-semibold">{t(M.settings)}</h3>
+			<div className="grid gap-3 md:grid-cols-2">
 				<Select
 					label={t(M.format)}
 					disabled={props.busy}
@@ -185,14 +186,26 @@ export function SourceSettings(props: {
 						/>
 					</>
 				) : null}
-				<TextSetting
-					disabled={props.busy}
-					label={t(M.filter)}
-					description={t(M.filterHint)}
-					value={block.filter ?? ""}
-					onCommit={(filter) => set({ filter })}
-				/>
 			</div>
 		</section>
+	);
+}
+
+/** The row filter: the template's `source.filter`, a JSONata expression. A change re-samples. */
+export function RowFilter(props: {
+	block: SourceBlock;
+	busy: boolean;
+	onChange(block: SourceBlock): void;
+}) {
+	const t = useT();
+	const { block, onChange } = props;
+	return (
+		<TextSetting
+			disabled={props.busy}
+			label={t(M.filter)}
+			description={t(M.filterHint)}
+			value={block.filter ?? ""}
+			onCommit={(filter) => onChange(blockOf({ ...block, filter }))}
+		/>
 	);
 }

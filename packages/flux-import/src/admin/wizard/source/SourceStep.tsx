@@ -1,20 +1,28 @@
-import { Banner, Link, Tabs } from "@cloudflare/kumo";
-import { type ComponentProps, useCallback, useRef, useState } from "react";
+import { Badge, Banner, Link, Tabs } from "@cloudflare/kumo";
+import { type ComponentProps, type ComponentType, useCallback, useRef, useState } from "react";
 import type { SourceFormat } from "../../../sources/reader.js";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
-import { type Msg, useT } from "../../i18n.js";
+import { type Msg, useT, useTn } from "../../i18n.js";
 import { SAMPLE_MAX } from "../../limits.js";
-import type { SourceBlock } from "../../types.js";
+import type { SampleColumn, SourceBlock } from "../../types.js";
+import {
+	BookmarkSimpleIcon,
+	ClipboardTextIcon,
+	type IconProps,
+	LinkIcon,
+	UploadSimpleIcon,
+} from "../../ui/icons.js";
 import { useWizard } from "../context.js";
-import { StepFooter } from "../StepFooter.js";
+import { SUMMARY } from "../messages.js";
+import { StepHeader } from "../StepHeader.js";
 import { sampleColumns } from "../sample.js";
 import { reachable, type SourceChoice } from "../state.js";
-import { M } from "./messages.js";
+import { COUNT, M } from "./messages.js";
 import { type Paste, PasteTab, pasteFits } from "./PasteTab.js";
 import { SamplePreview } from "./SamplePreview.js";
 import { SavedSourceTab } from "./SavedSourceTab.js";
-import { SourceSettings } from "./SourceSettings.js";
+import { FORMAT_LABELS, RowFilter, SourceSettings } from "./SourceSettings.js";
 import { TemplatePicker } from "./TemplatePicker.js";
 import { UploadTab } from "./UploadTab.js";
 import { UrlTab } from "./UrlTab.js";
@@ -47,6 +55,12 @@ const TAB_LABELS: Readonly<Record<TabId, Msg>> = {
 	paste: M.tabPaste,
 	saved: M.tabSaved,
 };
+const TAB_ICONS: Readonly<Record<TabId, ComponentType<IconProps>>> = {
+	upload: UploadSimpleIcon,
+	url: LinkIcon,
+	paste: ClipboardTextIcon,
+	saved: BookmarkSimpleIcon,
+};
 
 const WORDPRESS_IMPORTER = "/_emdash/admin/import/wordpress";
 
@@ -73,6 +87,31 @@ function ErrorNote({ error }: { error: Described }) {
 				) : undefined
 			}
 		/>
+	);
+}
+
+/**
+ * The data that was read (StepSource.dc.html): its format, its name, and how many records and keys
+ * the sample holds, so the user knows it parsed. A full sample may be the start of a longer source.
+ */
+function ChosenData(props: { choice: SourceChoice; block: SourceBlock; columns: SampleColumn[] }) {
+	const t = useT();
+	const tn = useTn();
+	const records = props.columns[0]?.values.length ?? 0;
+	return (
+		<div className="flex flex-wrap items-center gap-4 rounded-lg border border-kumo-hairline bg-kumo-base p-4">
+			<Badge variant="teal">{t(FORMAT_LABELS[props.block.format])}</Badge>
+			<div className="flex min-w-0 flex-1 flex-col">
+				<p className="truncate font-semibold text-kumo-default" title={props.choice.label}>
+					{props.choice.label}
+				</p>
+				<p className="text-sm text-kumo-subtle">
+					{tn(records < SAMPLE_MAX ? COUNT.records : COUNT.recordsAtLeast, records)}
+					{" · "}
+					{tn(COUNT.keys, props.columns.length)}
+				</p>
+			</div>
+		</div>
 	);
 }
 
@@ -155,7 +194,7 @@ export function SourceStep() {
 		choice !== null && state.source?.uploadId === choice.uploadId ? state.columns : null;
 	const usable = sampled !== null && reachable(state, "target");
 	const pasteTooLarge = tab === "paste" && !pasteFits(paste);
-	// StepFooter also disables Next while `busy`.
+	// StepHeader also disables Next while `busy`.
 	const canNext = usable && !pasteTooLarge;
 	let reason: string | undefined;
 	if (pasteTooLarge) reason = t(M.pasteTooLarge);
@@ -163,17 +202,34 @@ export function SourceStep() {
 	else if (!busy && !usable) reason = t(M.chooseData);
 
 	return (
-		<div className="space-y-6">
+		<div className="flex flex-col gap-5">
+			<StepHeader
+				summary={t(SUMMARY.source)}
+				next={{
+					canNext,
+					...(reason === undefined ? {} : { reason }),
+					busy,
+					onNext: () => dispatch({ type: "stepChanged", step: "target" }),
+				}}
+			/>
 			<Tabs
-				tabs={TABS.map((id) => ({
-					value: id,
-					label: t(TAB_LABELS[id]),
-					// Kumo's tabs take no `disabled`: while a request runs the tab stays put, so an
-					// upload's progress is never unmounted.
-					render: (own: ComponentProps<"button">) => (
-						<button {...own} type="button" disabled={busy} aria-disabled={busy} />
-					),
-				}))}
+				tabs={TABS.map((id) => {
+					const Icon = TAB_ICONS[id];
+					return {
+						value: id,
+						label: (
+							<span className="flex items-center gap-1.5">
+								<Icon aria-hidden="true" />
+								{t(TAB_LABELS[id])}
+							</span>
+						),
+						// Kumo's tabs take no `disabled`: while a request runs the tab stays put, so an
+						// upload's progress is never unmounted.
+						render: (own: ComponentProps<"button">) => (
+							<button {...own} type="button" disabled={busy} aria-disabled={busy} />
+						),
+					};
+				})}
 				value={tab}
 				onValueChange={(v: string) => setTab(TABS.find((id) => id === v) ?? "upload")}
 			/>
@@ -184,26 +240,28 @@ export function SourceStep() {
 				{tab === "saved" ? <SavedSourceTab {...tabProps} /> : null}
 			</div>
 			{error === null ? null : <ErrorNote error={error} />}
-			{choice === null ? null : (
-				<SourceSettings
-					choice={choice}
-					block={block}
-					assumed={assumed}
-					busy={busy}
-					onChange={changeBlock}
-				/>
+			{choice === null || sampled === null || !usable ? null : (
+				<ChosenData choice={choice} block={block} columns={sampled} />
 			)}
+			<div className="flex flex-wrap gap-x-6 gap-y-3">
+				{choice === null ? null : (
+					<SourceSettings
+						choice={choice}
+						block={block}
+						assumed={assumed}
+						busy={busy}
+						onChange={changeBlock}
+					/>
+				)}
+				<div className="flex min-w-0 flex-1 flex-col gap-5">
+					{choice === null ? null : <RowFilter block={block} busy={busy} onChange={changeBlock} />}
+					<TemplatePicker enabled={usable} busy={busy} run={run} />
+				</div>
+			</div>
 			{sampled === null ? null : <SamplePreview columns={sampled} format={block.format} />}
-			<TemplatePicker enabled={usable} busy={busy} run={run} />
-			<p className="text-sm text-kumo-subtle">
+			<p className="text-sm text-kumo-default">
 				{t(M.wordpress)} <Link href={WORDPRESS_IMPORTER}>{t(M.wordpressLink)}</Link>
 			</p>
-			<StepFooter
-				canNext={canNext}
-				{...(reason === undefined ? {} : { reason })}
-				busy={busy}
-				onNext={() => dispatch({ type: "stepChanged", step: "target" })}
-			/>
 		</div>
 	);
 }

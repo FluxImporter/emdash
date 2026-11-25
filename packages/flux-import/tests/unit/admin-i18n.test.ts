@@ -1,7 +1,7 @@
 import { setupI18n } from "@lingui/core";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, isRetryable, readError, redact } from "../../src/admin/api-error.js";
-import { interpolate, translate } from "../../src/admin/i18n.js";
+import { interpolate, translate, translatePlural } from "../../src/admin/i18n.js";
 
 const MSG = { id: "flux-import.t.n", message: "Imported {count} of {total}" };
 
@@ -23,6 +23,24 @@ describe("translate (plan Ruling 2)", () => {
 		expect(interpolate("{a} and {b}", { a: "x" })).toBe("x and {b}");
 		expect(interpolate("No values {here}")).toBe("No values {here}");
 		expect(interpolate("{n} records", { n: 0 })).toBe("0 records");
+	});
+});
+
+describe("translatePlural", () => {
+	const ENTRIES = { id: "t.entries", one: "{count} entry", other: "{count} entries" };
+	it("picks the English form by count and formats the number for the locale", () => {
+		const i18n = setupI18n({ locale: "en", messages: { en: {} } });
+		expect(translatePlural(i18n, ENTRIES, 1)).toBe("1 entry");
+		expect(translatePlural(i18n, ENTRIES, 0)).toBe("0 entries");
+		expect(translatePlural(i18n, ENTRIES, 1200)).toBe("1,200 entries");
+	});
+	it("uses the catalog's form for the locale's plural category, then its other form", () => {
+		const i18n = setupI18n({
+			locale: "pl",
+			messages: { pl: { "t.entries.few": "{count} wpisy", "t.entries.other": "{count} wpisów" } },
+		});
+		expect(translatePlural(i18n, ENTRIES, 3)).toBe("3 wpisy");
+		expect(translatePlural(i18n, ENTRIES, 5)).toBe("5 wpisów");
 	});
 });
 

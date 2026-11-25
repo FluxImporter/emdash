@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard step 3: Map</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 14px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 14px; border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.elev }}">
+<span><strong style="font-weight: 600">6 of 9 fields mapped.</strong> <span style="color: {{ k.sub }}">Both required fields are done.</span></span>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: {{ k.warnBg }}; color: {{ k.warnTx }}; font-size: 12px; font-weight: 600">1 to check</span>
+<span style="margin-left: auto; display: flex; align-items: center; gap: 10px; color: {{ k.sub }}; font-size: 13px">Suggestions by AI (OpenAI-compatible)<span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; color: {{ k.tx }}; font-weight: 500; border: 1px solid {{ k.line }}">Ask again</span></span>
+</div>
+
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 14px; align-items: start">
+
+<section aria-label="Source keys" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; padding: 12px; display: flex; flex-direction: column; gap: 10px; grid-column: {{ keysCol }}">
+<div style="display: flex; align-items: baseline; justify-content: space-between"><h3 style="margin: 0; font-size: 14px; font-weight: 600">Source keys</h3><span style="font-size: 12px; color: {{ k.sub }}">5 · 1 unused</span></div>
+<span style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; color: {{ k.ph }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4"></path></svg>Filter keys</span>
+<div style="display: flex; flex-direction: {{ keysDir }}; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{ keys }}" as="kk" hint-placeholder-count="5">
+<span role="button" aria-label="Key {{ kk.key }}, {{ kk.state }}" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 6px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; cursor: grab">
+<span style="display: flex; align-items: center; gap: 6px; min-width: 0"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="{{ k.sub }}"><circle cx="9" cy="6" r="1.6"></circle><circle cx="15" cy="6" r="1.6"></circle><circle cx="9" cy="12" r="1.6"></circle><circle cx="15" cy="12" r="1.6"></circle><circle cx="9" cy="18" r="1.6"></circle><circle cx="15" cy="18" r="1.6"></circle></svg><code style="font-family: 'Noto Sans Mono', monospace; font-size: 13px; font-weight: 500">{{ kk.key }}</code></span>
+<span style="font-size: 12px; color: {{ kk.sFg }}; white-space: nowrap">{{ kk.state }}</span>
+</span>
+</sc-for>
+</div>
+</section>
+
+<section aria-label="Posts fields" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; overflow: hidden; grid-column: {{ fieldsCol }}">
+<div style="display: flex; align-items: baseline; justify-content: space-between; padding: 12px 12px 8px"><h3 style="margin: 0; font-size: 14px; font-weight: 600">Posts fields</h3><span style="font-size: 12px; color: {{ k.sub }}">Drop a key on a field, or select a field and press Enter</span></div>
+<sc-for list="{{ fields }}" as="f" hint-placeholder-count="9">
+<div role="button" aria-pressed="{{ f.selStr }}" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; padding: 8px 12px; border-top: 1px solid {{ k.hair }}; background: {{ f.bg }}; box-shadow: inset 3px 0 0 {{ f.bar }}">
+<span style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0"><span style="font-weight: 600; color: {{ k.strong }}">{{ f.name }}</span><span style="font-size: 12px; color: {{ k.sub }}">{{ f.type }}</span><sc-if value="{{ f.req }}" hint-placeholder-val="{{ false }}"><span style="font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px; background: {{ k.neuBg }}; color: {{ k.neuTx }}">required</span></sc-if></span>
+<span style="display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px">
+<sc-if value="{{ f.mapped }}" hint-placeholder-val="{{ true }}"><span style="display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 8px; border-radius: 6px; border: 1px solid {{ k.line }}; background: {{ k.rec }}"><code style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; font-weight: 500">{{ f.key }}</code><span role="button" aria-label="Remove {{ f.key }} from {{ f.name }}" style="width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 4px"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></span></span></sc-if>
+<sc-if value="{{ f.empty }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; align-items: center; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px dashed {{ k.line }}; font-size: 12px; color: {{ k.sub }}">No key</span></sc-if>
+<sc-if value="{{ f.hasSug }}" hint-placeholder-val="{{ false }}"><span style="font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: {{ f.sBg }}; color: {{ f.sFg }}">{{ f.sug }}</span></sc-if>
+</span>
+<sc-if value="{{ f.check }}" hint-placeholder-val="{{ false }}"><span style="grid-column: 1 / span 2; font-size: 12px; color: {{ k.warnTx }}">Check: a number into a text field. AI was not sure.</span></sc-if>
+</div>
+</sc-for>
+<div style="padding: 10px 12px; border-top: 1px dashed {{ k.line }}; color: {{ k.sub }}; font-size: 13px">+ Drop a key here to propose a new field</div>
+</section>
+
+<section aria-label="Field details" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; padding: 14px; display: flex; flex-direction: column; gap: 12px; grid-column: {{ detailCol }}">
+<div style="display: flex; flex-direction: column"><span style="font-size: 12px; color: {{ k.sub }}">Selected field</span><h3 style="margin: 0; font-size: 16px; font-weight: 600; color: {{ k.strong }}">Excerpt <span style="font-size: 12px; font-weight: 400; color: {{ k.sub }}">text</span></h3></div>
+<label style="display: flex; flex-direction: column; gap: 4px"><span style="font-size: 13px; font-weight: 500">Key</span><span style="display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}"><code style="font-family: 'Noto Sans Mono', monospace; font-size: 13px">Price</code><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></label>
+<div style="padding: 10px 12px; border-radius: 8px; background: {{ k.warnBg }}; color: {{ k.warnTx }}; font-size: 13px; line-height: 19px">AI suggested <code style="font-family: 'Noto Sans Mono', monospace">Price</code> with low confidence. Values look like <code style="font-family: 'Noto Sans Mono', monospace">0.5, 1.5</code>.</div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap"><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600">Keep it</span><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; font-weight: 600">Remove the key</span></div>
+<span style="font-size: 12px; color: {{ k.sub }}">Preview: <code style="font-family: 'Noto Sans Mono', monospace">"0.5"</code></span>
+</section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', ph: 'oklch(55.6% 0 0)', base: '#ffffff', elev: '#ffffff', ctrl: '#ffffff', rec: 'oklch(96% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', sel: '#ffffff', brand: 'oklch(0.5772 0.2324 260)', ok: 'oklch(43.2% 0.095 166.913)', okBg: '#ccfbf1', okTx: '#115e59', neuBg: '#f5f5f5', neuTx: '#262626', warnBg: '#ffedd5', warnTx: '#9a3412', infoBg: '#dbeafe', infoTx: '#1e40af' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', ph: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', elev: 'oklch(14% 0 0)', ctrl: 'oklch(21% 0 0)', rec: 'oklch(24% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', sel: 'oklch(26.9% 0 0)', brand: 'oklch(0.52 0.21 260)', ok: 'oklch(90.5% 0.093 164.15)', okBg: '#042f2e', okTx: '#99f6e4', neuBg: '#262626', neuTx: '#e5e5e5', warnBg: '#431407', warnTx: '#fed7aa', infoBg: '#172554', infoTx: '#bfdbfe' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const n = !!this.props.narrow;
+const f = (name, type, req, key, sug, kind, sel, check) => ({
+name: name, type: type, req: !!req, key: key || '', mapped: !!key, empty: !key, sug: sug || '', hasSug: !!sug,
+sBg: kind === 'ai' ? k.infoBg : (kind === 'low' ? k.warnBg : k.okBg), sFg: kind === 'ai' ? k.infoTx : (kind === 'low' ? k.warnTx : k.okTx),
+selStr: sel ? 'true' : 'false', bg: sel ? k.sel : 'transparent', bar: sel ? k.brand : 'transparent', check: !!check
+});
+return {
+k: k,
+cols: n ? 'minmax(0, 1fr)' : 'minmax(0, 0.9fr) minmax(0, 1.6fr) minmax(0, 1fr)',
+keysCol: 'auto', fieldsCol: 'auto', detailCol: 'auto',
+keysDir: n ? 'row' : 'column',
+keys: [
+{ key: 'sku', state: 'Key', sFg: k.ok },
+{ key: 'Name', state: 'Title', sFg: k.ok },
+{ key: 'Price', state: 'Excerpt', sFg: k.warnTx },
+{ key: 'Released', state: 'unused', sFg: k.sub },
+{ key: 'Handle', state: 'Slug', sFg: k.ok }
+],
+fields: [
+f('Key', 'unique import key', true, 'sku', 'AI · medium', 'ai'),
+f('Slug', 'slug', false, 'Handle', 'Name match', 'name'),
+f('Title', 'string', true, 'Name', 'AI · high', 'ai'),
+f('Featured image', 'image'),
+f('Content', 'portableText'),
+f('Excerpt', 'text', false, 'Price', 'AI · low', 'low', true, true),
+f('Categories', 'taxonomy'),
+f('Tags', 'taxonomy'),
+f('Bylines', '')
+]
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard step 5: Preview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 14px">
+
+<div style="display: flex; flex-wrap: wrap; border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-for list="{{ stats }}" as="s" hint-placeholder-count="7">
+<div style="flex: 1 1 {{ statBasis }}; padding: 12px 14px; border-right: 1px solid {{ k.hair }}; display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 22px; line-height: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: {{ s.nfg }}">{{ s.n }}</span>
+<span style="font-size: 13px; color: {{ s.lfg }}">{{ s.label }}</span>
+</div>
+</sc-for>
+</div>
+
+<div role="note" style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 12px; border-radius: 10px; background: {{ k.infoBg }}; color: {{ k.infoTx }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5"></path></svg><span>Entries will be <strong style="font-weight: 600">published</strong>. 1 record has a warning.</span><span style="font-weight: 600; text-decoration: underline">Change in Options</span></div>
+
+<div role="tablist" aria-label="Filter records" style="display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: {{ k.rec }}; border: 1px solid {{ k.hair }}; align-self: flex-start; max-width: 100%; overflow-x: auto">
+<sc-for list="{{ filters }}" as="t" hint-placeholder-count="6"><span role="tab" aria-selected="{{ t.sel }}" aria-disabled="{{ t.dis }}" style="display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 7px; white-space: nowrap; background: {{ t.bg }}; box-shadow: {{ t.sh }}; color: {{ t.fg }}; font-weight: {{ t.fw }}; font-size: 13px">{{ t.label }}<span style="font-variant-numeric: tabular-nums">{{ t.n }}</span></span></sc-for>
+</div>
+
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; overflow: hidden">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 14px; padding: 9px 14px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600"><span>Record</span><span>Action</span><span>Changes</span></div>
+<sc-for list="{{ recs }}" as="r" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 6px 14px; align-items: start; padding: 10px 14px; border-bottom: 1px solid {{ k.hair }}">
+<code style="font-family: 'Noto Sans Mono', monospace; font-size: 13px; font-weight: 500; padding-top: 2px">{{ r.id }}</code>
+<span style="justify-self: start; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px; background: {{ k.okBg }}; color: {{ k.okTx }}; font-size: 12px; font-weight: 600">Create</span>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; grid-column: {{ chCol }}">
+<sc-for list="{{ r.ch }}" as="c" hint-placeholder-count="3"><span style="display: flex; gap: 8px; font-size: 13px; min-width: 0"><span style="flex: none; width: 64px; color: {{ k.sub }}">{{ c.f }}</span><code style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"><span style="color: {{ k.sub }}">—</span> → {{ c.v }}</code></span></sc-for>
+<sc-if value="{{ r.warn }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: {{ k.warnTx }}"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"></path></svg>Excerpt: a number written as text</span></sc-if>
+</span>
+</div>
+</sc-for>
+</div>
+<nav aria-label="Record pages" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: {{ k.sub }}"><span>1–4 of 10</span><span style="display: flex; gap: 6px"><span style="height: 30px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid {{ k.line }}; border-radius: 8px">Previous</span><span style="height: 30px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid {{ k.line }}; border-radius: 8px; color: {{ k.tx }}; font-weight: 500">Next</span></span></nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":700}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', base: '#ffffff', rec: 'oklch(96% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', ok: 'oklch(43.2% 0.095 166.913)', okBg: '#ccfbf1', okTx: '#115e59', warnTx: '#9a3412', infoBg: '#dbeafe', infoTx: '#1e40af' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', rec: 'oklch(15% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', ok: 'oklch(90.5% 0.093 164.15)', okBg: '#042f2e', okTx: '#99f6e4', warnTx: '#fed7aa', infoBg: '#172554', infoTx: '#bfdbfe' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const n = !!this.props.narrow;
+const st = [['10', 'to create'], ['0', 'to update'], ['0', 'unchanged'], ['0', 'failed'], ['0', 'conflicts'], ['0', 'locked'], ['0', 'filtered out']];
+const fl = [['All', '10'], ['Will change', '10'], ['Warnings', '1'], ['Failed', '0'], ['Conflicts', '0'], ['Locked', '0'], ['Filtered out', '0']];
+const ch = (i) => [{ f: 'slug', v: 'product-' + i }, { f: 'title', v: 'Product ' + i + ', "quoted"' }, { f: 'excerpt', v: '"' + (i + 0.5) + '"' }];
+return {
+k: k,
+statBasis: n ? '30%' : '0',
+cols: n ? '64px minmax(0, 1fr)' : '110px 90px minmax(0, 1fr)',
+chCol: n ? '1 / span 2' : 'auto',
+stats: st.map((s, i) => ({ n: s[0], label: s[1], nfg: s[0] === '0' ? k.sub : (i === 0 ? k.ok : k.strong), lfg: s[0] === '0' ? k.sub : k.tx })),
+filters: fl.map((f, i) => ({ label: f[0], n: f[1], sel: i === 0 ? 'true' : 'false', dis: f[1] === '0' ? 'true' : 'false', bg: i === 0 ? (theme === 'dark' ? 'oklch(23% 0 0)' : '#ffffff') : 'transparent', sh: i === 0 ? '0 1px 2px rgba(0,0,0,.12)' : 'none', fg: i === 0 ? k.strong : (f[1] === '0' ? k.sub : k.tx), fw: i === 0 ? 600 : 500 })),
+recs: [0, 1, 2, 3].map((i) => ({ id: 'SKU-' + i, ch: ch(i), warn: i === 3 }))
+};
+}
+}
+</script>
+</body>
+</html>

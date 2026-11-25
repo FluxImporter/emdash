@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ranked critique of the current admin screens</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1280px; box-sizing: border-box; padding: 48px 56px; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 21px; background: #ffffff; color: #171717; display: flex; flex-direction: column; gap: 22px">
+<header style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; letter-spacing: .06em; color: #9a3412">CRITIQUE · RANKED BY HOW MUCH EACH PROBLEM SLOWS A USER DOWN</span>
+<h1 style="margin: 0; font-size: 34px; line-height: 42px; font-weight: 700; letter-spacing: -0.02em">The screens work, but status and next steps are hard to find.</h1>
+<p style="margin: 0; color: #525252; max-width: 90ch">Most time is lost in three places: reading counts to find what went wrong, scrolling sideways at 768px, and judging a rollback without the numbers. Screenshot names are in brackets.</p>
+</header>
+<div style="display: grid; grid-template-columns: 52px minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 24px; font-size: 12px; font-weight: 600; color: #525252; padding-bottom: 6px; border-bottom: 2px solid #171717"><span>Rank</span><span>Problem</span><span>Fix in the redesign</span></div>
+<sc-for list="{{ items }}" as="it" hint-placeholder-count="15">
+<div style="display: grid; grid-template-columns: 52px minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 24px; padding: 12px 0; border-bottom: 1px solid #e5e5e5">
+<span style="font-size: 22px; line-height: 28px; font-weight: 700; color: {{ it.rc }}; font-variant-numeric: tabular-nums">{{ it.rank }}</span>
+<div style="display: flex; flex-direction: column; gap: 3px"><span style="font-weight: 700">{{ it.title }}</span><span style="color: #404040">{{ it.why }}</span><span style="font-family: 'Noto Sans Mono', monospace; font-size: 11px; color: #737373">{{ it.where }}</span></div>
+<span style="color: #262626">{{ it.fix }}</span>
+</div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":2000}}'>
+class Component extends DCLogic {
+renderVals() {
+const L = [
+['At 768px the tables scroll sideways and hide status, counts and actions.', 'To learn whether an import worked, the user scrolls each table horizontally; the Actions button is off-screen.', 'a8-final-jobs-dark-768 · a8-final-sources-dark-768', 'Below about 700px of content width, tables become stacked rows: name and status on top, counts below, menu on the right. Measure the content, not the viewport.'],
+['Counts are run-on sentences, and failures look like zeros.', '"Created 0 · Updated 10 · Unchanged 0 · Failed 0" has to be read word by word on every row. A failed record has the same weight as a zero.', 'a1-jobs · a8-final-jobs-light-1280 · a6-run-log', 'Hide zero counts, bold the numbers, colour failed in danger. All zero reads "No changes". The same format everywhere: Jobs, run log, Run step.'],
+['The rollback dialog hides the numbers that make it safe.', 'The summary shows one of four counts. Progress is a grey bar with no number, and Close is disabled with no reason.', 'a3-dry-summary · a3-progress', 'Three stages: checking (skeleton), summary (delete, restore, bring back, kept, with a warning when kept > 0), progress (8 of 13, close any time).'],
+['In the wizard, Next is below the fold, and the steps look like links.', 'Map and Preview push Next off-screen. Underlined blue step names look like navigation, with no done state; future steps are clickable.', 'prep1-source · prep2-map · prep3-csv-preview', 'Back and "Next: Target" sit at the top of every step. A stepper shows done (check), current (filled) and upcoming (outline).'],
+['The Map step mixes keys, actions and confidence in grey pills.', '"sku Remove" is one pill. "AI · medium" and "Name · high" look alike. "check" doesn’t say what to check. Required is a red asterisk only.', 'prep2-map', 'Key chip with a separate remove button; suggestion badges by source and confidence; a sentence for each check; a "required" badge.'],
+['Preview and Run give zeros the same weight as the result.', 'Seven equal cards, six of them zero. The completed Run screen has four equal buttons and no main action.', 'prep3-csv-preview · a3-open-run-screen', 'One count strip with quiet zeros; filter tabs carry counts; one primary action when done.'],
+['The button hierarchy is upside down.', 'The header "New import" is secondary while tab actions are primary blue; the empty Jobs state adds a second blue New import.', 'a0-empty-home · a8-final-schedules-*', 'New import is the only primary button. Tab actions are secondary and sit on the summary line.'],
+['Rows carry three or four full buttons.', 'Templates wraps Use, Export, Rename and describe, Delete onto two lines; Delete is as heavy as Use.', 'a4-templates · a8-final-sources-light-1280', 'One visible action (Use, Fetch now, Run now) and a menu; destructive items last, in danger text.'],
+['The credential form is always open.', 'An empty form with a disabled Save sits under the tables. Sources without a name repeat the address twice.', 'a8-final-sources-light-1280', 'An "Add a credential" dialog; masked values in the list. Show the host as the name when none is set.'],
+['Every tab repeats its own name as a heading.', '"Jobs" under the Jobs tab costs a row, and actions land in a different place on each tab.', 'a1-jobs · a4-templates · a8-final-schedules-*', 'Drop the heading. Each tab opens with one summary line and its action on the right.'],
+['Times use two formats.', 'Jobs say "today 18:38" with no zone; schedules and the run log say "Nov 24, 2026 16:40 UTC".', 'a1-jobs · a6-run-log', 'Always "Today 18:40 UTC" or "24 Nov 18:38 UTC". Schedules state "times in UTC" once.'],
+['"Started by: Admin or API" says nothing.', 'The origin (wizard, schedule, agent) is what users look for. Rollback jobs look like ordinary imports.', 'a8-final-jobs-*', 'An origin with its icon under the start time; rollback rows get the undo icon and "restored · kept" counts.'],
+['Dry runs look like a link and expand into plain text.', 'A blue "Dry runs: 2" reads as navigation; the expanded rows have no structure or actions.', 'a1-jobs-dry-runs-open', 'A table footer with a count badge, "Not written to the site.", and rows that open.'],
+['Empty states don’t lead anywhere.', 'Schedules explains the idea but not what is missing, and offers no next step.', 'a8-final-schedules-*', 'Empty Schedules lists what exists and what is missing, with a link to add it.'],
+['Loading, error, 403 and site-import states are missing.', 'None appear in the screenshots, so each tab likely handles them its own way.', '—', 'One set of five states shared by every tab.']
+];
+return { items: L.map((l, i) => ({ rank: i + 1, title: l[0], why: l[1], where: l[2], fix: l[3], rc: i < 3 ? '#b91c1c' : (i < 8 ? '#9a3412' : '#525252') })) };
+}
+}
+</script>
+</body>
+</html>

@@ -67,23 +67,6 @@ const two = (n: number) => String(n).padStart(2, "0");
 /** `HH:MM`, the clock every UTC time in the tab is written with. */
 export const clock = (hour: number, minute: number) => `${two(hour)}:${two(minute)}`;
 
-/**
- * `iso` in UTC, as "Nov 25, 2026 03:00": every time the Schedules tab shows is UTC and is never
- * converted to the viewer's zone (plan Ruling 13). Text that is not a time stays as it is.
- */
-export function utcLabel(iso: string, locale: string): string {
-	const at = new Date(iso);
-	if (Number.isNaN(at.getTime())) return iso;
-	const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(at);
-	const time = new Intl.DateTimeFormat(locale, {
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
-		timeZone: "UTC",
-	}).format(at);
-	return `${date} ${time}`;
-}
-
 /** When it runs, in words, with "UTC" wherever an hour is named. */
 export function describeTiming(t: Timing): { msg: Msg; values: Values } {
 	switch (t.kind) {

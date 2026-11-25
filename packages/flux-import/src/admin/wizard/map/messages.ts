@@ -1,8 +1,9 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** The Map step's messages: the keys and fields panes, drag and drop, and the suggestions. */
 export const M = {
 	keysHeading: { id: "flux-import.map.keys-heading", message: "Source keys · {count}" },
+	unused: { id: "flux-import.map.unused", message: "unused" },
 	filterKeys: { id: "flux-import.map.filter-keys", message: "Filter keys" },
 	keysShown: { id: "flux-import.map.keys-shown", message: "Showing {shown} of {total} keys" },
 	noKeyMatches: { id: "flux-import.map.no-key-matches", message: "No key matches the filter" },
@@ -10,6 +11,10 @@ export const M = {
 	used: { id: "flux-import.map.used", message: "used" },
 
 	fieldsHeading: { id: "flux-import.map.fields-heading", message: "{collection} fields" },
+	fieldsHint: {
+		id: "flux-import.map.fields-hint",
+		message: "Drop a key on a field, or select a field and press Enter",
+	},
 	fieldsLoading: { id: "flux-import.map.fields-loading", message: "Loading the fields" },
 	keyRow: { id: "flux-import.map.key-row", message: "Key" },
 	keyHint: { id: "flux-import.map.key-hint", message: "unique import key" },
@@ -21,7 +26,7 @@ export const M = {
 	},
 	taxonomyType: { id: "flux-import.map.taxonomy-type", message: "taxonomy" },
 	required: { id: "flux-import.map.required", message: "required" },
-	dropKey: { id: "flux-import.map.drop-key", message: "Drop a key" },
+	dropKey: { id: "flux-import.map.drop-key", message: "No key" },
 	expressionChip: { id: "flux-import.map.expression-chip", message: "Expression" },
 	remove: { id: "flux-import.map.remove", message: "Remove" },
 	removeKey: { id: "flux-import.map.remove-key", message: "Remove {key} from {field}" },
@@ -41,11 +46,12 @@ export const M = {
 		id: "flux-import.map.unbound-reference",
 		message: "This reference field is not linked to a collection to look entries up in",
 	},
-	addField: { id: "flux-import.map.add-field", message: "+ Add a new field" },
-	addFieldHint: {
-		id: "flux-import.map.add-field-hint",
-		message: "Drop a key here, or choose it, to propose a new field",
+	addField: {
+		id: "flux-import.map.add-field",
+		message: "+ Drop a key here to propose a new field",
 	},
+	/** What a key is over or dropped on, in the drag announcements. */
+	newFieldTarget: { id: "flux-import.map.new-field-target", message: "a new field" },
 
 	detailHeading: { id: "flux-import.map.detail-heading", message: "Details" },
 	nothingSelected: {
@@ -82,16 +88,24 @@ export const M = {
 		message: "Moving the key {key} was cancelled; nothing changed.",
 	},
 
-	suggestions: { id: "flux-import.map.suggestions", message: "Suggestions" },
 	asking: { id: "flux-import.map.asking", message: "Asking for suggestions…" },
-	statusAi: {
-		id: "flux-import.map.status-ai",
-		message: "AI ({provider}) · {filled} filled, {check} to check",
-	},
-	statusName: { id: "flux-import.map.status-name", message: "Name matching" },
+	statusAi: { id: "flux-import.map.status-ai", message: "Suggestions by AI ({provider})" },
+	statusName: { id: "flux-import.map.status-name", message: "Suggestions by name matching" },
 	statusNameUnavailable: {
 		id: "flux-import.map.status-name-unavailable",
-		message: "Name matching · AI unavailable",
+		message: "Suggestions by name matching · AI unavailable",
+	},
+	checkMissing: {
+		id: "flux-import.map.check-missing",
+		message: "Check: the sample has no key {key}.",
+	},
+	checkUnsure: {
+		id: "flux-import.map.check-unsure",
+		message: "Check: the suggestion was not sure.",
+	},
+	checkFormat: {
+		id: "flux-import.map.check-format",
+		message: "Check: the format of its values is unclear.",
 	},
 	providers: {
 		anthropic: { id: "flux-import.map.provider-anthropic", message: "Anthropic" },
@@ -126,3 +140,28 @@ export const M = {
 	},
 	waitFields: { id: "flux-import.map.wait-fields", message: "Wait for the fields to load" },
 } satisfies Record<string, Msg | Record<string, Msg>>;
+
+/** The Map step's counts: the summary bar's mapped fields and checks. */
+export const COUNT = {
+	mapped: {
+		id: "flux-import.map.count-mapped",
+		one: "{mapped} of {count} field mapped.",
+		other: "{mapped} of {count} fields mapped.",
+	},
+	requiredDone: {
+		id: "flux-import.map.count-required-done",
+		one: "The required field is done.",
+		other: "All {count} required fields are done.",
+	},
+	requiredLeft: {
+		id: "flux-import.map.count-required-left",
+		one: "{count} required field still needs a key.",
+		other: "{count} required fields still need a key.",
+	},
+	unused: { id: "flux-import.map.count-unused", one: "{count} unused", other: "{count} unused" },
+	toCheck: {
+		id: "flux-import.map.count-to-check",
+		one: "{count} to check",
+		other: "{count} to check",
+	},
+} satisfies Record<string, PluralMsg>;

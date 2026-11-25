@@ -10,7 +10,7 @@ import { M as SHARED } from "../../src/admin/home/shared/messages.js";
 import { When, whenLabel } from "../../src/admin/home/shared/When.js";
 import { readTab, type TabId } from "../../src/admin/home/url.js";
 import { translate } from "../../src/admin/i18n.js";
-import { fail, mockRoutes, renderAdmin } from "./harness.js";
+import { fail, HOME_ROUTES, mockRoutes, renderAdmin } from "./harness.js";
 
 function dummy(id: TabId) {
 	return function Dummy() {
@@ -36,7 +36,7 @@ const DUMMY: TabComponents = {
 	schedules: dummy("schedules"),
 };
 
-const granted = () => mockRoutes({ "credentials/list": () => [] });
+const granted = () => mockRoutes({ ...HOME_ROUTES, "credentials/list": () => [] });
 
 describe("url and links", () => {
 	it("reads the tab, Jobs for an unknown or absent one", () => {
@@ -55,6 +55,7 @@ describe("Home", () => {
 		mockRoutes({ "credentials/list": () => fail("FORBIDDEN", "Insufficient permissions", 403) });
 		renderAdmin(<Home tabs={DUMMY} />);
 		expect(await screen.findAllByText("Only administrators can import.")).toHaveLength(1);
+		expect(screen.getByText("Ask an administrator of this site for access.")).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 		expect(screen.queryByRole("tablist")).toBeNull();
 		expect(screen.queryByRole("link", { name: "New import" })).toBeNull();
@@ -64,10 +65,13 @@ describe("Home", () => {
 	it("offers Try again after another failure, which probes again", async () => {
 		let failing = true;
 		mockRoutes({
+			...HOME_ROUTES,
 			"credentials/list": () => (failing ? fail("UNAUTHORIZED", "Session expired", 401) : []),
 		});
 		const { user } = renderAdmin(<Home tabs={DUMMY} />);
 		const retry = await screen.findByRole("button", { name: "Try again" });
+		expect(screen.getByRole("alert")).toHaveTextContent("Imports could not be loaded.");
+		expect(screen.getByRole("alert")).toHaveTextContent("Your imports are not affected.");
 		expect(screen.queryByRole("tablist")).toBeNull();
 		failing = false;
 		await user.click(retry);
@@ -82,24 +86,68 @@ describe("Home", () => {
 			"/_emdash/admin/plugins/flux-import/import",
 		);
 		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
-		// A button, as the admin's own list screens put their "Add New" (Task 16), not a text link.
+		// The page's only primary button (Critique 7).
 		const { container } = render(
-			<LinkButton variant="secondary" href="/x">
+			<LinkButton variant="primary" href="/x">
 				x
 			</LinkButton>,
 		);
 		expect(screen.getByRole("link", { name: "New import" }).className).toBe(
 			(container.firstElementChild as HTMLElement).className,
 		);
-		expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
-			"Jobs",
-			"Templates",
-			"Sources",
-			"Schedules",
-		]);
+		// Each tab carries its count once its list is read.
+		await waitFor(() =>
+			expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
+				"Jobs0",
+				"Templates0",
+				"Sources0",
+				"Schedules0",
+			]),
+		);
 		expect(screen.getByRole("tabpanel")).toHaveTextContent("jobs-tab");
 		expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Jobs");
-		expect(screen.getByRole("heading", { level: 2, name: "Jobs" })).toBeVisible();
+		// No heading repeats the tab's name under the tabs (Critique 10).
+		expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
+	});
+
+	it("counts each tab's list, and Jobs with a + while more pages exist", async () => {
+		const row = (id: string) => ({ id });
+		mockRoutes({
+			...HOME_ROUTES,
+			"credentials/list": () => [],
+			"jobs/summaries": () => ({ items: [row("a"), row("b")], hasMore: true, cursor: "c" }),
+			"templates/list": () => ({ items: [row("t")], hasMore: false }),
+			"sources/list": () => ({ items: [row("s1"), row("s2"), row("s3")], hasMore: false }),
+		});
+		renderAdmin(<Home tabs={DUMMY} />);
+		await waitFor(() =>
+			expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
+				"Jobs2+",
+				"Templates1",
+				"Sources3",
+				"Schedules0",
+			]),
+		);
+	});
+
+	it("waits behind a banner while a site import runs, and recovers by itself", async () => {
+		let fence = "import";
+		mockRoutes({
+			...HOME_ROUTES,
+			"credentials/list": () => [],
+			"schedules/fence": () => ({ fence }),
+		});
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		renderAdmin(<Home tabs={DUMMY} />);
+		expect(await screen.findByText("A site import is running.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "New import" })).toBeDisabled();
+		expect(screen.queryByRole("link", { name: "New import" })).toBeNull();
+		expect(screen.getByText("jobs-tab").closest("[inert]")).not.toBeNull();
+		fence = "clear";
+		vi.advanceTimersByTime(5_000);
+		expect(await screen.findByRole("link", { name: "New import" })).toBeVisible();
+		expect(screen.queryByText("A site import is running.")).toBeNull();
+		vi.useRealTimers();
 	});
 
 	it("opens the tab named in ?tab=, and Jobs for an unknown one", async () => {
@@ -278,20 +326,21 @@ describe("ConfirmDialog", () => {
 describe("times", () => {
 	const t = (m: { id: string; message: string }, v?: Record<string, string | number>) =>
 		translate(setupI18n({ locale: "en", messages: { en: {} } }), m, v);
-	const now = new Date(2026, 10, 24, 15, 0).getTime();
-	it("labels times today, yesterday and older", () => {
-		expect(whenLabel(new Date(2026, 10, 24, 10, 14).toISOString(), now, "en", t)).toBe(
-			"today 10:14",
+	const now = Date.UTC(2026, 10, 24, 15, 0);
+	it("labels times today, yesterday and older, always in UTC", () => {
+		expect(whenLabel(new Date(Date.UTC(2026, 10, 24, 10, 14)).toISOString(), now, "en", t)).toBe(
+			"Today 10:14 UTC",
 		);
-		expect(whenLabel(new Date(2026, 10, 23, 23, 59).toISOString(), now, "en", t)).toBe(
-			"yesterday 23:59",
+		expect(whenLabel(new Date(Date.UTC(2026, 10, 23, 23, 59)).toISOString(), now, "en", t)).toBe(
+			"Yesterday 23:59 UTC",
 		);
-		const older = whenLabel(new Date(2026, 10, 20, 15, 30).toISOString(), now, "en", t);
-		expect(older).toContain("Nov 20, 2026");
-		expect(older).not.toContain("today");
-		expect(older).not.toContain("yesterday");
-		expect(older).toContain("15:30");
-		expect(older).not.toMatch(/[AP]M/);
+		expect(whenLabel(new Date(Date.UTC(2026, 10, 20, 15, 30)).toISOString(), now, "en", t)).toBe(
+			"Nov 20 15:30 UTC",
+		);
+		// Another year names it.
+		expect(whenLabel(new Date(Date.UTC(2025, 11, 31, 8, 0)).toISOString(), now, "en", t)).toBe(
+			"Dec 31, 2025 08:00 UTC",
+		);
 		expect(SHARED.today.message).toContain("{time}");
 	});
 	it("leaves a value that is not a time as it is", () => {
@@ -300,20 +349,21 @@ describe("times", () => {
 	it("renders a time element with the exact time as accessible text", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(now);
-		const iso = new Date(2026, 10, 24, 10, 14).toISOString();
+		const iso = new Date(Date.UTC(2026, 10, 24, 10, 14)).toISOString();
 		renderAdmin(<When iso={iso} />);
 		const el = document.querySelector("time");
 		expect(el).toHaveAttribute("datetime", iso);
-		expect(el?.textContent).toContain("today 10:14");
+		expect(el?.textContent).toContain("Today 10:14 UTC");
 		expect(el?.getAttribute("title")).toContain("Nov 24, 2026");
+		expect(el?.getAttribute("title")).toContain("UTC");
 		expect(el?.querySelector(".sr-only")?.textContent).toBe(el?.getAttribute("title"));
 	});
 	it("gives the exact time on the label's 24-hour clock", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(now);
-		renderAdmin(<When iso={new Date(2026, 10, 24, 14, 5, 9).toISOString()} />);
+		renderAdmin(<When iso={new Date(Date.UTC(2026, 10, 24, 14, 5, 9)).toISOString()} />);
 		const el = document.querySelector("time");
-		expect(el?.textContent).toContain("today 14:05");
+		expect(el?.textContent).toContain("Today 14:05 UTC");
 		expect(el?.getAttribute("title")).toContain("14:05:09");
 		expect(el?.getAttribute("title")).not.toMatch(/[AP]M/);
 	});

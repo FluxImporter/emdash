@@ -7,7 +7,7 @@ import type { SchemaField } from "../../src/admin/types.js";
 import { createOnce, draftDispatch, WizardProvider } from "../../src/admin/wizard/context.js";
 import { M } from "../../src/admin/wizard/messages.js";
 import { M as OPTIONS } from "../../src/admin/wizard/options/messages.js";
-import { StepFooter } from "../../src/admin/wizard/StepFooter.js";
+import { StepHeader, type StepNext } from "../../src/admin/wizard/StepHeader.js";
 import {
 	clearsDryRun,
 	deriveOwner,
@@ -1523,8 +1523,8 @@ describe("once (F14)", () => {
 	});
 });
 
-describe("StepFooter", () => {
-	const render = (initial: Partial<WizardState>, props: Parameters<typeof StepFooter>[0]) => {
+describe("StepHeader", () => {
+	const render = (initial: Partial<WizardState>, next: StepNext) => {
 		const i18n = setupI18n({ locale: "en", messages: { en: {} } });
 		return renderToStaticMarkup(
 			createElement(
@@ -1534,7 +1534,7 @@ describe("StepFooter", () => {
 					WizardProvider,
 					// `children` comes as createElement's third argument.
 					{ initial } as Parameters<typeof WizardProvider>[0],
-					createElement(StepFooter, props),
+					createElement(StepHeader, { next }),
 				),
 			),
 		);
@@ -1546,12 +1546,12 @@ describe("StepFooter", () => {
 			{ canNext: false, reason: "Map at least one field", onNext: () => {} },
 		);
 		expect(html).toContain(">Back<");
-		expect(html).toMatch(/<span id="([^"]+)"[^>]*>Map at least one field<\/span>/);
-		const id = /<span id="([^"]+)"/.exec(html)?.[1];
-		const next = /<button[^>]*>(?:(?!<\/button>).)*>Next</.exec(html)?.[0] ?? "";
+		expect(html).toMatch(/<p id="([^"]+)"[^>]*>Map at least one field<\/p>/);
+		const id = /<p id="([^"]+)"/.exec(html)?.[1];
+		const next = /<button[^>]*aria-label="Next: Options"[^>]*>/.exec(html)?.[0] ?? "";
 		expect(next).toContain(' disabled=""');
 		expect(next).toContain(`aria-describedby="${id}"`);
-		expect(html).toContain(">Next<");
+		expect(html).toContain(">Next: Options<");
 	});
 
 	it("has no Back on Source or once a run exists, and an enabled Next with its own label", () => {

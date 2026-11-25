@@ -192,7 +192,7 @@ export function UrlTab(props: TabProps) {
 					))}
 				</Select>
 			</div>
-			<Button variant="primary" disabled={busy || !ready} onClick={fetchUrl}>
+			<Button variant="secondary" disabled={busy || !ready} onClick={fetchUrl}>
 				{t(M.fetch)}
 			</Button>
 			{taken === null ? null : <TakenOffer {...props} {...taken} />}

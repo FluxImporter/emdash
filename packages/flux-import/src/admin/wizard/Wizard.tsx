@@ -1,16 +1,23 @@
-import { Banner, Button, Loader } from "@cloudflare/kumo";
+import { LinkButton } from "@cloudflare/kumo";
 import { type ComponentType, useCallback, useEffect, useRef, useState } from "react";
-import { describeError, ERROR_MESSAGES } from "../errors.js";
+import { isForbidden } from "../api-error.js";
+import { HOME_URL } from "../home/links.js";
 import { useT } from "../i18n.js";
 import { M as PAGE } from "../messages.js";
 import { useCredentials } from "../queries.js";
+import { Mark } from "../ui/Mark.js";
+import { Forbidden, LoadFailed, LoadingRows } from "../ui/states.js";
+import { useNarrow } from "../ui/use-narrow.js";
 import { useWizard, WizardProvider } from "./context.js";
 import { SHELL } from "./messages.js";
 import { StepBar } from "./StepBar.js";
 import { initialState, reducer, type StepId, type WizardState } from "./state.js";
 import { readUrl, writeUrl } from "./url.js";
 
-/** The component each step renders below its heading; it renders no `<h2>` (preflight F20). */
+/**
+ * The component each step renders below the step bar. Each starts with its `StepHeader`: the
+ * step's `<h2>`, its summary line, and its Back and Next (preflight F20, Critique 4).
+ */
 export type StepComponents = Readonly<Record<StepId, ComponentType>>;
 
 /** Asks the browser to confirm leaving the page while `active`. */
@@ -35,56 +42,51 @@ function openingState(search: string): WizardState {
 }
 
 /**
- * The import page: the access probe (Ruling 17), then the wizard. A 403 shows only the
- * administrators-only sentence; any other failure its sentence and "Try again".
+ * The import page: the access probe (Ruling 17), then the wizard, under the title with the
+ * product mark (Wizard.dc.html). A 403 shows only the administrators-only state; any other failure
+ * its sentence and "Try again" (States.dc.html).
  */
 export function Wizard(props: { steps: StepComponents }) {
 	const t = useT();
 	const access = useCredentials();
+	if (access.data !== undefined) {
+		// Once granted, the wizard stays: a later failed probe must not drop the draft.
+		return <OpenedWizard steps={props.steps} />;
+	}
 	return (
-		<div className="space-y-6">
-			<h1 className="text-2xl font-bold">{t(PAGE.pageTitle)}</h1>
-			{access.data !== undefined ? (
-				// Once granted, the wizard stays: a later failed probe must not drop the draft.
-				<OpenedWizard steps={props.steps} />
+		<div className="flex flex-col gap-4">
+			<Title />
+			{access.isError && isForbidden(access.error) ? (
+				<Forbidden />
 			) : access.isError ? (
-				<AccessError
+				<LoadFailed
+					title={t(SHELL.accessFailed)}
 					error={access.error}
 					retrying={access.isFetching}
 					onRetry={() => void access.refetch()}
 				/>
 			) : (
-				<Loader aria-label={t(SHELL.checkingAccess)} />
+				<LoadingRows label={t(SHELL.checkingAccess)} rows={3} />
 			)}
 		</div>
 	);
 }
 
-function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void }) {
+/** The page's title with the product mark, and the way back to the Imports home. */
+function Title(props: { exit?: "cancel" | "seeAll" }) {
 	const t = useT();
-	const { msg, values, detail } = describeError(props.error);
-	if (msg.id === ERROR_MESSAGES.FORBIDDEN?.id) {
-		return <Banner variant="alert" title={t(msg)} />;
-	}
 	return (
-		<Banner
-			variant="error"
-			role="alert"
-			title={t(msg, values)}
-			{...(detail === undefined ? {} : { description: detail })}
-			action={
-				<Button
-					variant="secondary"
-					loading={props.retrying}
-					// Kumo's spinner is labelled "Loading" in English: the label names the button.
-					aria-label={t(PAGE.tryAgain)}
-					aria-busy={props.retrying || undefined}
-					onClick={props.onRetry}
-				>
-					{t(PAGE.tryAgain)}
-				</Button>
-			}
-		/>
+		<div className="flex flex-wrap items-center justify-between gap-3">
+			<div className="flex items-center gap-2.5">
+				<Mark />
+				<h1 className="text-2xl font-bold text-kumo-default">{t(PAGE.pageTitle)}</h1>
+			</div>
+			{props.exit === undefined ? null : (
+				<LinkButton variant="ghost" href={HOME_URL}>
+					{t(props.exit === "seeAll" ? SHELL.seeAll : SHELL.cancel)}
+				</LinkButton>
+			)}
+		</div>
 	);
 }
 
@@ -113,12 +115,14 @@ function OpenedWizard(props: { steps: StepComponents }) {
 	);
 }
 
-/** The step bar, the current step's heading and the step itself. */
+/**
+ * The title, the step bar and the step (which renders its own heading). Focus moves to the step's
+ * heading when the step changes.
+ */
 function Shell(props: { steps: StepComponents; focusHeading?: boolean }) {
-	const t = useT();
-	const { state } = useWizard();
-	const heading = useRef<HTMLHeadingElement>(null);
+	const { state, heading } = useWizard();
 	const shown = useRef(state.step);
+	const [ref, narrow] = useNarrow<HTMLDivElement>();
 
 	useUnloadGuard(state.dirty && state.run === null);
 
@@ -127,7 +131,7 @@ function Shell(props: { steps: StepComponents; focusHeading?: boolean }) {
 	const focusHeading = props.focusHeading === true;
 	useEffect(() => {
 		if (focusHeading) heading.current?.focus();
-	}, [focusHeading]);
+	}, [focusHeading, heading]);
 
 	// The URL names the current step (Ruling 12); on the first render this also rewrites an
 	// unreachable `?step=` and adds `step=run` to a reopened job's URL. The URL is read once, at
@@ -138,15 +142,13 @@ function Shell(props: { steps: StepComponents; focusHeading?: boolean }) {
 		if (shown.current === state.step) return;
 		shown.current = state.step;
 		heading.current?.focus();
-	}, [state.step]);
+	}, [state.step, heading]);
 
 	const Step = props.steps[state.step];
 	return (
-		<div className="space-y-6">
-			<StepBar />
-			<h2 ref={heading} tabIndex={-1} className="text-xl font-semibold outline-none">
-				{t(SHELL.step[state.step])}
-			</h2>
+		<div ref={ref} className="flex flex-col gap-4">
+			<Title exit={state.step === "run" ? "seeAll" : "cancel"} />
+			<StepBar narrow={narrow} />
 			<Step />
 		</div>
 	);

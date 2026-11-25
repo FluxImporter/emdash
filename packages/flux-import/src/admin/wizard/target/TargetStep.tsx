@@ -6,7 +6,8 @@ import { M as SHARED } from "../../messages.js";
 import { useFields, useSite } from "../../queries.js";
 import type { SiteInfo } from "../../types.js";
 import { useWizard } from "../context.js";
-import { StepFooter } from "../StepFooter.js";
+import { SUMMARY } from "../messages.js";
+import { StepHeader } from "../StepHeader.js";
 import { M } from "./messages.js";
 
 /** A failed read as its sentence, with the route's specifics when `describeError` gives them. */
@@ -191,7 +192,7 @@ export function TargetStep() {
 										? {}
 										: { error: t(M.staleLocale, { locale: staleTranslation }) })}
 								/>
-								<Text variant="secondary">{t(M.translationHint)}</Text>
+								<p className="text-sm text-kumo-default">{t(M.translationHint)}</p>
 							</>
 						) : null}
 					</div>
@@ -200,18 +201,16 @@ export function TargetStep() {
 		);
 	}
 
+	let reason: string | undefined;
+	if (info !== undefined && hasCollections && collection === null) reason = t(M.chooseCollection);
+	else if (staleSentence !== null) reason = staleSentence;
 	return (
-		<div>
-			{body}
-			<StepFooter
-				canNext={canNext}
-				{...(info !== undefined && hasCollections && collection === null
-					? { reason: t(M.chooseCollection) }
-					: staleSentence === null
-						? {}
-						: { reason: staleSentence })}
-				onNext={next}
+		<div className="flex flex-col gap-5">
+			<StepHeader
+				summary={t(SUMMARY.target)}
+				next={{ canNext, ...(reason === undefined ? {} : { reason }), onNext: next }}
 			/>
+			<div className="max-w-xl">{body}</div>
 		</div>
 	);
 }
