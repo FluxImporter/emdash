@@ -1,0 +1,60 @@
+---
+// Starlight's "On this page" with the design's sliding yellow marker (GuidePage.dc.html).
+// Starlight sets aria-current on the heading in view; the script moves the marker to it.
+// Without JavaScript, CSS still marks the current link.
+import Default from "@astrojs/starlight/components/TableOfContents.astro";
+---
+
+<fx-toc class="fx-toc">
+	<span class="marker" aria-hidden="true"></span>
+	<Default />
+</fx-toc>
+
+<script>
+	class FxToc extends HTMLElement {
+		connectedCallback() {
+			const marker = this.querySelector<HTMLElement>(".marker");
+			const list = this.querySelector("ul");
+			if (!marker || !list) return;
+			const place = () => {
+				const current = list.querySelector<HTMLElement>('a[aria-current="true"]');
+				if (!current) {
+					marker.style.opacity = "0";
+					return;
+				}
+				const top = current.getBoundingClientRect().top - this.getBoundingClientRect().top;
+				marker.style.opacity = "1";
+				marker.style.height = `${current.offsetHeight}px`;
+				marker.style.transform = `translateY(${top}px)`;
+				this.classList.add("has-marker");
+			};
+			new MutationObserver(place).observe(list, {
+				subtree: true,
+				attributes: true,
+				attributeFilter: ["aria-current"],
+			});
+			place();
+		}
+	}
+	customElements.define("fx-toc", FxToc);
+</script>
+
+<style>
+	.fx-toc {
+		position: relative;
+		display: block;
+	}
+
+	.marker {
+		position: absolute;
+		inset-inline-start: 0;
+		top: 0;
+		width: 2px;
+		height: 32px;
+		border-radius: 2px;
+		background: #ffd23f;
+		opacity: 0;
+		transition: transform 0.3s var(--fx-ease);
+		z-index: 1;
+	}
+</style>

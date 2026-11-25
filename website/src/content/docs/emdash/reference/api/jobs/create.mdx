@@ -1,0 +1,35 @@
+---
+title: jobs/create
+description: Create an import job from an uploaded file and a template.
+lede: Create an import job from an uploaded file and a template.
+---
+
+import ApiRoute from "../../../../../../components/api/ApiRoute.astro";
+import ApiFields from "../../../../../../components/api/ApiFields.astro";
+import ApiExamples from "../../../../../../components/api/ApiExamples.astro";
+import ApiErrors from "../../../../../../components/api/ApiErrors.astro";
+import { jobsCreate } from "../../../../../../data/api";
+
+<ApiRoute route={jobsCreate} />
+
+## Request body
+
+<ApiFields route={jobsCreate} />
+
+## Examples
+
+<ApiExamples route={jobsCreate} />
+
+## Errors
+
+<ApiErrors route={jobsCreate} />
+
+<div class="fx-api-agent">
+
+## Also available as agent tool
+
+AI agents can call this route as `[tool]` over MCP. Shown only on routes that have one; for example, `jobs/plan` is `dry_run`.
+
+[Agent tools reference](/emdash/reference/agent-tools/)
+
+</div>

@@ -1,0 +1,103 @@
+---
+// Error codes a route can answer with (ApiPage.dc.html). The meanings are placeholders until
+// the error reference is written.
+import type { ApiRouteData } from "../../data/api";
+
+interface Props {
+	route: ApiRouteData;
+}
+const { route } = Astro.props;
+---
+
+<div class="fx-api-errors not-content">
+	<div class="scroller" role="region" aria-label="Errors" tabindex="0">
+		<table>
+			<thead>
+				<tr><th scope="col">Code</th><th scope="col">HTTP status</th><th scope="col">Meaning</th></tr>
+			</thead>
+			<tbody>
+				{route.errors.map((e) => (
+					<tr>
+						<td><code>{e.code}</code></td>
+						<td><span class="status">{e.status}</span></td>
+						<td class="meaning">{e.meaning}</td>
+					</tr>
+				))}
+			</tbody>
+		</table>
+	</div>
+	<a class="all" href="/emdash/reference/error-codes/">All error codes</a>
+</div>
+
+<style>
+	.fx-api-errors {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		margin-top: 8px;
+	}
+
+	.scroller {
+		overflow-x: auto;
+		border: 1px solid var(--fx-line);
+		border-radius: var(--fx-radius-md);
+	}
+
+	table {
+		width: 100%;
+		min-width: 520px;
+		border-collapse: collapse;
+		font-size: var(--fx-text-sm);
+		line-height: 22px;
+	}
+
+	th {
+		padding: 12px 16px;
+		background: var(--fx-bg-1);
+		text-align: start;
+		font-weight: 600;
+		color: var(--fx-text);
+	}
+
+	td {
+		padding: 12px 16px;
+		border-top: 1px solid var(--fx-line);
+		vertical-align: top;
+	}
+
+	code {
+		font-family: var(--fx-font-mono);
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--fx-text);
+	}
+
+	.status {
+		padding: 2px 8px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--fx-warning) 14%, transparent);
+		color: var(--fx-warning);
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+		font-weight: 600;
+	}
+
+	.meaning {
+		color: var(--fx-text-2);
+	}
+
+	.all {
+		align-self: flex-start;
+		font-weight: 600;
+		color: var(--fx-text);
+		text-decoration: underline;
+		text-decoration-color: var(--fx-accent-line);
+		text-decoration-thickness: 2px;
+		text-underline-offset: 3px;
+	}
+
+	.all:hover {
+		background: var(--fx-accent);
+		color: var(--fx-accent-ink);
+	}
+</style>

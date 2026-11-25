@@ -1,0 +1,775 @@
+---
+// Home page body (HomePage.dc.html), rendered inside Starlight's splash template.
+import GitHubIcon from "../GitHubIcon.astro";
+import { DOCS_URL, EMDASH_VERSION, GITHUB_URL, PACKAGE } from "../../site";
+import SiteFooter from "../SiteFooter.astro";
+import FlowDemo from "./FlowDemo.astro";
+import InstallBlock from "./InstallBlock.astro";
+
+const formats = ["CSV", "JSON", "XML", "XLSX", "ZIP", "URL feeds"];
+const features = [
+	{
+		title: "Visual mapping, with AI suggestions",
+		text: "Match source columns to fields in a wizard. AI suggests the matches; you confirm them.",
+		d: "M4 6h5M4 18h5M15 12h5M9 6c3 0 3 6 6 6M9 18c3 0 3-6 6-6",
+	},
+	{
+		title: "Dry-run preview",
+		text: "See every create, update and skip before anything is written.",
+		d: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z",
+	},
+	{
+		title: "Schedules",
+		text: "Re-run a URL feed hourly, daily, weekly or on a cron expression.",
+		d: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2",
+	},
+	{
+		title: "Rollback of any run",
+		text: "Every run is kept in a history you can undo from.",
+		d: "M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4",
+	},
+	{
+		title: "Record rules",
+		text: "Create, update, or never overwrite edits made in the CMS.",
+		d: "M4 6h11M4 12h11M4 18h7M15 17l2.5 2.5L22 15",
+	},
+	{
+		title: "Agent tools (MCP)",
+		text: "Eight tools let AI agents plan, dry-run and run imports.",
+		d: "M8 8l-5 4 5 4M16 8l5 4-5 4M13.5 5l-3 14",
+	},
+];
+const arrow = "M5 12h14M13 6l6 6-6 6";
+---
+
+<div class="fx-home fx-splash not-content">
+	<section class="hero">
+		<div class="hero-inner">
+			<div class="hero-copy">
+				<a class="announce up" href={DOCS_URL}>
+					<span class="announce-version">{EMDASH_VERSION}</span>
+					<span>Flux Importer for EmDash is available</span>
+					<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d={arrow}></path></svg>
+				</a>
+				<h1 id="_top" class="up d1">Import CSV, JSON, XML and Excel <span class="highlight">into your CMS.</span></h1>
+				<p class="lede up d2">Mapped in a visual wizard, scheduled, and every run can be rolled back.</p>
+				<div class="install up d3"><InstallBlock /></div>
+				<div class="actions up d4">
+					<a class="btn primary" href={DOCS_URL}>
+						Read the docs
+						<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d={arrow}></path></svg>
+					</a>
+					<a class="btn secondary" href={GITHUB_URL}>
+						<GitHubIcon />
+						View on GitHub
+					</a>
+				</div>
+				<p class="fine up d5">Open source · MIT licensed · For EmDash 1.2 and later</p>
+			</div>
+			<div class="demo up d6"><FlowDemo /></div>
+		</div>
+	</section>
+
+	<section class="section">
+		<div class="inner">
+			<div class="heading">
+				<span class="eyebrow">Products</span>
+				<h2>Pick your CMS</h2>
+			</div>
+			<div class="products">
+				<a class="product emdash" href={DOCS_URL}>
+					<div class="product-top">
+						<span class="available"><span class="pulse" aria-hidden="true"></span>Available · {EMDASH_VERSION}</span>
+						<code>{PACKAGE}</code>
+					</div>
+					<h3>EmDash</h3>
+					<p>For Cloudflare's open-source TypeScript CMS, built on Astro. Install the plugin, open the wizard, import.</p>
+					<div class="chips">
+						<span>EmDash 1.2+</span><span>Astro 6+</span><span>Node or Cloudflare Workers</span>
+					</div>
+					<span class="cta-link">
+						Read the EmDash docs
+						<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d={arrow}></path></svg>
+					</span>
+				</a>
+				<div class="product soon">
+					<span class="soon-badge">Coming soon</span>
+					<h3>WordPress</h3>
+					<p>The same wizard, schedules and rollback as a WordPress plugin. Its docs will live at <code>/wordpress/</code>.</p>
+					<a class="follow" href={GITHUB_URL}>Follow progress on GitHub</a>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="section band">
+		<div class="inner">
+			<div class="features-head">
+				<div class="heading">
+					<span class="eyebrow">Features</span>
+					<h2>Map, preview, run, undo.</h2>
+				</div>
+				<ul class="formats" aria-label="Source formats">
+					{formats.map((f) => <li>{f}</li>)}
+				</ul>
+			</div>
+			<ul class="features">
+				{features.map((f, i) => (
+					<li class="feature up" style={`animation-delay: ${(0.1 + i * 0.08).toFixed(2)}s`}>
+						<span class="icon" aria-hidden="true">
+							<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d={f.d}></path></svg>
+						</span>
+						<h3>{f.title}</h3>
+						<p>{f.text}</p>
+					</li>
+				))}
+			</ul>
+		</div>
+	</section>
+
+	<section class="section">
+		<div class="inner">
+			<div class="cta">
+				<div class="cta-copy">
+					<h2>From install to first import in two minutes.</h2>
+					<p>Add the package, register the plugin, open Import in the EmDash admin.</p>
+				</div>
+				<a class="btn dark" href="/emdash/first-import/">
+					Your first import
+					<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d={arrow}></path></svg>
+				</a>
+			</div>
+		</div>
+	</section>
+
+	<SiteFooter variant="home" />
+</div>
+
+<script>
+	// Hero dots: pause the sweep while the hero is off screen, and light the dots near the pointer
+	// on devices with a fine pointer. Nothing runs under reduced motion.
+	const hero = document.querySelector<HTMLElement>(".fx-home .hero");
+	if (hero && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+		new IntersectionObserver(([entry]) => hero.classList.toggle("paused", !entry?.isIntersecting)).observe(hero);
+		if (matchMedia("(hover: hover) and (pointer: fine)").matches) {
+			let frame = 0;
+			hero.addEventListener("pointermove", (event) => {
+				cancelAnimationFrame(frame);
+				frame = requestAnimationFrame(() => {
+					const box = hero.getBoundingClientRect();
+					hero.style.setProperty("--mx", `${event.clientX - box.left}px`);
+					hero.style.setProperty("--my", `${event.clientY - box.top}px`);
+					hero.classList.add("pointer");
+				});
+			});
+			hero.addEventListener("pointerleave", () => {
+				cancelAnimationFrame(frame);
+				hero.classList.remove("pointer");
+			});
+		}
+	}
+</script>
+
+<style>
+	.fx-home {
+		--home-dot: rgb(201 213 222 / 0.12);
+		--home-dot-lit: rgb(255 210 63 / 0.75);
+		--home-icon-bg: #152d42;
+		--home-icon-fg: #ffd23f;
+		--home-ok-bg: rgb(95 211 154 / 0.14);
+		--home-shadow: 0 20px 50px rgb(0 0 0 / 0.35);
+		font-size: var(--fx-text-md);
+		line-height: 28px;
+		color: var(--fx-text);
+	}
+
+	:global([data-theme="light"]) .fx-home {
+		--home-dot: rgb(15 34 51 / 0.1);
+		--home-dot-lit: rgb(179 134 0 / 0.7);
+		--home-icon-bg: #ffd23f;
+		--home-icon-fg: #0f2233;
+		--home-ok-bg: #e3f4ea;
+		--home-shadow: 0 18px 40px rgb(15 34 51 / 0.1);
+	}
+
+	.fx-home h1,
+	.fx-home h2,
+	.fx-home h3 {
+		margin: 0;
+		font-family: var(--fx-font-display);
+		font-weight: 600;
+		color: var(--fx-text);
+	}
+
+	.fx-home p {
+		margin: 0;
+	}
+
+	/* ---- Hero ---- */
+
+	.hero {
+		background-color: var(--fx-bg);
+		background-image: radial-gradient(var(--home-dot) 1.2px, transparent 1.3px);
+		background-size: 24px 24px;
+		border-bottom: 1px solid var(--fx-line);
+		position: relative;
+		overflow: hidden;
+		isolation: isolate;
+		--mx: 50%;
+		--my: 50%;
+	}
+
+	/* Lit dots: the same grid in yellow, shown through a mask. ::before is a band that sweeps
+	   across like a feed passing through; ::after follows the pointer (set by the script). */
+	.hero::before,
+	.hero::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		pointer-events: none;
+		background-image: radial-gradient(var(--home-dot-lit) 1.2px, transparent 1.3px);
+		background-size: 24px 24px;
+	}
+
+	.hero::before {
+		-webkit-mask: linear-gradient(100deg, transparent, #000 50%, transparent) -70% 0 / 40% 100% no-repeat;
+		mask: linear-gradient(100deg, transparent, #000 50%, transparent) -70% 0 / 40% 100% no-repeat;
+		opacity: 0.55;
+		animation: hero-sweep 9s cubic-bezier(0.45, 0, 0.55, 1) 1.2s infinite;
+	}
+
+	.hero.paused::before {
+		animation-play-state: paused;
+	}
+
+	.hero::after {
+		-webkit-mask: radial-gradient(circle 160px at var(--mx) var(--my), #000, transparent);
+		mask: radial-gradient(circle 160px at var(--mx) var(--my), #000, transparent);
+		opacity: 0;
+		transition: opacity 0.4s var(--fx-ease);
+	}
+
+	.hero.pointer::after {
+		opacity: 1;
+	}
+
+	@keyframes hero-sweep {
+		from {
+			-webkit-mask-position: -70% 0;
+			mask-position: -70% 0;
+		}
+		to {
+			-webkit-mask-position: 170% 0;
+			mask-position: 170% 0;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hero::before,
+		.hero::after {
+			display: none;
+		}
+	}
+
+	.hero-inner {
+		max-width: 1200px;
+		margin: 0 auto;
+		padding: 88px 24px 96px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 56px;
+	}
+
+	.hero-copy {
+		width: 100%;
+		min-width: 0;
+		max-width: 940px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 24px;
+		text-align: center;
+	}
+
+	.announce {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		min-height: 36px;
+		padding: 4px 14px 4px 5px;
+		border: 1px solid var(--fx-line);
+		border-radius: var(--fx-radius-pill);
+		background: var(--fx-bg-1);
+		color: var(--fx-text-2);
+		font-size: 14px;
+		line-height: 20px;
+		text-decoration: none;
+		transition: border-color var(--fx-dur) var(--fx-ease);
+	}
+
+	.announce:hover {
+		border-color: #ffd23f;
+	}
+
+	.announce-version {
+		font-family: var(--fx-font-mono);
+		font-weight: 600;
+		font-size: 12px;
+		padding: 2px 9px;
+		border-radius: var(--fx-radius-pill);
+		background: #ffd23f;
+		color: #0f2233;
+	}
+
+	h1 {
+		font-size: var(--fx-text-hero);
+		line-height: 1.04;
+		letter-spacing: -0.035em;
+	}
+
+	.highlight {
+		display: inline-block;
+		background: #ffd23f;
+		color: #0f2233;
+		padding: 0 12px;
+		border-radius: 10px;
+		transform-origin: left center;
+		animation: fx-pop 0.7s 0.55s var(--fx-ease) both;
+	}
+
+	.lede {
+		font-size: var(--fx-text-lg);
+		line-height: 32px;
+		color: var(--fx-text-2);
+		max-width: 52ch;
+	}
+
+	.install {
+		width: 100%;
+		max-width: 640px;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 12px 16px;
+	}
+
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		min-height: 48px;
+		padding: 0 22px;
+		box-sizing: border-box;
+		border-radius: 8px;
+		font-weight: 600;
+		text-decoration: none;
+		transition:
+			transform var(--fx-dur) var(--fx-ease),
+			border-color var(--fx-dur) var(--fx-ease);
+	}
+
+	.btn:hover {
+		transform: translateY(-2px);
+	}
+
+	.primary {
+		background: #ffd23f;
+		color: #0f2233;
+	}
+
+	.secondary {
+		padding: 0 20px;
+		border: 1px solid var(--fx-line-strong);
+		color: var(--fx-text);
+	}
+
+	.secondary:hover {
+		border-color: #ffd23f;
+	}
+
+	.fine {
+		font-size: 14px;
+		line-height: 20px;
+		color: var(--fx-text-3);
+	}
+
+	.demo {
+		width: 100%;
+		max-width: 1120px;
+	}
+
+	/* ---- Sections ---- */
+
+	.section .inner {
+		max-width: 1200px;
+		margin: 0 auto;
+		padding: 96px 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 32px;
+	}
+
+	.band {
+		background: var(--fx-bg-1);
+		border-block: 1px solid var(--fx-line);
+	}
+
+	.heading {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.eyebrow {
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+		line-height: 20px;
+		color: var(--fx-text-3);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	h2 {
+		font-size: clamp(28px, 3vw, 40px);
+		line-height: 1.15;
+		letter-spacing: -0.025em;
+	}
+
+	/* ---- Products ---- */
+
+	.products {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 24px;
+	}
+
+	.product {
+		min-width: 0;
+		border-radius: var(--fx-radius-lg);
+		padding: 32px;
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+	}
+
+	.product h3 {
+		font-size: 32px;
+		line-height: 40px;
+		letter-spacing: -0.02em;
+	}
+
+	.emdash {
+		flex: 1.4 1 420px;
+		background: var(--fx-bg-1);
+		border: 2px solid #ffd23f;
+		color: var(--fx-text);
+		text-decoration: none;
+		box-shadow: var(--home-shadow);
+		transition: transform var(--fx-dur) ease;
+	}
+
+	.emdash:hover {
+		transform: translateY(-4px);
+	}
+
+	.emdash p {
+		color: var(--fx-text-2);
+	}
+
+	.product-top {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px 16px;
+	}
+
+	.product-top code {
+		font-family: var(--fx-font-mono);
+		font-size: 14px;
+		color: var(--fx-text-3);
+		background: none;
+		border: 0;
+		padding: 0;
+	}
+
+	.available {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 14px;
+		line-height: 20px;
+		font-weight: 600;
+		padding: 4px 12px 4px 10px;
+		border-radius: var(--fx-radius-pill);
+		background: var(--home-ok-bg);
+		color: var(--fx-success);
+	}
+
+	.pulse {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--fx-success);
+		animation: fx-pulse 1.8s ease-out infinite;
+	}
+
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.chips span {
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+		line-height: 20px;
+		padding: 3px 10px;
+		border-radius: 6px;
+		background: var(--fx-bg-2);
+		color: var(--fx-text-2);
+	}
+
+	.cta-link {
+		align-self: flex-start;
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		font-weight: 600;
+		padding: 2px 4px;
+		margin-inline-start: -4px;
+		border-radius: 4px;
+		text-decoration: underline;
+		text-decoration-color: var(--fx-accent-line);
+		text-decoration-thickness: 2px;
+		text-underline-offset: 3px;
+	}
+
+	.emdash:hover .cta-link {
+		background: #ffd23f;
+		color: #0f2233;
+	}
+
+	.soon {
+		flex: 1 1 320px;
+		border: 2px dashed var(--fx-line-strong);
+		color: var(--fx-text-2);
+	}
+
+	.soon p {
+		color: var(--fx-text-3);
+	}
+
+	.soon code {
+		font-family: var(--fx-font-mono);
+		font-size: 15px;
+		background: none;
+		border: 0;
+		padding: 0;
+		color: inherit;
+	}
+
+	.soon-badge {
+		align-self: flex-start;
+		font-size: 14px;
+		line-height: 20px;
+		font-weight: 600;
+		padding: 4px 12px;
+		border-radius: var(--fx-radius-pill);
+		background: var(--fx-bg-2);
+		color: var(--fx-text-2);
+	}
+
+	.follow {
+		align-self: flex-start;
+		margin-top: auto;
+		color: var(--fx-text-2);
+		font-weight: 600;
+		text-decoration: underline;
+		text-decoration-color: var(--fx-accent-line);
+		text-decoration-thickness: 2px;
+		text-underline-offset: 3px;
+	}
+
+	.follow:hover {
+		background: #ffd23f;
+		color: #0f2233;
+	}
+
+	/* ---- Features ---- */
+
+	.features-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		justify-content: space-between;
+		gap: 16px 32px;
+	}
+
+	.formats {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.formats li {
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+		line-height: 20px;
+		font-weight: 500;
+		padding: 4px 10px;
+		border: 1px solid var(--fx-line-strong);
+		border-radius: 6px;
+		color: var(--fx-text-2);
+	}
+
+	.features {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+		gap: 1px;
+		background: var(--fx-line);
+		border: 1px solid var(--fx-line);
+		border-radius: var(--fx-radius-lg);
+		overflow: hidden;
+	}
+
+	.feature {
+		background: var(--fx-bg-1);
+		padding: 28px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.icon {
+		width: 40px;
+		height: 40px;
+		border-radius: 10px;
+		background: var(--home-icon-bg);
+		color: var(--home-icon-fg);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.feature h3 {
+		font-size: var(--fx-text-lg);
+		line-height: 28px;
+		letter-spacing: -0.01em;
+	}
+
+	.feature p {
+		font-size: 16px;
+		line-height: 26px;
+		color: var(--fx-text-2);
+	}
+
+	/* ---- Call to action ---- */
+
+	.cta {
+		background: #ffd23f;
+		color: #0f2233;
+		border-radius: var(--fx-radius-xl);
+		padding: 48px 56px;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 24px 48px;
+	}
+
+	.cta-copy {
+		flex: 1 1 420px;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.cta h2 {
+		color: #0f2233;
+	}
+
+	.cta p {
+		font-size: 18px;
+		line-height: 28px;
+	}
+
+	.dark {
+		min-height: 52px;
+		padding: 0 24px;
+		background: #0f2233;
+		color: #ffffff;
+	}
+
+	/* ---- Motion ---- */
+
+	.up {
+		animation: fx-up 0.7s ease both;
+	}
+
+	.announce.up {
+		animation-duration: 0.6s;
+	}
+
+	.d1 {
+		animation-delay: 0.08s;
+	}
+
+	.d2 {
+		animation-delay: 0.16s;
+	}
+
+	.d3 {
+		animation-delay: 0.24s;
+	}
+
+	.d4 {
+		animation-delay: 0.32s;
+	}
+
+	.d5 {
+		animation-delay: 0.4s;
+	}
+
+	.d6 {
+		animation-duration: 0.9s;
+		animation-delay: 0.45s;
+	}
+
+	.feature.up {
+		animation-duration: 0.6s;
+	}
+
+	/* ---- Phones (HomeMobile.dc.html) ---- */
+
+	@media (max-width: 640px) {
+		.hero-inner {
+			padding: 56px 20px 64px;
+		}
+
+		.section .inner {
+			padding: 64px 20px;
+		}
+
+		.cta {
+			padding: 32px 24px;
+		}
+
+		.product {
+			padding: 24px;
+		}
+	}
+</style>

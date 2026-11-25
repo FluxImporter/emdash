@@ -1,0 +1,10 @@
+// fluximporter.com: a Worker that only serves the static build (no Worker script).
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "fluximporter-website",
+	"compatibility_date": "2026-11-01",
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "404-page"
+	}
+}

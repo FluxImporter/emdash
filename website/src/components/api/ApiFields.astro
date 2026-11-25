@@ -1,0 +1,295 @@
+---
+// Request body fields (ApiPage.dc.html): a table on wide screens, stacked cards when its column
+// is narrow (ApiMobile.dc.html). Nested fields open in place, in a <details> under their parent.
+import type { ApiRouteData } from "../../data/api";
+import FieldRow from "./FieldRow.astro";
+
+interface Props {
+	route: ApiRouteData;
+}
+const { route } = Astro.props;
+---
+
+<div class="fx-api-fields not-content">
+	<p class="ctype"><code>{route.contentType}</code></p>
+	<div class="scroller" role="region" aria-label="Request body fields" tabindex="0">
+		<table>
+			<colgroup><col class="c-name" /><col class="c-type" /><col class="c-req" /><col class="c-def" /><col class="c-desc" /></colgroup>
+			<thead>
+				<tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Required</th><th scope="col">Default</th><th scope="col">Description</th></tr>
+			</thead>
+			<tbody>
+				{route.fields.map((f) => <FieldRow field={f} />)}
+			</tbody>
+		</table>
+	</div>
+	<p class="note">Nested rows open in place. Rows marked [EXAMPLE CHILD ROW] are placeholders.</p>
+</div>
+
+<style>
+	.fx-api-fields {
+		container: fields / inline-size;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		margin-top: 8px;
+		--fx-type: var(--fx-info);
+		--fx-req-bg: rgb(255 210 63 / 0.16);
+		--fx-req-fg: #ffd23f;
+		--fx-child: #0d1f2f;
+	}
+
+	:global(:root[data-theme="light"]) .fx-api-fields {
+		--fx-req-bg: #fff1bf;
+		--fx-req-fg: #6b5000;
+		--fx-child: #f7f9fa;
+	}
+
+	.ctype {
+		margin: -8px 0 0;
+		text-align: end;
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+		color: var(--fx-text-3);
+	}
+
+	.note {
+		margin: 0;
+		font-size: 14px;
+		line-height: 20px;
+		color: var(--fx-text-3);
+	}
+
+	.scroller {
+		overflow-x: auto;
+		border: 1px solid var(--fx-line);
+		border-radius: var(--fx-radius-md);
+	}
+
+	.scroller :global(table) {
+		width: 100%;
+		min-width: 680px;
+		table-layout: fixed;
+		border-collapse: collapse;
+		font-size: var(--fx-text-sm);
+		line-height: 22px;
+	}
+
+	.scroller :global(table table) {
+		min-width: 0;
+	}
+
+	.scroller :global(.c-name) {
+		width: 24%;
+	}
+
+	.scroller :global(.c-type) {
+		width: 17%;
+	}
+
+	.scroller :global(.c-req) {
+		width: 12%;
+	}
+
+	.scroller :global(.c-def) {
+		width: 13%;
+	}
+
+	th {
+		padding: 12px 16px;
+		background: var(--fx-bg-1);
+		text-align: start;
+		font-weight: 600;
+		color: var(--fx-text);
+	}
+
+	.scroller :global(td) {
+		padding: 12px 16px;
+		border-top: 1px solid var(--fx-line);
+		vertical-align: top;
+		color: var(--fx-text-2);
+		overflow-wrap: anywhere;
+	}
+
+	.scroller :global(td code) {
+		font-family: var(--fx-font-mono);
+		font-size: 13px;
+	}
+
+	.scroller :global(:is(.name, .default)) {
+		white-space: nowrap;
+		overflow-wrap: normal;
+	}
+
+	.scroller :global(.name code) {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--fx-text);
+	}
+
+	.scroller :global(.elbow) {
+		margin-inline: 4px 6px;
+		color: var(--fx-line-strong);
+		font-family: var(--fx-font-mono);
+	}
+
+	.scroller :global(.type code) {
+		color: var(--fx-type);
+	}
+
+	.scroller :global(.pill) {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: var(--fx-radius-pill);
+		background: var(--fx-req-bg);
+		color: var(--fx-req-fg);
+		font-size: 12px;
+		line-height: 18px;
+		font-weight: 700;
+		white-space: nowrap;
+	}
+
+	.scroller :global(.pill.either) {
+		background: transparent;
+		box-shadow: inset 0 0 0 1px var(--fx-req-fg);
+	}
+
+	.scroller :global(.opt) {
+		color: var(--fx-text-3);
+	}
+
+	.scroller :global(.desc a) {
+		color: var(--fx-text);
+		text-decoration: underline;
+		text-decoration-color: var(--fx-accent-line);
+		text-decoration-thickness: 2px;
+		text-underline-offset: 3px;
+	}
+
+	.scroller :global(.desc a:hover) {
+		background: var(--fx-accent);
+		color: var(--fx-accent-ink);
+	}
+
+	.scroller :global(.child td) {
+		background: var(--fx-child);
+	}
+
+	.scroller :global(.placeholder td),
+	.scroller :global(.placeholder .name code) {
+		color: var(--fx-text-3);
+	}
+
+	/* The row holding nested fields: the details spans the table, its table lines up below. */
+	.scroller :global(.kids > td) {
+		padding: 0;
+	}
+
+	.scroller :global(summary) {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 40px;
+		padding: 0 16px;
+		background: var(--fx-child);
+		color: var(--fx-text-2);
+		font-size: 14px;
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.scroller :global(summary::-webkit-details-marker) {
+		display: none;
+	}
+
+	.scroller :global(summary svg) {
+		transition: transform var(--fx-dur) var(--fx-ease);
+	}
+
+	.scroller :global(details[open] > summary svg) {
+		transform: rotate(90deg);
+	}
+
+	.scroller :global(.sr-only) {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
+
+	/* Narrow column (ApiMobile.dc.html): each field is a card: name, type and required on one
+	   line, then the description and the default. */
+	@container fields (max-width: 600px) {
+		.scroller {
+			overflow: visible;
+		}
+
+		.scroller :global(table) {
+			min-width: 0;
+		}
+
+		.scroller :global(:is(table, tbody, tr, td)) {
+			display: block;
+		}
+
+		.scroller :global(colgroup) {
+			display: none;
+		}
+
+		.scroller :global(thead) {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+		}
+
+		.scroller :global(tr.field) {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 6px 8px;
+			padding: 14px 16px;
+			border-top: 1px solid var(--fx-line);
+		}
+
+		.scroller :global(tbody > tr.field:first-child) {
+			border-top: 0;
+		}
+
+		.scroller :global(tr.child) {
+			padding-inline-start: 24px;
+			background: var(--fx-child);
+		}
+
+		.scroller :global(tr.field > td) {
+			padding: 0;
+			border: 0;
+			background: none;
+		}
+
+		.scroller :global(.opt) {
+			display: none;
+		}
+
+		.scroller :global(.desc) {
+			flex-basis: 100%;
+		}
+
+		.scroller :global(.default) {
+			order: 1;
+			flex-basis: 100%;
+			color: var(--fx-text-3);
+		}
+
+		.scroller :global(.default::before) {
+			content: "Default: ";
+		}
+
+		.scroller :global(.kids > td) {
+			border-top: 1px solid var(--fx-line);
+		}
+	}
+</style>

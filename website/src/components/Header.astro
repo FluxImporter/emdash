@@ -1,0 +1,131 @@
+---
+// Site header (Header.dc.html): logo, search, Docs / Reference / GitHub, theme switch.
+// On the home page (variant "home") the content is centred at 1200px and has no search.
+import GitHubIcon from "./GitHubIcon.astro";
+import Search from "@astrojs/starlight/components/Search.astro";
+import { DOCS_URL, GITHUB_URL, REFERENCE_URL } from "../site";
+import Logo from "./Logo.astro";
+import ThemeSelect from "./ThemeSelect.astro";
+
+const route = Astro.locals.starlightRoute;
+// The home page gets the centred header; the 404 (also a splash page) keeps the docs one.
+const home = route.entry.data.template === "splash" && Astro.url.pathname === "/";
+const path = Astro.url.pathname;
+const inReference = path.startsWith("/emdash/reference/");
+const inDocs = !inReference && path.startsWith("/emdash/");
+---
+
+<div class:list={["fx-header", { home }]}>
+	<a class="brand" href="/" aria-label="fluximporter home"><Logo animated /></a>
+	{!home && <div class="search"><Search /></div>}
+	<nav class="main-nav" aria-label="Main">
+		<a href={DOCS_URL} aria-current={inDocs ? "page" : undefined}>Docs</a>
+		<a href={REFERENCE_URL} aria-current={inReference ? "page" : undefined}>Reference</a>
+		<a href={GITHUB_URL}>
+			<GitHubIcon />
+			GitHub
+		</a>
+		<ThemeSelect />
+	</nav>
+	{home && <div class="search home-search"><Search /></div>}
+</div>
+
+<style>
+	.fx-header {
+		height: 100%;
+		display: flex;
+		align-items: center;
+		gap: 8px 20px;
+	}
+
+	.fx-header.home {
+		max-width: 1200px;
+		margin-inline: auto;
+	}
+
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+		text-decoration: none;
+		flex: none;
+	}
+
+	.search {
+		flex: 1 1 260px;
+		max-width: 420px;
+		margin-inline-start: 12px;
+	}
+
+	.main-nav {
+		margin-inline-start: auto;
+		display: none;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.main-nav > a {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 44px;
+		padding: 0 12px;
+		color: var(--fx-text);
+		text-decoration: none;
+		font-size: var(--fx-text-sm);
+		font-weight: 500;
+		box-shadow: inset 0 -2px 0 transparent;
+		transition: box-shadow var(--fx-dur) var(--fx-ease);
+	}
+
+	.main-nav > a:hover {
+		box-shadow: inset 0 -2px 0 var(--fx-line-strong);
+	}
+
+	.main-nav > a[aria-current="page"] {
+		box-shadow: inset 0 -2px 0 #ffd23f;
+	}
+
+	.main-nav :global(fx-theme-switch) {
+		margin-inline-start: 8px;
+	}
+
+	/* Home: search only as the icon button on small screens (the docs search lives on docs pages). */
+	.home-search {
+		display: none;
+	}
+
+	@media (min-width: 50rem) {
+		.main-nav {
+			display: flex;
+		}
+	}
+
+	@media (max-width: 49.99rem) {
+		.search {
+			flex: 0 0 auto;
+			margin-inline-start: auto;
+			margin-inline-end: 52px; /* room for Starlight's menu button */
+		}
+
+		/* Home has no sidebar menu: search, then the theme switch on its own. */
+		.home .home-search {
+			display: block;
+			margin-inline-end: 0;
+		}
+
+		.home .main-nav {
+			display: flex;
+			margin-inline-start: 0;
+			order: 3;
+		}
+
+		.home .main-nav > a {
+			display: none;
+		}
+
+		.home .main-nav :global(fx-theme-switch) {
+			margin-inline-start: 0;
+		}
+	}
+</style>
