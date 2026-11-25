@@ -389,7 +389,8 @@ describe("JobsTab", () => {
 	it("still says a scheduled job's cancel pauses its schedule when its name cannot be read", async () => {
 		mockRoutes(
 			routes([row({ id: "J1", status: "running", origin: "schedule", scheduleId: "SC1" })], {
-				"schedules/list": () => fail("INTERNAL_ERROR", "boom", 500),
+				// Not a 5xx, which the query itself retries once after a delay.
+				"schedules/list": () => fail("VALIDATION_ERROR", "bad", 400),
 			}),
 		);
 		const { user, queryClient } = show();
