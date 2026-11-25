@@ -5,13 +5,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { type UserEvent, userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { pages } from "../../src/admin/index.js";
+import { queryKeys } from "../../src/admin/queries.js";
 import type { Counters, Job } from "../../src/engine/types.js";
 import type { ScheduleView } from "../../src/plugin/schedules.js";
 import type { JobListItem } from "../../src/plugin/summaries.js";
 import type { TemplateFile } from "../../src/plugin/template-files.js";
 import type { TemplateSummary } from "../../src/plugin/templates.js";
 import { job } from "./fixtures.js";
-import { mockRoutes, type RouteCall, type RouteHandler, renderAdmin } from "./harness.js";
+import { fail, mockRoutes, type RouteCall, type RouteHandler, renderAdmin } from "./harness.js";
 import { item, schedule, sourceRow, templateRow } from "./home-fixtures.js";
 
 /**
@@ -347,7 +348,7 @@ describe("the Imports home, assembled", () => {
 		const row = within(await rowOf("Nightly products"));
 		expect(announced()).toBe("Created Nightly products.");
 
-		await user.click(screen.getByRole("button", { name: "Run Nightly products now" }));
+		await user.click(screen.getByRole("button", { name: "Run now Nightly products" }));
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(announced()).toBe("Queued a run of Nightly products.");
 
@@ -405,8 +406,10 @@ describe("the Imports home, assembled", () => {
 		const dialog = await screen.findByRole("dialog", { name: "Clear dry runs" });
 		await user.click(within(dialog).getByRole("button", { name: "Clear dry runs" }));
 		await waitFor(() => expect(announced()).toBe("Dry runs cleared: 3."));
-		// The line goes with them (the live region's "Dry runs cleared" is not the line).
+		// The line goes with them (the live region's "Dry runs cleared" is not the line), and focus,
+		// which was on its button, goes to the tab's heading.
 		await waitFor(() => expect(screen.queryByText(/^Dry runs: /)).toBeNull());
+		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Jobs" }));
 		expect(writes(calls, ["jobs/clear-dry-runs"])).toEqual([["jobs/clear-dry-runs", {}]]);
 		// The real import stays.
 		expect(await rowOf("Products feed")).toBeVisible();
@@ -469,7 +472,7 @@ describe("the Imports home, assembled", () => {
 		await rowOf("Products feed");
 
 		await user.click(screen.getByRole("tab", { name: "Schedules" }));
-		await user.click(await screen.findByRole("button", { name: "Run Nightly now" }));
+		await user.click(await screen.findByRole("button", { name: "Run now Nightly" }));
 		await waitFor(() => expect(announced()).toBe("Queued a run of Nightly."));
 
 		await user.click(screen.getByRole("tab", { name: "Jobs" }));
@@ -490,6 +493,71 @@ describe("the Imports home, assembled", () => {
 		await user.click(screen.getByRole("tab", { name: "Schedules" }));
 		const row = within(await rowOf("Nightly"));
 		expect(await row.findByText("Paused: an import it ran was rolled back")).toBeVisible();
+	});
+
+	it("moves focus to the Jobs heading when a failed clear's dialog closes over an empty list", async () => {
+		const dry = (id: string) => item({ id, dryRun: true, rollbackable: false, createdAt: AT });
+		let dryRuns = [dry("D1"), dry("D2")];
+		let n = 0;
+		mockRoutes(
+			site({
+				"jobs/summaries": (b) =>
+					(b as { dryRun: boolean }).dryRun ? pageOf(dryRuns) : pageOf([imported()]),
+				"jobs/clear-dry-runs": () => {
+					if (n++ > 0) return fail("VALIDATION_ERROR", "bad", 400);
+					dryRuns = [];
+					return { cleared: 2, more: true, cursor: "c1" };
+				},
+			}),
+		);
+		const { user } = openHome();
+		await rowOf("Products feed");
+		await user.click(await screen.findByText("Dry runs: 2"));
+		await user.click(screen.getByRole("button", { name: "Clear dry runs" }));
+		const dialog = await screen.findByRole("dialog", { name: "Clear dry runs" });
+		await user.click(within(dialog).getByRole("button", { name: "Clear dry runs" }));
+		expect(await within(dialog).findByRole("alert")).toBeVisible();
+		// The line and its button are gone: focus cannot go back to them.
+		await waitFor(() => expect(screen.queryByText(/^Dry runs: /)).toBeNull());
+		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		const heading = screen.getByRole("heading", { level: 2, name: "Jobs" });
+		await waitFor(() => expect(document.activeElement).toBe(heading));
+		// Focusable from script only, never a Tab stop.
+		expect(heading).toHaveAttribute("tabindex", "-1");
+	});
+
+	it("takes no focus on opening a page without dry runs", async () => {
+		mockRoutes(
+			site({
+				"jobs/summaries": (b) => pageOf((b as { dryRun: boolean }).dryRun ? [] : [imported()]),
+			}),
+		);
+		openHome();
+		await rowOf("Products feed");
+		await waitFor(() =>
+			expect(document.querySelectorAll('[aria-label^="Loading"]')).toHaveLength(0),
+		);
+		expect(document.activeElement).toBe(document.body);
+	});
+
+	it("leaves focus where it is when the dry runs go while it is elsewhere", async () => {
+		let dryRuns = [item({ id: "D1", dryRun: true, rollbackable: false, createdAt: AT })];
+		mockRoutes(
+			site({
+				"jobs/summaries": (b) =>
+					(b as { dryRun: boolean }).dryRun ? pageOf(dryRuns) : pageOf([imported()]),
+			}),
+		);
+		const { queryClient } = openHome();
+		await screen.findByText("Dry runs: 1");
+		const tab = screen.getByRole("tab", { name: "Jobs" });
+		tab.focus();
+		// Another tab, or an agent, cleared them.
+		dryRuns = [];
+		await queryClient.invalidateQueries({ queryKey: queryKeys.dryRuns });
+		await waitFor(() => expect(screen.queryByText(/^Dry runs: /)).toBeNull());
+		expect(document.activeElement).toBe(tab);
 	});
 
 	it("never sends a request without X-EmDash-Request", async () => {

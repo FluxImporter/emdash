@@ -1,6 +1,6 @@
 import { Button, Collapsible } from "@cloudflare/kumo";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { JobListItem } from "../../../../plugin/summaries.js";
 import { api } from "../../../api.js";
 import { describeError } from "../../../errors.js";
@@ -21,7 +21,7 @@ const MAX_CALLS = 50;
  */
 export function DryRuns(props: { names: (item: JobListItem) => string }) {
 	const t = useT();
-	const { announce } = useHome();
+	const { announce, focusHeading } = useHome();
 	const client = useQueryClient();
 	const query = useDryRuns();
 	const [confirming, setConfirming] = useState(false);
@@ -30,6 +30,17 @@ export function DryRuns(props: { names: (item: JobListItem) => string }) {
 
 	const items = query.data?.items ?? [];
 	const more = query.data?.cursor !== undefined;
+	const shown = items.length > 0 || confirming;
+
+	// The line going (all cleared, or its dialog closed over an emptied list) takes the focused
+	// "Clear dry runs" button or dialog with it: focus goes to the tab's heading, not the page. Only
+	// focus that was lost moves; focus the person put elsewhere meanwhile stays.
+	const wasShown = useRef(shown);
+	useEffect(() => {
+		const lost = document.activeElement === null || document.activeElement === document.body;
+		if (wasShown.current && !shown && lost) focusHeading();
+		wasShown.current = shown;
+	}, [shown, focusHeading]);
 
 	const close = () => {
 		setConfirming(false);
@@ -81,30 +92,33 @@ export function DryRuns(props: { names: (item: JobListItem) => string }) {
 			onClose={close}
 		/>
 	);
-	// A clear that failed after emptying the list keeps its dialog, and its failure, open.
-	if (items.length === 0) return confirming ? dialog : null;
+	// A clear that failed after emptying the list keeps its dialog, and its failure, open: in the
+	// same place in the tree, so it is not mounted again (with its focus) as the line goes.
+	if (!shown) return null;
 	return (
 		<section className="space-y-2">
-			<Collapsible.Root>
-				<Collapsible.DefaultTrigger>
-					{t(more ? M.countMore : M.count, { count: items.length })}
-				</Collapsible.DefaultTrigger>
-				<Collapsible.DefaultPanel>
-					<ul className="space-y-1 py-2 text-sm">
-						{items.map((job) => (
-							<li key={job.id} className="flex flex-wrap items-center gap-x-3">
-								<span className="font-medium">{props.names(job)}</span>
-								<span>{t(M.where, { collection: job.collection, locale: job.locale })}</span>
-								<When iso={job.createdAt} />
-								<span>{t(STATUS_MESSAGES[job.status])}</span>
-							</li>
-						))}
-					</ul>
-					<Button variant="secondary" onClick={() => setConfirming(true)}>
-						{t(M.clear)}
-					</Button>
-				</Collapsible.DefaultPanel>
-			</Collapsible.Root>
+			{items.length === 0 ? null : (
+				<Collapsible.Root>
+					<Collapsible.DefaultTrigger>
+						{t(more ? M.countMore : M.count, { count: items.length })}
+					</Collapsible.DefaultTrigger>
+					<Collapsible.DefaultPanel>
+						<ul className="space-y-1 py-2 text-sm">
+							{items.map((job) => (
+								<li key={job.id} className="flex flex-wrap items-center gap-x-3">
+									<span className="font-medium">{props.names(job)}</span>
+									<span>{t(M.where, { collection: job.collection, locale: job.locale })}</span>
+									<When iso={job.createdAt} />
+									<span>{t(STATUS_MESSAGES[job.status])}</span>
+								</li>
+							))}
+						</ul>
+						<Button variant="secondary" onClick={() => setConfirming(true)}>
+							{t(M.clear)}
+						</Button>
+					</Collapsible.DefaultPanel>
+				</Collapsible.Root>
+			)}
 			{dialog}
 		</section>
 	);

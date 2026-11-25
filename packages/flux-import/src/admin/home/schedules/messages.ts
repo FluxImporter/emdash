@@ -199,7 +199,7 @@ export const M = {
 	repin: { id: "flux-import.home-schedules.repin", message: "Use the current version" },
 	repinRow: {
 		id: "flux-import.home-schedules.repin-row",
-		message: "Update {name} to its template's current version",
+		message: "Use the current version for {name}",
 	},
 	// Row actions: the visible label, and the accessible name that names the row
 	pause: { id: "flux-import.home-schedules.pause", message: "Pause" },
@@ -207,7 +207,7 @@ export const M = {
 	resume: { id: "flux-import.home-schedules.resume", message: "Resume" },
 	resumeRow: { id: "flux-import.home-schedules.resume-row", message: "Resume {name}" },
 	runNow: { id: "flux-import.home-schedules.run-now", message: "Run now" },
-	runNowRow: { id: "flux-import.home-schedules.run-now-row", message: "Run {name} now" },
+	runNowRow: { id: "flux-import.home-schedules.run-now-row", message: "Run now {name}" },
 	edit: { id: "flux-import.home-schedules.edit", message: "Edit" },
 	editRow: { id: "flux-import.home-schedules.edit-row", message: "Edit {name}" },
 	delete: { id: "flux-import.home-schedules.delete", message: "Delete" },

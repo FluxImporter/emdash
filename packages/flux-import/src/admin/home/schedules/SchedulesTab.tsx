@@ -147,6 +147,8 @@ export function SchedulesTab() {
 				if (pin === null) return;
 				const reply = await api.updateSchedule({ id: s.id, revision: s.revision, ...pin });
 				replaceRow(reply.schedule);
+				// The note compares with the listed revision: a stale list must not keep it.
+				void client.invalidateQueries({ queryKey: queryKeys.allTemplates });
 				announce(t(M.repinned, { name: reply.schedule.name }));
 			} else {
 				const enabled = action === "resume";

@@ -3,9 +3,11 @@ import {
 	type ComponentType,
 	createContext,
 	type ReactNode,
+	type RefObject,
 	useCallback,
 	useContext,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 import { describeError, ERROR_MESSAGES } from "../errors.js";
@@ -23,6 +25,13 @@ interface HomeValue {
 	tab: TabId;
 	goTo(tab: TabId): void;
 	announce(text: string): void;
+	/**
+	 * Moves focus to the open tab's heading: where a dialog sends it when the control that opened
+	 * it is gone. Does nothing outside `Home`.
+	 */
+	focusHeading(): void;
+	/** The open tab's `<h2>`, which `Home` renders. */
+	headingRef: RefObject<HTMLHeadingElement | null>;
 }
 
 const HomeContext = createContext<HomeValue | null>(null);
@@ -50,7 +59,12 @@ export function HomeProvider(props: { children: ReactNode; initialTab?: TabId })
 		(text: string) => setAnnouncement((a) => ({ n: a.n + 1, text })),
 		[],
 	);
-	const value = useMemo(() => ({ tab, goTo, announce }), [tab, goTo, announce]);
+	const headingRef = useRef<HTMLHeadingElement | null>(null);
+	const focusHeading = useCallback(() => headingRef.current?.focus(), []);
+	const value = useMemo(
+		() => ({ tab, goTo, announce, focusHeading, headingRef }),
+		[tab, goTo, announce, focusHeading],
+	);
 	return (
 		<HomeContext.Provider value={value}>
 			{props.children}
@@ -128,7 +142,7 @@ function AccessError(props: { error: unknown; retrying: boolean; onRetry(): void
 
 function Content(props: { tabs: TabComponents }) {
 	const t = useT();
-	const { tab, goTo } = useHome();
+	const { tab, goTo, headingRef } = useHome();
 	const Tab = props.tabs[tab];
 	return (
 		<>
@@ -138,7 +152,10 @@ function Content(props: { tabs: TabComponents }) {
 				onValueChange={(v: string) => goTo(TABS.find((id) => id === v) ?? "jobs")}
 			/>
 			<div role="tabpanel" aria-label={t(M.tabs[tab])} className="space-y-4">
-				<h2 className="text-xl font-semibold">{t(M.tabs[tab])}</h2>
+				{/* Focusable from script only (`focusHeading`), never by Tab. */}
+				<h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold">
+					{t(M.tabs[tab])}
+				</h2>
 				<Tab />
 			</div>
 		</>

@@ -190,12 +190,12 @@ describe("the Schedules tab", () => {
 		// Paused rows offer Resume, running ones Pause; every action names its row.
 		expect(screen.getByRole("button", { name: "Pause Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Resume Prices hourly" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run Nightly now" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Run now Nightly" })).toBeVisible();
 		// A paused or disabled schedule is never run (SCHEDULE_DISABLED): Resume comes first.
 		for (const name of ["Prices hourly", "Weekdays", "Future"]) {
-			expect(screen.queryByRole("button", { name: `Run ${name} now` })).toBeNull();
+			expect(screen.queryByRole("button", { name: `Run now ${name}` })).toBeNull();
 		}
-		expect(screen.getByRole("button", { name: "Run Mondays now" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Run now Mondays" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Edit Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Delete Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Run log of Nightly" })).toBeVisible();
@@ -559,7 +559,7 @@ describe("the Schedules tab", () => {
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		const row = within(await rowOf("Nightly"));
 		expect(row.getByText("Active")).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Run Nightly now" }));
+		await user.click(screen.getByRole("button", { name: "Run now Nightly" }));
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(live()).toHaveTextContent("Queued a run of Nightly.");
 		expect(bodyOf(calls, "schedules/run")).toEqual([{ id: "SC1" }]);
@@ -574,13 +574,13 @@ describe("the Schedules tab", () => {
 		expect(await row.findByText("Active")).toBeVisible();
 		expect(row.getByText("Started an import.")).toBeVisible();
 
-		await user.click(screen.getByRole("button", { name: "Run Busy one now" }));
+		await user.click(screen.getByRole("button", { name: "Run now Busy one" }));
 		expect(
 			await screen.findByText(
 				"Busy one: This schedule is importing right now. Wait for the import to finish or cancel it.",
 			),
 		).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Run Off one now" }));
+		await user.click(screen.getByRole("button", { name: "Run now Off one" }));
 		expect(
 			await screen.findByText("Off one: This schedule is paused. Resume it first."),
 		).toBeVisible();
@@ -877,20 +877,26 @@ describe("the Schedules tab", () => {
 				},
 			},
 		);
-		const { user } = renderTab();
+		const { user, queryClient } = renderTab();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		const row = within(await rowOf("Nightly"));
 		expect(row.getByText(note)).toBeVisible();
+		// The accessible name holds the visible text (WCAG 2.5.3), as Run now's does.
+		expect(
+			screen.getByRole("button", { name: "Use the current version for Nightly" }),
+		).toHaveTextContent("Use the current version");
+		expect(screen.getByRole("button", { name: "Run now Nightly" })).toHaveTextContent("Run now");
 		for (const name of ["Current", "Off", "Orphan"]) {
 			expect(within(await rowOf(name)).queryByText(note)).toBeNull();
 		}
 		expect(
-			screen.queryByRole("button", { name: "Update Current to its template's current version" }),
+			screen.queryByRole("button", { name: "Use the current version for Current" }),
 		).toBeNull();
-		await user.click(
-			screen.getByRole("button", { name: "Update Nightly to its template's current version" }),
-		);
+		await user.click(screen.getByRole("button", { name: "Use the current version for Nightly" }));
 		await waitFor(() => expect(row.queryByText(note)).toBeNull());
 		expect(live()).toHaveTextContent("Updated Nightly to its template's current version.");
+		// The listed revisions are read again, so a stale list cannot keep the note.
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.allTemplates });
 		// Only the pin changes: the schedule stays enabled.
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, templateId: "T1", templateRevision: 3 },
