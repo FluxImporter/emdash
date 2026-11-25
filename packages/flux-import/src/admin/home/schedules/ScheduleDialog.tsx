@@ -10,7 +10,7 @@ import type {
 import type { SourceRow } from "../../../plugin/sources.js";
 import type { TemplateSummary } from "../../../plugin/templates.js";
 import { api } from "../../api.js";
-import { ApiError } from "../../api-error.js";
+import { ApiError, isForbidden } from "../../api-error.js";
 import { describeError } from "../../errors.js";
 import { type Msg, useT, type Values } from "../../i18n.js";
 import { BATCH_SIZE_MAX, TEMPLATE_NAME_MAX } from "../../limits.js";
@@ -223,17 +223,22 @@ function LoadError(props: { error: unknown; retrying: boolean; onRetry(): void }
 		<Banner
 			variant="error"
 			title={t(msg, values)}
-			action={
-				<Button
-					variant="secondary"
-					loading={props.retrying}
-					aria-label={t(PAGE.tryAgain)}
-					aria-busy={props.retrying || undefined}
-					onClick={props.onRetry}
-				>
-					{t(PAGE.tryAgain)}
-				</Button>
-			}
+			// No retry changes a role.
+			{...(isForbidden(props.error)
+				? {}
+				: {
+						action: (
+							<Button
+								variant="secondary"
+								loading={props.retrying}
+								aria-label={t(PAGE.tryAgain)}
+								aria-busy={props.retrying || undefined}
+								onClick={props.onRetry}
+							>
+								{t(PAGE.tryAgain)}
+							</Button>
+						),
+					})}
 		/>
 	);
 }

@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { TemplateSummary } from "../../../plugin/templates.js";
 import { api, saveJson } from "../../api.js";
-import { ApiError } from "../../api-error.js";
+import { ApiError, isForbidden } from "../../api-error.js";
 import { describeError, scheduleNames } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { M as PAGE } from "../../messages.js";
@@ -79,9 +79,12 @@ export function TemplatesTab() {
 		body = (
 			<div role="alert" className="flex items-center gap-3 text-kumo-danger">
 				<p>{sentence(templates.error)}</p>
-				<Button variant="secondary" onClick={() => void templates.refetch()}>
-					{t(PAGE.tryAgain)}
-				</Button>
+				{/* No retry changes a role. */}
+				{isForbidden(templates.error) ? null : (
+					<Button variant="secondary" onClick={() => void templates.refetch()}>
+						{t(PAGE.tryAgain)}
+					</Button>
+				)}
 			</div>
 		);
 	} else if (templates.data.length === 0) {

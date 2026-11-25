@@ -1158,6 +1158,16 @@ describe("the Schedules tab", () => {
 		]);
 	});
 
+	it("offers no Try again in the dialog after a 403 on its templates", async () => {
+		routes({}, { "templates/list": () => fail("FORBIDDEN", "Insufficient permissions", 403) });
+		const { user } = renderTab();
+		await screen.findByText("No schedules yet.");
+		await user.click(screen.getByRole("button", { name: "New schedule" }));
+		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
+		expect(await within(dialog).findByText("Only administrators can import.")).toBeVisible();
+		expect(within(dialog).queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
 	it("shows a failed list with Try again", async () => {
 		let failing = true;
 		routes(

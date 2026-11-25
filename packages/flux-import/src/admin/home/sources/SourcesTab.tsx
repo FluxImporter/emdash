@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { SourceRow } from "../../../plugin/sources.js";
 import { api } from "../../api.js";
+import { isForbidden } from "../../api-error.js";
 import { describeError, ERROR_MESSAGES, scheduleNames } from "../../errors.js";
 import { useT } from "../../i18n.js";
 import { M as PAGE } from "../../messages.js";
@@ -41,22 +42,28 @@ export function SourcesTab() {
 		return <Loader aria-label={t(M.loading)} />;
 	}
 	if (sources.isError || credentials.isError) {
-		const failure = describeError(sources.error ?? credentials.error);
+		const error = sources.error ?? credentials.error;
+		const failure = describeError(error);
 		return (
 			<Banner
 				variant="alert"
 				description={t(failure.msg, failure.values)}
-				action={
-					<Button
-						variant="secondary"
-						onClick={() => {
-							void sources.refetch();
-							void credentials.refetch();
-						}}
-					>
-						{t(PAGE.tryAgain)}
-					</Button>
-				}
+				// No retry changes a role.
+				{...(isForbidden(error)
+					? {}
+					: {
+							action: (
+								<Button
+									variant="secondary"
+									onClick={() => {
+										void sources.refetch();
+										void credentials.refetch();
+									}}
+								>
+									{t(PAGE.tryAgain)}
+								</Button>
+							),
+						})}
 			/>
 		);
 	}

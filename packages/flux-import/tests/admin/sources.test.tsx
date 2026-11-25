@@ -78,6 +78,12 @@ describe("SourcesTab", () => {
 		expect(screen.queryByText("feed-token (missing)")).toBeNull();
 	});
 
+	it("offers no Try again after a 403 on the list", async () => {
+		setup({ "sources/list": () => fail("FORBIDDEN", "Insufficient permissions", 403) });
+		expect(await screen.findByText("Only administrators can import.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
 	it("says Fetched when the fetch is newer than the last failure", async () => {
 		setup({
 			"sources/list": () =>

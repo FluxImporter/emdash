@@ -462,6 +462,16 @@ describe("Templates tab", () => {
 		expect(link.className).toBe((container.firstElementChild as HTMLElement).className);
 	});
 
+	it("offers no Try again after a 403 on the list", async () => {
+		mockRoutes({
+			"templates/list": () => fail("FORBIDDEN", "Insufficient permissions", 403),
+			"schedules/list": () => page([]),
+		});
+		show();
+		expect(await screen.findByText("Only administrators can import.")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
 	it("shows a load failure with Try again", async () => {
 		let n = 0;
 		mockRoutes({
