@@ -29,7 +29,6 @@ export function DryRuns(props: { names: (item: JobListItem) => string }) {
 	const [error, setError] = useState<unknown>(null);
 
 	const items = query.data?.items ?? [];
-	if (items.length === 0) return null;
 	const more = query.data?.cursor !== undefined;
 
 	const close = () => {
@@ -63,6 +62,27 @@ export function DryRuns(props: { names: (item: JobListItem) => string }) {
 	}
 
 	const failure = error === null ? null : describeError(error);
+	const dialog = (
+		<ConfirmDialog
+			open={confirming}
+			title={t(M.clear)}
+			sentence={t(M.confirm)}
+			confirmLabel={t(M.clear)}
+			danger
+			busy={busy}
+			error={
+				failure === null ? null : (
+					<p role="alert" className="text-sm text-kumo-danger">
+						{t(failure.msg, failure.values)}
+					</p>
+				)
+			}
+			onConfirm={() => void clear()}
+			onClose={close}
+		/>
+	);
+	// A clear that failed after emptying the list keeps its dialog, and its failure, open.
+	if (items.length === 0) return confirming ? dialog : null;
 	return (
 		<section className="space-y-2">
 			<Collapsible.Root>
@@ -85,23 +105,7 @@ export function DryRuns(props: { names: (item: JobListItem) => string }) {
 					</Button>
 				</Collapsible.DefaultPanel>
 			</Collapsible.Root>
-			<ConfirmDialog
-				open={confirming}
-				title={t(M.clear)}
-				sentence={t(M.confirm)}
-				confirmLabel={t(M.clear)}
-				danger
-				busy={busy}
-				error={
-					failure === null ? null : (
-						<p role="alert" className="text-sm text-kumo-danger">
-							{t(failure.msg, failure.values)}
-						</p>
-					)
-				}
-				onConfirm={() => void clear()}
-				onClose={close}
-			/>
+			{dialog}
 		</section>
 	);
 }

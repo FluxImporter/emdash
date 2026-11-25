@@ -1,8 +1,9 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { DryRuns } from "../../src/admin/home/jobs/dry-runs/DryRuns.js";
 import { STATUS_MESSAGES } from "../../src/admin/home/jobs/status.js";
+import { queryKeys } from "../../src/admin/queries.js";
 import { fail, mockRoutes, renderAdmin } from "./harness.js";
 import { item } from "./home-fixtures.js";
 
@@ -139,6 +140,33 @@ describe("DryRuns", () => {
 		await user.click(buttons[buttons.length - 1]!);
 		expect(await screen.findByText("Dry runs cleared: 50.")).toBeInTheDocument();
 		expect(calls.filter((c) => c.route === "jobs/clear-dry-runs")).toHaveLength(50);
+	});
+	it("keeps the dialog and its failure when a partial clear empties the list", async () => {
+		let items = THREE.items;
+		let n = 0;
+		mockRoutes({
+			"jobs/summaries": () => ({ items }),
+			"jobs/clear-dry-runs": () => {
+				if (n++ > 0) return fail("VALIDATION_ERROR", "bad", 400);
+				items = [];
+				return { cleared: 3, more: true, cursor: "c1" };
+			},
+		});
+		const { user, queryClient } = show();
+		await user.click(await screen.findByText("Dry runs: 3"));
+		await user.click(screen.getByRole("button", { name: "Clear dry runs" }));
+		const dialog = await screen.findByRole("dialog");
+		const buttons = dialog.querySelectorAll("button");
+		await user.click(buttons[buttons.length - 1]!);
+		// The cleared ones are read again: none are left, so the line goes, not the dialog.
+		await waitFor(() =>
+			expect(queryClient.getQueryData<{ items: unknown[] }>(queryKeys.dryRuns)?.items).toEqual([]),
+		);
+		await waitFor(() => expect(screen.queryByText("Dry runs: 3")).toBeNull());
+		const alert = within(screen.getByRole("dialog")).getByRole("alert");
+		expect(alert).toHaveTextContent("The request was not valid.");
+		await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 	});
 	it("names a failure in the dialog and keeps it open", async () => {
 		mockRoutes({
