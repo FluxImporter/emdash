@@ -160,7 +160,7 @@ describe("the Schedules tab", () => {
 		// Every time in the tab is UTC (plan Ruling 13), the last launch's too.
 		expect(nightly.getByText("Nov 24, 2026 06:00 UTC")).toBeVisible();
 		expect(nightly.getByText("Started an import.")).toBeVisible();
-		expect(nightly.getByText("Running")).toBeVisible();
+		expect(nightly.getByText("Active")).toBeVisible();
 
 		const prices = within(await rowOf("Prices hourly"));
 		expect(prices.getByText("Deleted template")).toBeVisible();
@@ -191,6 +191,11 @@ describe("the Schedules tab", () => {
 		expect(screen.getByRole("button", { name: "Pause Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Resume Prices hourly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Run Nightly now" })).toBeVisible();
+		// A paused or disabled schedule is never run (SCHEDULE_DISABLED): Resume comes first.
+		for (const name of ["Prices hourly", "Weekdays", "Future"]) {
+			expect(screen.queryByRole("button", { name: `Run ${name} now` })).toBeNull();
+		}
+		expect(screen.getByRole("button", { name: "Run Mondays now" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Edit Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Delete Nightly" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Run log of Nightly" })).toBeVisible();
@@ -553,7 +558,7 @@ describe("the Schedules tab", () => {
 		const { user, queryClient } = renderTab();
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		const row = within(await rowOf("Nightly"));
-		expect(row.getByText("Running")).toBeVisible();
+		expect(row.getByText("Active")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Run Nightly now" }));
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(live()).toHaveTextContent("Queued a run of Nightly.");
@@ -566,7 +571,7 @@ describe("the Schedules tab", () => {
 			...data.schedules!.slice(1),
 		];
 		await queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
-		expect(await row.findByText("Running")).toBeVisible();
+		expect(await row.findByText("Active")).toBeVisible();
 		expect(row.getByText("Started an import.")).toBeVisible();
 
 		await user.click(screen.getByRole("button", { name: "Run Busy one now" }));
@@ -577,7 +582,7 @@ describe("the Schedules tab", () => {
 		).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Run Off one now" }));
 		expect(
-			await screen.findByText("Off one: This schedule is off. Turn it on first."),
+			await screen.findByText("Off one: This schedule is paused. Resume it first."),
 		).toBeVisible();
 		expect(screen.queryByText(/^Busy one:/)).toBeNull();
 	});
@@ -599,7 +604,7 @@ describe("the Schedules tab", () => {
 		expect(await row.findByText("Paused")).toBeVisible();
 		expect(live()).toHaveTextContent("Paused Nightly.");
 		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
-		expect(await row.findByText("Running")).toBeVisible();
+		expect(await row.findByText("Active")).toBeVisible();
 		expect(live()).toHaveTextContent("Resumed Nightly.");
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, enabled: false },
@@ -796,10 +801,10 @@ describe("the Schedules tab", () => {
 		const row = within(await rowOf("Nightly"));
 		expect(row.getByText("Resume runs the template's current version.")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
-		expect(await row.findByText("Running")).toBeVisible();
+		expect(await row.findByText("Active")).toBeVisible();
 		// T2's current revision has no rules.missing: the stored threshold is cleared with it.
 		await user.click(screen.getByRole("button", { name: "Resume Dropped" }));
-		expect(await within(await rowOf("Dropped")).findByText("Running")).toBeVisible();
+		expect(await within(await rowOf("Dropped")).findByText("Active")).toBeVisible();
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, enabled: true, templateId: "T1", templateRevision: 3 },
 			{

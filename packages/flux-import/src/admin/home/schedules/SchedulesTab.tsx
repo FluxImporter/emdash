@@ -26,13 +26,16 @@ import { ScheduleDialog } from "./ScheduleDialog.js";
 
 type Action = "pause" | "resume" | "run" | "repin";
 
-/** A row's state in words (spec "Schedules"): queued while due, else running or paused. */
+/**
+ * A row's state in words (spec "Schedules"): queued while due, else active or paused. Not
+ * "Running", which the Jobs tab says of an import in progress.
+ */
 function stateOf(
 	s: ScheduleView,
 	t: (m: Msg, v?: Values) => string,
 ): { text: string; variant: "info" | "success" | "warning" | "neutral" } {
 	if (s.due !== undefined) return { text: t(M.stateQueued), variant: "info" };
-	if (s.enabled) return { text: t(M.stateRunning), variant: "success" };
+	if (s.enabled) return { text: t(M.stateActive), variant: "success" };
 	if (s.pause !== undefined) {
 		const reason = t(pauseMessage(s.pause.reason));
 		return { text: t(M.statePausedFor, { reason }), variant: "warning" };
@@ -332,13 +335,16 @@ export function SchedulesTab() {
 													disabled={mine}
 													onClick={() => void act(s, toggle)}
 												/>
-												<RowButton
-													label={t(M.runNow)}
-													name={t(M.runNowRow, { name: s.name })}
-													busy={mine && busy?.action === "run"}
-													disabled={mine}
-													onClick={() => void act(s, "run")}
-												/>
+												{/* A paused or disabled schedule cannot run (SCHEDULE_DISABLED): Resume comes first. */}
+												{s.enabled ? (
+													<RowButton
+														label={t(M.runNow)}
+														name={t(M.runNowRow, { name: s.name })}
+														busy={mine && busy?.action === "run"}
+														disabled={mine}
+														onClick={() => void act(s, "run")}
+													/>
+												) : null}
 												<RowButton
 													label={t(M.edit)}
 													name={t(M.editRow, { name: s.name })}

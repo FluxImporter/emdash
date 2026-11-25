@@ -280,7 +280,7 @@ export const ERROR_MESSAGES: Readonly<Record<string, Msg>> = {
 	},
 	SCHEDULE_DISABLED: {
 		id: "flux-import.error.schedule-disabled",
-		message: "This schedule is off. Turn it on first.",
+		message: "This schedule is paused. Resume it first.",
 	},
 	SCHEDULE_LIMIT: {
 		id: "flux-import.error.schedule-limit",

@@ -178,7 +178,7 @@ export const M = {
 	utcTime: { id: "flux-import.home-schedules.utc-time", message: "{time} UTC" },
 	notScheduled: { id: "flux-import.home-schedules.not-scheduled", message: "Not scheduled" },
 	stateQueued: { id: "flux-import.home-schedules.state-queued", message: "Queued" },
-	stateRunning: { id: "flux-import.home-schedules.state-running", message: "Running" },
+	stateActive: { id: "flux-import.home-schedules.state-active", message: "Active" },
 	statePausedFor: {
 		id: "flux-import.home-schedules.state-paused-for",
 		message: "Paused: {reason}",
