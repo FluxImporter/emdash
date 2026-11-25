@@ -225,16 +225,12 @@ describe("the Imports home, assembled", () => {
 	it("exports a template, then imports it under another name", async () => {
 		let saved: Blob | null = null;
 		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-		vi.stubGlobal(
-			"URL",
-			Object.assign(URL, {
-				createObjectURL: (blob: Blob) => {
-					saved = blob;
-					return "blob:template";
-				},
-				revokeObjectURL: () => {},
-			}),
-		);
+		// Spied, so the real `URL` is restored after the test (setup.ts).
+		vi.spyOn(URL, "createObjectURL").mockImplementation((blob: Blob | MediaSource) => {
+			saved = blob as Blob;
+			return "blob:template";
+		});
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
 		const exported: TemplateFile = {
 			format: "flux-import.template",
 			formatVersion: 1,

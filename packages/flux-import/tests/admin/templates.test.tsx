@@ -1,5 +1,5 @@
 import { LinkButton } from "@cloudflare/kumo";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { TemplatesTab } from "../../src/admin/home/templates/TemplatesTab.js";
@@ -53,11 +53,9 @@ describe("Templates tab", () => {
 	it("exports through templates/export and saves the file under its filename", async () => {
 		const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 		let download = "";
-		const create = vi.fn(() => "blob:x");
-		vi.stubGlobal(
-			"URL",
-			Object.assign(URL, { createObjectURL: create, revokeObjectURL: () => {} }),
-		);
+		// Spied, so the real `URL` is restored after the test.
+		const create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
 		const original = document.body.append.bind(document.body);
 		vi.spyOn(document.body, "append").mockImplementation((...nodes: (Node | string)[]) => {
 			for (const n of nodes) if (n instanceof HTMLAnchorElement) download = n.download;
@@ -432,17 +430,25 @@ describe("Templates tab", () => {
 	it("keeps the newer file when an older read finishes last", async () => {
 		const { user, dialog, bodies } = await openImport();
 		const input = within(dialog).getByLabelText("Template file (.json)", { selector: "input" });
-		const slow = new File(["{}"], "a.json", { type: "application/json" });
-		Object.defineProperty(slow, "text", {
-			value: () => new Promise((r) => setTimeout(() => r(JSON.stringify({ v: "old" })), 50)),
+		// The older file's read ends only when the test says so, after the newer one's.
+		let finishOld!: (text: string) => void;
+		const oldText = new Promise<string>((r) => {
+			finishOld = r;
 		});
+		const slow = new File(["{}"], "a.json", { type: "application/json" });
+		Object.defineProperty(slow, "text", { value: () => oldText });
 		await user.upload(input, slow);
 		await user.upload(
 			input,
 			new File([JSON.stringify({ v: "new" })], "b.json", { type: "application/json" }),
 		);
-		await new Promise((r) => setTimeout(r, 120));
-		await user.click(within(dialog).getByRole("button", { name: "Import" }));
+		const go = within(dialog).getByRole("button", { name: "Import" });
+		await waitFor(() => expect(go).toBeEnabled());
+		await act(async () => {
+			finishOld(JSON.stringify({ v: "old" }));
+			await oldText;
+		});
+		await user.click(go);
 		await waitFor(() => expect(bodies).toEqual([{ file: { v: "new" } }]));
 	});
 
