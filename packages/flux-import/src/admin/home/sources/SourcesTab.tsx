@@ -62,6 +62,13 @@ export function SourcesTab() {
 	}
 
 	const when = (iso: string) => whenLabel(iso, Date.now(), i18n.locale, t);
+	/** A source's credential by name; one no longer saved says so (its fetches fail). */
+	const credentialOf = (row: SourceRow): string => {
+		if (row.credential === undefined) return t(M.noCredential);
+		return credentials.data.some((c) => c.name === row.credential)
+			? row.credential
+			: t(M.credentialMissing, { name: row.credential });
+	};
 	const lastFetch = (row: SourceRow): string => {
 		const state = lastFetchState(row);
 		if (state.kind === "never") return t(M.never);
@@ -133,7 +140,7 @@ export function SourcesTab() {
 									<Table.Row key={row.id}>
 										<Table.Cell>{row.name}</Table.Cell>
 										<Table.Cell>{urlLabel(row.url)}</Table.Cell>
-										<Table.Cell>{row.credential ?? t(M.noCredential)}</Table.Cell>
+										<Table.Cell>{credentialOf(row)}</Table.Cell>
 										<Table.Cell>{lastFetch(row)}</Table.Cell>
 										<Table.Cell>
 											<div className="flex gap-2">

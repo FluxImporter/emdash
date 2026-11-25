@@ -12,6 +12,10 @@ export const M = {
 	colLastFetch: { id: "flux-import.home-sources.col-last-fetch", message: "Last fetch" },
 	colActions: { id: "flux-import.home-sources.col-actions", message: "Actions" },
 	noCredential: { id: "flux-import.home-sources.no-credential", message: "No credential" },
+	credentialMissing: {
+		id: "flux-import.home-sources.credential-missing",
+		message: "{name} (missing)",
+	},
 	fetched: { id: "flux-import.home-sources.fetched", message: "Fetched {when}" },
 	failed: { id: "flux-import.home-sources.failed", message: "Failed {when}: {reason}" },
 	never: { id: "flux-import.home-sources.never", message: "Never fetched" },
@@ -125,7 +129,7 @@ export const M = {
 	credUsedBy: {
 		id: "flux-import.home-sources.cred-used-by",
 		message:
-			"Sources that use it: {names}. Their fetches will fail until the credential is set again.",
+			"Sources that use it: {names}. Their fetches will fail until the credential is set again, and schedules that read them will pause.",
 	},
 	credUnused: {
 		id: "flux-import.home-sources.cred-unused",

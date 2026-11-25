@@ -63,6 +63,21 @@ describe("SourcesTab", () => {
 		}
 	});
 
+	it("says a source's credential is missing once it is no longer saved", async () => {
+		setup({
+			"sources/list": () =>
+				page([
+					sourceRow({ credential: "gone-token" }),
+					sourceRow({ id: "S2", name: "Kept", credential: "feed-token" }),
+				]),
+			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],
+		});
+		expect(await screen.findByText("gone-token (missing)")).toBeVisible();
+		const kept = screen.getByRole("cell", { name: "Kept" }).closest("tr")!;
+		expect(within(kept).getByText("feed-token")).toBeVisible();
+		expect(screen.queryByText("feed-token (missing)")).toBeNull();
+	});
+
 	it("says Fetched when the fetch is newer than the last failure", async () => {
 		setup({
 			"sources/list": () =>
@@ -316,7 +331,7 @@ describe("SourcesTab", () => {
 		let dialog = await screen.findByRole("dialog");
 		expect(
 			within(dialog).getByText(
-				"Sources that use it: Feed. Their fetches will fail until the credential is set again.",
+				"Sources that use it: Feed. Their fetches will fail until the credential is set again, and schedules that read them will pause.",
 			),
 		).toBeVisible();
 		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
