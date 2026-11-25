@@ -110,6 +110,8 @@ export function SchedulesTab() {
 			if (action === "run") {
 				const reply = await api.runSchedule({ id: s.id });
 				replaceRow(reply.schedule);
+				// The run's job is listed in Jobs.
+				void client.invalidateQueries({ queryKey: queryKeys.jobs });
 				announce(t(M.queued, { name: s.name }));
 			} else {
 				const enabled = action === "resume";

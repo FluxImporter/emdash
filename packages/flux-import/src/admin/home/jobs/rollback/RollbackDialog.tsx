@@ -205,6 +205,8 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 			announce(t(M.finished));
 			void queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
 			void queryClient.invalidateQueries({ queryKey: queryKeys.dryRuns });
+			// A scheduled import's rollback pauses its schedule.
+			void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
 			return;
 		}
 		const retry: Step = { kind: "resume", id: driven.id, total: state.total };

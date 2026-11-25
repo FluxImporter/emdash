@@ -100,6 +100,14 @@ export const M = {
 		id: "flux-import.home-jobs.cancel-sentence",
 		message: "Records already written stay.",
 	},
+	cancelSchedule: {
+		id: "flux-import.home-jobs.cancel-schedule",
+		message: "Its schedule {name} will be paused.",
+	},
+	cancelScheduleUnnamed: {
+		id: "flux-import.home-jobs.cancel-schedule-unnamed",
+		message: "Its schedule will be paused.",
+	},
 	cancelConfirm: { id: "flux-import.home-jobs.cancel-confirm", message: "Cancel the import" },
 	cancelKeep: { id: "flux-import.home-jobs.cancel-keep", message: "Keep the import" },
 

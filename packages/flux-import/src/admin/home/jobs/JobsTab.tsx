@@ -1,7 +1,7 @@
 import { Button, Empty, LinkButton, Loader, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import type { JobListItem } from "../../../plugin/summaries.js";
 import { api, downloadLog } from "../../api.js";
 import { isForbidden } from "../../api-error.js";
@@ -171,6 +171,8 @@ export function JobsTab() {
 		} finally {
 			setCancelBusy(false);
 			refresh();
+			// A scheduled job's cancel pauses its schedule.
+			void client.invalidateQueries({ queryKey: queryKeys.schedules });
 		}
 	};
 
@@ -292,13 +294,13 @@ export function JobsTab() {
 			{body}
 			<DryRuns names={nameOf} />
 			{cancelling === null ? null : (
-				<ConfirmDialog
-					open
-					title={t(M.cancelTitle, { name: cancelling.name })}
-					sentence={t(M.cancelSentence)}
-					confirmLabel={t(M.cancelConfirm)}
-					cancelLabel={t(M.cancelKeep)}
-					danger
+				<CancelDialog
+					name={cancelling.name}
+					scheduleId={
+						cancelling.item.origin === "schedule" && cancelling.item.scheduleId !== undefined
+							? cancelling.item.scheduleId
+							: null
+					}
 					busy={cancelBusy}
 					error={
 						cancelError === null ? null : (
@@ -326,24 +328,75 @@ export function JobsTab() {
 }
 
 /**
- * The rollback dialog of a scheduled job, which names the schedule it pauses. The schedules are
- * read only now. Until they are (or when they cannot be read) the line still says the schedule
- * will be paused; a schedule no longer listed was deleted, and nothing is paused.
+ * The schedule a scheduled job's cancel or rollback pauses, read only once its dialog opens:
+ * `{ name: null }` until the schedules are read (or when they cannot be), so the line still says
+ * the schedule will be paused; null for a schedule no longer listed, which was deleted.
  */
-function ScheduledRollback(props: { target: StartTarget; scheduleId: string; onClose(): void }) {
+function useScheduleOf(scheduleId: string): { name: string | null } | null {
 	const schedules = useSchedules();
-	const { target, scheduleId } = props;
-	// undefined: not read (yet), so unnamed; null: read, and the schedule is gone.
-	const name =
-		schedules.data === undefined
-			? undefined
-			: (schedules.data.find((s) => s.id === scheduleId)?.name ?? null);
+	if (schedules.data === undefined) return { name: null };
+	const name = schedules.data.find((s) => s.id === scheduleId)?.name;
+	return name === undefined ? null : { name };
+}
+
+/** The rollback dialog of a scheduled job, which names the schedule it pauses. */
+function ScheduledRollback(props: { target: StartTarget; scheduleId: string; onClose(): void }) {
+	const schedule = useScheduleOf(props.scheduleId);
+	const { target } = props;
+	const name = schedule === null ? undefined : schedule.name;
 	const withSchedule = useMemo(
-		(): StartTarget => ({
-			...target,
-			schedule: name === null ? null : { name: name ?? null },
-		}),
+		(): StartTarget => ({ ...target, schedule: name === undefined ? null : { name } }),
 		[target, name],
 	);
 	return <RollbackDialog target={withSchedule} onClose={props.onClose} />;
+}
+
+interface CancelProps {
+	name: string;
+	busy: boolean;
+	error: ReactNode;
+	onConfirm(): void;
+	onClose(): void;
+}
+
+/** The cancel's confirmation; a scheduled job's also says its schedule will be paused. */
+function CancelDialog(props: CancelProps & { scheduleId: string | null }) {
+	const { scheduleId, ...rest } = props;
+	return scheduleId === null ? (
+		<CancelConfirm {...rest} schedule={null} />
+	) : (
+		<ScheduledCancel {...rest} scheduleId={scheduleId} />
+	);
+}
+
+function ScheduledCancel(props: CancelProps & { scheduleId: string }) {
+	const { scheduleId, ...rest } = props;
+	return <CancelConfirm {...rest} schedule={useScheduleOf(scheduleId)} />;
+}
+
+function CancelConfirm(props: CancelProps & { schedule: { name: string | null } | null }) {
+	const t = useT();
+	const { schedule } = props;
+	return (
+		<ConfirmDialog
+			open
+			title={t(M.cancelTitle, { name: props.name })}
+			sentence={t(M.cancelSentence)}
+			confirmLabel={t(M.cancelConfirm)}
+			cancelLabel={t(M.cancelKeep)}
+			danger
+			busy={props.busy}
+			error={props.error}
+			onConfirm={props.onConfirm}
+			onClose={props.onClose}
+		>
+			{schedule === null ? null : (
+				<p className="text-sm">
+					{schedule.name === null
+						? t(M.cancelScheduleUnnamed)
+						: t(M.cancelSchedule, { name: schedule.name })}
+				</p>
+			)}
+		</ConfirmDialog>
+	);
 }

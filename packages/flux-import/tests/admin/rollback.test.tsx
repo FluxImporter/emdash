@@ -119,6 +119,20 @@ describe("RollbackDialog", () => {
 		expect(calls.filter((c) => c.route === "jobs/next").map((c) => c.body)).toEqual([{ id: "D1" }]);
 	});
 
+	it("reads the jobs, the dry runs and the schedules again when the rollback finishes", async () => {
+		mockRoutes({
+			"jobs/rollback": (b) => ((b as { dryRun: boolean }).dryRun ? DRY : REAL),
+			"jobs/next": nextScript,
+		});
+		const { user, queryClient } = renderDialog(START);
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await waitFor(() => expect(announced()).toContain("Rollback finished."));
+		// A scheduled import's rollback pauses its schedule.
+		for (const queryKey of [queryKeys.jobs, queryKeys.dryRuns, queryKeys.schedules]) {
+			expect(invalidate).toHaveBeenCalledWith({ queryKey });
+		}
+	});
 	it("says what it is doing while the dry rollback runs", async () => {
 		const held = gate<Job>();
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": () => held.promise });

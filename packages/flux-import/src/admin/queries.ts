@@ -67,6 +67,13 @@ export function schedulePollInterval(rows: readonly ScheduleView[] | undefined):
 const retry = (failureCount: number, error: Error) => isRetryable(error) && failureCount < 1;
 
 /**
+ * The host's `QueryClient` keeps data fresh for 60 s (`staleTime: 60_000`, @emdash-cms/admin). The
+ * home's lists change from its other tabs (Run now, a cancel, a rollback), so each is read again
+ * whenever a tab shows it.
+ */
+const ALWAYS_STALE = 0;
+
+/**
  * Every item of a paged list, following `cursor` while `hasMore`. `read` passes React Query's
  * signal on, so an unmount aborts the walk instead of reading every remaining page.
  */
@@ -159,6 +166,7 @@ export function useJobPages(): UseInfiniteQueryResult<
 		getNextPageParam: (last) => (last.hasMore ? last.cursor : undefined),
 		refetchInterval: (query) => jobPollInterval(query.state.data),
 		retry,
+		staleTime: ALWAYS_STALE,
 	});
 }
 
@@ -168,6 +176,7 @@ export function useDryRuns(): UseQueryResult<Page<JobListItem>> {
 		queryKey: queryKeys.dryRuns,
 		queryFn: ({ signal }) => api.jobSummaries({ dryRun: true }, signal),
 		retry,
+		staleTime: ALWAYS_STALE,
 	});
 }
 
@@ -179,6 +188,7 @@ export function useSchedules(): UseQueryResult<ScheduleView[]> {
 			allPages((cursor) => api.listSchedules(cursor === undefined ? {} : { cursor }, signal)),
 		refetchInterval: (query) => schedulePollInterval(query.state.data),
 		retry,
+		staleTime: ALWAYS_STALE,
 	});
 }
 
@@ -191,6 +201,7 @@ export function useFence(): UseQueryResult<Fence> {
 		refetchInterval: () =>
 			schedulePollInterval(client.getQueryData<ScheduleView[]>(queryKeys.schedules)),
 		retry,
+		staleTime: ALWAYS_STALE,
 	});
 }
 

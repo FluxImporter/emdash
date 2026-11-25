@@ -321,6 +321,33 @@ describe("the home's queries (M7b)", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it.each([
+		["useJobPages", () => useJobPages(), "jobs/summaries"],
+		["useDryRuns", () => useDryRuns(), "jobs/summaries"],
+		["useSchedules", () => useSchedules(), "schedules/list"],
+		["useFence", () => useFence(), "schedules/fence"],
+	] as [string, () => { isSuccess: boolean }, string][])(
+		"%s reads again on each mount under the host's 60 s staleTime",
+		async (_, hook, route) => {
+			const { calls } = mockRoutes({
+				"jobs/summaries": () => ({ items: [], hasMore: false }),
+				"schedules/list": () => ({ items: [], hasMore: false }),
+				"schedules/fence": () => ({ fence: "clear" }),
+			});
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+			});
+			const first = renderHook(hook, { wrapper: wrapperFor(client) });
+			await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+			first.unmount();
+			const count = () => calls.filter((c) => c.route === route).length;
+			const before = count();
+			const second = renderHook(hook, { wrapper: wrapperFor(client) });
+			await waitFor(() => expect(count()).toBe(before + 1));
+			second.unmount();
+		},
+	);
+
 	it("polls jobs every 5 s only while a loaded row is created or running (Ruling 15)", () => {
 		const page = (...statuses: ("created" | "running" | "paused" | "completed")[]) => ({
 			items: statuses.map((status) => item({ status })),

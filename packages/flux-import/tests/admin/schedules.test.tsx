@@ -1,7 +1,7 @@
 import { Empty } from "@cloudflare/kumo";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { runUrl } from "../../src/admin/home/links.js";
 import { SchedulesTab } from "../../src/admin/home/schedules/SchedulesTab.js";
@@ -551,12 +551,15 @@ describe("the Schedules tab", () => {
 			},
 		});
 		const { user, queryClient } = renderTab();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		const row = within(await rowOf("Nightly"));
 		expect(row.getByText("Running")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Run Nightly now" }));
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(live()).toHaveTextContent("Queued a run of Nightly.");
 		expect(bodyOf(calls, "schedules/run")).toEqual([{ id: "SC1" }]);
+		// Its job is listed in Jobs.
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.jobs });
 		// The launch takes the mark: the next read shows the row running, with its launch.
 		data.schedules = [
 			{ ...nightly, lastLaunch: { at, outcome: "started", jobId: "J9" } },

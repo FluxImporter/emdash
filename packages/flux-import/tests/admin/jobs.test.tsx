@@ -357,6 +357,7 @@ describe("JobsTab", () => {
 		await pick(user, "Products feed", "Cancel");
 		const dialog = await screen.findByRole("dialog", { name: "Cancel the import Products feed?" });
 		expect(dialog).toHaveTextContent("Records already written stay.");
+		expect(dialog).not.toHaveTextContent(/will be paused/);
 		expect(calls.some((c) => c.route === "jobs/cancel")).toBe(false);
 		const before = real(calls).length;
 		await user.click(within(dialog).getByRole("button", { name: "Cancel the import" }));
@@ -366,6 +367,38 @@ describe("JobsTab", () => {
 		]);
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		await waitFor(() => expect(real(calls).length).toBeGreaterThan(before));
+	});
+
+	it("says a scheduled job's cancel pauses its schedule, then reads the schedules again", async () => {
+		const { calls } = mockRoutes(
+			routes([row({ id: "J1", status: "running", origin: "schedule", scheduleId: "SC1" })], {
+				"jobs/cancel": () => job({ id: "J1", status: "cancelled" }),
+			}),
+		);
+		const { user, queryClient } = show();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+		await pick(user, "Products feed", "Cancel");
+		const dialog = await screen.findByRole("dialog", { name: "Cancel the import Products feed?" });
+		expect(await within(dialog).findByText("Its schedule Nightly will be paused.")).toBeVisible();
+		expect(calls.filter((c) => c.route === "schedules/list")).toHaveLength(1);
+		await user.click(within(dialog).getByRole("button", { name: "Cancel the import" }));
+		await waitFor(() => expect(announced()).toContain("Cancelled Products feed."));
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.schedules });
+	});
+
+	it("still says a scheduled job's cancel pauses its schedule when its name cannot be read", async () => {
+		mockRoutes(
+			routes([row({ id: "J1", status: "running", origin: "schedule", scheduleId: "SC1" })], {
+				"schedules/list": () => fail("INTERNAL_ERROR", "boom", 500),
+			}),
+		);
+		const { user, queryClient } = show();
+		await pick(user, "Products feed", "Cancel");
+		const dialog = await screen.findByRole("dialog", { name: "Cancel the import Products feed?" });
+		await waitFor(() =>
+			expect(queryClient.getQueryState(queryKeys.schedules)?.status).toBe("error"),
+		);
+		expect(within(dialog).getByText("Its schedule will be paused.")).toBeVisible();
 	});
 
 	it("keeps the import when the cancel is dismissed", async () => {

@@ -1,5 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
+import { setupI18n } from "@lingui/core";
+import { I18nProvider } from "@lingui/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { type UserEvent, userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { pages } from "../../src/admin/index.js";
 import type { Counters, Job } from "../../src/engine/types.js";
@@ -43,6 +46,30 @@ function openHome(tab = "jobs") {
 	const ImportsPage = pages?.["/imports"];
 	if (!ImportsPage) throw new Error("no /imports page");
 	return renderAdmin(<ImportsPage />);
+}
+
+/**
+ * `openHome` with the host's own `QueryClient` defaults: `staleTime: 60_000` (@emdash-cms/admin),
+ * where the harness keeps 0. Built here, as the harness takes no client.
+ */
+function openHostHome(tab = "jobs") {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(NOW);
+	window.history.replaceState(null, "", tab === "jobs" ? "/" : `/?tab=${tab}`);
+	const ImportsPage = pages?.["/imports"];
+	if (!ImportsPage) throw new Error("no /imports page");
+	const i18n = setupI18n({ locale: "en", messages: { en: {} } });
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: 60_000 }, mutations: { retry: false } },
+	});
+	render(
+		<I18nProvider i18n={i18n}>
+			<QueryClientProvider client={queryClient}>
+				<ImportsPage />
+			</QueryClientProvider>
+		</I18nProvider>,
+	);
+	return { user: userEvent.setup() };
 }
 
 /** The page's one live region's text. */
@@ -387,6 +414,86 @@ describe("the Imports home, assembled", () => {
 		expect(writes(calls, ["jobs/clear-dry-runs"])).toEqual([["jobs/clear-dry-runs", {}]]);
 		// The real import stays.
 		expect(await rowOf("Products feed")).toBeVisible();
+	});
+
+	it("shows each tab's changes from another tab under the host's 60 s staleTime", async () => {
+		const LATER = new Date(2026, 10, 24, 14, 30).toISOString();
+		const scheduled = imported({ origin: "schedule", scheduleId: "SC1" });
+		let jobs: JobListItem[] = [scheduled];
+		let schedules: ScheduleView[] = [schedule({ templateId: "T1", sourceId: "S1" })];
+		const nexts: Record<string, Job[]> = {
+			D1: [
+				rb({
+					id: "D1",
+					dryRun: true,
+					status: "completed",
+					counters: { ...zero, reverted: 10 },
+					undo: { deleted: 10, restored: 0, recovered: 0 },
+				}),
+			],
+			R1: [
+				rb({
+					id: "R1",
+					dryRun: false,
+					status: "completed",
+					counters: { ...zero, reverted: 10 },
+					undo: { deleted: 10, restored: 0, recovered: 0 },
+				}),
+			],
+		};
+		mockRoutes(
+			site({
+				"jobs/summaries": (b) => pageOf((b as { dryRun: boolean }).dryRun ? [] : jobs),
+				"sources/list": () => pageOf([sourceRow()]),
+				"schedules/list": () => pageOf(schedules),
+				"schedules/fence": () => ({ fence: "clear" }),
+				"schedules/run": () => {
+					// The queued run starts at once here: its job is listed from now on.
+					jobs = [imported({ id: "J2", createdAt: LATER, status: "running" }), ...jobs];
+					return { queued: true, schedule: { ...schedules[0]!, due: { at: LATER, force: true } } };
+				},
+				"jobs/rollback": (b) =>
+					(b as { dryRun: boolean }).dryRun
+						? rb({ id: "D1", dryRun: true })
+						: rb({ id: "R1", dryRun: false }),
+				"jobs/next": (b) => {
+					const id = (b as { id: string }).id;
+					const reply = nexts[id]?.shift();
+					if (!reply) throw new Error(`no next for ${id}`);
+					if (id === "R1") {
+						// The rollback of a scheduled import pauses its schedule.
+						const { due: _due, ...rest } = schedules[0]!;
+						schedules = [{ ...rest, enabled: false, pause: { reason: "rolled_back", at: LATER } }];
+					}
+					return reply;
+				},
+			}),
+		);
+		const { user } = openHostHome();
+		await rowOf("Products feed");
+
+		await user.click(screen.getByRole("tab", { name: "Schedules" }));
+		await user.click(await screen.findByRole("button", { name: "Run Nightly now" }));
+		await waitFor(() => expect(announced()).toBe("Queued a run of Nightly."));
+
+		await user.click(screen.getByRole("tab", { name: "Jobs" }));
+		expect(
+			await screen.findByRole("button", { name: "Actions for Products feed, today 14:30" }),
+		).toBeVisible();
+
+		await user.click(screen.getByRole("button", { name: `Actions for Products feed, ${WHEN}` }));
+		await user.click(
+			await screen.findByRole("menuitem", { name: `Roll back Products feed, ${WHEN}` }),
+		);
+		const dialog = await screen.findByRole("dialog", { name: "Roll back Products feed?" });
+		await user.click(await within(dialog).findByRole("button", { name: "Roll back" }));
+		await waitFor(() => expect(announced()).toContain("Rollback finished."));
+		await user.click(within(dialog).getByRole("button", { name: "Close" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+		await user.click(screen.getByRole("tab", { name: "Schedules" }));
+		const row = within(await rowOf("Nightly"));
+		expect(await row.findByText("Paused: an import it ran was rolled back")).toBeVisible();
 	});
 
 	it("never sends a request without X-EmDash-Request", async () => {
