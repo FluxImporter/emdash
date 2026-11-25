@@ -844,6 +844,54 @@ describe("the Schedules tab", () => {
 		]);
 	});
 
+	it("notes an enabled schedule pinned to an older template revision, and re-pins it to the current one", async () => {
+		const note = "Will pause at its next run: its template changed.";
+		const outdated = schedule({
+			id: "SC1",
+			name: "Nightly",
+			templateId: "T1",
+			templateRevision: 1,
+			sourceId: "SRC1",
+			revision: 4,
+		});
+		const { calls } = routes(
+			{
+				schedules: [
+					outdated,
+					schedule({ id: "SC2", name: "Current", templateId: "T2", templateRevision: 7 }),
+					schedule({ id: "SC3", name: "Off", templateRevision: 1, enabled: false }),
+					schedule({ id: "SC4", name: "Orphan", templateId: "GONE", templateRevision: 1 }),
+				],
+			},
+			{
+				"schedules/update": (body) => {
+					const b = body as { templateRevision: number };
+					return {
+						schedule: { ...outdated, templateRevision: b.templateRevision, revision: 5 },
+					};
+				},
+			},
+		);
+		const { user } = renderTab();
+		const row = within(await rowOf("Nightly"));
+		expect(row.getByText(note)).toBeVisible();
+		for (const name of ["Current", "Off", "Orphan"]) {
+			expect(within(await rowOf(name)).queryByText(note)).toBeNull();
+		}
+		expect(
+			screen.queryByRole("button", { name: "Update Current to its template's current version" }),
+		).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "Update Nightly to its template's current version" }),
+		);
+		await waitFor(() => expect(row.queryByText(note)).toBeNull());
+		expect(live()).toHaveTextContent("Updated Nightly to its template's current version.");
+		// Only the pin changes: the schedule stays enabled.
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, templateId: "T1", templateRevision: 3 },
+		]);
+	});
+
 	it("says a template_changed schedule whose template is gone needs an edit, and sends nothing", async () => {
 		const { calls } = routes({
 			schedules: [

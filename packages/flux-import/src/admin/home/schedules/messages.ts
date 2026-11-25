@@ -192,6 +192,15 @@ export const M = {
 		id: "flux-import.home-schedules.resume-template-gone",
 		message: "Its template is no longer saved. Edit the schedule to choose one.",
 	},
+	willPause: {
+		id: "flux-import.home-schedules.will-pause",
+		message: "Will pause at its next run: its template changed.",
+	},
+	repin: { id: "flux-import.home-schedules.repin", message: "Use the current version" },
+	repinRow: {
+		id: "flux-import.home-schedules.repin-row",
+		message: "Update {name} to its template's current version",
+	},
 	// Row actions: the visible label, and the accessible name that names the row
 	pause: { id: "flux-import.home-schedules.pause", message: "Pause" },
 	pauseRow: { id: "flux-import.home-schedules.pause-row", message: "Pause {name}" },
@@ -208,6 +217,10 @@ export const M = {
 	// Announcements and failures
 	paused: { id: "flux-import.home-schedules.paused", message: "Paused {name}." },
 	resumed: { id: "flux-import.home-schedules.resumed", message: "Resumed {name}." },
+	repinned: {
+		id: "flux-import.home-schedules.repinned",
+		message: "Updated {name} to its template's current version.",
+	},
 	queued: { id: "flux-import.home-schedules.queued", message: "Queued a run of {name}." },
 	deleted: { id: "flux-import.home-schedules.deleted", message: "Deleted {name}." },
 	created: { id: "flux-import.home-schedules.created", message: "Created {name}." },

@@ -24,7 +24,7 @@ import { M } from "./messages.js";
 import { RunLog } from "./RunLog.js";
 import { ScheduleDialog } from "./ScheduleDialog.js";
 
-type Action = "pause" | "resume" | "run";
+type Action = "pause" | "resume" | "run" | "repin";
 
 /** A row's state in words (spec "Schedules"): queued while due, else running or paused. */
 function stateOf(
@@ -103,6 +103,30 @@ export function SchedulesTab() {
 		}
 	};
 
+	/**
+	 * The pin to the template's current version, read now (a cached body may be older); null, with
+	 * the reason shown, when the template is no longer saved (coordinator ruling b).
+	 */
+	const currentPin = async (s: ScheduleView): Promise<Partial<UpdateScheduleInput> | null> => {
+		if (templates.data !== undefined && !templates.data.some((x) => x.id === s.templateId)) {
+			setFailed({ name: s.name, said: M.resumeTemplateGone });
+			return null;
+		}
+		const current = await client.fetchQuery({
+			queryKey: queryKeys.template(s.templateId),
+			queryFn: () => api.getTemplate({ id: s.templateId }),
+			staleTime: 0,
+		});
+		// A threshold the current version no longer allows goes with it; a missing choice it newly
+		// asks for is the server's sentence (MISSING_REQUIRED).
+		const dropped = current.template.rules?.missing === undefined && s.missing !== undefined;
+		return {
+			templateId: s.templateId,
+			templateRevision: current.revision,
+			...(dropped ? { missing: null } : {}),
+		};
+	};
+
 	const act = async (s: ScheduleView, action: Action) => {
 		setBusy({ id: s.id, action });
 		setFailed(null);
@@ -113,31 +137,23 @@ export function SchedulesTab() {
 				// The run's job is listed in Jobs.
 				void client.invalidateQueries({ queryKey: queryKeys.jobs });
 				announce(t(M.queued, { name: s.name }));
+			} else if (action === "repin") {
+				// An enabled schedule on an older revision pauses at its next run: re-pinned, it
+				// stays enabled.
+				const pin = await currentPin(s);
+				if (pin === null) return;
+				const reply = await api.updateSchedule({ id: s.id, revision: s.revision, ...pin });
+				replaceRow(reply.schedule);
+				announce(t(M.repinned, { name: reply.schedule.name }));
 			} else {
 				const enabled = action === "resume";
 				let input: UpdateScheduleInput = { id: s.id, revision: s.revision, enabled };
 				if (enabled && s.pause?.reason === "template_changed") {
 					// Enabling re-pins only the source: the template is re-pinned here, to its
-					// current revision (coordinator ruling b). A template no longer saved cannot be.
-					if (templates.data !== undefined && !templates.data.some((x) => x.id === s.templateId)) {
-						setFailed({ name: s.name, said: M.resumeTemplateGone });
-						return;
-					}
-					// Read now: a body cached under the host's 60 s staleTime may be an older revision.
-					const current = await client.fetchQuery({
-						queryKey: queryKeys.template(s.templateId),
-						queryFn: () => api.getTemplate({ id: s.templateId }),
-						staleTime: 0,
-					});
-					// A threshold the current version no longer allows goes with it; a missing
-					// choice it newly asks for is the server's sentence (MISSING_REQUIRED).
-					const dropped = current.template.rules?.missing === undefined && s.missing !== undefined;
-					input = {
-						...input,
-						templateId: s.templateId,
-						templateRevision: current.revision,
-						...(dropped ? { missing: null } : {}),
-					};
+					// current revision (coordinator ruling b).
+					const pin = await currentPin(s);
+					if (pin === null) return;
+					input = { ...input, ...pin };
 				}
 				const reply = await api.updateSchedule(input);
 				replaceRow(reply.schedule);
@@ -251,6 +267,10 @@ export function SchedulesTab() {
 								const mine = busy?.id === s.id;
 								const toggle: Action = s.enabled ? "pause" : "resume";
 								const launch = s.lastLaunch;
+								const listed = templates.data?.find((x) => x.id === s.templateId);
+								// Enabled on an older revision: it pauses at its next launch.
+								const outdated =
+									s.enabled && listed !== undefined && listed.revision !== s.templateRevision;
 								return (
 									<Table.Row key={s.id}>
 										<Table.Cell className="font-medium">{s.name}</Table.Cell>
@@ -289,6 +309,18 @@ export function SchedulesTab() {
 															: M.resumeRepins,
 													)}
 												</p>
+											) : null}
+											{outdated ? (
+												<div className="mt-1 space-y-1">
+													<p className="text-sm text-kumo-subtle">{t(M.willPause)}</p>
+													<RowButton
+														label={t(M.repin)}
+														name={t(M.repinRow, { name: s.name })}
+														busy={mine && busy?.action === "repin"}
+														disabled={mine}
+														onClick={() => void act(s, "repin")}
+													/>
+												</div>
 											) : null}
 										</Table.Cell>
 										<Table.Cell>
