@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { TemplatesTab } from "../../src/admin/home/templates/TemplatesTab.js";
+import { queryKeys } from "../../src/admin/queries.js";
 import { fail, mockRoutes, renderAdmin } from "./harness.js";
 import { schedule, templateRow } from "./home-fixtures.js";
 
@@ -132,6 +133,15 @@ describe("Templates tab", () => {
 		expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe(
 			"Saved Products feed v2. Schedules updated: 2.",
 		);
+	});
+
+	it("makes the renamed template's own body stale", async () => {
+		const { user, dialog, queryClient, updateBodies } = await rename({ check: false });
+		queryClient.setQueryData(queryKeys.template("T1"), { id: "T1", revision: 3 });
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() => expect(updateBodies).toHaveLength(1));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(queryClient.getQueryState(queryKeys.template("T1"))?.isInvalidated).toBe(true);
 	});
 
 	it("names a pinned schedule whose update failed, and says it will pause (Review Focus 4)", async () => {

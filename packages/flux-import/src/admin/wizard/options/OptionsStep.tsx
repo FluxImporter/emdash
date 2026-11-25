@@ -288,6 +288,7 @@ export function OptionsStep() {
 				});
 				// The saved templates hold its new revision (final review 3).
 				void queryClient.invalidateQueries({ queryKey: queryKeys.allTemplates });
+				void queryClient.invalidateQueries({ queryKey: queryKeys.template(base.id) });
 				dispatch({
 					type: "templateSaved",
 					id: reply.template.id,

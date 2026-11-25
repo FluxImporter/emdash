@@ -123,9 +123,11 @@ export function SchedulesTab() {
 						setFailed({ name: s.name, said: M.resumeTemplateGone });
 						return;
 					}
+					// Read now: a body cached under the host's 60 s staleTime may be an older revision.
 					const current = await client.fetchQuery({
 						queryKey: queryKeys.template(s.templateId),
 						queryFn: () => api.getTemplate({ id: s.templateId }),
+						staleTime: 0,
 					});
 					// A threshold the current version no longer allows goes with it; a missing
 					// choice it newly asks for is the server's sentence (MISSING_REQUIRED).

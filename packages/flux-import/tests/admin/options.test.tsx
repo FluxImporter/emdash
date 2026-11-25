@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { MAX_UPDATE_FIELDS } from "../../src/admin/limits.js";
+import { queryKeys } from "../../src/admin/queries.js";
 import { useWizard, WizardProvider } from "../../src/admin/wizard/context.js";
 import { OptionsStep } from "../../src/admin/wizard/options/OptionsStep.js";
 import { ownerClash } from "../../src/admin/wizard/options/owner.js";
@@ -753,6 +754,29 @@ describe("the Options step", () => {
 		await user.click(next());
 		await waitFor(() => expect(seen.state.step).toBe("preview"));
 		await waitFor(() => expect(lists()).toBe(4));
+	});
+
+	it("makes the saved template's own body stale once the changes are saved", async () => {
+		const { user, seen, queryClient } = renderOptions(editedBase(), {
+			routes: {
+				"templates/update": (body) => {
+					const b = body as { id: string; revision: number; template: unknown };
+					return {
+						template: {
+							...summary({ id: b.id, name: "Products feed", revision: b.revision + 1 }),
+							template: templateSchema.parse(b.template),
+						},
+						check: { problems: [], warnings: [] },
+					};
+				},
+			},
+		});
+		// A schedule's Resume or dialog read this body before the save.
+		queryClient.setQueryData(queryKeys.template("T1"), { id: "T1", revision: 3 });
+		await user.click(screen.getByRole("radio", { name: "Save the changes to Products feed" }));
+		await user.click(next());
+		await waitFor(() => expect(seen.state.step).toBe("preview"));
+		expect(queryClient.getQueryState(queryKeys.template("T1"))?.isInvalidated).toBe(true);
 	});
 
 	it("stays on Options with the sentence when the template changed meanwhile", async () => {

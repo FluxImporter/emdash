@@ -28,7 +28,10 @@ export const queryKeys = {
 	templates: (collection?: string) => ["flux-import", "templates", collection ?? null],
 	/** Every `templates` key, whatever its collection: what a template save makes stale. */
 	allTemplates: ["flux-import", "templates"],
-	/** One saved template with its body. */
+	/**
+	 * One saved template with its body. Outside `allTemplates`: a save invalidates it by its own
+	 * key, and every read of it asks again (`staleTime: 0`).
+	 */
 	template: (id: string | null) => ["flux-import", "template", id],
 	/** The Jobs tab's pages of real imports. */
 	jobs: ["flux-import", "jobs"],
@@ -211,5 +214,6 @@ export function useTemplate(id: string | null): UseQueryResult<SavedTemplate> {
 		queryKey: queryKeys.template(id),
 		queryFn: id === null ? skipToken : () => api.getTemplate({ id }),
 		retry,
+		staleTime: ALWAYS_STALE,
 	});
 }

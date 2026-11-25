@@ -326,6 +326,7 @@ describe("the home's queries (M7b)", () => {
 		["useDryRuns", () => useDryRuns(), "jobs/summaries"],
 		["useSchedules", () => useSchedules(), "schedules/list"],
 		["useFence", () => useFence(), "schedules/fence"],
+		["useTemplate", () => useTemplate("T1"), "templates/get"],
 	] as [string, () => { isSuccess: boolean }, string][])(
 		"%s reads again on each mount under the host's 60 s staleTime",
 		async (_, hook, route) => {
@@ -333,6 +334,7 @@ describe("the home's queries (M7b)", () => {
 				"jobs/summaries": () => ({ items: [], hasMore: false }),
 				"schedules/list": () => ({ items: [], hasMore: false }),
 				"schedules/fence": () => ({ fence: "clear" }),
+				"templates/get": () => ({ id: "T1", name: "Feed" }),
 			});
 			const client = new QueryClient({
 				defaultOptions: { queries: { retry: false, staleTime: 60_000 } },

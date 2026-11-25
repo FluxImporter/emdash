@@ -73,6 +73,7 @@ export function EditTemplateDialog(props: {
 					: { updated: [], failed: [] };
 			await Promise.all([
 				client.invalidateQueries({ queryKey: queryKeys.allTemplates }),
+				client.invalidateQueries({ queryKey: queryKeys.template(row.id) }),
 				client.invalidateQueries({ queryKey: queryKeys.schedules }),
 			]);
 			const saved = result.template.name;

@@ -813,6 +813,37 @@ describe("the Schedules tab", () => {
 		]);
 	});
 
+	it("re-pins on Resume to the template's revision as read now, not a cached one", async () => {
+		const changed = schedule({
+			id: "SC1",
+			name: "Nightly",
+			templateId: "T1",
+			templateRevision: 1,
+			sourceId: "SRC1",
+			enabled: false,
+			pause: { reason: "template_changed", at: "2026-11-24T06:00:00.000Z" },
+			revision: 4,
+		});
+		const { calls } = routes(
+			{ schedules: [changed] },
+			{
+				"schedules/update": () => {
+					const { pause: _, ...rest } = changed;
+					return { schedule: { ...rest, enabled: true, revision: 5 } };
+				},
+			},
+		);
+		const { user, queryClient } = renderTab();
+		// The host keeps data fresh for 60 s; a dialog read revision 2 a moment ago.
+		queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+		queryClient.setQueryData(queryKeys.template("T1"), saved({ ...T1, revision: 2 }));
+		await user.click(await screen.findByRole("button", { name: "Resume Nightly" }));
+		await waitFor(() => expect(bodyOf(calls, "schedules/update")).toHaveLength(1));
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, enabled: true, templateId: "T1", templateRevision: 3 },
+		]);
+	});
+
 	it("says a template_changed schedule whose template is gone needs an edit, and sends nothing", async () => {
 		const { calls } = routes({
 			schedules: [
