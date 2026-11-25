@@ -44,6 +44,7 @@ import {
 	type RecordError,
 	type RecordRow,
 	type RollbackAction,
+	type RollbackUndo,
 	type RowFields,
 	recordKey,
 } from "./types.js";
@@ -119,6 +120,47 @@ function counterOf(row: RowFields): keyof Counters | null {
 	}
 }
 
+/**
+ * M7b (plan Ruling 7): what a reverted rollback row did. A delete or trash undid a create; a
+ * restore undid the missing phase's trash; a revert undid an update, or the missing phase's
+ * unpublish (journalled as an update) at or past `missingFrom`.
+ */
+export function undoKind(
+	action: string | undefined,
+	seq: number,
+	missingFrom: number | undefined,
+): keyof RollbackUndo | null {
+	switch (action) {
+		case "delete":
+		case "trash":
+			return "deleted";
+		case "restore":
+			return "recovered";
+		case "revert":
+			return missingFrom !== undefined && seq >= missingFrom ? "recovered" : "restored";
+		default:
+			return null;
+	}
+}
+
+/**
+ * Counts a rollback row `by` times toward its counter and, when it counts as `reverted` on a job
+ * that keeps `undo` (created by 0.7.0 or later), toward its kind there.
+ */
+function countRow(
+	job: Pick<Job, "counters" | "undo" | "missingFrom">,
+	row: RowFields,
+	seq: number,
+	by = 1,
+): void {
+	const counter = counterOf(row);
+	if (counter === null) return;
+	bump(job.counters, counter, by);
+	if (counter !== "reverted" || job.undo === undefined) return;
+	const kind = undoKind(row.action, seq, job.missingFrom);
+	if (kind !== null) job.undo[kind] += by;
+}
+
 /** The rollback job's original import; job creation always sets it. */
 function originalOf(job: Job): string {
 	if (job.rollbackOf === undefined) throw new Error(`Job ${job.id} is not a rollback job`);
@@ -173,7 +215,7 @@ export async function rollbackRetryPass(
 			limit: Math.min(limit, PAGE),
 		});
 		if (page.items.length === 0) {
-			job.counters = await tallyRollback(deps, job.id);
+			await tallyRollback(deps, job);
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {
@@ -207,24 +249,30 @@ function affordable(cache: LookupCache, journal: JournalEntry): boolean {
 	return cache.spent + ROW_RESERVE + COST_READ * ids <= cache.budget;
 }
 
-/** Rebuilds a rollback job's counters from its rows, as an import's retry does. */
-async function tallyRollback(deps: EngineDeps, jobId: string): Promise<Counters> {
-	const counters: Counters = { ...emptyCounters(), reverted: 0 };
+/**
+ * Rebuilds a rollback job's counters from its rows, as an import's retry does, and its `undo`
+ * when it keeps one (M7b).
+ */
+async function tallyRollback(deps: EngineDeps, job: Job): Promise<void> {
+	const tally: Pick<Job, "counters" | "undo" | "missingFrom"> = {
+		counters: { ...emptyCounters(), reverted: 0 },
+		...(job.undo === undefined ? {} : { undo: { deleted: 0, restored: 0, recovered: 0 } }),
+		...(job.missingFrom === undefined ? {} : { missingFrom: job.missingFrom }),
+	};
 	let cursor: string | undefined;
 	for (;;) {
 		const page = await deps.records.query({
-			where: { jobId },
+			where: { jobId: job.id },
 			orderBy: { seq: "asc" },
 			limit: PAGE,
 			...(cursor ? { cursor } : {}),
 		});
-		for (const { data } of page.items) {
-			const counter = counterOf(data);
-			if (counter) bump(counters, counter);
-		}
-		if (!page.hasMore || !page.cursor) return counters;
+		for (const { data } of page.items) countRow(tally, data, data.seq);
+		if (!page.hasMore || !page.cursor) break;
 		cursor = page.cursor;
 	}
+	job.counters = tally.counters;
+	if (tally.undo !== undefined) job.undo = tally.undo;
 }
 
 /** Decides and carries out one journal row, saving its record row as an import saves its own. */
@@ -238,8 +286,7 @@ async function revertRow(
 	const existing = await deps.records.get(key);
 	if (existing && existing.status !== "writing" && !opts.retry) {
 		// Only reached after a crash: the batch that wrote this row never saved its cursor.
-		const counter = counterOf(existing);
-		if (counter) bump(job.counters, counter);
+		countRow(job, existing, journal.seq);
 		return;
 	}
 	const save = (fields: RowFields) =>
@@ -272,12 +319,8 @@ async function revertRow(
 	if (ctx.warnings.length > 0)
 		row = { ...row, warnings: [...(row.warnings ?? []), ...ctx.warnings] };
 	await save(row);
-	if (existing && opts.retry) {
-		const old = counterOf(existing);
-		if (old) bump(job.counters, old, -1);
-	}
-	const counter = counterOf(row);
-	if (counter) bump(job.counters, counter);
+	if (existing && opts.retry) countRow(job, existing, journal.seq, -1);
+	countRow(job, row, journal.seq);
 }
 
 type RowCtx = {

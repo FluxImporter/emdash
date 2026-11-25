@@ -35,6 +35,16 @@ export type MissingAction = "trash" | "unpublish";
 /** The mark the missing phase leaves on a link it acted on (M5c); any import write clears it. */
 export type LinkMissing = { jobId: string; action: MissingAction; at: string };
 
+/** M7b: what a rollback job's reverted rows did (plan Ruling 7). */
+export interface RollbackUndo {
+	/** Entries the import created, deleted or moved to Trash. */
+	deleted: number;
+	/** Entries the import updated, restored to their earlier revision. */
+	restored: number;
+	/** Entries the import's missing phase trashed or unpublished, brought back. */
+	recovered: number;
+}
+
 /** The default `rules.missing.maxPercent` (spec M5c, Ruling 7). */
 export const MISSING_MAX_PERCENT_DEFAULT = 25;
 
@@ -73,6 +83,13 @@ export interface Job {
 	rollbackOf?: string;
 	/** An import job: the real rollback job created for it; it can no longer be resumed or retried. */
 	rolledBackBy?: string;
+	/**
+	 * M7b, rollback jobs: the rows counted in `counters.reverted`, by what they did. Absent on
+	 * rollback jobs created before 0.7.0 (unknown).
+	 */
+	undo?: RollbackUndo;
+	/** M7b, rollback jobs: the original's `missing.fromSeq`, when its missing phase had started. */
+	missingFrom?: number;
 	/**
 	 * A real import job keeps a journal of what it changes, so it can be rolled back (M5a). Absent
 	 * on dry runs and on jobs created before M5a, which have no journal.

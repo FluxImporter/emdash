@@ -11,9 +11,12 @@ import {
 } from "../../src/engine/template.js";
 import { BATCH_SIZE_MAX } from "../../src/engine/types.js";
 import { FALSE_TOKENS, TRUE_TOKENS } from "../../src/engine/values.js";
+import { CREDENTIAL_NAME, HEADER_NAME } from "../../src/plugin/credentials.js";
+import { routes, TEMPLATE_BODY_MAX_BYTES } from "../../src/plugin/routes.js";
+import { MAX_SCHEDULES } from "../../src/plugin/schedules.js";
 import { APPLY_FIELD_TYPES, MAX_APPLY_FIELDS } from "../../src/plugin/schema-apply.js";
-import { PASTE_MAX_BYTES, SAMPLE_MAX } from "../../src/plugin/service.js";
-import { TEMPLATE_NAME_MAX } from "../../src/plugin/templates.js";
+import { JOB_PAGE, PASTE_MAX_BYTES, SAMPLE_MAX } from "../../src/plugin/service.js";
+import { TEMPLATE_DESCRIPTION_MAX, TEMPLATE_NAME_MAX } from "../../src/plugin/templates.js";
 import { SOURCE_FORMATS } from "../../src/sources/reader.js";
 
 /** The browser's copies of server constants equal the server's (plan Ruling 8). */
@@ -68,5 +71,39 @@ describe("src/admin/limits.ts", () => {
 
 	it("shows at most 200 keys at once (Review Focus 4)", () => {
 		expect(limits.KEYS_SHOWN).toBe(200);
+	});
+
+	it("copies the home's limits (M7b)", () => {
+		expect(limits.TEMPLATE_BODY_MAX_BYTES).toBe(TEMPLATE_BODY_MAX_BYTES);
+		expect(limits.TEMPLATE_BODY_MAX_BYTES).toBe(2_097_152);
+		expect(limits.TEMPLATE_DESCRIPTION_MAX).toBe(TEMPLATE_DESCRIPTION_MAX);
+		expect(limits.JOB_PAGE).toBe(JOB_PAGE);
+		expect(limits.MAX_SCHEDULES).toBe(MAX_SCHEDULES);
+		expect(limits.CREDENTIAL_NAME.source).toBe(CREDENTIAL_NAME.source);
+		expect(limits.CREDENTIAL_NAME.flags).toBe(CREDENTIAL_NAME.flags);
+		expect(limits.HEADER_NAME.source).toBe(HEADER_NAME.source);
+		expect(limits.HEADER_NAME.flags).toBe(HEADER_NAME.flags);
+	});
+
+	it("pins SOURCE_NAME_MAX through the route's own schema, which keeps it inline (F8)", () => {
+		const url = "https://feed.example.com/a.json";
+		const create = routes["sources/create"]!.input!;
+		const { SOURCE_NAME_MAX } = limits;
+		expect(create.safeParse({ name: "x".repeat(SOURCE_NAME_MAX), url }).success).toBe(true);
+		expect(create.safeParse({ name: "x".repeat(SOURCE_NAME_MAX + 1), url }).success).toBe(false);
+	});
+
+	it("has no SCHEDULE_BATCH_MAX: a schedule's batch size is BATCH_SIZE_MAX (F8)", () => {
+		expect(limits).not.toHaveProperty("SCHEDULE_BATCH_MAX");
+		const create = routes["schedules/create"]!.input!;
+		const base = {
+			name: "Nightly",
+			templateId: "T1",
+			templateRevision: 1,
+			sourceId: "S1",
+			cron: "0 3 * * *",
+		};
+		expect(create.safeParse({ ...base, batchSize: limits.BATCH_SIZE_MAX }).success).toBe(true);
+		expect(create.safeParse({ ...base, batchSize: limits.BATCH_SIZE_MAX + 1 }).success).toBe(false);
 	});
 });

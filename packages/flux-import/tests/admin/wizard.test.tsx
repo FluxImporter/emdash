@@ -101,7 +101,7 @@ describe("Wizard", () => {
 		expect(screen.queryByRole("list", { name: /steps/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 		expect(screen.queryByText(/Insufficient permissions/)).toBeNull();
-		expect(screen.getByRole("heading", { level: 1, name: "Import" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { level: 1, name: "New import" })).toBeInTheDocument();
 		expect(calls.map((c) => c.route)).toEqual(["credentials/list"]);
 	});
 
@@ -271,6 +271,37 @@ describe("Wizard", () => {
 		expect(screen.getByText("job J1")).toBeInTheDocument();
 		expect(sourceMounted).not.toHaveBeenCalled();
 		expect(window.location.search).toBe("?step=run&job=J1");
+	});
+
+	it("drops ?template= from the URL at page load, even when Source is not mounted first", async () => {
+		window.history.replaceState(null, "", "/import?template=T1&job=J1");
+		granted();
+		renderAdmin(<Wizard steps={DUMMY} />);
+		expect(await stepHeading()).toHaveTextContent("Run");
+		expect(new URLSearchParams(window.location.search).has("template")).toBe(false);
+	});
+
+	it("hands ?template= to Source once, and not again after Start a new import", async () => {
+		window.history.replaceState(null, "", "/import?template=T1");
+		granted();
+		const Probe = () => {
+			const { state, template, restart } = useWizard();
+			return (
+				<div>
+					<p>{`preselect ${template ?? "none"}`}</p>
+					{state.step === "source" ? (
+						<button type="button" onClick={() => restart?.()}>
+							Restart
+						</button>
+					) : null}
+				</div>
+			);
+		};
+		const { user } = renderAdmin(<Wizard steps={{ ...DUMMY, source: Probe }} />);
+		expect(await screen.findByText("preselect T1")).toBeVisible();
+		expect(new URLSearchParams(window.location.search).has("template")).toBe(false);
+		await user.click(screen.getByRole("button", { name: "Restart" }));
+		expect(await screen.findByText("preselect none")).toBeVisible();
 	});
 
 	it("falls back to Source for an unreachable ?step=", async () => {

@@ -139,6 +139,9 @@ export async function createRollback(
 		// Journal rows are read newest first, below `cursor.seq`.
 		cursor: { offset: 0, seq: Number.MAX_SAFE_INTEGER },
 		counters: { ...emptyCounters(), reverted: 0 },
+		// M7b (plan Ruling 7): the split of `reverted`, and where the original's missing phase began.
+		undo: { deleted: 0, restored: 0, recovered: 0 },
+		...(original.missing === undefined ? {} : { missingFrom: original.missing.fromSeq }),
 		lease: null,
 		phase: "import",
 		retryFromSeq: Number.MAX_SAFE_INTEGER,

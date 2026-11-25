@@ -1,3 +1,4 @@
+import type { ScheduleView } from "../plugin/schedules.js";
 import { ApiError, redact } from "./api-error.js";
 import type { Msg, Values } from "./i18n.js";
 
@@ -50,6 +51,23 @@ export const WIZARD_ERROR_CODES: readonly string[] = [
 	"COLLECTION_NOT_FOUND",
 	"COLLECTION_MISMATCH",
 	"INVALID_CURSOR",
+	"OWNER_IN_USE",
+	"INVALID_FILE",
+	"UNSUPPORTED_FILE_VERSION",
+	"TEMPLATE_IN_USE",
+	"TEMPLATE_PROBLEMS",
+	// Sources
+	"SOURCE_IN_USE",
+	// Schedules
+	"SCHEDULE_CHANGED",
+	"SCHEDULE_BUSY",
+	"SCHEDULE_DISABLED",
+	"SCHEDULE_LIMIT",
+	"INVALID_CRON",
+	"MISSING_REQUIRED",
+	// EmDash's site fence (F3)
+	"TRANSFER_IMPORT_IN_PROGRESS",
+	"TRANSFER_FENCE_CHECK_FAILED",
 	// Jobs
 	"INVALID_OPTIONS",
 	"INVALID_TRANSITION",
@@ -227,6 +245,63 @@ export const ERROR_MESSAGES: Readonly<Record<string, Msg>> = {
 	INVALID_CURSOR: {
 		id: "flux-import.error.invalid-cursor",
 		message: "The list changed while it was being read. Reload it.",
+	},
+	OWNER_IN_USE: {
+		id: "flux-import.error.owner-in-use",
+		message: "Another template that tracks missing entries already uses this owner.",
+	},
+	INVALID_FILE: {
+		id: "flux-import.error.invalid-file",
+		message: "This file is not a template that flux-import can read.",
+	},
+	UNSUPPORTED_FILE_VERSION: {
+		id: "flux-import.error.unsupported-file-version",
+		message: "This template file was made by a newer version of the importer.",
+	},
+	TEMPLATE_IN_USE: {
+		id: "flux-import.error.template-in-use",
+		message: "A schedule runs this template. Delete or change the schedule first.",
+	},
+	SOURCE_IN_USE: {
+		id: "flux-import.error.source-in-use",
+		message: "A schedule reads this source. Delete or change the schedule first.",
+	},
+	TEMPLATE_PROBLEMS: {
+		id: "flux-import.error.template-problems",
+		message: "The template does not fit the site, so it cannot be scheduled.",
+	},
+	SCHEDULE_CHANGED: {
+		id: "flux-import.error.schedule-changed",
+		message: "Someone else changed this schedule. Open it again to see their changes.",
+	},
+	SCHEDULE_BUSY: {
+		id: "flux-import.error.schedule-busy",
+		message: "This schedule is importing right now. Wait for the import to finish or cancel it.",
+	},
+	SCHEDULE_DISABLED: {
+		id: "flux-import.error.schedule-disabled",
+		message: "This schedule is paused. Resume it first.",
+	},
+	SCHEDULE_LIMIT: {
+		id: "flux-import.error.schedule-limit",
+		message: "The site has as many schedules as it can hold. Delete one first.",
+	},
+	INVALID_CRON: {
+		id: "flux-import.error.invalid-cron",
+		message: "That schedule time is not valid.",
+	},
+	MISSING_REQUIRED: {
+		id: "flux-import.error.missing-required",
+		message:
+			"This template tracks missing entries, so the schedule has to say what to do about them.",
+	},
+	TRANSFER_IMPORT_IN_PROGRESS: {
+		id: "flux-import.error.transfer-import-in-progress",
+		message: "A site import is running, so imports and their schedules wait until it ends.",
+	},
+	TRANSFER_FENCE_CHECK_FAILED: {
+		id: "flux-import.error.transfer-fence-check-failed",
+		message: "flux-import couldn't check whether the site is busy. Try again shortly.",
 	},
 	INVALID_OPTIONS: {
 		id: "flux-import.error.invalid-options",
@@ -578,6 +653,8 @@ const DETAIL_CODES: ReadonlySet<string> = new Set([
 	"VALIDATION_ERROR",
 	"HTTP_ERROR",
 	"INVALID_OPTIONS",
+	"INVALID_FILE",
+	"INVALID_CRON",
 ]);
 
 function detailProblems(details: unknown): string[] | undefined {
@@ -617,6 +694,21 @@ export function describeError(e: unknown): {
 	if (e instanceof TypeError) return { msg: ERROR_MESSAGES.offline! };
 	if (e instanceof Error) return { msg: ERROR_MESSAGES.unknown!, detail: redact(e.message) };
 	return { msg: ERROR_MESSAGES.unknown! };
+}
+
+/**
+ * The names of the schedules an in-use refusal lists in `details.scheduleIds`, in that order,
+ * comma-joined; an ID the list lacks is skipped. Null when there are none to name.
+ */
+export function scheduleNames(e: unknown, schedules: readonly ScheduleView[]): string | null {
+	if (!(e instanceof ApiError) || !isRecord(e.details)) return null;
+	const ids = e.details.scheduleIds;
+	if (!Array.isArray(ids)) return null;
+	const names = ids.flatMap((id) => {
+		const found = schedules.find((s) => s.id === id);
+		return found ? [found.name] : [];
+	});
+	return names.length === 0 ? null : names.join(", ");
 }
 
 /** A failed job's error (`job.error`), for the Run step (preflight F15). */

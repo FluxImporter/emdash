@@ -29,7 +29,8 @@ const AI_KEY_DESCRIPTION =
  * schedules (M6b): `name` serves the uniqueness check, `templateId` and `sourceId` the in-use
  * checks of `templates/delete` and `sources/delete`; `jobs` `["scheduled", "status", "createdAt"]`
  * serves the pump's finalization and batch queries, `["feedSourceId", "status"]` the busy check
- * (plan Ruling 2).
+ * (plan Ruling 2). `jobs` `["dryRun", "createdAt"]` serves `jobs/summaries` and
+ * `jobs/clear-dry-runs` (M7b), built by EmDash at its first scheduler tick (Fact V3).
  */
 export const STORAGE = {
 	jobs: {
@@ -41,6 +42,7 @@ export const STORAGE = {
 			["templateId", "createdAt"],
 			["scheduled", "status", "createdAt"],
 			["feedSourceId", "status"],
+			["dryRun", "createdAt"],
 		],
 	},
 	templates: { indexes: ["name", "collection", "owner"] },
@@ -106,11 +108,16 @@ export function createPlugin(_options: FluxImportOptions = {}) {
 		// mcp:tools, and the routes still need Admin.
 		mcp: { tools: MCP_TOOLS },
 		admin: {
-			// M7a: the import wizard, a trusted React page. `entry` equals the descriptor's
-			// `adminEntry`, and the module's `pages` export keys the same path (docs "React admin
-			// extensions": https://docs.emdashcms.com/plugins/creating-native-plugins/react-admin/).
+			// M7a: trusted React pages. `entry` equals the descriptor's `adminEntry`, and the
+			// module's `pages` export keys the same paths (docs "React admin extensions":
+			// https://docs.emdashcms.com/plugins/creating-native-plugins/react-admin/). M7b: the
+			// Imports home, then the wizard as New import, in one "Imports" sidebar folder; the home
+			// comes first, so the plugin's root opens it (Fact V1).
 			entry: "flux-import/admin",
-			pages: [{ path: "/import", label: "Import", icon: "upload-simple" }],
+			pages: [
+				{ path: "/imports", label: "Imports", icon: "clock-counter-clockwise", group: "Imports" },
+				{ path: "/import", label: "New import", icon: "upload-simple", group: "Imports" },
+			],
 			settingsSchema: {
 				credentials: {
 					type: "secret",

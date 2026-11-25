@@ -1,5 +1,5 @@
 import { Button, Empty, Loader, Select } from "@cloudflare/kumo";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
 import { useT } from "../../i18n.js";
@@ -23,9 +23,18 @@ function describeLoad(e: unknown): Described {
  */
 export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "busy" | "run">) {
 	const t = useT();
-	const { state, dispatch } = useWizard();
 	const templates = useAllTemplates();
-	const [id, setId] = useState<string | null>(null);
+	const { state, dispatch, template, clearTemplate } = useWizard();
+	// The page's `?template=` (read and dropped from the URL at page load), taken once: a return to
+	// Source does not preselect it again (preflight F13).
+	const [fromUrl] = useState(template);
+	const [picked, setPicked] = useState<{ id: string | null } | null>(null);
+	useEffect(() => {
+		if (fromUrl !== null) clearTemplate();
+	}, [fromUrl, clearTemplate]);
+	const preselected = picked === null && templates.data?.some((s) => s.id === fromUrl) === true;
+	const id = picked !== null ? picked.id : preselected ? fromUrl : null;
+	const setId = (v: string | null) => setPicked({ id: v });
 	const disabled = !props.enabled || props.busy;
 
 	let body: ReactNode;
@@ -74,7 +83,9 @@ export function TemplatePicker(props: { enabled: boolean } & Pick<TabProps, "bus
 					label={t(M.templateLabel)}
 					value={id}
 					disabled={disabled}
-					{...(props.enabled ? {} : { description: t(M.templateNeedsFile) })}
+					{...(props.enabled
+						? {}
+						: { description: t(preselected ? M.templateChooseData : M.templateNeedsFile) })}
 					onValueChange={(v: unknown) => setId(typeof v === "string" ? v : null)}
 					items={items}
 				>

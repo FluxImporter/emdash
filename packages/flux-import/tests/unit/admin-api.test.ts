@@ -4,6 +4,7 @@ import {
 	callRoute,
 	downloadLog,
 	PLUGIN_BASE,
+	saveJson,
 	UPLOAD_URL,
 	uploadFile,
 } from "../../src/admin/api.js";
@@ -115,6 +116,52 @@ const ROUTE_INPUTS: Record<string, [method: keyof typeof api, call: () => Promis
 	"jobs/cancel": ["cancel", () => api.cancel({ id: "J1" })],
 	"jobs/retry": ["retry", () => api.retry({ id: "J1" })],
 	"jobs/records": ["records", () => api.records({ id: "J1", status: "failed", cursor: "c1" })],
+	"jobs/summaries": ["jobSummaries", () => api.jobSummaries({ dryRun: true, cursor: "c1" })],
+	"jobs/clear-dry-runs": ["clearDryRuns", () => api.clearDryRuns({ cursor: "c1" })],
+	"jobs/rollback": ["rollback", () => api.rollback({ id: "J1", dryRun: false })],
+	"templates/delete": ["deleteTemplate", () => api.deleteTemplate({ id: "T1", revision: 3 })],
+	"templates/export": ["exportTemplate", () => api.exportTemplate({ id: "T1" })],
+	"templates/import": [
+		"importTemplate",
+		() => api.importTemplate({ file: { format: "x" }, name: "Copy", owner: "posts-feed" }),
+	],
+	"sources/update": [
+		"updateSource",
+		() =>
+			api.updateSource({
+				id: "S1",
+				name: "Feed",
+				url: "https://example.com/f.json",
+				credential: null,
+			}),
+	],
+	"sources/delete": ["deleteSource", () => api.deleteSource({ id: "S1" })],
+	"credentials/set": [
+		"setCredential",
+		() => api.setCredential({ name: "feed-key", header: "Authorization", value: "Bearer x" }),
+	],
+	"credentials/delete": ["deleteCredential", () => api.deleteCredential({ name: "feed-key" })],
+	"schedules/list": ["listSchedules", () => api.listSchedules({ cursor: "c1" })],
+	"schedules/create": [
+		"createSchedule",
+		() =>
+			api.createSchedule({
+				name: "Nightly",
+				templateId: "T1",
+				templateRevision: 2,
+				sourceId: "S1",
+				cron: "0 3 * * *",
+				batchSize: 100,
+				missing: { maxPercent: 10 },
+			}),
+	],
+	"schedules/update": [
+		"updateSchedule",
+		() => api.updateSchedule({ id: "SC1", revision: 2, enabled: true, missing: null }),
+	],
+	"schedules/delete": ["deleteSchedule", () => api.deleteSchedule({ id: "SC1", revision: 2 })],
+	"schedules/run": ["runSchedule", () => api.runSchedule({ id: "SC1", force: true })],
+	"schedules/fence": ["fence", () => api.fence()],
 };
 
 describe("callRoute", () => {
@@ -193,6 +240,36 @@ describe("the route adapters", () => {
 			expect(parsed.success).toBe(true);
 		},
 	);
+
+	it("sends a widened templates/update with only what changed", async () => {
+		const sent = ok({});
+		await api.updateTemplate({ id: "T1", revision: 2, name: "New", description: null });
+		expect(sent[0]!.body).toEqual({ id: "T1", revision: 2, name: "New", description: null });
+		expect(routes["templates/update"]!.input!.safeParse(sent[0]!.body).success).toBe(true);
+	});
+
+	it("sends jobs/summaries and jobs/rollback exactly what the route takes", async () => {
+		const sent = ok({});
+		await api.jobSummaries({ dryRun: false });
+		await api.rollback({ id: "J1", dryRun: true });
+		expect(sent.map((r) => r.body)).toEqual([{ dryRun: false }, { id: "J1", dryRun: true }]);
+	});
+
+	it("passes the signal of a list read on", async () => {
+		let seen: AbortSignal | undefined;
+		vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+			seen = init.signal ?? undefined;
+			return new Response(JSON.stringify({ success: true, data: { items: [], hasMore: false } }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const controller = new AbortController();
+		await api.jobSummaries({ dryRun: false }, controller.signal);
+		expect(seen).toBe(controller.signal);
+		await api.listSchedules({}, controller.signal);
+		expect(seen).toBe(controller.signal);
+	});
 
 	it("never sends `ai` to templates/suggest", async () => {
 		const sent = ok({});
@@ -661,5 +738,24 @@ describe("downloadLog (plan Ruling 4)", () => {
 		const { create } = fakeDocument();
 		await expect(downloadLog("J")).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 });
 		expect(create).not.toHaveBeenCalled();
+	});
+
+	it("saves a template file as pretty JSON under its filename", async () => {
+		// Let the revocations an earlier test scheduled run before this test spies on them.
+		await new Promise((r) => setTimeout(r, 0));
+		const { anchor, append, create, revoke } = fakeDocument();
+		const file = { format: "flux-import.template", name: "Posts feed", template: { a: 1 } };
+		saveJson(file, "flux-import-template-posts-feed.json");
+		const blob = create.mock.calls[0]![0] as Blob;
+		expect(blob.type).toBe("application/json");
+		expect(await blob.text()).toBe(JSON.stringify(file, null, 2));
+		expect(anchor.href).toBe("blob:log");
+		expect(anchor.download).toBe("flux-import-template-posts-feed.json");
+		expect(append).toHaveBeenCalledWith(anchor);
+		expect(anchor.click).toHaveBeenCalledOnce();
+		expect(anchor.remove).toHaveBeenCalledOnce();
+		expect(revoke).not.toHaveBeenCalled();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:log");
 	});
 });

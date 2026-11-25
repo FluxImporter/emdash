@@ -40,6 +40,7 @@ export const M = {
 	retryFailed: { id: "flux-import.run.retry-failed", message: "Retry failed records" },
 	viewEntries: { id: "flux-import.run.view-entries", message: "View the entries" },
 	startNew: { id: "flux-import.run.start-new", message: "Start a new import" },
+	seeAll: { id: "flux-import.run.see-all", message: "See all imports" },
 	counters: {
 		created: { id: "flux-import.run.counter.created", message: "Created" },
 		updated: { id: "flux-import.run.counter.updated", message: "Updated" },

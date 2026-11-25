@@ -185,6 +185,8 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.unkeyed ? { unkeyed: job.unkeyed } : {}),
 			// M5c: the missing phase.
 			...(job.missing ? { missing: job.missing } : {}),
+			// M7b: a rollback job's split counts, kept as its counters are.
+			...(job.undo ? { undo: job.undo } : {}),
 			// A finished batch clears an earlier unexpected error; other errors stay until resume.
 			error: outcome.error ?? (stored.error?.code === "internal" ? null : stored.error),
 			failures: 0,

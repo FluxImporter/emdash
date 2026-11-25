@@ -2,6 +2,7 @@ import {
 	createContext,
 	type Dispatch,
 	type ReactNode,
+	useCallback,
 	useContext,
 	useMemo,
 	useReducer,
@@ -70,6 +71,10 @@ interface WizardContextValue {
 	once: Once["once"];
 	/** Starts a new import from an empty draft, when the page offers that; null otherwise. */
 	restart: (() => void) | null;
+	/** The template ID the page was opened with (`?template=`), until the picker takes it; else null. */
+	template: string | null;
+	/** Forgets `template`: the picker takes it once. */
+	clearTemplate(): void;
 }
 
 const WizardContext = createContext<WizardContextValue | null>(null);
@@ -77,6 +82,7 @@ const WizardContext = createContext<WizardContextValue | null>(null);
 export function WizardProvider(props: {
 	initial?: Partial<WizardState>;
 	restart?: () => void;
+	template?: string | null;
 	children: ReactNode;
 }) {
 	const [start] = useState(() => ({ ...initialState, ...props.initial }));
@@ -89,9 +95,11 @@ export function WizardProvider(props: {
 	dispatchRef.current ??= draftDispatch(rawDispatch, once, start);
 	const dispatch = dispatchRef.current;
 	const restart = props.restart ?? null;
+	const [template, setTemplate] = useState<string | null>(props.template ?? null);
+	const clearTemplate = useCallback(() => setTemplate(null), []);
 	const value = useMemo(
-		() => ({ state, dispatch, once: once.once, restart }),
-		[state, dispatch, once, restart],
+		() => ({ state, dispatch, once: once.once, restart, template, clearTemplate }),
+		[state, dispatch, once, restart, template, clearTemplate],
 	);
 	return <WizardContext.Provider value={value}>{props.children}</WizardContext.Provider>;
 }

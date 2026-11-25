@@ -45,7 +45,53 @@ function deferred<T>() {
 }
 
 describe("the admin entry", () => {
-	it("exports the Import page: the wizard, opening on its Source step", async () => {
+	it("exports the Imports home first, then New import (M7b)", () => {
+		// The descriptor's `admin.pages` lists the same paths in the same order (Fact V1).
+		expect(Object.keys(pages ?? {})).toEqual(["/imports", "/import"]);
+	});
+
+	it("exports the Imports page: the home, opening on its Jobs tab", async () => {
+		mockRoutes({
+			"credentials/list": () => [],
+			"jobs/summaries": () => ({ items: [], hasMore: false }),
+			"templates/list": () => ({ items: [], hasMore: false }),
+		});
+		const ImportsPage = pages?.["/imports"];
+		expect(ImportsPage).toBeTypeOf("function");
+		renderAdmin(<ImportsPage />);
+		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeInTheDocument();
+		expect(await screen.findByRole("tab", { name: "Jobs" })).toHaveAttribute(
+			"aria-selected",
+			"true",
+		);
+		expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Jobs");
+		// The real Jobs tab, not a stand-in: its empty state.
+		expect(await screen.findByText("No imports yet.")).toBeVisible();
+	});
+
+	it.each([
+		["templates", "Templates", "Import a template"],
+		["sources", "Sources", "Add a source"],
+		["schedules", "Schedules", "New schedule"],
+	])("heads the %s tab once, with its own <h2> (Task 16)", async (tab, title, action) => {
+		window.history.replaceState(null, "", `/?tab=${tab}`);
+		mockRoutes({
+			"credentials/list": () => [],
+			"templates/list": () => ({ items: [], hasMore: false }),
+			"sources/list": () => ({ items: [], hasMore: false }),
+			"schedules/list": () => ({ items: [], hasMore: false }),
+			"schedules/fence": () => ({ fence: "clear" }),
+		});
+		const ImportsPage = pages?.["/imports"];
+		if (!ImportsPage) throw new Error("no Imports page");
+		renderAdmin(<ImportsPage />);
+		expect(await screen.findByRole("button", { name: action })).toBeVisible();
+		expect(screen.getAllByRole("heading", { name: title })).toHaveLength(1);
+		expect(screen.getByRole("heading", { level: 2, name: title })).toBeVisible();
+		window.history.replaceState(null, "", "/");
+	});
+
+	it("exports the New import page: the wizard, opening on its Source step", async () => {
 		mockRoutes({
 			"credentials/list": () => [],
 			"templates/list": () => ({ items: [], hasMore: false }),
@@ -54,7 +100,7 @@ describe("the admin entry", () => {
 		const ImportPage = pages?.["/import"];
 		expect(ImportPage).toBeTypeOf("function");
 		renderAdmin(<ImportPage />);
-		expect(screen.getByRole("heading", { level: 1, name: "Import" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { level: 1, name: "New import" })).toBeInTheDocument();
 		expect(await screen.findByRole("heading", { level: 2, name: "Source" })).toBeVisible();
 		expect(screen.getByRole("list", { name: "Steps" })).toBeVisible();
 		expect(screen.getByRole("link", { name: "1 Source" })).toHaveAttribute("aria-current", "step");
@@ -78,7 +124,7 @@ describe("the admin entry", () => {
 				<Page />
 			</I18nProvider>,
 		);
-		expect(screen.getByText("Import")).toBeInTheDocument();
+		expect(screen.getByText("New import")).toBeInTheDocument();
 		act(() => {
 			i18n.loadAndActivate({ locale: "fr", messages: { [M.pageTitle.id]: "Importer" } });
 		});

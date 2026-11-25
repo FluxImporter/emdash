@@ -23,6 +23,7 @@ import {
 	type ValueSample,
 } from "../sources/reader.js";
 import { checkSource, readerFor } from "../sources/readers.js";
+import { type JobListItem, listItem } from "./summaries.js";
 
 export const PAGE_SIZE = 50;
 /**
@@ -471,6 +472,20 @@ export async function releaseUploadIfUnused(
 	keep: UploadKeeper = keepNone,
 ): Promise<boolean> {
 	if (uploadNeeded(job)) return false;
+	return releaseFiles(deps, uploads, job, keep);
+}
+
+/**
+ * Deletes the job's staged file and its XLSX workbook unless another job may still read them or
+ * `keep` holds them, without asking whether the job itself still needs them (the caller decided
+ * that, or deleted the job: M7b `jobs/clear-dry-runs`). Returns whether the job's file was deleted.
+ */
+export async function releaseFiles(
+	deps: Pick<EngineDeps, "jobs">,
+	uploads: UploadStore,
+	job: Pick<Job, "id" | "uploadId" | "sourceUploadId">,
+	keep: UploadKeeper = keepNone,
+): Promise<boolean> {
 	let released = false;
 	for (const uploadId of [job.uploadId, job.sourceUploadId]) {
 		if (uploadId === undefined) continue;
@@ -534,6 +549,36 @@ export async function listJobs(
 		}),
 	);
 	return { ...jobs, items: jobs.items.map(upgradeJob) };
+}
+
+/**
+ * A page of the admin's Jobs table (M7b `jobs/summaries`): real imports or dry runs, newest
+ * first, from one query the `["dryRun", "createdAt"]` index serves, plus one read per
+ * rolled-back import for its rollback's status (at most `JOB_PAGE`).
+ */
+export async function listJobSummaries(
+	deps: Pick<EngineDeps, "jobs" | "now">,
+	opts: { dryRun: boolean; cursor?: string },
+): Promise<Page<JobListItem>> {
+	const jobs = page(
+		await deps.jobs.query({
+			where: { dryRun: opts.dryRun },
+			orderBy: { createdAt: "desc" },
+			limit: JOB_PAGE,
+			...(opts.cursor ? { cursor: opts.cursor } : {}),
+		}),
+	);
+	const now = deps.now();
+	const items = await Promise.all(
+		jobs.items.map(async (job) => {
+			const rollback =
+				job.kind !== "rollback" && job.rolledBackBy !== undefined
+					? await deps.jobs.get(job.rolledBackBy)
+					: null;
+			return listItem(job, rollback?.status, now);
+		}),
+	);
+	return { ...jobs, items };
 }
 
 export async function listRecords(

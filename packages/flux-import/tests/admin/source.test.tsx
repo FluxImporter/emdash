@@ -42,9 +42,9 @@ function readState(): {
 	return JSON.parse(screen.getByTestId("state").textContent ?? "null");
 }
 
-function renderSource() {
+function renderSource(template?: string) {
 	return renderAdmin(
-		<WizardProvider>
+		<WizardProvider {...(template === undefined ? {} : { template })}>
 			<SourceStep />
 			<StateView />
 		</WizardProvider>,
@@ -664,6 +664,35 @@ describe("the Source step", () => {
 		expect(state.target).toEqual({ collection: "posts", locale: "en", translationLocale: null });
 		expect(state.rows).toEqual(["key", "field:title"]);
 		expect(state.base).toEqual({ id: SAVED_TEMPLATE.id, revision: 3 });
+	});
+
+	it("preselects the template named in ?template= and loads it once a file is sampled", async () => {
+		const { calls } = routes({
+			"templates/list": () => ({ items: [SUMMARY], hasMore: false }),
+			"templates/get": () => SAVED_TEMPLATE,
+		});
+		const { user } = renderSource(SAVED_TEMPLATE.id);
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		expect(picker).toHaveTextContent(/Posts from CSV/);
+		expect(picker).toBeDisabled();
+		expect(screen.getByText("Choose the data, then use the template.")).toBeVisible();
+		expect(screen.queryByText("Choose the file to import first")).toBeNull();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(picker).toBeEnabled());
+		await user.click(screen.getByRole("button", { name: "Load template" }));
+		await waitFor(() => expect(readState().step).toBe("preview"));
+		expect(calls.find((c) => c.route === "templates/get")?.body).toEqual({
+			id: SAVED_TEMPLATE.id,
+		});
+	});
+
+	it("ignores a ?template= that is not in the list", async () => {
+		routes({ "templates/list": () => ({ items: [SUMMARY], hasMore: false }) });
+		renderSource("NOPE");
+		const picker = await screen.findByRole("combobox", { name: "Saved template" });
+		expect(picker).not.toHaveTextContent(/Posts from CSV/);
+		expect(screen.getByText("Choose the file to import first")).toBeVisible();
+		expect(screen.queryByText("Choose the data, then use the template.")).toBeNull();
 	});
 
 	/** Picks the saved template in the picker and loads it. */

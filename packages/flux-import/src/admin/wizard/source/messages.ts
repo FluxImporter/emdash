@@ -160,6 +160,10 @@ export const M = {
 		id: "flux-import.source.template-needs-file",
 		message: "Choose the file to import first",
 	},
+	templateChooseData: {
+		id: "flux-import.source.template-choose-data",
+		message: "Choose the data, then use the template.",
+	},
 
 	wordpress: {
 		id: "flux-import.source.wordpress",
