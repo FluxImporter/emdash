@@ -57,7 +57,7 @@ describe("planLines", () => {
 			"Entries the import created, to delete: 2",
 			"Entries it updated, to restore to their earlier version: 1",
 			"Entries it moved to Trash or unpublished, to bring back: 1",
-			"Entries edited since, which stay as they are: 1",
+			"Entries that can't be rolled back (edited since, locked or failed): 1",
 		]);
 	});
 
@@ -78,7 +78,7 @@ describe("planLines", () => {
 		const plan = planOf(dryRollback({ counters: counters({ reverted: 3, conflict: 1 }) }));
 		expect(read(planLines(plan))).toEqual([
 			"Entries to roll back: 3",
-			"Entries edited since, which stay as they are: 1",
+			"Entries that can't be rolled back (edited since, locked or failed): 1",
 		]);
 	});
 

@@ -112,7 +112,9 @@ describe("RollbackDialog", () => {
 		expect(
 			screen.getByText("Entries it updated, to restore to their earlier version: 1"),
 		).toBeVisible();
-		expect(screen.getByText("Entries edited since, which stay as they are: 1")).toBeVisible();
+		expect(
+			screen.getByText("Entries that can't be rolled back (edited since, locked or failed): 1"),
+		).toBeVisible();
 		expect(screen.queryByText(/to bring back/)).toBeNull();
 		expect(screen.getByRole("dialog", { name: "Roll back Products feed?" })).toBeVisible();
 		expect(rollbackBodies(calls)).toEqual([{ id: "J1", dryRun: true }]);

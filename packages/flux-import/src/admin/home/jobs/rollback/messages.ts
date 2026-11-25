@@ -21,7 +21,7 @@ export const M = {
 	},
 	kept: {
 		id: "flux-import.home-rollback.kept",
-		message: "Entries edited since, which stay as they are: {count}",
+		message: "Entries that can't be rolled back (edited since, locked or failed): {count}",
 	},
 	gone: { id: "flux-import.home-rollback.gone", message: "Entries already gone: {count}" },
 	total: { id: "flux-import.home-rollback.total", message: "Entries to roll back: {count}" },

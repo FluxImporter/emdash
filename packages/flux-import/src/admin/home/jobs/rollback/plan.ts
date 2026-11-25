@@ -4,8 +4,8 @@ import { M } from "./messages.js";
 
 /**
  * What a (dry) rollback job does, from its counters: `total` rows it reverts, split by kind when
- * the job keeps `undo` (made by 0.7.0 or later); `kept` it cannot undo (edited since, locked or
- * refused); `gone` with nothing left to undo.
+ * the job keeps `undo` (made by 0.7.0 or later); `kept` it cannot roll back (edited since,
+ * locked or failed); `gone` with nothing left to undo.
  */
 export interface RollbackPlan {
 	total: number;
