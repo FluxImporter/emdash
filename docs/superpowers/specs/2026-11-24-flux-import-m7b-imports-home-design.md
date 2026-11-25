@@ -300,3 +300,91 @@ one per error, as M7a); which row actions sit in a menu; page sizes; the relativ
 - How EmDash evaluates plugin cron expressions (time zone) on both hosts.
 - `templates/export`'s answer shape (a file or JSON) and `templates/import`'s input.
 - `readFence`'s kinds and cost.
+
+## Amendments from the plan and review
+
+Added 2026-11-24 by the review (`../notes/2026-11-24-m7b-review.md`). Each names the plan ruling or
+fact it comes from; where an amendment and the text above differ, the amendment wins.
+
+1. **Summaries on a new route** (plan Ruling 1, Fact D1). Server addition 1 is a new read-only
+   route, `jobs/summaries { dryRun?: boolean, cursor? }` → `Page<JobListItem>`, eight rows a page,
+   newest first. `jobs/list` keeps its whole rows, since tests and callers read them; no MCP tool
+   calls either.
+2. **The index and its build** (plan Ruling 2, Facts V2, V3). The filter is the plugin storage index
+   `["dryRun", "createdAt"]` on `jobs`, queried with the boolean as is (V2 held on SQLite and D1).
+   EmDash creates it itself at the first scheduler tick after a deploy (16-44 ms on 5,000 jobs); no
+   migration. Until then the query answers through the general index and a sort.
+3. **The list item** (plan Ruling 3). `JobListItem` carries what the table and its actions need, no
+   template, cursor, lease, planned terms or error message (only `errorCode`), with `rollbackable`
+   computed by the server and `rollbackStatus` read per rolled-back import on the page.
+4. **Names and origins composed in the admin** (plan Ruling 4, Fact D2). A job records no template
+   name and records its origin only as `agent` or `schedule`: a row's name is its template's from
+   the template list ("One-off import" without one, "Deleted template" when gone), and wizard and
+   API jobs share the origin "Admin or API".
+5. **The clear route's rule and bounds** (plan Ruling 6). `jobs/clear-dry-runs { cursor? }` →
+   `{ cleared, more, cursor? }` scans 20 dry runs a call, oldest first, within 150 metered storage
+   calls. Clearable: no live lease, and either an agent's dry run never started and idle 24 hours,
+   or any other dry run (dry rollbacks included) completed, cancelled, failed or idle 1 hour. The
+   row, records and journal go at once; the staged file only once the dry run has been idle 1
+   hour, so an open Preview's Run still imports it. The admin repeats the call while `more`, at most
+   50 times a click. The page reads "Dry runs: {count}" and announces "Dry runs cleared: {count}."
+   (pre-flight F18), not "{count} dry runs".
+6. **The split counts beside the counters** (plan Ruling 7, Fact D8). The counts live in
+   `job.undo { deleted, restored, recovered }` with `job.missingFrom`, beside `counters`, not in
+   them: the agents' `processed` and the admin's rate sum every counter. They are kept as the
+   rollback runs; a retry pass rebuilds them inside its existing end-of-retry tally, which adds no
+   record reads (pre-flight F21). Rollback rows in `jobs/list`, `jobs/get` and `jobs/next` gain the
+   two fields, an additive change; `summarize` is unchanged (pre-flight F22).
+7. **The fence route** (plan Ruling 8). Server addition 3 is `schedules/fence {}` → `{ fence }`, so
+   `schedules/list` keeps its shape. EmDash itself refuses every plugin POST during a site import
+   (503 `TRANSFER_IMPORT_IN_PROGRESS`) or when its fence check fails (503
+   `TRANSFER_FENCE_CHECK_FAILED`), so the route answers only `clear`, `export` or `media` in
+   practice; in those two cases the whole home answers that code's sentence, starting with its
+   access check, rather than the Schedules banner (pre-flight F3).
+8. **The pages and the wizard's title** (plan Ruling 9, Fact V1). The home is at `/imports`
+   ("Imports", `clock-counter-clockwise`), first in `admin.pages`, so the plugin root opens it; the
+   wizard keeps `/import` as "New import"; both in the group "Imports". The wizard's heading reads
+   "New import". EmDash draws a folder's items without icons. Links into the home use `/imports`,
+   since at the bare root the folder starts collapsed. A finished import's Run screen links to the
+   home ("See all imports").
+9. **"Use" by `?template=`** (plan Ruling 12). "Use" opens `/import?template=<id>`; the wizard reads
+   it once at page load, removes it from the URL, preselects the template, and loads it once a file
+   is sampled ("Choose the data, then use the template.").
+10. **UTC timing** (plan Ruling 13, Fact V4). EmDash runs plugin cron in UTC on both hosts, so
+    times are entered and shown in UTC and every time in the Schedules tab says "UTC", the last
+    launch and run log included.
+11. **The re-pin by `enabled: true`** (plan Ruling 14, Fact D10). `schedules/update` re-pins a
+    source only on a new source or `enabled: true`, so "Also update these schedules" after a source
+    edit updates the enabled schedules with `enabled: true` (which also re-arms them as the editor
+    and resets their launch failures; the dialog says so); disabled ones re-pin when resumed. Resume
+    of a schedule paused for `template_changed` also moves it to the template's current revision.
+12. **The in-use codes** (plan Ruling 16). The refusals are `TEMPLATE_IN_USE` and `SOURCE_IN_USE`
+    (not `IN_USE`), with `details.scheduleIds`, which the dialogs turn into schedule names.
+13. **Polling `schedules/list` reconciles** (pre-flight F23). Every poll of `schedules/list` also
+    reconciles the cron tasks, as every `schedules/*` call does; accepted, and the separate fence
+    route keeps the fence out of it.
+
+## Open issues
+
+From the review (`../notes/2026-11-24-m7b-review.md`, which has the details):
+
+- **A site import, or a failed fence check, takes the whole home to one sentence.** EmDash refuses
+  every plugin POST then (503 `TRANSFER_IMPORT_IN_PROGRESS` or `TRANSFER_FENCE_CHECK_FAILED`), so
+  the access check fails and the page reads "A site import is running, so imports and their
+  schedules wait until it ends." (or the fence-check sentence) with Try again, never the Schedules
+  banner, which only an export or a media activation reaches (amendment 7, pre-flight F3).
+- **Clearing dry runs empties an open Preview's records table.** The dry run's row, records and
+  journal go at once, so a Preview still open elsewhere pages `jobs/records` into `NOT_FOUND`; its
+  Run still works, since the staged file stays for an hour (pre-flight F26).
+- **A template revision that adds `rules.missing` fails its pinned schedules' update** with
+  `MISSING_REQUIRED`; the dialog names them, and each needs an Edit by hand.
+- **An Edit of a schedule paused for `template_changed`** checks its missing-entries choice against
+  the current template in the browser and against the pinned revision on the server, and re-pins
+  only when the template is chosen again; Resume does re-pin.
+- **A schedule's run log can lag the Jobs tab**: its entry is written a moment after the job's
+  status, and the Schedules tab polls every 60 s when nothing is due.
+- **The dry-run line does not poll**; it catches up on the next load or action.
+- **At 768 px the Jobs table scrolls sideways** to reach Records and Actions; the Templates row's
+  buttons wrap at 1280 px; failures read as a sentence in some tabs and a banner in others. Left for
+  a later layout pass.
+- **Kumo's `Empty` renders its title as an `<h2>`** under each tab's `<h2>` (as in M7a).
