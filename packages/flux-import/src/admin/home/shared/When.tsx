@@ -40,7 +40,12 @@ export function When(props: { iso: string }) {
 	const at = new Date(props.iso);
 	const exact = Number.isNaN(at.getTime())
 		? props.iso
-		: new Intl.DateTimeFormat(i18n.locale, { dateStyle: "medium", timeStyle: "medium" }).format(at);
+		: // The label's own 24-hour clock, so the tooltip never reads 2:05 PM beside 14:05.
+			new Intl.DateTimeFormat(i18n.locale, {
+				dateStyle: "medium",
+				timeStyle: "medium",
+				hourCycle: "h23",
+			}).format(at);
 	return (
 		<time dateTime={props.iso} title={exact}>
 			{whenLabel(props.iso, Date.now(), i18n.locale, t)}

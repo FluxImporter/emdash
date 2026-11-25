@@ -308,4 +308,13 @@ describe("times", () => {
 		expect(el?.getAttribute("title")).toContain("Nov 24, 2026");
 		expect(el?.querySelector(".sr-only")?.textContent).toBe(el?.getAttribute("title"));
 	});
+	it("gives the exact time on the label's 24-hour clock", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(now);
+		renderAdmin(<When iso={new Date(2026, 10, 24, 14, 5, 9).toISOString()} />);
+		const el = document.querySelector("time");
+		expect(el?.textContent).toContain("today 14:05");
+		expect(el?.getAttribute("title")).toContain("14:05:09");
+		expect(el?.getAttribute("title")).not.toMatch(/[AP]M/);
+	});
 });
