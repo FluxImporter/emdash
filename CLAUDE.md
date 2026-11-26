@@ -56,3 +56,12 @@ Key pages:
 - TypeScript strict, ESM, `import type` for types, `.js` extensions on internal imports.
 - Keep it simple: no speculative abstractions. Match existing project conventions first.
 - Verify before calling work done: typecheck, lint, and run the dev server or tests when relevant.
+
+## Git and pull requests
+
+- The default branch is `main`. Open pull requests against it.
+- Branch names describe the work (`m8a-website`). Never use `claude`, AI, bot or model names, or
+  random session slugs, in branch names.
+- Pull request titles and bodies read like normal project work: a plain title saying what the
+  change does, no `claude`/AI/bot/tool names or tags, and no AI attribution lines (no
+  `Co-Authored-By`, no "Generated with" footer) in commits or PRs.
