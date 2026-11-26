@@ -1,14 +1,9 @@
 packages:
   - packages/*
   - sites/*
-  - website
 onlyBuiltDependencies:
   - esbuild
   - sharp
 # No package version younger than 14 days (in minutes) is resolved, transitive ones included
 # (M6d spec, Ruling 54): the Anthropic SDK's caret dependencies otherwise pull days-old releases.
 minimumReleaseAge: 20160
-# One @types/node for the whole workspace: the website's sitemap dependency asks for 24, which
-# otherwise becomes the sites' auto-installed peer and splits emdash into two lock variants.
-overrides:
-  '@types/node': 22.20.5
