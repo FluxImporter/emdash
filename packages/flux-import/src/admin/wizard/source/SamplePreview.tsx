@@ -1,9 +1,9 @@
 import { Empty, Table } from "@cloudflare/kumo";
 import type { SourceFormat } from "../../../sources/reader.js";
-import { useT } from "../../i18n.js";
+import { useT, useTn } from "../../i18n.js";
 import { KEYS_SHOWN } from "../../limits.js";
 import type { SampleColumn } from "../../types.js";
-import { M } from "./messages.js";
+import { COUNT, M } from "./messages.js";
 
 /** The values shown per key: the sample holds `SAMPLE_MAX` records (preflight F24). */
 const VALUES_SHOWN = 5;
@@ -22,6 +22,7 @@ function shown(value: unknown): string | null {
  */
 export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFormat }) {
 	const t = useT();
+	const tn = useTn();
 	const { columns } = props;
 	if (columns.length === 0) {
 		const nested = props.format === "json" || props.format === "xml";
@@ -37,18 +38,26 @@ export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFo
 		return <Empty size="sm" title={t(M.headerOnly)} description={t(M.headerOnlyHint)} />;
 	}
 	const rows = columns.slice(0, KEYS_SHOWN);
+	const records = columns[0]?.values.length ?? 0;
 	return (
-		<section className="space-y-2">
-			<h3 className="font-semibold">{t(M.sample)}</h3>
+		<section className="flex flex-col gap-3">
+			<div className="flex flex-wrap items-baseline justify-between gap-2">
+				<h3 className="font-semibold">{t(M.sample)}</h3>
+				<p className="text-sm text-kumo-default">
+					{records > VALUES_SHOWN
+						? tn(COUNT.firstValues, records, { shown: VALUES_SHOWN })
+						: tn(COUNT.records, records)}
+				</p>
+			</div>
 			{columns.length > rows.length ? (
-				<p className="text-sm text-kumo-subtle">
+				<p className="text-sm text-kumo-default">
 					{t(M.keysShown, {
 						shown: rows.length.toLocaleString("en"),
 						total: columns.length.toLocaleString("en"),
 					})}
 				</p>
 			) : null}
-			<div className="max-h-96 overflow-y-auto">
+			<div className="max-h-96 overflow-y-auto rounded-lg border border-kumo-hairline bg-kumo-base">
 				<Table aria-label={t(M.sample)}>
 					<Table.Header>
 						<Table.Row>
@@ -60,17 +69,23 @@ export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFo
 						{rows.map((column) => (
 							<Table.Row key={column.key}>
 								<Table.Cell>
-									<span className="block max-w-xs truncate font-mono" title={column.key}>
+									<code
+										className="block max-w-xs truncate font-mono text-sm font-medium"
+										title={column.key}
+									>
 										{column.key}
-									</span>
+									</code>
 								</Table.Cell>
 								<Table.Cell>
-									<ul className="flex flex-wrap gap-2">
+									<ul className="flex flex-wrap gap-1.5">
 										{column.values.slice(0, VALUES_SHOWN).map((value, i) => {
 											const text = shown(value);
 											return text === null ? null : (
-												// biome-ignore lint/suspicious/noArrayIndexKey: one value per sampled record, in order.
-												<li key={i} className="max-w-xs truncate">
+												<li
+													// biome-ignore lint/suspicious/noArrayIndexKey: one value per sampled record, in order.
+													key={i}
+													className="max-w-xs truncate rounded bg-kumo-recessed px-1.5 font-mono text-xs"
+												>
 													{text}
 												</li>
 											);

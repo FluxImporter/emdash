@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Animated example: an import from CSV to EmDash</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<figure style="margin: 0; font-family: Inter, system-ui, sans-serif; color: {{ t.tx }}; font-size: 15px; line-height: 22px; text-align: left; display: flex; flex-direction: column; gap: 12px">
+<div style="background: {{ t.b1 }}; border: 1px solid {{ t.ln }}; border-radius: 18px; overflow: hidden; box-shadow: {{ t.sh }}">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; background: {{ t.b0 }}">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.tx2 }}">products.csv <span style="color: {{ t.tx3 }}">→</span> Products</span>
+<ol aria-label="Import steps" style="margin: 0 auto; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{ steps }}" as="st" hint-placeholder-count="4">
+<li><button type="button" aria-current="{{ st.cur }}" onClick="{{ st.go }}" style="display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px 0 6px; border: 1px solid {{ st.ln }}; border-radius: 999px; background: {{ st.bg }}; color: {{ st.fg }}; font: 600 13px/18px Inter, system-ui, sans-serif; cursor: pointer; transition: background-color .3s ease, color .3s ease"><span style="width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: {{ st.dotBg }}; color: {{ st.dotFg }}">{{ st.mark }}</span>{{ st.label }}</button></li>
+</sc-for>
+</ol>
+<div style="display: flex; gap: 6px">
+<button type="button" onClick="{{ togglePause }}" style="min-height: 36px; padding: 0 12px; border: 1px solid {{ t.ln2 }}; border-radius: 8px; background: transparent; color: {{ t.tx }}; font: 600 13px/18px Inter, system-ui, sans-serif; cursor: pointer">{{ pauseLabel }}</button>
+<button type="button" onClick="{{ replay }}" style="min-height: 36px; padding: 0 12px; border: 1px solid {{ t.ln2 }}; border-radius: 8px; background: transparent; color: {{ t.tx }}; font: 600 13px/18px Inter, system-ui, sans-serif; cursor: pointer">Replay</button>
+</div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; min-height: 420px">
+<div style="flex: 1.5 1 480px; min-width: 0; padding: 20px 20px 24px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1.2fr); gap: 10px; font-size: 12px; line-height: 16px; font-weight: 600; color: {{ t.tx3 }}; text-transform: uppercase; letter-spacing: .05em; padding-bottom: 4px">
+<span>Source column</span><span></span><span>EmDash field</span>
+</div>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1.2fr); gap: 10px; align-items: center">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 9px 12px; border-radius: 8px; background: {{ t.b2 }}; color: {{ t.tx }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.src }}</span>
+<span aria-hidden="true" style="height: 2px; background: {{ t.ln }}; border-radius: 2px; position: relative; overflow: hidden"><span style="position: absolute; left: 0; top: 0; bottom: 0; width: {{ r.w }}; background-color: {{ t.flow }}; background-image: {{ r.dash }}; background-size: 16px 2px; animation: {{ r.anim }}; transition: width .45s cubic-bezier(.2,.8,.2,1)"></span></span>
+<span style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; border: 1.5px solid {{ r.ln }}; background: {{ t.b1 }}; opacity: {{ r.op }}; transition: border-color .35s ease, opacity .35s ease; min-width: 0">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.dst }}</span>
+<span style="font-size: 12px; color: {{ t.tx3 }}">{{ r.type }}</span>
+<sc-if value="{{ r.ai }}" hint-placeholder-val="{{ false }}"><span style="margin-left: auto; font-size: 11px; line-height: 16px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #ffd23f; color: #0f2233; animation: fx-in .35s ease both">AI</span></sc-if>
+</span>
+</div>
+</sc-for>
+</div>
+
+<div style="flex: 1 1 320px; min-width: 0; padding: 20px 20px 24px; border-left: 1px solid {{ t.ln }}; background: {{ t.b0 }}; display: flex; flex-direction: column; gap: 14px">
+<sc-if value="{{ isMap }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 12px; animation: fx-in .35s ease both">
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 28px">Mapping {{ mappedCount }} of 5 columns</span>
+<p style="margin: 0; color: {{ t.tx2 }}">AI suggested {{ aiCount }} matches. You confirm each one before the dry run.</p>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 20px; color: {{ t.tx2 }}; background: {{ t.b2 }}; border-radius: 8px; padding: 10px 12px">row 1 · TEE-014 · "Logo tee" · 24.00</div>
+</div>
+</sc-if>
+<sc-if value="{{ isDry }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 14px; animation: fx-in .35s ease both">
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 28px">Dry run: nothing written</span>
+<sc-for list="{{ stats }}" as="s" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between"><span style="color: {{ t.tx2 }}">{{ s.label }}</span><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600">{{ s.n }}</span></div>
+<span style="height: 6px; border-radius: 6px; background: {{ t.b2 }}; overflow: hidden"><span style="display: block; height: 100%; width: {{ s.w }}; background: {{ s.c }}; border-radius: 6px; transition: width .2s linear"></span></span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ isRun }}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 14px; animation: fx-in .35s ease both">
+<div style="display: flex; justify-content: space-between; align-items: baseline"><span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 28px">{{ runTitle }}</span><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600; color: {{ runColor }}">{{ pct }}%</span></div>
+<span style="height: 8px; border-radius: 8px; background: {{ t.b2 }}; overflow: hidden"><span style="display: block; height: 100%; width: {{ pctW }}; background: {{ runColor }}; border-radius: 8px; transition: width .2s linear"></span></span>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px">
+<sc-for list="{{ log }}" as="l" hint-placeholder-count="3">
+<li style="display: flex; gap: 10px; align-items: flex-start; color: {{ t.tx2 }}; animation: fx-in .35s ease both"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ l.c }}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 2px"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span>{{ l.text }}</span></li>
+</sc-for>
+</ul>
+<sc-if value="{{ showRollBtn }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ goRollback }}" style="align-self: flex-start; min-height: 40px; padding: 0 14px; border: 1px solid {{ t.ln2 }}; border-radius: 8px; background: transparent; color: {{ t.tx }}; font: 600 14px/20px Inter, system-ui, sans-serif; cursor: pointer; animation: fx-in .35s ease both">Roll back run #12</button>
+</sc-if>
+</div>
+</sc-if>
+</div>
+</div>
+
+</div>
+<figcaption style="font-size: 14px; line-height: 20px; color: {{ t.tx3 }}; text-align: center">Example data. Every step runs in the EmDash admin, through the API, or from an AI agent.</figcaption>
+</figure>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1120,"height":560}}'>
+class Component extends DCLogic {
+constructor(props) {
+super(props);
+this.state = { ph: 0, t: 0, paused: false, done: false };
+this.dur = [58, 40, 54, 44];
+}
+componentDidMount() {
+this.reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+if (this.reduce) { this.setState({ ph: 2, t: this.dur[2], done: true }); return; }
+this.timer = setInterval(() => this.tick(), 80);
+}
+componentWillUnmount() { clearInterval(this.timer); }
+tick() {
+const s = this.state;
+if (s.paused || s.done) return;
+if (s.t < this.dur[s.ph]) this.setState({ t: s.t + 1 });
+else if (s.ph < 3) this.setState({ ph: s.ph + 1, t: 0 });
+else this.setState({ done: true });
+}
+go(i) { this.setState({ ph: i, t: this.reduce ? this.dur[i] : 0, done: !!this.reduce, paused: false }); }
+renderVals() {
+const T = {
+dark: { b0: '#0c1c2b', b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7', ok: '#5fd39a', warn: '#ffa257', flow: '#ffd23f', sh: '0 30px 80px rgba(0,0,0,.5)' },
+light: { b0: '#f7f9fa', b1: '#ffffff', b2: '#eef2f5', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a', ok: '#146c3f', warn: '#b45309', flow: '#0f2233', sh: '0 24px 60px rgba(15,34,51,.16)' }
+};
+const t = T[this.props.theme === 'light' ? 'light' : 'dark'];
+const s = this.state;
+const active = this.dur[s.ph] - 12;
+const p = Math.max(0, Math.min(1, s.t / active));
+const map = [
+{ src: 'sku', dst: 'slug', type: 'string', ai: true },
+{ src: 'name', dst: 'title', type: 'string', ai: false },
+{ src: 'price_gbp', dst: 'price', type: 'number', ai: true },
+{ src: 'image_url', dst: 'featured_image', type: 'media', ai: true },
+{ src: 'category', dst: 'category', type: 'taxonomy', ai: false }
+];
+const isMapped = (i) => s.ph > 0 || s.t >= 6 + i * 9;
+const running = s.ph === 2 && p < 1 && !s.done;
+const mappedCount = map.filter((m, i) => isMapped(i)).length;
+const labels = ['Map', 'Dry run', 'Import', 'Roll back'];
+const pct = Math.round(p * 100);
+const runLog = [
+{ at: 1 / 3, text: 'batch 1 of 3 · 50 records' },
+{ at: 2 / 3, text: 'batch 2 of 3 · 50 records' },
+{ at: 1, text: 'batch 3 of 3 · 28 records' }
+];
+const rbLog = [
+{ at: 0.5, text: '96 created entries removed' },
+{ at: 1, text: '31 updated entries restored' }
+];
+const logSrc = s.ph === 3 ? rbLog : runLog;
+return {
+t: t,
+steps: labels.map((l, i) => {
+const cur = i === s.ph;
+const past = i < s.ph;
+return {
+label: l, cur: cur ? 'step' : 'false',
+mark: past ? '✓' : String(i + 1),
+bg: cur ? '#ffd23f' : 'transparent',
+fg: cur ? '#0f2233' : (past ? t.tx : t.tx3),
+ln: cur ? '#ffd23f' : t.ln,
+dotBg: cur ? '#0f2233' : (past ? t.ok : t.b2),
+dotFg: cur ? '#ffd23f' : (past ? t.b1 : t.tx2),
+go: () => this.go(i)
+};
+}),
+rows: map.map((m, i) => {
+const on = isMapped(i);
+return {
+src: m.src, dst: m.dst, type: m.type,
+ai: on && m.ai,
+w: on ? '100%' : '0%',
+dash: running ? 'linear-gradient(90deg, rgba(0,0,0,0) 50%, ' + (this.props.theme === 'light' ? '#ffd23f' : '#0f2233') + ' 50%)' : 'none',
+anim: running ? 'fx-march .5s linear infinite' : 'none',
+ln: on ? '#ffd23f' : t.ln,
+op: on ? 1 : 0.55
+};
+}),
+isMap: s.ph === 0,
+isDry: s.ph === 1,
+isRun: s.ph >= 2,
+mappedCount: mappedCount,
+aiCount: map.filter((m, i) => m.ai && isMapped(i)).length,
+stats: [
+{ label: 'Create', n: Math.round(96 * p), w: (Math.round(96 * p) / 128 * 100) + '%', c: t.ok },
+{ label: 'Update', n: Math.round(31 * p), w: (Math.round(31 * p) / 128 * 100) + '%', c: t.flow },
+{ label: 'Skip', n: p >= 1 ? 1 : 0, w: (p >= 1 ? 1 / 128 * 100 : 0) + '%', c: t.tx3 }
+],
+runTitle: s.ph === 3 ? (p >= 1 ? 'Run #12 rolled back' : 'Rolling back run #12') : (p >= 1 ? 'Import complete' : 'Importing 128 records'),
+runColor: s.ph === 3 ? t.warn : t.ok,
+pct: pct,
+pctW: pct + '%',
+log: logSrc.filter((l) => p >= l.at).map((l) => ({ text: l.text, c: s.ph === 3 ? t.warn : t.ok })),
+showRollBtn: s.ph === 2 && p >= 1,
+goRollback: () => this.go(3),
+pauseLabel: s.paused ? 'Play' : 'Pause',
+togglePause: () => this.setState({ paused: !this.state.paused }),
+replay: () => this.go(0)
+};
+}
+}
+</script>
+</body>
+</html>

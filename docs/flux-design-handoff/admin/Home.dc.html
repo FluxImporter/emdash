@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Imports home</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" style="color: {{ k.strong }}"><rect x="1" y="1" width="22" height="22" rx="5.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect><rect x="5" y="6.6" width="5" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="5" y="10.9" width="7.3" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="5" y="15.2" width="5" height="2.2" rx="1.1" fill="currentColor"></rect><rect x="13.8" y="5.6" width="5" height="12.8" rx="1.4" fill="currentColor"></rect></svg>
+<h1 style="margin: 0; font-size: 24px; line-height: 32px; font-weight: 700; color: {{ k.strong }}">Imports</h1>
+</div>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 8px; background: {{ k.brand }}; color: #ffffff; font-weight: 600; opacity: {{ newOp }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>New import</span>
+</div>
+
+<div role="tablist" aria-label="Imports" style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 10px; background: {{ k.rec }}; border: 1px solid {{ k.hair }}; align-self: {{ tabsAlign }}; max-width: 100%; overflow-x: auto; opacity: {{ tabsOp }}">
+<sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="4">
+<span role="tab" aria-selected="{{ tb.sel }}" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 7px; background: {{ tb.bg }}; box-shadow: {{ tb.sh }}; color: {{ tb.fg }}; font-weight: {{ tb.fw }}; white-space: nowrap">{{ tb.label }}<span style="font-size: 12px; color: {{ tb.cfg }}; font-variant-numeric: tabular-nums">{{ tb.count }}</span></span>
+</sc-for>
+</div>
+
+<sc-if value="{{ isJobs }}" hint-placeholder-val="{{ true }}"><dc-import name="Jobs" theme="{{ theme }}" narrow="{{ narrow }}" view="{{ view }}" hint-size="100%,600px"></dc-import></sc-if>
+<sc-if value="{{ isTemplates }}" hint-placeholder-val="{{ false }}"><dc-import name="Templates" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,400px"></dc-import></sc-if>
+<sc-if value="{{ isSources }}" hint-placeholder-val="{{ false }}"><dc-import name="Sources" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,600px"></dc-import></sc-if>
+<sc-if value="{{ isSchedules }}" hint-placeholder-val="{{ false }}"><dc-import name="Schedules" theme="{{ theme }}" narrow="{{ narrow }}" view="{{ view }}" hint-size="100%,500px"></dc-import></sc-if>
+<sc-if value="{{ isStates }}" hint-placeholder-val="{{ false }}"><dc-import name="States" theme="{{ theme }}" narrow="{{ narrow }}" hint-size="100%,1400px"></dc-import></sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"tab":{"editor":"enum","options":["jobs","templates","sources","schedules","states"],"default":"jobs"},"view":{"editor":"text","default":""},"$preview":{"width":1020,"height":700}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', rec: 'oklch(96% 0 0)', base: '#ffffff', hair: 'oklch(93.5% 0 0)', brand: 'oklch(0.5772 0.2324 260)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', rec: 'oklch(15% 0 0)', base: 'oklch(23% 0 0)', hair: 'oklch(26.9% 0 0)', brand: 'oklch(0.52 0.21 260)' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const tab = this.props.tab || 'jobs';
+const shown = tab === 'states' ? 'jobs' : tab;
+const list = [['jobs', 'Jobs', '23'], ['templates', 'Templates', '3'], ['sources', 'Sources', '2'], ['schedules', 'Schedules', '1']];
+return {
+theme: theme, k: k, narrow: !!this.props.narrow, view: this.props.view || '',
+tabsAlign: this.props.narrow ? 'stretch' : 'flex-start',
+newOp: 1, tabsOp: 1,
+isJobs: tab === 'jobs', isTemplates: tab === 'templates', isSources: tab === 'sources', isSchedules: tab === 'schedules', isStates: tab === 'states',
+tabs: list.map((t) => {
+const on = t[0] === shown;
+return { label: t[1], count: tab === 'states' ? '' : t[2], sel: on ? 'true' : 'false', bg: on ? k.base : 'transparent', sh: on ? '0 1px 2px rgba(0,0,0,.12)' : 'none', fg: on ? k.strong : (theme === 'light' ? k.tx : k.sub), cfg: theme === 'light' ? k.tx : k.sub, fw: on ? 600 : 500 };
+})
+};
+}
+}
+</script>
+</body>
+</html>

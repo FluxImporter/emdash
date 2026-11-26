@@ -128,9 +128,7 @@ describe("PreviewStep", () => {
 			"jobs/records": () => ({ items: [], hasMore: false }),
 		});
 		renderPreview();
-		expect(
-			await screen.findByText("Checking every record. Nothing is imported yet."),
-		).toBeVisible();
+		expect(await screen.findByText("Checking every record. Nothing is written yet.")).toBeVisible();
 		await waitFor(() =>
 			expect(probe.state.dryRun).toEqual({ jobId: JOB_ID, uploadId: UPLOAD_ID, total: 2 }),
 		);
@@ -141,10 +139,10 @@ describe("PreviewStep", () => {
 			{ id: JOB_ID },
 			{ id: JOB_ID },
 		]);
-		expect(count("Create")).toBe("2");
+		expect(count("to create")).toBe("2");
 		const counts = screen.getByRole("region", { name: "What the import would do" });
 		expect(within(counts).queryByText(/Missing/)).toBeNull();
-		expect(screen.queryByText("Checking every record. Nothing is imported yet.")).toBeNull();
+		expect(screen.queryByText("Checking every record. Nothing is written yet.")).toBeNull();
 		expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled();
 	});
 
@@ -252,14 +250,14 @@ describe("PreviewStep", () => {
 		});
 		renderPreview();
 		const table = await screen.findByRole("table");
-		expect(count("Create")).toBe("1");
-		expect(count("Update")).toBe("1");
-		expect(count("Unchanged")).toBe("0");
-		expect(count("Failed")).toBe("1");
-		expect(count("Conflict")).toBe("2");
-		expect(count("Locked")).toBe("3");
-		expect(count("Filtered")).toBe("4");
-		expect(count("Missing → Unpublish")).toBe("5");
+		expect(count("to create")).toBe("1");
+		expect(count("to update")).toBe("1");
+		expect(count("unchanged")).toBe("0");
+		expect(count("failed")).toBe("1");
+		expect(count("conflicts")).toBe("2");
+		expect(count("locked")).toBe("3");
+		expect(count("filtered out")).toBe("4");
+		expect(count("missing → unpublish")).toBe("5");
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(12));
 
 		const rows = within(table).getAllByRole("row").slice(1);
@@ -268,35 +266,33 @@ describe("PreviewStep", () => {
 				.getAllByRole("cell")
 				.map((c) => c.textContent),
 		);
-		expect(cells[0]).toEqual([
-			"a1",
-			"Create",
-			"title: (empty) → Helloexcerpt: (empty) → Short",
-			"",
-		]);
+		// Each change: the field, then its value before and after ("—" when empty); errors and
+		// warnings under the changes they belong to (StepPreview.dc.html).
+		expect(cells[0]).toEqual(["a1", "Create", "title— → Helloexcerpt— → Short"]);
 		expect(cells[1]).toEqual([
 			"a2",
 			"Update",
-			`excerpt: Old → ${"x".repeat(119)}…`,
-			"title: Not updated: the value was changed outside the import since it last wrote it." +
+			`excerptOld → ${"x".repeat(119)}…` +
+				"title: Not updated: the value was changed outside the import since it last wrote it." +
 				"content: Some images were left out. Left out 1 image inside <pre> or <figcaption>, which hold only text",
 		]);
 		expect(cells[2]).toEqual([
 			"a3",
 			"Failed",
-			"",
 			"title: The field is requiredUpload the uploaded file not found",
 		]);
-		expect(cells[3]).toEqual(["gone", "Missing → Unpublish", "status: published → draft", ""]);
-		expect(cells[4]).toEqual(["old", "Missing → Trash", "status: published → trashed", ""]);
+		expect(cells[3]).toEqual(["gone", "Missing → Unpublish", "statuspublished → draft"]);
+		expect(cells[4]).toEqual(["old", "Missing → Trash", "statuspublished → trashed"]);
 		expect(cells[5]).toEqual([
 			"kept",
 			"Unchanged",
-			"",
 			"Left alone: the entry changed after the import last wrote it.",
 		]);
-		expect(cells[6]).toEqual(["(no key)", "Conflict", "", ""]);
-		expect(cells[7]).toEqual(["odd", "Other", "", ""]);
+		expect(cells[6]).toEqual(["(no key)", "Conflict", ""]);
+		expect(cells[7]).toEqual(["odd", "Other", ""]);
+		// The action is a badge; its words carry the meaning, not only its colour.
+		expect(within(rows[0] as HTMLElement).getByText("Create")).toHaveClass("bg-kumo-badge-teal");
+		expect(within(rows[2] as HTMLElement).getByText("Failed")).toHaveClass("bg-kumo-badge-red");
 		expect(screen.queryByText("Not applied")).toBeNull();
 		expect(document.body.textContent).not.toContain(UPLOAD_ID);
 	});
@@ -329,7 +325,10 @@ describe("PreviewStep", () => {
 			within(filters)
 				.getAllByRole("tab")
 				.map((tab) => tab.textContent),
-		).toEqual(["All", "Would change", "Failed", "Conflicts", "Locked", "Filtered"]);
+		).toEqual(["All", "Will change", "Failed1", "Conflicts0", "Locked0", "Filtered out0"]);
+		// A filter no record matches is disabled, so it never shows an empty table.
+		expect(within(filters).getByRole("tab", { name: "Conflicts 0" })).toBeDisabled();
+		expect(within(filters).getByRole("tab", { name: "Failed 1" })).toBeEnabled();
 		const previous = screen.getByRole("button", { name: "Previous page" });
 		const next = screen.getByRole("button", { name: "Next page" });
 		expect(previous).toBeDisabled();
@@ -343,7 +342,7 @@ describe("PreviewStep", () => {
 		expect(await screen.findByRole("cell", { name: "a2" })).toBeVisible();
 
 		// A new filter starts again at its first page.
-		await user.click(screen.getByRole("tab", { name: "Failed" }));
+		await user.click(screen.getByRole("tab", { name: "Failed 1" }));
 		expect(await screen.findByRole("cell", { name: "a3" })).toBeVisible();
 		expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
 		expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
@@ -413,10 +412,10 @@ describe("PreviewStep", () => {
 			renderPreview();
 			const counts = await screen.findByRole("region", { name: "What the import would do" });
 			expect(within(counts).getByText(sentence)).toBeVisible();
-			const card = within(counts).getByText("Missing → Trash").parentElement;
+			const card = within(counts).getByText("missing → trash").parentElement;
 			expect(card).toHaveTextContent("Not applied");
 			expect(within(counts).getAllByText("Not applied")).toHaveLength(1);
-			expect(count("Missing → Trash")).toBe(String(missing.removed ?? 0));
+			expect(count("missing → trash")).toBe(String(missing.removed ?? 0));
 		},
 	);
 
@@ -447,7 +446,7 @@ describe("PreviewStep", () => {
 			"jobs/records": () => ({ items: [], hasMore: false }),
 		});
 		renderPreview();
-		await waitFor(() => expect(count("Missing → Trash")).toBe("1"));
+		await waitFor(() => expect(count("missing → trash")).toBe("1"));
 		expect(screen.queryByText("Not applied")).toBeNull();
 		expect(screen.queryByText(/Missing entries|would leave these entries/)).toBeNull();
 	});
@@ -462,7 +461,7 @@ describe("PreviewStep", () => {
 		renderPreview();
 		expect(await screen.findByText("No records to import")).toBeVisible();
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(0));
-		expect(count("Missing → Trash")).toBe("0");
+		expect(count("missing → trash")).toBe("0");
 		expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
 		expect(screen.queryByRole("table")).toBeNull();
 	});
@@ -475,9 +474,7 @@ describe("PreviewStep", () => {
 			"jobs/records": () => ({ items: [], hasMore: false }),
 		});
 		renderPreview();
-		expect(
-			await screen.findByText("Checking every record. Nothing is imported yet."),
-		).toBeVisible();
+		expect(await screen.findByText("Checking every record. Nothing is written yet.")).toBeVisible();
 		const run = screen.getByRole("button", { name: "Run import" });
 		expect(run).toBeDisabled();
 		expect(run).toHaveAccessibleDescription("Wait for the dry run to finish");
@@ -486,7 +483,7 @@ describe("PreviewStep", () => {
 		await waitFor(() => expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled());
 		// The same live region announces the end.
 		expect(status).toBeInTheDocument();
-		expect(status).toHaveTextContent("Dry run finished. Records checked: 1");
+		expect(status).toHaveTextContent("Dry run of 1 record. Nothing is written yet.");
 	});
 
 	it("goes to Run on Run import", async () => {
@@ -499,6 +496,24 @@ describe("PreviewStep", () => {
 		await waitFor(() => expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled());
 		await user.click(screen.getByRole("button", { name: "Run import" }));
 		expect(probe.state.step).toBe("run");
+	});
+
+	it("puts Back and Run import at the top, above the counts, and Back returns to Options", async () => {
+		mockRoutes({
+			"jobs/create": () => job(),
+			"jobs/next": () => completed({ created: 1 }),
+			"jobs/records": () => ({ items: [], hasMore: false }),
+		});
+		const { user } = renderPreview();
+		const counts = await screen.findByRole("region", { name: "What the import would do" });
+		const run = screen.getByRole("button", { name: "Run import" });
+		expect(run.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		// The count strip: zero counts are quiet, the others stand out.
+		const toCreate = within(counts).getByText("to create").nextElementSibling;
+		expect(toCreate).toHaveClass("text-kumo-default");
+		expect(within(counts).getByText("failed").nextElementSibling).toHaveClass("text-kumo-subtle");
+		await user.click(screen.getByRole("button", { name: "Back" }));
+		expect(probe.state.step).toBe("options");
 	});
 
 	it("shows template warnings from Options above the counts", async () => {
@@ -621,7 +636,7 @@ describe("PreviewStep", () => {
 		// Driving again: the stopped job's notice goes before the next reply lands.
 		await waitFor(() => expect(nexts).toBe(2));
 		expect(screen.queryByText(sentence)).toBeNull();
-		expect(screen.getByText("Checking every record. Nothing is imported yet.")).toBeVisible();
+		expect(screen.getByText("Checking every record. Nothing is written yet.")).toBeVisible();
 		resumed.resolve(completed({ created: 1 }));
 		await waitFor(() => expect(probe.state.dryRun?.total).toBe(1));
 		expect(calls.filter((c) => c.route === "jobs/resume").map((c) => c.body)).toEqual([
@@ -747,7 +762,7 @@ describe("PreviewStep", () => {
 		await waitFor(() => expect(nexts).toBe(2));
 		expect(screen.getByRole("button", { name: "Run import" })).toBeDisabled();
 		again.resolve(completed({ created: 1 }));
-		await waitFor(() => expect(count("Create")).toBe("1"));
+		await waitFor(() => expect(count("to create")).toBe("1"));
 		expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled();
 		expect(created(calls)).toHaveLength(1);
 	});

@@ -8,7 +8,6 @@ import {
 	pauseMessage,
 	type Timing,
 	toCron,
-	utcLabel,
 } from "../../src/admin/home/schedules/cron.js";
 import { interpolate, type Msg, type Values } from "../../src/admin/i18n.js";
 import type { PauseReason } from "../../src/plugin/schedules.js";
@@ -128,15 +127,5 @@ describe("pause and launch messages", () => {
 		expect(launchMessage({ at, outcome: "failed", errorCode: "constructor" })).toBe(
 			ERROR_MESSAGES.unknown,
 		);
-	});
-});
-
-describe("utcLabel", () => {
-	it("writes a time in UTC with a 24-hour clock, whatever the viewer's zone", () => {
-		expect(utcLabel("2026-11-24T23:30:00.000Z", "en")).toBe("Nov 24, 2026 23:30");
-		expect(utcLabel("2026-11-25T00:05:00.000+02:00", "en")).toBe("Nov 24, 2026 22:05");
-	});
-	it("leaves text that is not a time as it is", () => {
-		expect(utcLabel("soon", "en")).toBe("soon");
 	});
 });

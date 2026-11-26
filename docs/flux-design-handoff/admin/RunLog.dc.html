@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Schedule run log dialog</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div role="dialog" aria-modal="true" aria-labelledby="rl-title" style="width: {{ w }}; max-width: 100%; box-sizing: border-box; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; background: {{ k.overlay }}; border: 1px solid {{ k.line }}; border-radius: 14px; box-shadow: {{ k.sh }}; padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; animation: ad-in .2s ease both">
+<div style="display: flex; justify-content: space-between; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 id="rl-title" style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; color: {{ k.strong }}">Nightly products: run log</h2><span style="color: {{ k.sub }}">Daily at 03:00 UTC · last 10 runs, newest first</span></div>
+<span role="button" aria-label="Close" style="flex: none; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></span>
+</div>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; overflow: hidden">
+<sc-for list="{{ runs }}" as="r" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 6px 14px; align-items: center; padding: 10px 14px; border-bottom: 1px solid {{ k.hair }}">
+<span style="font-variant-numeric: tabular-nums">{{ r.when }}</span>
+<span style="justify-self: start; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: {{ r.bg }}; color: {{ r.fg }}; font-size: 12px; font-weight: 600"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: currentColor"></span>{{ r.outcome }}</span>
+<span style="color: {{ k.sub }}; grid-column: {{ countCol }}">{{ r.counts }}</span>
+<span style="justify-self: end; color: {{ k.link }}; font-weight: 500">Open</span>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; justify-content: flex-end"><span style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid {{ k.line }}; background: {{ k.ctrl }}; font-weight: 600">Close</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":760,"height":440}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', overlay: '#ffffff', ctrl: '#ffffff', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)', link: 'oklch(42.4% 0.199 265.638)', okBg: '#ccfbf1', okTx: '#115e59', badBg: '#fee2e2', badTx: '#991b1b', neuBg: '#f5f5f5', neuTx: '#262626', sh: '0 24px 64px rgba(0,0,0,.18)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', overlay: 'oklch(21% 0 0)', ctrl: 'oklch(25% 0 0)', hair: 'oklch(30% 0 0)', line: 'oklch(32% 0 0)', link: 'oklch(70.7% 0.165 254.624)', okBg: '#042f2e', okTx: '#99f6e4', badBg: '#450a0a', badTx: '#fca5a5', neuBg: '#262626', neuTx: '#e5e5e5', sh: '0 24px 64px rgba(0,0,0,.6)' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const n = !!this.props.narrow;
+const r = (when, o, counts) => ({ when: when, outcome: o, counts: counts, bg: o === 'Completed' ? k.okBg : (o === 'Failed' ? k.badBg : k.neuBg), fg: o === 'Completed' ? k.okTx : (o === 'Failed' ? k.badTx : k.neuTx) });
+return {
+k: k, w: n ? '460px' : '760px',
+cols: n ? 'minmax(0, 1fr) auto' : '170px 110px minmax(0, 1fr) 48px',
+countCol: n ? '1 / span 2' : 'auto',
+runs: [
+r('25 Nov, 03:00 UTC', 'Completed', '2 created · 10 updated'),
+r('24 Nov, 03:00 UTC', 'Completed', '12 updated'),
+r('23 Nov, 03:00 UTC', 'Failed', 'Source returned HTTP 503'),
+r('21 Nov, 03:00 UTC', 'Completed', 'No changes')
+]
+};
+}
+}
+</script>
+</body>
+</html>

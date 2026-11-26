@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Starlight mapping notes</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1040px; box-sizing: border-box; padding: 56px; font-family: Inter, system-ui, sans-serif; background: #0b1824; color: #f4f7f9; font-size: 15px; line-height: 23px; display: flex; flex-direction: column; gap: 28px">
+<header style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #93a7b7; text-transform: uppercase; letter-spacing: .05em">Deliverable 4</span>
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 44px; line-height: 52px; letter-spacing: -0.03em">What doesn't map cleanly onto Starlight</h1>
+<p style="margin: 0; color: #c9d5de">Grouped by effort. Component names refer to Starlight's overridable components; check them against the Starlight version you pin.</p>
+</header>
+<div style="display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px; font-weight: 600">
+<span style="padding: 2px 10px; border-radius: 999px; background: rgba(95,211,154,.14); color: #5fd39a">CSS only</span>
+<span style="padding: 2px 10px; border-radius: 999px; background: rgba(255,210,63,.16); color: #ffd23f">Component override</span>
+<span style="padding: 2px 10px; border-radius: 999px; background: rgba(255,162,87,.14); color: #ffa257">Custom build</span>
+</div>
+<sc-for list="{{ items }}" as="it" hint-placeholder-count="14">
+<div style="display: grid; grid-template-columns: 230px minmax(0, 1fr) 150px; gap: 20px; padding: 16px 0; border-top: 1px solid #24425c">
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 17px; line-height: 24px">{{ it.what }}</span>
+<span style="color: #c9d5de">{{ it.how }}</span>
+<span style="align-self: start; justify-self: end; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: {{ it.bg }}; color: {{ it.fg }}">{{ it.tag }}</span>
+</div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1040,"height":2200}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = { css: ['CSS only', 'rgba(95,211,154,.14)', '#5fd39a'], ov: ['Component override', 'rgba(255,210,63,.16)', '#ffd23f'], cu: ['Custom build', 'rgba(255,162,87,.14)', '#ffa257'] };
+const rows = [
+['Home page', 'Use template: splash with no hero frontmatter, and put the hero, install block and product cards in the MDX body as Astro components. Load the animated import demo as an island with client:visible.', 'cu'],
+['Header links and theme switch', 'Override Header to add Docs, Reference and GitHub. Override ThemeSelect with the two-button switch; Starlight’s select also has Auto, so either keep a third state or follow the system on first visit.', 'ov'],
+['Product switcher', 'Not built in. Override Sidebar and render the switcher above the default sidebar, with one sidebar config per product. A sidebar-topics community plugin does this; check it fits before writing your own.', 'ov'],
+['Sidebar counts and “soon”', 'Sidebar items take a badge, so 44, 8 and soon are badges restyled in CSS. Every item needs a link: a soon item points to a placeholder page and gets aria-disabled through attrs.', 'css'],
+['API route template', 'No Starlight layout fits. Generate one MDX page per route from the code, rendering an ApiRoute component with the badge, auth note, tables and examples.', 'cu'],
+['Side-by-side examples', 'The content column is narrow by default. Widen it on reference pages only, by setting --sl-content-width under a class those pages add. Below about 1100px the pair stacks.', 'css'],
+['Nested parameter rows', 'Use a details element per nested object, so rows expand without JavaScript and stay readable when the page is indexed.', 'cu'],
+['Code blocks', 'Expressive Code already gives file titles, line highlights, ins/del diffs and copy. Give it one custom theme from the syntax tokens for both modes, so blocks stay navy in light mode.', 'css'],
+['Code tabs and install tabs', 'Starlight Tabs with a syncKey (client, pkg) covers curl/fetch and pnpm/npm/yarn. The typing animation is only on the home page island.', 'ov'],
+['Callouts', 'Asides map one-to-one: note, tip, caution, danger. Restyle the border, background and icons in CSS.', 'css'],
+['On this page marker', 'Starlight marks the current heading with aria-current. The sliding yellow marker needs a few lines of script in an overridden TableOfContents; without it, a static marker still works.', 'ov'],
+['Search grouping', 'Pagefind’s modal lists results by page, not by Guides and Reference. Group them by overriding Search and calling the Pagefind API with a section filter, or accept the default list.', 'cu'],
+['Previous/next and footer', 'Pagination and Footer restyle in CSS; the home footer is part of the splash page body.', 'css'],
+['Motion', 'Docs pages use CSS animation only, all switched off under prefers-reduced-motion. The demo and install typing are islands that open on their finished state for reduced motion.', 'css']
+];
+return { items: rows.map((r) => ({ what: r[0], how: r[1], tag: K[r[2]][0], bg: K[r[2]][1], fg: K[r[2]][2] })) };
+}
+}
+</script>
+</body>
+</html>

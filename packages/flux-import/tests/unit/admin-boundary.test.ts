@@ -257,12 +257,19 @@ describe("the admin module's boundary", () => {
 			const msgs: [string, Record<string, unknown>][] = [];
 			const collect = (path: string, value: unknown) => {
 				if (!isPlainObject(value)) return;
-				if ("id" in value || "message" in value) msgs.push([path, value]);
+				if ("id" in value || "message" in value || "one" in value) msgs.push([path, value]);
 				else for (const [k, v] of Object.entries(value)) collect(`${path}.${k}`, v);
 			};
 			for (const [name, value] of Object.entries(mod)) collect(name, value);
 			for (const [path, msg] of msgs) {
-				if (typeof msg.id !== "string" || typeof msg.message !== "string") {
+				// A Msg has one message; a PluralMsg (i18n.ts) has its English `one` and `other`.
+				const texts =
+					typeof msg.message === "string"
+						? [msg.message]
+						: typeof msg.one === "string" && typeof msg.other === "string"
+							? [msg.one, msg.other]
+							: null;
+				if (typeof msg.id !== "string" || texts === null) {
 					problems.push(`${where} ${path}: not a Msg`);
 					continue;
 				}
@@ -271,8 +278,10 @@ describe("the admin module's boundary", () => {
 				if (other) problems.push(`${where} ${path}: duplicate ID ${msg.id} (also ${other})`);
 				seen.set(msg.id, `${where} ${path}`);
 				// Only {name} placeholders: no plural, select or other ICU syntax.
-				const braces = msg.message.replace(/\{[A-Za-z]+\}/g, "");
-				if (/[{}]/.test(braces)) problems.push(`${where} ${path}: ICU syntax in ${msg.message}`);
+				for (const text of texts) {
+					const braces = text.replace(/\{[A-Za-z]+\}/g, "");
+					if (/[{}]/.test(braces)) problems.push(`${where} ${path}: ICU syntax in ${text}`);
+				}
 			}
 		}
 		expect(problems).toEqual([]);

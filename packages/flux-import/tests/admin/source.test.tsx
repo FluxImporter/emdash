@@ -79,11 +79,11 @@ function chooseFile(name: string, text = "id,title\n1,First\n") {
 	return file;
 }
 
-const next = () => screen.getByRole("button", { name: "Next" });
+const next = () => screen.getByRole("button", { name: "Next: Target" });
 
 /** Opens the Upload tab; returns its file input. */
 async function openUpload(user: { click(e: Element): Promise<void> }) {
-	await user.click(screen.getByRole("tab", { name: "Upload file" }));
+	await user.click(screen.getByRole("tab", { name: "Upload a file" }));
 	return fileInput();
 }
 
@@ -130,7 +130,7 @@ const SOURCE_ROW = {
 };
 
 describe("the Source step", () => {
-	it("opens the file chooser from a Browse files button, the only control a keyboard reaches", async () => {
+	it("opens the file chooser from a Choose a file button, the only control a keyboard reaches", async () => {
 		routes({});
 		const { user } = renderSource();
 		const input = fileInput();
@@ -138,10 +138,11 @@ describe("the Source step", () => {
 		expect(input).toHaveClass("sr-only");
 		expect(input).toHaveAttribute("tabindex", "-1");
 		expect(input).toHaveAttribute("aria-hidden", "true");
-		// The visible "Choose a file" label names the button a keyboard reaches, with its own text.
-		const browse = screen.getByRole("button", { name: "Choose a file Browse files" });
+		// The button says what it does (Copy: "Choose a file"); the input's own label is hidden.
+		const browse = screen.getByRole("button", { name: "Choose a file" });
 		expect(browse).toHaveAccessibleDescription(/CSV, JSON/);
-		expect(screen.getByText("Choose a file").tagName).toBe("LABEL");
+		const label = screen.getByText("Choose a file", { selector: "label" });
+		expect(label).toHaveClass("sr-only");
 		const click = vi.spyOn(input, "click").mockImplementation(() => {});
 		await user.click(browse);
 		expect(click).toHaveBeenCalledTimes(1);
@@ -180,6 +181,44 @@ describe("the Source step", () => {
 		await screen.findByText(/no saved templates/i);
 	});
 
+	it("opens with its heading, summary and Next: Target at the top (StepSource.dc.html)", async () => {
+		routes({});
+		renderSource();
+		const heading = screen.getByRole("heading", { level: 2, name: "Source" });
+		expect(heading).toBeVisible();
+		expect(screen.getByText("Choose a file, a URL, pasted text or a saved source.")).toBeVisible();
+		// Next comes before the tabs, so it is never below the fold.
+		const tab = screen.getByRole("tab", { name: "Upload a file" });
+		expect(next().compareDocumentPosition(tab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(next()).toHaveAccessibleDescription("Choose the data to import");
+		await screen.findByText(/no saved templates/i);
+	});
+
+	it("shows what was read: the data's name, format, records and keys, and Choose another file", async () => {
+		routes({});
+		renderSource();
+		chooseFile("posts.csv");
+		await waitFor(() => expect(readState().keys).toEqual(["id", "title"]));
+		expect(screen.getByText("posts.csv")).toBeVisible();
+		expect(screen.getByText("2 records · 2 keys")).toBeVisible();
+		expect(screen.getByRole("heading", { level: 3, name: "How to read it" })).toBeVisible();
+		// The sample says how many records it shows values of.
+		expect(screen.getByText("2 records", { selector: "p" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Choose another file" })).toBeEnabled();
+		expect(screen.queryByRole("button", { name: "Choose a file" })).toBeNull();
+		await screen.findByText(/no saved templates/i);
+	});
+
+	it("says a full sample may be the start of a longer source", async () => {
+		const rows = Array.from({ length: SAMPLE_MAX }, (_, i) => [String(i), `Title ${i}`]);
+		routes({ "sources/sample": () => sampleCsv(["id", "title"], rows) });
+		renderSource();
+		chooseFile("posts.csv");
+		expect(await screen.findByText(`${SAMPLE_MAX}+ records · 2 keys`)).toBeVisible();
+		expect(screen.getByText(`First 5 of ${SAMPLE_MAX} records`)).toBeVisible();
+		await screen.findByText(/no saved templates/i);
+	});
+
 	it("detects the format from the extension: .ndjson and .jsonl read as JSON Lines", async () => {
 		const { calls } = routes({ "sources/sample": () => ({ records: [{ a: 1 }], paths: ["a"] }) });
 		renderSource();
@@ -209,7 +248,7 @@ describe("the Source step", () => {
 		const list = deferred<unknown>();
 		routes({ "credentials/list": () => list.promise });
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		// Kumo's Select shows an unlabelled skeleton in place of the value, so, unlike its Button,
 		// it adds no "Loading" to the name: the label alone names it.
 		const select = screen.getByRole("combobox", { name: "Credential" });
@@ -227,7 +266,7 @@ describe("the Source step", () => {
 			"sources/sample": () => ({ records: [{ sku: "A" }], paths: ["sku"] }),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		await user.type(
 			screen.getByRole("textbox", { name: "Address" }),
 			"https://example.com/feeds/products.json",
@@ -266,7 +305,7 @@ describe("the Source step", () => {
 			"sources/sample": () => ({ records: [{ sku: "A" }], paths: ["sku"] }),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		await user.type(
 			screen.getByRole("textbox", { name: "Address" }),
 			"https://example.com/feeds/products.json",
@@ -292,7 +331,7 @@ describe("the Source step", () => {
 			"sources/list": () => ({ items: [{ ...SOURCE_ROW, ...saved }], hasMore: false }),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		await user.type(
 			screen.getByRole("textbox", { name: "Address" }),
 			"https://example.com/feeds/products.json",
@@ -341,7 +380,7 @@ describe("the Source step", () => {
 			}),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		const address = screen.getByRole("textbox", { name: "Address" });
 		// The derived name drops the query, so both addresses get the same name.
 		await user.type(address, "https://example.com/feeds/products.json?page=2");
@@ -370,7 +409,7 @@ describe("the Source step", () => {
 		const { user } = renderSource();
 		await user.click(screen.getByRole("tab", { name: "Saved source" }));
 		expect(await screen.findByText("No saved sources")).toBeVisible();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		await user.type(
 			screen.getByRole("textbox", { name: "Address" }),
 			"https://example.com/feeds/products.json",
@@ -390,7 +429,7 @@ describe("the Source step", () => {
 			"sources/list": () => ({ items: [], hasMore: false }),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		const address = screen.getByRole("textbox", { name: "Address" });
 		await user.type(address, "https://example.com/feeds/products.json");
 		await user.click(screen.getByRole("button", { name: "Fetch" }));
@@ -408,7 +447,7 @@ describe("the Source step", () => {
 			"sources/fetch": () => ({ changed: true, uploadId: FETCHED_ID, bytes: 10, sha256: "x" }),
 		});
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		await user.type(
 			screen.getByRole("textbox", { name: "Address" }),
 			"https://example.com/api/products",
@@ -448,12 +487,12 @@ describe("the Source step", () => {
 	it("puts the active tab's content in a labelled tab panel", async () => {
 		routes({ "credentials/list": () => [] });
 		const { user } = renderSource();
-		const panel = screen.getByRole("tabpanel", { name: "Upload file" });
+		const panel = screen.getByRole("tabpanel", { name: "Upload a file" });
 		expect(
 			within(panel).getByLabelText("Choose a file", { selector: "input" }),
 		).toBeInTheDocument();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
-		expect(screen.getByRole("tabpanel", { name: "From URL" })).toBeInTheDocument();
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
+		expect(screen.getByRole("tabpanel", { name: "From a URL" })).toBeInTheDocument();
 	});
 
 	it("does not switch tabs while an upload runs, so its progress stays visible", async () => {
@@ -465,7 +504,7 @@ describe("the Source step", () => {
 		const paste = screen.getByRole("tab", { name: "Paste" });
 		expect(paste).toBeDisabled();
 		await user.click(paste);
-		expect(screen.getByRole("tabpanel", { name: "Upload file" })).toBeInTheDocument();
+		expect(screen.getByRole("tabpanel", { name: "Upload a file" })).toBeInTheDocument();
 		expect(screen.getByRole("meter")).toBeInTheDocument();
 		reply.resolve({ uploadId: UPLOAD_ID, bytes: 20 });
 		await waitFor(() => expect(next()).toBeEnabled());
@@ -1035,7 +1074,7 @@ describe("the Source step", () => {
 	it("stops deriving the name from the URL once it is edited", async () => {
 		routes({ "credentials/list": () => [] });
 		const { user } = renderSource();
-		await user.click(screen.getByRole("tab", { name: "From URL" }));
+		await user.click(screen.getByRole("tab", { name: "From a URL" }));
 		const name = screen.getByRole("textbox", { name: "Name" });
 		const fetch = screen.getByRole("button", { name: "Fetch" });
 		expect(fetch).toBeDisabled();

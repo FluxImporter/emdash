@@ -74,7 +74,7 @@ export function PasteTab(props: TabProps & { paste: Paste; onPaste(paste: Paste)
 			/>
 			<div id={sizeId} aria-live="polite" className="text-sm">
 				{paste.text === "" ? null : (
-					<p className="text-kumo-subtle tabular-nums">
+					<p className="tabular-nums">
 						{t(M.pasteSize, {
 							used: Math.ceil(bytes / KIB).toLocaleString("en"),
 							max: (PASTE_MAX_BYTES / KIB).toLocaleString("en"),
@@ -83,7 +83,7 @@ export function PasteTab(props: TabProps & { paste: Paste; onPaste(paste: Paste)
 				)}
 				{fits ? null : <p className="text-kumo-danger">{t(M.pasteTooLarge)}</p>}
 			</div>
-			<Button variant="primary" disabled={busy || !fits || paste.text === ""} onClick={send}>
+			<Button variant="secondary" disabled={busy || !fits || paste.text === ""} onClick={send}>
 				{t(M.useText)}
 			</Button>
 		</div>

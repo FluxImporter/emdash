@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Guide: Schedule a URL import</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="fx-{{ theme }}" style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: {{ t.bg }}; color: {{ t.tx }}; font-size: 17px; line-height: 28px; transition: background-color .3s ease, color .3s ease">
+<dc-import name="Header" theme="{{ theme }}" variant="docs" current="docs" on-toggle="{{ onToggle }}" hint-size="100%,65px"></dc-import>
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+<aside style="flex: 0 0 290px; border-right: 1px solid {{ t.ln }}; align-self: stretch">
+<dc-import name="Sidebar" theme="{{ theme }}" current="Schedules" hint-size="100%,1200px"></dc-import>
+</aside>
+<main style="flex: 999 1 560px; min-width: 0; padding: 40px 56px 64px; display: flex; justify-content: center">
+<article style="width: 100%; max-width: 740px; display: flex; flex-direction: column; gap: 28px">
+
+<header id="top" style="display: flex; flex-direction: column; gap: 14px; animation: fx-up .6s ease both">
+<span style="font-size: 14px; line-height: 20px; color: {{ t.tx3 }}">EmDash <span aria-hidden="true">/</span> Guides <span aria-hidden="true">/</span> Schedules</span>
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 44px; line-height: 52px; letter-spacing: -0.03em">Schedule a URL import</h1>
+<p style="margin: 0; font-size: 20px; line-height: 32px; color: {{ t.tx2 }}">Fetch a feed on a timetable and import it with a saved template. Every scheduled run is logged and can be rolled back.</p>
+</header>
+
+<div role="note" style="display: flex; gap: 14px; padding: 16px 18px; border: 1px solid {{ c.note.ln }}; border-radius: 12px; background: {{ c.note.bg }}">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ c.note.fg }}" stroke-width="2.2" stroke-linecap="round" style="flex: none; margin-top: 4px"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5"></path></svg>
+<div style="display: flex; flex-direction: column; gap: 2px"><strong style="font-weight: 600; color: {{ c.note.fg }}">Note</strong><span style="color: {{ t.tx2 }}">Schedule times are in UTC.</span></div>
+</div>
+
+<section id="before" style="display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Before you start</h2>
+<ul style="margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; color: {{ t.tx2 }}">
+<li>A saved template. See <a href="#" class="fx-ul" style="color: {{ t.tx }}">Template format</a>.</li>
+<li>A URL source. If the feed needs a key, store it as a <a href="#" class="fx-ul" style="color: {{ t.tx }}">credential</a>.</li>
+<li>The <code style="font-family: 'JetBrains Mono', monospace; font-size: 15px; padding: 2px 6px; border-radius: 5px; background: {{ t.b2 }}; border: 1px solid {{ t.ln }}; color: {{ t.tx }}">network:request:unrestricted</code> capability, granted on install. See <a href="Permissions.dc.html" class="fx-ul" style="color: {{ t.tx }}">Permissions</a>.</li>
+</ul>
+</section>
+
+<section id="steps" style="display: flex; flex-direction: column; gap: 18px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Create the schedule</h2>
+<ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; counter-reset: s">
+<sc-for list="{{ steps }}" as="s" hint-placeholder-count="4">
+<li style="display: flex; gap: 16px; align-items: flex-start">
+<span aria-hidden="true" style="flex: none; width: 30px; height: 30px; margin-top: -1px; border-radius: 50%; border: 1.5px solid {{ t.ln2 }}; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 700; font-size: 15px">{{ s.n }}</span>
+<span style="color: {{ t.tx2 }}">{{ s.text }}</span>
+</li>
+</sc-for>
+</ol>
+<figure style="margin: 0; display: flex; flex-direction: column; gap: 8px">
+<div role="img" aria-label="Screenshot placeholder: the New schedule form in the EmDash admin" style="aspect-ratio: 16 / 9; border: 2px dashed {{ t.ln2 }}; border-radius: 14px; background: {{ t.b1 }}; padding: 24px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px">
+<span style="width: 38%; height: 14px; border-radius: 6px; background: {{ t.b2 }}"></span>
+<span style="width: 70%; height: 40px; border-radius: 8px; background: {{ t.b2 }}"></span>
+<span style="width: 70%; height: 40px; border-radius: 8px; background: {{ t.b2 }}"></span>
+<span style="display: flex; gap: 8px"><span style="width: 80px; height: 32px; border-radius: 999px; background: #ffd23f"></span><span style="width: 70px; height: 32px; border-radius: 999px; background: {{ t.b2 }}"></span><span style="width: 76px; height: 32px; border-radius: 999px; background: {{ t.b2 }}"></span><span style="width: 64px; height: 32px; border-radius: 999px; background: {{ t.b2 }}"></span></span>
+<span style="margin-top: auto; align-self: center; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.tx3 }}">[ADMIN SCREENSHOT: New schedule, 1600 × 900]</span>
+</div>
+<figcaption style="font-size: 14px; line-height: 20px; color: {{ t.tx3 }}">The New schedule form, with Daily selected.</figcaption>
+</figure>
+</section>
+
+<section id="frequency" style="display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">Frequencies</h2>
+<p style="margin: 0; color: {{ t.tx2 }}">Pick a preset, or type a five-field cron expression. The presets match these expressions:</p>
+<div role="region" aria-label="Frequency presets" tabindex="0" style="overflow-x: auto; border: 1px solid {{ t.ln }}; border-radius: 12px">
+<table style="border-collapse: collapse; width: 100%; min-width: 460px; font-size: 15px; line-height: 22px">
+<thead><tr style="background: {{ t.b1 }}"><th scope="col" style="text-align: left; padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Preset</th><th scope="col" style="text-align: left; padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Cron</th><th scope="col" style="text-align: left; padding: 12px 16px; font-weight: 600; border-bottom: 1px solid {{ t.ln }}">Runs</th></tr></thead>
+<tbody>
+<sc-for list="{{ freq }}" as="f" hint-placeholder-count="4">
+<tr><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; font-weight: 500">{{ f.name }}</td><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}"><code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; padding: 2px 6px; border-radius: 5px; background: {{ t.b2 }}">{{ f.cron }}</code></td><td style="padding: 12px 16px; border-bottom: 1px solid {{ t.ln }}; color: {{ t.tx2 }}">{{ f.runs }}</td></tr>
+</sc-for>
+</tbody>
+</table>
+</div>
+<div role="note" style="display: flex; gap: 14px; padding: 16px 18px; border: 1px solid {{ c.tip.ln }}; border-radius: 12px; background: {{ c.tip.bg }}">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ c.tip.fg }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"></path></svg>
+<div style="display: flex; flex-direction: column; gap: 2px"><strong style="font-weight: 600; color: {{ c.tip.fg }}">Tip</strong><span style="color: {{ t.tx2 }}">Press <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 1px 7px; border: 1px solid {{ t.ln2 }}; border-bottom-width: 3px; border-radius: 6px; background: {{ t.b1 }}; color: {{ t.tx }}">⌘</kbd> <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 1px 7px; border: 1px solid {{ t.ln2 }}; border-bottom-width: 3px; border-radius: 6px; background: {{ t.b1 }}; color: {{ t.tx }}">K</kbd> anywhere in these docs to search for a route or a guide.</span></div>
+</div>
+</section>
+
+<section id="workers" style="display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 28px; line-height: 36px; letter-spacing: -0.02em">On Cloudflare Workers</h2>
+<p style="margin: 0; color: {{ t.tx2 }}">Scheduled imports run on EmDash's Cron Trigger. The EmDash template sets one in <code style="font-family: 'JetBrains Mono', monospace; font-size: 15px; padding: 2px 6px; border-radius: 5px; background: {{ t.b2 }}; border: 1px solid {{ t.ln }}; color: {{ t.tx }}">wrangler.jsonc</code>, for example:</p>
+<dc-import name="Code" theme="{{ theme }}" file="wrangler.jsonc" lang="json" code="{{ wrangler }}" hl="{{ wranglerHl }}" hint-size="100%,240px"></dc-import>
+<div role="note" style="display: flex; gap: 14px; padding: 16px 18px; border: 1px solid {{ c.caution.ln }}; border-radius: 12px; background: {{ c.caution.bg }}">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ c.caution.fg }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"></path></svg>
+<div style="display: flex; flex-direction: column; gap: 2px"><strong style="font-weight: 600; color: {{ c.caution.fg }}">Caution</strong><span style="color: {{ t.tx2 }}">Without a Cron Trigger, scheduled imports do not run. Manual imports still work.</span></div>
+</div>
+<div role="note" style="display: flex; gap: 14px; padding: 16px 18px; border: 1px solid {{ c.danger.ln }}; border-radius: 12px; background: {{ c.danger.bg }}">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ c.danger.fg }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 4px"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8zM12 8v5M12 16v.5"></path></svg>
+<div style="display: flex; flex-direction: column; gap: 2px"><strong style="font-weight: 600; color: {{ c.danger.fg }}">Danger</strong><span style="color: {{ t.tx2 }}">Never put an API key in the feed URL. Anyone who can read the schedule can read the URL. Store the key as a credential.</span></div>
+</div>
+</section>
+
+<div style="display: flex; flex-direction: column; gap: 20px; border-top: 1px solid {{ t.ln }}; padding-top: 24px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; font-size: 14px; line-height: 20px; color: {{ t.tx3 }}"><a href="https://github.com/" class="fx-ul" style="color: {{ t.tx2 }}">Edit this page on GitHub</a><span>Last updated [DATE]</span></div>
+<dc-import name="PrevNext" theme="{{ theme }}" prev="URL sources and credentials" prev-href="#" next="Rollback" next-href="#" hint-size="100%,90px"></dc-import>
+</div>
+
+</article>
+</main>
+<aside aria-label="On this page" style="flex: 0 0 240px; padding: 40px 24px 40px 8px; box-sizing: border-box; font-size: 14px; line-height: 20px">
+<span style="display: block; font-weight: 600; margin-bottom: 12px">On this page</span>
+<div style="position: relative; border-left: 1px solid {{ t.ln }}">
+<span aria-hidden="true" style="position: absolute; left: -1px; top: 0; width: 2px; height: 32px; background: #ffd23f; border-radius: 2px; transform: translateY({{ barY }}); transition: transform .3s cubic-bezier(.2,.8,.2,1)"></span>
+<ul style="margin: 0; padding: 0; list-style: none">
+<sc-for list="{{ outline }}" as="o" hint-placeholder-count="5">
+<li><a href="{{ o.href }}" onClick="{{ o.pick }}" aria-current="{{ o.cur }}" style="display: flex; align-items: center; height: 32px; padding: 0 12px; color: {{ o.fg }}; font-weight: {{ o.fw }}; text-decoration: none; transition: color .2s ease">{{ o.label }}</a></li>
+</sc-for>
+</ul>
+</div>
+</aside>
+</div>
+<dc-import name="Footer" theme="{{ theme }}" variant="docs" hint-size="100%,120px"></dc-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"onToggle":{"editor":null},"$preview":{"width":1440,"height":2900}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { sec: 0 }; }
+renderVals() {
+const T = {
+dark: { bg: '#0b1824', b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7' },
+light: { bg: '#ffffff', b1: '#f2f5f7', b2: '#e7edf1', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a' }
+};
+const C = {
+dark: {
+note: { bg: '#0f2233', ln: '#3a5a76', fg: '#8fd6ff' },
+tip: { bg: 'rgba(255,210,63,.08)', ln: 'rgba(255,210,63,.55)', fg: '#ffd23f' },
+caution: { bg: 'rgba(255,162,87,.08)', ln: 'rgba(255,162,87,.55)', fg: '#ffa257' },
+danger: { bg: 'rgba(255,122,122,.08)', ln: 'rgba(255,122,122,.55)', fg: '#ff7a7a' }
+},
+light: {
+note: { bg: '#f2f5f7', ln: '#9fb0bd', fg: '#0a5c6b' },
+tip: { bg: '#fff8dc', ln: '#e0b000', fg: '#7a5b00' },
+caution: { bg: '#fff3e8', ln: '#e8a065', fg: '#b45309' },
+danger: { bg: '#fdeeee', ln: '#e59a9a', fg: '#c62828' }
+}
+};
+const theme = this.props.theme === 'light' ? 'light' : 'dark';
+const t = T[theme];
+const secs = [['Before you start', '#before'], ['Create the schedule', '#steps'], ['Frequencies', '#frequency'], ['On Cloudflare Workers', '#workers']];
+return {
+theme: theme, t: t, c: C[theme], onToggle: this.props.onToggle,
+steps: [
+{ n: 1, text: 'In the EmDash admin, open Flux Importer, then Schedules, and choose New schedule.' },
+{ n: 2, text: 'Pick the URL source and the template to import with.' },
+{ n: 3, text: 'Choose hourly, daily, weekly, or enter a cron expression.' },
+{ n: 4, text: 'Run a dry run to check the mapping, then save the schedule.' }
+],
+freq: [
+{ name: 'Hourly', cron: '0 * * * *', runs: 'At minute 0 of every hour' },
+{ name: 'Daily', cron: '0 3 * * *', runs: 'Every day at 03:00 UTC' },
+{ name: 'Weekly', cron: '0 3 * * 1', runs: 'Mondays at 03:00 UTC' },
+{ name: 'Custom', cron: '*/15 * * * *', runs: 'Any five-field cron expression' }
+],
+wrangler: ['{', '  "name": "my-emdash-site",', '  "triggers": {', '    "crons": ["*/5 * * * *"]', '  }', '}'].join('\n'),
+wranglerHl: [3, 4, 5],
+barY: (this.state.sec * 32) + 'px',
+outline: secs.map((s, i) => ({
+label: s[0], href: s[1], cur: i === this.state.sec ? 'true' : 'false',
+fg: i === this.state.sec ? t.tx : t.tx2, fw: i === this.state.sec ? 600 : 400,
+pick: () => this.setState({ sec: i })
+}))
+};
+}
+}
+</script>
+</body>
+</html>

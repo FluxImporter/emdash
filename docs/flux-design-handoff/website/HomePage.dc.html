@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Flux Importer home page body</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="fx-{{ theme }}" style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: {{ t.bg }}; color: {{ t.tx }}; font-size: 17px; line-height: 28px; transition: background-color .3s ease, color .3s ease">
+
+<dc-import name="Header" theme="{{ theme }}" variant="home" current="none" mobile="{{ mobile }}" on-toggle="{{ onToggle }}" hint-size="100%,72px"></dc-import>
+
+<main>
+
+<section style="background-color: {{ t.bg }}; background-image: radial-gradient({{ t.dot }} 1.2px, transparent 1.3px); background-size: 24px 24px; border-bottom: 1px solid {{ t.ln }}">
+<div style="max-width: 1200px; margin: 0 auto; padding: {{ heroPad }}; display: flex; flex-direction: column; align-items: center; gap: 56px">
+<div style="max-width: 940px; display: flex; flex-direction: column; align-items: center; gap: 24px; text-align: center">
+<a href="EmDash.dc.html" style="display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 14px 4px 5px; box-sizing: border-box; border: 1px solid {{ t.ln }}; border-radius: 999px; background: {{ t.b1 }}; color: {{ t.tx2 }}; font-size: 14px; line-height: 20px; text-decoration: none; animation: fx-up .6s ease both">
+<span style="font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: #ffd23f; color: #0f2233">v0.7</span>
+<span>Flux Importer for EmDash is available</span>
+<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+</a>
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: clamp(38px, 5.6vw, 76px); line-height: 1.04; letter-spacing: -0.035em; animation: fx-up .7s .08s ease both">Import CSV, JSON, XML and Excel <span style="display: inline-block; background: #ffd23f; color: #0f2233; padding: 0 12px; border-radius: 10px; transform-origin: left center; animation: fx-pop .7s .55s cubic-bezier(.2,.8,.2,1) both">into your CMS.</span></h1>
+<p style="margin: 0; font-size: 20px; line-height: 32px; color: {{ t.tx2 }}; max-width: 52ch; animation: fx-up .7s .16s ease both">Mapped in a visual wizard, scheduled, and every run can be rolled back.</p>
+<div style="width: 100%; max-width: 640px; animation: fx-up .7s .24s ease both">
+<dc-import name="InstallBlock" theme="{{ theme }}" hint-size="100%,150px"></dc-import>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px 16px; animation: fx-up .7s .32s ease both">
+<a href="EmDash.dc.html" style="display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px; box-sizing: border-box; background: #ffd23f; color: #0f2233; border-radius: 8px; font-weight: 600; text-decoration: none">Read the docs<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></a>
+<a href="https://github.com/" style="display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 20px; box-sizing: border-box; border: 1px solid {{ t.ln2 }}; color: {{ t.tx }}; border-radius: 8px; font-weight: 600; text-decoration: none"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"></path></svg>View on GitHub</a>
+</div>
+<p style="margin: 0; font-size: 14px; line-height: 20px; color: {{ t.tx3 }}; animation: fx-up .7s .4s ease both">Open source · MIT licensed · For EmDash 1.2 and later</p>
+</div>
+<div style="width: 100%; max-width: 1120px; animation: fx-up .9s .45s ease both">
+<dc-import name="FlowDemo" theme="{{ theme }}" hint-size="100%,600px"></dc-import>
+</div>
+</div>
+</section>
+
+<section>
+<div style="max-width: 1200px; margin: 0 auto; padding: {{ secPad }}; display: flex; flex-direction: column; gap: 32px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; color: {{ t.tx3 }}; letter-spacing: .04em; text-transform: uppercase">Products</span>
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: clamp(28px, 3vw, 40px); line-height: 1.15; letter-spacing: -0.025em">Pick your CMS</h2>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 24px">
+<a href="EmDash.dc.html" class="fx-lift" style="flex: 1.4 1 420px; min-width: 0; background: {{ t.b1 }}; border: 2px solid #ffd23f; border-radius: 16px; padding: 32px; display: flex; flex-direction: column; gap: 18px; color: {{ t.tx }}; text-decoration: none; box-shadow: {{ t.shSoft }}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px">
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; font-weight: 600; padding: 4px 12px 4px 10px; border-radius: 999px; background: {{ t.okb }}; color: {{ t.ok }}"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{ t.ok }}; animation: fx-pulse 1.8s ease-out infinite"></span>Available · v0.7</span>
+<code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: {{ t.tx3 }}">@fluximporter/emdash</code>
+</div>
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 32px; line-height: 40px; letter-spacing: -0.02em">EmDash</h3>
+<p style="margin: 0; color: {{ t.tx2 }}">For Cloudflare's open-source TypeScript CMS, built on Astro. Install the plugin, open the wizard, import.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; padding: 3px 10px; border-radius: 6px; background: {{ t.b2 }}; color: {{ t.tx2 }}">EmDash 1.2+</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; padding: 3px 10px; border-radius: 6px; background: {{ t.b2 }}; color: {{ t.tx2 }}">Astro 6+</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; padding: 3px 10px; border-radius: 6px; background: {{ t.b2 }}; color: {{ t.tx2 }}">Node or Cloudflare Workers</span>
+</div>
+<span class="fx-ul" style="align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; padding: 2px 4px; margin-left: -4px; border-radius: 4px">Read the EmDash docs<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></span>
+</a>
+<div style="flex: 1 1 320px; min-width: 0; border: 2px dashed {{ t.ln2 }}; border-radius: 16px; padding: 32px; display: flex; flex-direction: column; gap: 18px; color: {{ t.tx2 }}">
+<span style="align-self: flex-start; font-size: 14px; line-height: 20px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: {{ t.b2 }}; color: {{ t.tx2 }}">Coming soon</span>
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 32px; line-height: 40px; letter-spacing: -0.02em">WordPress</h3>
+<p style="margin: 0; color: {{ t.tx3 }}">The same wizard, schedules and rollback as a WordPress plugin. Its docs will live at <code style="font-family: 'JetBrains Mono', monospace; font-size: 15px">/wordpress/</code>.</p>
+<a href="https://github.com/" style="align-self: flex-start; margin-top: auto; color: {{ t.tx2 }}; font-weight: 600">Follow progress on GitHub</a>
+</div>
+</div>
+</div>
+</section>
+
+<section style="background: {{ t.b1 }}; border-top: 1px solid {{ t.ln }}; border-bottom: 1px solid {{ t.ln }}">
+<div style="max-width: 1200px; margin: 0 auto; padding: {{ secPad }}; display: flex; flex-direction: column; gap: 32px">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 32px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; color: {{ t.tx3 }}; letter-spacing: .04em; text-transform: uppercase">Features</span>
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: clamp(28px, 3vw, 40px); line-height: 1.15; letter-spacing: -0.025em">Map, preview, run, undo.</h2>
+</div>
+<ul aria-label="Source formats" style="margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px">
+<sc-for list="{{ formats }}" as="fm" hint-placeholder-count="6">
+<li style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 500; padding: 4px 10px; border: 1px solid {{ t.ln2 }}; border-radius: 6px; color: {{ t.tx2 }}">{{ fm }}</li>
+</sc-for>
+</ul>
+</div>
+<ul style="margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1px; background: {{ t.ln }}; border: 1px solid {{ t.ln }}; border-radius: 16px; overflow: hidden">
+<sc-for list="{{ features }}" as="f" hint-placeholder-count="6">
+<li style="background: {{ t.b1 }}; padding: 28px; display: flex; flex-direction: column; gap: 12px; animation: fx-up .6s {{ f.delay }} ease both">
+<span aria-hidden="true" style="width: 40px; height: 40px; border-radius: 10px; background: {{ t.icoBg }}; display: flex; align-items: center; justify-content: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{ t.icoFg }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ f.d }}"></path></svg></span>
+<h3 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 20px; line-height: 28px; letter-spacing: -0.01em">{{ f.title }}</h3>
+<p style="margin: 0; font-size: 16px; line-height: 26px; color: {{ t.tx2 }}">{{ f.text }}</p>
+</li>
+</sc-for>
+</ul>
+</div>
+</section>
+
+<section>
+<div style="max-width: 1200px; margin: 0 auto; padding: {{ secPad }}">
+<div style="background: #ffd23f; color: #0f2233; border-radius: 20px; padding: {{ bandPad }}; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 24px 48px">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: clamp(28px, 3vw, 40px); line-height: 1.15; letter-spacing: -0.025em">From install to first import in two minutes.</h2>
+<p style="margin: 0; font-size: 18px; line-height: 28px">Add the package, register the plugin, open Import in the EmDash admin.</p>
+</div>
+<a href="Guide.dc.html" style="display: inline-flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 24px; box-sizing: border-box; background: #0f2233; color: #ffffff; border-radius: 8px; font-weight: 600; text-decoration: none">Your first import<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></a>
+</div>
+</div>
+</section>
+
+</main>
+
+<dc-import name="Footer" theme="{{ theme }}" hint-size="100%,200px"></dc-import>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"mobile":{"editor":"boolean","default":false},"onToggle":{"editor":null},"$preview":{"width":1440,"height":3300}}'>
+class Component extends DCLogic {
+renderVals() {
+const T = {
+dark: { bg: '#0b1824', b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7', ok: '#5fd39a', okb: 'rgba(95,211,154,.14)', dot: 'rgba(201,213,222,.12)', icoBg: '#152d42', icoFg: '#ffd23f', shSoft: '0 20px 50px rgba(0,0,0,.35)' },
+light: { bg: '#ffffff', b1: '#f2f5f7', b2: '#e7edf1', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a', ok: '#146c3f', okb: '#e3f4ea', dot: 'rgba(15,34,51,.10)', icoBg: '#ffd23f', icoFg: '#0f2233', shSoft: '0 18px 40px rgba(15,34,51,.10)' }
+};
+const theme = this.props.theme === 'light' ? 'light' : 'dark';
+const m = !!this.props.mobile;
+const feats = [
+{ title: 'Visual mapping, with AI suggestions', text: 'Match source columns to fields in a wizard. AI suggests the matches; you confirm them.', d: 'M4 6h5M4 18h5M15 12h5M9 6c3 0 3 6 6 6M9 18c3 0 3-6 6-6' },
+{ title: 'Dry-run preview', text: 'See every create, update and skip before anything is written.', d: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z' },
+{ title: 'Schedules', text: 'Re-run a URL feed hourly, daily, weekly or on a cron expression.', d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2' },
+{ title: 'Rollback of any run', text: 'Every run is kept in a history you can undo from.', d: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4' },
+{ title: 'Record rules', text: 'Create, update, or never overwrite edits made in the CMS.', d: 'M4 6h11M4 12h11M4 18h7M15 17l2.5 2.5L22 15' },
+{ title: 'Agent tools (MCP)', text: 'Eight tools let AI agents plan, dry-run and run imports.', d: 'M8 8l-5 4 5 4M16 8l5 4-5 4M13.5 5l-3 14' }
+];
+return {
+theme: theme,
+t: T[theme],
+mobile: m,
+onToggle: this.props.onToggle,
+heroPad: m ? '56px 20px 64px' : '88px 24px 96px',
+secPad: m ? '64px 20px' : '96px 24px',
+bandPad: m ? '32px 24px' : '48px 56px',
+formats: ['CSV', 'JSON', 'XML', 'XLSX', 'ZIP', 'URL feeds'],
+features: feats.map((f, i) => ({ ...f, delay: (0.1 + i * 0.08).toFixed(2) + 's' }))
+};
+}
+}
+</script>
+</body>
+</html>

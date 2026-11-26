@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>API route jobs/create, dark</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:inherit;text-underline-offset:3px}
+:focus-visible{outline:2px solid #ffd23f;outline-offset:2px;border-radius:4px}
+.fx-lift{transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease}
+.fx-lift:hover{transform:translateY(-4px)}
+.fx-ul{text-decoration:underline;text-decoration-color:#ffd23f;text-decoration-thickness:2px}
+.fx-ul:hover{background:#ffd23f;color:#0f2233}
+.fx-light .fx-ul{text-decoration-color:#b38600}
+@keyframes fx-up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes fx-pop{from{opacity:0;transform:scaleX(.3)}to{opacity:1;transform:none}}
+@keyframes fx-blink{50%{opacity:0}}
+@keyframes fx-flow{0%,100%{transform:translateX(-1.5px)}50%{transform:translateX(1.5px)}}
+@keyframes fx-pulse{0%{box-shadow:0 0 0 0 rgba(95,211,154,.6)}100%{box-shadow:0 0 0 8px rgba(95,211,154,0)}}
+@keyframes fx-march{to{background-position:16px 0}}
+@keyframes fx-in{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<dc-import name="ApiPage" theme="{{ theme }}" on-toggle="{{ toggle }}" hint-size="100%,2300px"></dc-import>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":2300}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { theme: null }; }
+renderVals() {
+const theme = this.state.theme || this.props.theme || 'dark';
+return { theme: theme, toggle: (v) => this.setState({ theme: v }) };
+}
+}
+</script>
+</body>
+</html>

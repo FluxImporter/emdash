@@ -92,7 +92,7 @@ function expectStale(sentence: string) {
 	const shown = screen.getAllByText(sentence);
 	expect(shown).toHaveLength(2);
 	for (const el of shown) expect(el).toBeVisible();
-	expect(screen.getByRole("button", { name: "Next" })).toHaveAccessibleDescription(sentence);
+	expect(screen.getByRole("button", { name: "Next: Map" })).toHaveAccessibleDescription(sentence);
 }
 
 describe("TargetStep", () => {
@@ -107,7 +107,7 @@ describe("TargetStep", () => {
 		expect(await optionsOf(user, "Collection")).toEqual(["Pages", "Posts", "Archive (hidden)"]);
 
 		// Next waits for a collection.
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 		expect(screen.getByText("Choose a collection to import into")).toBeVisible();
 
 		await choose(user, "Collection", "Posts");
@@ -118,7 +118,7 @@ describe("TargetStep", () => {
 				"/_emdash/api/schema/collections/posts?includeFields=true",
 			),
 		);
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState()).toMatchObject({
 			step: "map",
 			target: { collection: "posts", locale: "en", translationLocale: null },
@@ -134,7 +134,7 @@ describe("TargetStep", () => {
 		expect(screen.queryByRole("checkbox", { name: TRANSLATES })).toBeNull();
 
 		await choose(user, "Collection", "Pages");
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "pages",
 			locale: "en",
@@ -164,7 +164,7 @@ describe("TargetStep", () => {
 		expect(screen.getByText(/Translation of/)).toBeVisible();
 
 		await choose(user, "Locale of the original entries", "de");
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "fr",
@@ -191,7 +191,7 @@ describe("TargetStep", () => {
 		expect(
 			screen.getByRole("combobox", { name: "Locale of the original entries" }),
 		).toHaveTextContent("en");
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "de",
@@ -206,7 +206,7 @@ describe("TargetStep", () => {
 		});
 		await screen.findByRole("combobox", { name: "Collection" });
 		await user.click(screen.getByRole("checkbox", { name: TRANSLATES }));
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "fr",
@@ -222,7 +222,7 @@ describe("TargetStep", () => {
 		await screen.findByRole("combobox", { name: "Collection" });
 		await choose(user, "Locale", "en");
 		expect(screen.queryByRole("checkbox", { name: TRANSLATES })).toBeNull();
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "en",
@@ -269,8 +269,8 @@ describe("TargetStep", () => {
 		});
 		await screen.findByRole("combobox", { name: "Collection" });
 		await choose(user, "Collection", "Pages");
-		await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Next: Map" })).toBeEnabled());
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "pages",
 			locale: "en",
@@ -287,7 +287,7 @@ describe("TargetStep", () => {
 		const dryRun = { jobId: "D1", uploadId: "u1", total: 3 };
 		renderTarget({ target, rows: { key: { from: "id" } }, dryRun, dirty: false, generation: 5 });
 		await screen.findByRole("combobox", { name: "Collection" });
-		await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
+		await waitFor(() => expect(screen.getByRole("button", { name: "Next: Map" })).toBeEnabled());
 		const seen = readState();
 		expect(seen.target).toEqual(target);
 		expect(seen.generation).toBe(5);
@@ -374,11 +374,11 @@ describe("TargetStep", () => {
 		await screen.findByRole("combobox", { name: "Collection" });
 		const stale = "es is not one of this site's locales. Choose another.";
 		expectStale(stale);
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 
 		await choose(user, "Locale", "fr");
 		expect(screen.queryByText(stale)).toBeNull();
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "fr",
@@ -433,11 +433,11 @@ describe("TargetStep", () => {
 		await screen.findByRole("combobox", { name: "Collection" });
 		const stale = "es is not one of this site's locales. Choose another.";
 		expectStale(stale);
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 
 		await choose(user, "Locale of the original entries", "de");
 		expect(screen.queryByText(stale)).toBeNull();
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "fr",
@@ -452,10 +452,10 @@ describe("TargetStep", () => {
 		});
 		await screen.findByRole("combobox", { name: "Collection" });
 		expectStale("fr is not one of this site's locales. Choose another.");
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 
 		await choose(user, "Locale", "en");
-		await user.click(screen.getByRole("button", { name: "Next" }));
+		await user.click(screen.getByRole("button", { name: "Next: Map" }));
 		expect(readState().target).toEqual({
 			collection: "posts",
 			locale: "en",
@@ -468,7 +468,7 @@ describe("TargetStep", () => {
 		renderTarget();
 		expect(await screen.findByText("No collections")).toBeVisible();
 		expect(screen.queryByRole("combobox", { name: "Collection" })).toBeNull();
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 		// Nothing can be chosen, so the footer does not ask for it.
 		expect(screen.queryByText("Choose a collection to import into")).toBeNull();
 	});
@@ -488,14 +488,14 @@ describe("TargetStep", () => {
 		const alert = await screen.findByRole("alert");
 		expect(alert).toHaveTextContent("Something went wrong on the server. Try again.");
 		expect(alert).not.toHaveTextContent("Database is locked");
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 
 		answer = () => POSTS;
 		const before = calls.length;
 		await user.click(within(alert).getByRole("button", { name: "Try again" }));
 		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 		expect(calls.length).toBe(before + 1);
-		expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeEnabled();
 	});
 
 	it("shows the route's own message for a code the wizard does not know", async () => {
@@ -517,7 +517,7 @@ describe("TargetStep", () => {
 		const { user } = renderTarget();
 		const alert = await screen.findByRole("alert");
 		expect(alert).toHaveTextContent("Only administrators can import.");
-		expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Next: Map" })).toBeDisabled();
 
 		answer = () => MANIFEST;
 		await user.click(within(alert).getByRole("button", { name: "Try again" }));

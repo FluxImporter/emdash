@@ -7,7 +7,8 @@ import { type Msg, useT, type Values } from "../../i18n.js";
 import { BATCH_SIZE_MAX, MAX_UPDATE_FIELDS, OWNER_PATTERN } from "../../limits.js";
 import { queryKeys, useAllTemplates, useFields, useSite } from "../../queries.js";
 import { useWizard } from "../context.js";
-import { StepFooter } from "../StepFooter.js";
+import { SUMMARY } from "../messages.js";
+import { StepHeader } from "../StepHeader.js";
 import {
 	fromTemplate,
 	isEdited,
@@ -309,7 +310,16 @@ export function OptionsStep() {
 	};
 
 	return (
-		<div className="space-y-6">
+		<div className="flex flex-col gap-6">
+			<StepHeader
+				summary={t(SUMMARY.options)}
+				next={{
+					canNext: blocker === null,
+					...(blocker === null ? {} : { reason: t(blocker.msg, blocker.values) }),
+					busy,
+					onNext,
+				}}
+			/>
 			<Radio.Group<Options["mode"]>
 				legend={t(M.records)}
 				description={t(M.recordsHelp)}
@@ -349,7 +359,7 @@ export function OptionsStep() {
 							onCheckedChange={(checked: boolean) => set({ protectEdited: checked })}
 							aria-describedby={protectHelpId}
 						/>
-						<p id={protectHelpId} className="text-sm text-kumo-subtle">
+						<p id={protectHelpId} className="text-sm text-kumo-default">
 							{t(M.protectEditedHelp)}
 						</p>
 					</div>
@@ -474,7 +484,7 @@ export function OptionsStep() {
 						onCheckedChange={(checked: boolean) => chooseSave(checked ? "new" : "none")}
 						aria-describedby={saveHelpId}
 					/>
-					<p id={saveHelpId} className="text-sm text-kumo-subtle">
+					<p id={saveHelpId} className="text-sm text-kumo-default">
 						{t(M.saveAsHelp)}
 					</p>
 				</div>
@@ -545,13 +555,6 @@ export function OptionsStep() {
 					)}
 				</Banner>
 			)}
-
-			<StepFooter
-				canNext={blocker === null}
-				{...(blocker === null ? {} : { reason: t(blocker.msg, blocker.values) })}
-				busy={busy}
-				onNext={onNext}
-			/>
 		</div>
 	);
 }

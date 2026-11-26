@@ -111,10 +111,17 @@ function Panel({ row, mapping, meta, columns, onChange }: Parameters<typeof Deta
 	};
 
 	return (
-		<section aria-labelledby={headingId} className="space-y-4">
-			<h3 id={headingId} className="truncate text-base font-medium" title={row.label}>
-				{row.label}
-			</h3>
+		<section aria-labelledby={headingId} className="flex flex-col gap-4">
+			<div className="flex min-w-0 flex-col">
+				<span className="text-xs text-kumo-subtle">{t(M.selectedField)}</span>
+				<h3
+					id={headingId}
+					className="truncate text-base font-semibold text-kumo-default"
+					title={row.label}
+				>
+					{row.label}
+				</h3>
+			</div>
 			{/* A field no mapping can write takes no source; the Map row says why (Review Focus 5). */}
 			{field !== undefined && type === undefined ? null : (
 				<SourceInput
@@ -217,7 +224,7 @@ function Suggestion(p: { meta: RowMeta }) {
 		<div className="space-y-2">
 			<div className="flex items-center gap-2">
 				{label === null ? null : <Badge variant="secondary">{label}</Badge>}
-				{check ? <Badge variant="warning">{t(M.check)}</Badge> : null}
+				{check ? <Badge variant="orange">{t(M.check)}</Badge> : null}
 			</div>
 			{rationale === undefined || rationale === "" ? null : (
 				<p className="text-sm text-kumo-subtle">{rationale}</p>

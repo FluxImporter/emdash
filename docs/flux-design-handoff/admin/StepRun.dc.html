@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard step 6: Run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 16px">
+
+<section aria-label="Progress" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; padding: 16px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px">
+<span role="status" style="display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; color: {{ k.strong }}"><span aria-hidden="true" style="width: 16px; height: 16px; border-radius: 50%; border: 2px solid {{ k.tint }}; border-top-color: {{ k.brand }}; animation: ad-spin .8s linear infinite"></span><span>Importing · <span style="font-variant-numeric: tabular-nums">{{ done }}</span> of 1,000 records</span></span>
+<span style="color: {{ k.sub }}; font-variant-numeric: tabular-nums">About {{ left }} left · 21 records a second</span>
+</div>
+<span role="meter" aria-label="Import progress" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100" style="display: block; height: 10px; border-radius: 10px; background: {{ k.tint }}; overflow: hidden"><span style="display: block; width: {{ pctW }}; height: 100%; border-radius: 10px; background: {{ k.brand }}; transition: width .6s ease"></span></span>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 22px">
+<sc-for list="{{ counts }}" as="c" hint-placeholder-count="7"><span style="display: inline-flex; align-items: baseline; gap: 6px"><strong style="font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; color: {{ c.nfg }}">{{ c.n }}</strong><span style="font-size: 13px; color: {{ c.lfg }}">{{ c.label }}</span></span></sc-for>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px">
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg>Pause</span>
+<span style="display: inline-flex; align-items: center; height: 34px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; color: {{ k.bad }}; font-weight: 600">Cancel import</span>
+<span style="display: inline-flex; align-items: center; height: 34px; padding: 0 12px; border-radius: 8px; color: {{ k.sub }}; font-weight: 500">Retry failed records · after the run</span>
+</div>
+</section>
+
+<section aria-label="Log" style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: baseline; justify-content: space-between"><h3 style="margin: 0; font-size: 14px; font-weight: 600">Log</h3><span style="color: {{ k.link }}; font-weight: 500">Download log</span></div>
+<div role="log" aria-live="polite" style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.elev }}; padding: 10px 14px; font-family: 'Noto Sans Mono', monospace; font-size: 12px; line-height: 20px; display: flex; flex-direction: column">
+<sc-for list="{{ log }}" as="l" hint-placeholder-count="6"><span style="display: flex; gap: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{ l.fg }}"><span style="color: {{ k.sub }}">{{ l.t }}</span>{{ l.m }}</span></sc-for>
+</div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":520}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { n: 640 }; }
+componentDidMount() {
+const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+if (reduce) return;
+this.timer = setInterval(() => this.setState({ n: this.state.n >= 980 ? 640 : this.state.n + 7 }), 330);
+}
+componentWillUnmount() { clearInterval(this.timer); }
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', base: '#ffffff', elev: '#ffffff', ctrl: '#ffffff', tint: 'oklch(94% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', brand: 'oklch(0.5772 0.2324 260)', link: 'oklch(42.4% 0.199 265.638)', ok: 'oklch(43.2% 0.095 166.913)', bad: 'oklch(50.5% 0.213 27.518)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', elev: 'oklch(14% 0 0)', ctrl: 'oklch(21% 0 0)', tint: 'oklch(26.9% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', brand: 'oklch(0.52 0.21 260)', link: 'oklch(70.7% 0.165 254.624)', ok: 'oklch(90.5% 0.093 164.15)', bad: 'oklch(70.4% 0.191 22.216)' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const d = this.state.n;
+const created = Math.round(d * 0.19), failed = 3, unchanged = Math.round(d * 0.17), updated = d - created - failed - unchanged;
+const c = (n, label, bad) => ({ n: n.toLocaleString('en-GB'), label: label, nfg: n === 0 ? k.sub : (bad ? k.bad : k.strong), lfg: n === 0 ? k.sub : k.tx });
+const pct = Math.round(d / 10);
+const secs = Math.max(1, Math.round((1000 - d) / 21));
+return {
+k: k, done: d.toLocaleString('en-GB'), pct: pct, pctW: pct + '%', left: secs + ' s',
+counts: [c(created, 'created'), c(updated, 'updated'), c(unchanged, 'unchanged'), c(failed, 'failed', true), c(0, 'conflicts'), c(0, 'locked'), c(0, 'filtered out')],
+log: [
+{ t: '18:42:31', m: 'Batch 13 of 20 · 50 records', fg: k.tx },
+{ t: '18:42:29', m: 'SKU-417 failed · Title is empty (required)', fg: k.bad },
+{ t: '18:42:28', m: 'Batch 12 of 20 · 50 records', fg: k.tx },
+{ t: '18:42:26', m: 'SKU-388 failed · Image URL returned 404', fg: k.bad },
+{ t: '18:42:25', m: 'Batch 11 of 20 · 50 records', fg: k.tx },
+{ t: '18:42:01', m: 'Started · products-1000.csv → posts · en · publish', fg: k.sub }
+]
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,5 +1,4 @@
-import { Empty } from "@cloudflare/kumo";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
@@ -69,12 +68,27 @@ function renderTab() {
 	);
 }
 
-/** The table row whose name cell reads `name`. */
+/** The row (a table row, or a stacked row when narrow) whose name reads `name`. */
 async function rowOf(name: string): Promise<HTMLElement> {
-	const cell = await screen.findByRole("cell", { name });
-	const row = cell.closest("tr");
+	const label = await screen.findByText(name, { selector: "span" });
+	const row = label.closest("tr, li");
 	if (!row) throw new Error(`no row for ${name}`);
-	return row;
+	return row as HTMLElement;
+}
+
+/** Opens the row's menu and picks `item` (its accessible name names the row). */
+async function pick(user: UserEvent, name: string, item: string) {
+	await user.click(await screen.findByRole("button", { name: `Actions for ${name}` }));
+	await user.click(await screen.findByRole("menuitem", { name: `${item} ${name}` }));
+}
+
+/** The row's Active switch. */
+const activeOf = (name: string) => screen.getByRole("switch", { name: `Active: ${name}` });
+
+/** Fixes "now" for the UTC labels (Today / Yesterday), leaving timers real for user-event. */
+function now(iso: string) {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(iso));
 }
 
 async function choose(user: UserEvent, name: string, option: string) {
@@ -90,8 +104,10 @@ const bodyOf = (calls: { route: string; body: unknown }[], route: string) =>
 	calls.filter((c) => c.route === route).map((c) => c.body);
 
 describe("the Schedules tab", () => {
-	it("lists names, timing in words with UTC, next run, last launch and the state with its pause reason in words", async () => {
+	it("lists each schedule with its template, source, timing and next run in UTC, last launch, state in words and its actions", async () => {
+		now("2026-11-24T12:00:00.000Z");
 		const at = "2026-11-24T06:00:00.000Z";
+		const zero = { created: 0, updated: 0, unchanged: 0, failed: 0, conflict: 0, locked: 0 };
 		routes({
 			schedules: [
 				schedule({
@@ -101,6 +117,14 @@ describe("the Schedules tab", () => {
 					cron: "0 3 * * *",
 					nextRunAt: "2026-11-25T03:00:00.000Z",
 					lastLaunch: { at, outcome: "started", jobId: "J1" },
+					runs: [
+						{
+							jobId: "J1",
+							at,
+							outcome: "completed",
+							counters: { ...zero, updated: 2, removed: 0 },
+						},
+					],
 				}),
 				schedule({
 					id: "SC2",
@@ -138,94 +162,229 @@ describe("the Schedules tab", () => {
 					pause: { reason: "from_the_future" as never, at },
 					lastLaunch: { at, outcome: "busy" },
 				}),
+				schedule({ id: "SC6", name: "Unplanned", sourceId: "SRC1", nextRunAt: null }),
 			],
 		});
 		renderTab();
 		const nightly = within(await rowOf("Nightly"));
-		for (const head of [
-			"Name",
-			"Template",
-			"Source",
-			"When it runs",
-			"Next run",
-			"Last launch",
-			"State",
-		]) {
+		for (const head of ["Schedule", "Source", "When", "Last run", "Active"]) {
 			expect(screen.getByRole("columnheader", { name: head })).toBeVisible();
 		}
-		expect(nightly.getByText("Products feed")).toBeVisible();
+		// The summary line: the count, then how many are active and paused.
+		expect(screen.getByText("6 schedules")).toBeVisible();
+		expect(screen.getByText("6 schedules").parentElement).toHaveTextContent(
+			"6 schedules · 3 active · 3 paused",
+		);
+		expect(nightly.getByText("Products feed → posts · en")).toBeVisible();
 		expect(nightly.getByText("Feed")).toBeVisible();
+		expect(nightly.getByText("feed.example.com/a/b.json")).toBeVisible();
 		expect(nightly.getByText("Every day at 03:00 UTC")).toBeVisible();
-		expect(nightly.getByText("Nov 25, 2026 03:00 UTC")).toBeVisible();
-		// Every time in the tab is UTC (plan Ruling 13), the last launch's too.
-		expect(nightly.getByText("Nov 24, 2026 06:00 UTC")).toBeVisible();
+		// Every time in the tab is UTC (plan Ruling 13), the next run's and the last launch's too.
+		expect(nightly.getByText("Next: Nov 25 03:00 UTC")).toBeVisible();
+		expect(nightly.getByText(/^Today 06:00 UTC/)).toBeVisible();
 		expect(nightly.getByText("Started an import.")).toBeVisible();
-		expect(nightly.getByText("Active")).toBeVisible();
+		// The last run's outcome, beside its log.
+		expect(nightly.getByText("Completed")).toBeVisible();
+		expect(activeOf("Nightly")).toBeChecked();
 
 		const prices = within(await rowOf("Prices hourly"));
 		expect(prices.getByText("Deleted template")).toBeVisible();
 		expect(prices.getByText("Deleted source")).toBeVisible();
 		expect(prices.getByText("Every hour at minute 5")).toBeVisible();
-		expect(prices.getByText("Not scheduled")).toBeVisible();
 		expect(prices.getByText("Couldn't start: The address could not be reached.")).toBeVisible();
-		expect(prices.getByText("Paused: the feed was empty")).toBeVisible();
+		expect(prices.getByText("Paused")).toBeVisible();
+		expect(prices.getByText("Because the feed was empty.")).toBeVisible();
+		expect(activeOf("Prices hourly")).not.toBeChecked();
 
 		const weekdays = within(await rowOf("Weekdays"));
-		expect(weekdays.getByText("Prices")).toBeVisible();
+		expect(weekdays.getByText("Prices → posts · en")).toBeVisible();
 		expect(weekdays.getByText("Other feed")).toBeVisible();
 		expect(weekdays.getByText("Custom: 0 6 * * 1-5 (UTC)")).toBeVisible();
 		expect(weekdays.getByText("Never launched")).toBeVisible();
 		expect(weekdays.getByText("Paused")).toBeVisible();
+		expect(weekdays.queryByText(/^Because/)).toBeNull();
 
 		const mondays = within(await rowOf("Mondays"));
 		expect(mondays.getByText("Every Monday at 06:30 UTC")).toBeVisible();
 		expect(mondays.getByText("Queued")).toBeVisible();
 		expect(mondays.getByText("The feed had not changed, so nothing was imported.")).toBeVisible();
+		expect(activeOf("Mondays")).toBeChecked();
 
 		const future = within(await rowOf("Future"));
-		expect(future.getByText("Paused: for a reason this version does not know")).toBeVisible();
+		expect(future.getByText("For a reason this version does not know.")).toBeVisible();
 		expect(
 			future.getByText("Skipped: an import from this source was still running."),
 		).toBeVisible();
-		// Paused rows offer Resume, running ones Pause; every action names its row.
-		expect(screen.getByRole("button", { name: "Pause Nightly" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Resume Prices hourly" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run now Nightly" })).toBeVisible();
-		// A paused or disabled schedule is never run (SCHEDULE_DISABLED): Resume comes first.
+
+		expect(within(await rowOf("Unplanned")).getByText("Not scheduled")).toBeVisible();
+
+		// Every action names its row; the switch replaces Pause and Resume.
+		expect(screen.queryByRole("button", { name: /^(Pause|Resume) / })).toBeNull();
+		expect(screen.getByRole("button", { name: "Run now Nightly" })).toHaveTextContent(/^Run now$/);
+		// A paused or disabled schedule is never run (SCHEDULE_DISABLED): it is switched on first.
 		for (const name of ["Prices hourly", "Weekdays", "Future"]) {
 			expect(screen.queryByRole("button", { name: `Run now ${name}` })).toBeNull();
 		}
 		expect(screen.getByRole("button", { name: "Run now Mondays" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Edit Nightly" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Delete Nightly" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Run log of Nightly" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Run log of Nightly" })).toHaveTextContent(
+			/^Run log$/,
+		);
+		expect(screen.getByRole("button", { name: "Actions for Nightly" })).toBeVisible();
 	});
 
-	it("says when there are no schedules", async () => {
+	it("puts Edit and Delete in the row's menu, Delete last in the danger colour", async () => {
+		routes({ schedules: [schedule({ sourceId: "SRC1" })] });
+		const { user } = renderTab();
+		await user.click(await screen.findByRole("button", { name: "Actions for Nightly" }));
+		const items = await screen.findAllByRole("menuitem");
+		expect(items.map((i) => i.getAttribute("aria-label"))).toEqual([
+			"Edit Nightly",
+			"Delete Nightly",
+		]);
+		expect(items.map((i) => i.textContent)).toEqual(["Edit", "Delete"]);
+		expect(items[1]).toHaveClass("text-kumo-danger");
+	});
+
+	it("switches a schedule off and on from the keyboard", async () => {
+		const nightly = schedule({ id: "SC1", name: "Nightly", sourceId: "SRC1", revision: 4 });
+		const { calls } = routes(
+			{ schedules: [nightly] },
+			{
+				"schedules/update": (body) => {
+					const b = body as { revision: number; enabled: boolean };
+					return { schedule: { ...nightly, enabled: b.enabled, revision: b.revision + 1 } };
+				},
+			},
+		);
+		const { user } = renderTab();
+		await rowOf("Nightly");
+		const toggle = activeOf("Nightly");
+		toggle.focus();
+		await user.keyboard(" ");
+		await waitFor(() => expect(activeOf("Nightly")).not.toBeChecked());
+		expect(live()).toHaveTextContent("Paused Nightly.");
+		await user.keyboard("{Enter}");
+		await waitFor(() => expect(activeOf("Nightly")).toBeChecked());
+		expect(live()).toHaveTextContent("Resumed Nightly.");
+		expect(bodyOf(calls, "schedules/update")).toEqual([
+			{ id: "SC1", revision: 4, enabled: false },
+			{ id: "SC1", revision: 5, enabled: true },
+		]);
+	});
+
+	it("stacks the rows when the tab is narrow", async () => {
+		// The width is measured on the tab (ResizeObserver), not the viewport.
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe() {}
+				disconnect() {}
+			},
+		);
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+			width: 460,
+		} as DOMRect);
+		routes({ schedules: [schedule({ sourceId: "SRC1" })] });
+		renderTab();
+		const row = await rowOf("Nightly");
+		expect(row.tagName).toBe("LI");
+		expect(screen.queryByRole("table")).toBeNull();
+		expect(within(row).getByRole("switch", { name: "Active: Nightly" })).toBeVisible();
+		expect(within(row).getByRole("button", { name: "Actions for Nightly" })).toBeVisible();
+	});
+
+	it("says when there are no schedules, with what exists and New schedule", async () => {
 		routes();
 		renderTab();
-		const title = await screen.findByText("No schedules yet.");
-		expect(title).toBeVisible();
+		expect(await screen.findByRole("heading", { name: "No schedules yet" })).toBeVisible();
+		expect(
+			screen.getByText("A schedule runs a saved template on a saved URL source, on a timer."),
+		).toBeVisible();
 		expect(screen.queryByRole("table")).toBeNull();
-		// The small empty state, as Jobs and Templates show theirs (Task 16).
-		const { container } = render(<Empty size="sm" title="x" />);
-		const root = container.firstElementChild as HTMLElement;
-		let mine: HTMLElement = title;
-		while (mine.parentElement && !mine.parentElement.classList.contains("space-y-4")) {
-			mine = mine.parentElement;
-		}
-		expect(mine.className).toBe(root.className);
+		expect(await screen.findByText("2 templates saved")).toBeVisible();
+		expect(await screen.findByText("2 URL sources saved")).toBeVisible();
+		// One New schedule: in the empty state, not also on the summary line.
+		expect(screen.getAllByRole("button", { name: "New schedule" })).toHaveLength(1);
+		expect(screen.getByText("0 schedules")).toBeVisible();
+	});
+
+	it("names what is missing, and adds a source from the empty state", async () => {
+		const sources: SourceRow[] = [];
+		const { calls } = routes(
+			{ schedules: [], templates: [], sources },
+			{
+				"credentials/list": () => [],
+				"sources/create": () => {
+					sources.push(SRC1);
+					return SRC1;
+				},
+			},
+		);
+		const { user } = renderTab();
+		const goTemplates = await screen.findByRole("button", { name: "Go to Templates" });
+		expect(goTemplates.closest("li")).toHaveTextContent(
+			/^No template saved yet · Go to Templates$/,
+		);
+		expect(screen.getByRole("button", { name: "Add a source" }).closest("li")).toHaveTextContent(
+			/^No URL source yet · Add a source$/,
+		);
+		await user.click(screen.getByRole("button", { name: "Add a source" }));
+		const dialog = await screen.findByRole("dialog", { name: "Add a source" });
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Feed");
+		await user.type(
+			within(dialog).getByRole("textbox", { name: "Address" }),
+			"https://feed.example.com/products.json",
+		);
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(bodyOf(calls, "sources/create")).toEqual([
+			{ name: "Feed", url: "https://feed.example.com/products.json" },
+		]);
+		expect(await screen.findByText("1 URL source saved")).toBeVisible();
+		// Its link is gone: focus moves on to what comes next, not to the page.
+		await waitFor(() => expect(screen.getByRole("button", { name: "New schedule" })).toHaveFocus());
+	});
+
+	it("goes to Templates from the empty state", async () => {
+		routes({ schedules: [], templates: [] });
+		const { user } = renderTab();
+		await user.click(await screen.findByRole("button", { name: "Go to Templates" }));
+		expect(new URLSearchParams(window.location.search).get("tab")).toBe("templates");
+	});
+
+	it("shows nothing for a site import, which the home shows for the whole page", async () => {
+		const { calls } = routes({ fence: "import", schedules: [schedule({ sourceId: "SRC1" })] });
+		renderTab();
+		await rowOf("Nightly");
+		await waitFor(() => expect(calls.some((c) => c.route === "schedules/fence")).toBe(true));
+		expect(screen.queryByText(/Scheduled runs wait/)).toBeNull();
+		expect(screen.queryByText(/import into this site/)).toBeNull();
 	});
 
 	it.each([
-		["import", "An import into this site is running, so scheduled runs wait until it ends."],
-		["export", "An export of this site is running, so scheduled runs wait until it ends."],
-		["media", "EmDash is turning on media tracking, so scheduled runs wait until it ends."],
-		["error", "flux-import couldn't check whether the site is busy, so scheduled runs wait."],
-	])("shows the fence banner with its kind in words (%s)", async (fence, sentence) => {
+		["export", "The site is locked for an export.", "Scheduled runs wait until it ends."],
+		["media", "EmDash is turning on media tracking.", "Scheduled runs wait until it ends."],
+		[
+			"error",
+			"flux-import couldn't check whether the site is busy.",
+			"Scheduled runs wait until the check succeeds.",
+		],
+		[
+			"from_the_future",
+			"flux-import couldn't check whether the site is busy.",
+			"Scheduled runs wait until the check succeeds.",
+		],
+	])("shows the fence banner with its kind in words (%s)", async (fence, title, wait) => {
 		routes({ fence, schedules: [schedule({ sourceId: "SRC1" })] });
 		renderTab();
-		expect(await screen.findByText(sentence)).toBeVisible();
+		const banner = (await screen.findByText(title)).closest('[role="status"]') as HTMLElement;
+		expect(banner).toBeVisible();
+		expect(within(banner).getByText(wait)).toBeVisible();
+		// Above the summary line.
+		expect(
+			banner.compareDocumentPosition(screen.getByText("1 schedule")) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("shows the failed-check banner when the fence cannot be read", async () => {
@@ -236,9 +395,7 @@ describe("the Schedules tab", () => {
 		);
 		renderTab();
 		expect(
-			await screen.findByText(
-				"flux-import couldn't check whether the site is busy, so scheduled runs wait.",
-			),
+			await screen.findByText("flux-import couldn't check whether the site is busy."),
 		).toBeVisible();
 	});
 
@@ -247,7 +404,7 @@ describe("the Schedules tab", () => {
 		renderTab();
 		await rowOf("Nightly");
 		await waitFor(() => expect(calls.some((c) => c.route === "schedules/fence")).toBe(true));
-		expect(screen.queryByText(/scheduled runs wait/)).toBeNull();
+		expect(screen.queryByText(/Scheduled runs wait/)).toBeNull();
 	});
 
 	it("creates a daily schedule from a template at its listed revision and a URL source", async () => {
@@ -262,7 +419,7 @@ describe("the Schedules tab", () => {
 		});
 		const { calls } = routes(data, { "schedules/create": () => ({ schedule: created }) });
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		expect(within(dialog).getByText("Times are in UTC, as EmDash runs schedules.")).toBeVisible();
@@ -299,13 +456,18 @@ describe("the Schedules tab", () => {
 		expect(live()).toHaveTextContent("Created Nightly products.");
 	});
 
-	it("closes the dialog with Escape and gives focus back to New schedule", async () => {
-		routes({ schedules: [] });
+	it.each([
+		["the empty state", []],
+		["the summary line", [schedule({ sourceId: "SRC1" })]],
+	])("closes the dialog with Escape and gives focus back to New schedule (%s)", async (_, rows) => {
+		routes({ schedules: rows });
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
-		const button = screen.getByRole("button", { name: "New schedule" });
-		// At the right, as the other tabs place their action (Task 16).
-		expect(button.parentElement).toHaveClass("justify-end");
+		const button = await screen.findByRole("button", { name: "New schedule" });
+		if (rows.length > 0) {
+			// On the summary line, after the count, as every tab places its action.
+			const line = screen.getByText("1 schedule").closest("p")?.parentElement;
+			expect(line).toContainElement(button);
+		}
 		await user.click(button);
 		await screen.findByRole("dialog", { name: "New schedule" });
 		await user.keyboard("{Escape}");
@@ -319,7 +481,7 @@ describe("the Schedules tab", () => {
 			{ "schedules/create": (b) => ({ schedule: schedule({ ...(b as object), id: "SC9" }) }) },
 		);
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		await user.click(within(dialog).getByRole("button", { name: "Create schedule" }));
@@ -369,7 +531,7 @@ describe("the Schedules tab", () => {
 			{ "schedules/create": (b) => ({ schedule: schedule({ ...(b as object), id: "SC9" }) }) },
 		);
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Nightly");
@@ -413,7 +575,7 @@ describe("the Schedules tab", () => {
 			{ "schedules/create": (b) => ({ schedule: schedule({ ...(b as object), id: "SC9" }) }) },
 		);
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		for (const [choice, percent, expected] of [
 			["Off", null, false],
 			["A lower threshold", "10", { maxPercent: 10 }],
@@ -449,7 +611,7 @@ describe("the Schedules tab", () => {
 			},
 		);
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Odd");
@@ -486,7 +648,7 @@ describe("the Schedules tab", () => {
 			},
 		);
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Nightly");
@@ -509,7 +671,7 @@ describe("the Schedules tab", () => {
 			window.history.replaceState(null, "", "/?tab=schedules");
 			routes({ schedules: [], ...data });
 			const { user, unmount } = renderTab();
-			await screen.findByText("No schedules yet.");
+			await screen.findByText("No schedules yet");
 			await user.click(screen.getByRole("button", { name: "New schedule" }));
 			const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 			expect(within(dialog).getByText("Save a template and add a URL source first.")).toBeVisible();
@@ -558,7 +720,7 @@ describe("the Schedules tab", () => {
 		const { user, queryClient } = renderTab();
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		const row = within(await rowOf("Nightly"));
-		expect(row.getByText("Active")).toBeVisible();
+		expect(row.getByText(/^Next: /)).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Run now Nightly" }));
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(live()).toHaveTextContent("Queued a run of Nightly.");
@@ -571,7 +733,8 @@ describe("the Schedules tab", () => {
 			...data.schedules!.slice(1),
 		];
 		await queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
-		expect(await row.findByText("Active")).toBeVisible();
+		await waitFor(() => expect(row.queryByText("Queued")).toBeNull());
+		expect(row.getByText(/^Next: /)).toBeVisible();
 		expect(row.getByText("Started an import.")).toBeVisible();
 
 		await user.click(screen.getByRole("button", { name: "Run now Busy one" }));
@@ -600,11 +763,13 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		const row = within(await rowOf("Nightly"));
-		await user.click(screen.getByRole("button", { name: "Pause Nightly" }));
+		await user.click(activeOf("Nightly"));
 		expect(await row.findByText("Paused")).toBeVisible();
+		expect(activeOf("Nightly")).not.toBeChecked();
 		expect(live()).toHaveTextContent("Paused Nightly.");
-		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
-		expect(await row.findByText("Active")).toBeVisible();
+		await user.click(activeOf("Nightly"));
+		await waitFor(() => expect(activeOf("Nightly")).toBeChecked());
+		expect(row.queryByText("Paused")).toBeNull();
 		expect(live()).toHaveTextContent("Resumed Nightly.");
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, enabled: false },
@@ -619,13 +784,15 @@ describe("the Schedules tab", () => {
 		});
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Pause Nightly" }));
+		await user.click(activeOf("Nightly"));
 		expect(await screen.findByText("This schedule changed elsewhere.")).toBeVisible();
+		// Refused, the switch shows the list's state, not the one asked for.
+		expect(activeOf("Nightly")).toBeChecked();
 		const lists = bodyOf(calls, "schedules/list").length;
 		data.schedules = [schedule({ id: "SC1", name: "Nightly", revision: 5, enabled: false })];
 		await user.click(screen.getByRole("button", { name: "Reload" }));
 		await waitFor(() => expect(bodyOf(calls, "schedules/list").length).toBe(lists + 1));
-		expect(await screen.findByRole("button", { name: "Resume Nightly" })).toBeVisible();
+		await waitFor(() => expect(activeOf("Nightly")).not.toBeChecked());
 		expect(screen.queryByText("This schedule changed elsewhere.")).toBeNull();
 	});
 
@@ -636,12 +803,12 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Delete Nightly" }));
+		await pick(user, "Nightly", "Delete");
 		let dialog = await screen.findByRole("dialog", { name: "Delete Nightly?" });
 		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(bodyOf(calls, "schedules/delete")).toEqual([]);
-		await user.click(screen.getByRole("button", { name: "Delete Nightly" }));
+		await pick(user, "Nightly", "Delete");
 		dialog = await screen.findByRole("dialog", { name: "Delete Nightly?" });
 		expect(
 			within(dialog).getByText(
@@ -651,7 +818,7 @@ describe("the Schedules tab", () => {
 		await user.click(within(dialog).getByRole("button", { name: "Delete schedule" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(bodyOf(calls, "schedules/delete")).toEqual([{ id: "SC1", revision: 4 }]);
-		expect(await screen.findByText("No schedules yet.")).toBeVisible();
+		expect(await screen.findByText("No schedules yet")).toBeVisible();
 		expect(live()).toHaveTextContent("Deleted Nightly.");
 	});
 
@@ -662,7 +829,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Delete Nightly" }));
+		await pick(user, "Nightly", "Delete");
 		const dialog = await screen.findByRole("dialog", { name: "Delete Nightly?" });
 		await user.click(within(dialog).getByRole("button", { name: "Delete schedule" }));
 		expect(
@@ -673,6 +840,7 @@ describe("the Schedules tab", () => {
 	});
 
 	it("shows the run log with each job linked to its Run screen", async () => {
+		now("2026-11-24T12:00:00.000Z");
 		routes({
 			schedules: [
 				schedule({
@@ -729,25 +897,27 @@ describe("the Schedules tab", () => {
 		});
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Run log of Nightly" }));
-		const dialog = await screen.findByRole("dialog", { name: "Run log of Nightly" });
+		const opener = screen.getByRole("button", { name: "Run log of Nightly" });
+		await user.click(opener);
+		const dialog = await screen.findByRole("dialog", { name: "Nightly: run log" });
+		expect(dialog).toHaveAccessibleDescription(
+			"Every day at 03:00 UTC · last 3 runs, newest first",
+		);
 		const rows = within(dialog).getAllByRole("row").slice(1);
 		expect(rows).toHaveLength(3);
 		expect(rows[0]).toHaveTextContent("Completed");
-		expect(rows[0]).toHaveTextContent("Nov 23, 2026 06:05 UTC");
+		// UTC, as every time in the tab.
+		expect(rows[0]).toHaveTextContent("Yesterday 06:05 UTC");
 		expect(rows[2]).toHaveTextContent("Unknown outcome");
 		// The outcome cell says only that: never "Failed" for an outcome it does not know.
 		expect(within(rows[2]!).getAllByRole("cell")[1]).toHaveTextContent(/^Unknown outcome$/);
-		expect(rows[0]).toHaveTextContent(
-			"Created: 3. Updated: 2. Unchanged: 1. Failed: 0. Removed: 4.",
-		);
-		// Counts that are zero beyond the four every run has are left out.
-		expect(rows[0]).not.toHaveTextContent("Conflicts");
-		expect(rows[0]).not.toHaveTextContent("Locked");
-		expect(rows[1]).not.toHaveTextContent("Removed");
+		// Counts read as on Jobs: zero counts hidden, unchanged only when nothing else changed.
+		const counts = within(rows[0]!).getAllByRole("cell")[2]!;
+		expect(counts).toHaveTextContent(/^3 created2 updated4 deleted$/);
+		expect(within(rows[1]!).getAllByRole("cell")[2]).toHaveTextContent(/^No changes$/);
 		expect(
 			within(rows[0]!).getByRole("link", {
-				name: "Open the import that finished Nov 23, 2026 06:05 UTC",
+				name: "Open the import that finished Yesterday 06:05 UTC",
 			}),
 		).toHaveAttribute("href", runUrl("J2"));
 		expect(rows[1]).toHaveTextContent("Stopped: the feed was empty");
@@ -755,15 +925,14 @@ describe("the Schedules tab", () => {
 		expect(within(rows[1]!).getByRole("link")).toHaveAttribute("href", runUrl("J1"));
 		await user.click(within(dialog).getByRole("button", { name: "Close" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		await waitFor(() => expect(opener).toHaveFocus());
 		await user.click(screen.getByRole("button", { name: "Run log of Fresh" }));
-		expect(
-			within(await screen.findByRole("dialog", { name: "Run log of Fresh" })).getByText(
-				"No runs yet.",
-			),
-		).toBeVisible();
+		const fresh = await screen.findByRole("dialog", { name: "Fresh: run log" });
+		expect(within(fresh).getByText("No runs yet.")).toBeVisible();
+		expect(fresh).toHaveAccessibleDescription("Every day at 03:00 UTC");
 	});
 
-	it("resumes a schedule paused for template_changed on the template's current revision", async () => {
+	it("switches on a schedule paused for template_changed on the template's current revision", async () => {
 		const at = "2026-11-24T06:00:00.000Z";
 		const changed = schedule({
 			id: "SC1",
@@ -799,12 +968,12 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		const row = within(await rowOf("Nightly"));
-		expect(row.getByText("Resume runs the template's current version.")).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
-		expect(await row.findByText("Active")).toBeVisible();
+		expect(row.getByText("Switched on, it runs the template's current version.")).toBeVisible();
+		await user.click(activeOf("Nightly"));
+		await waitFor(() => expect(activeOf("Nightly")).toBeChecked());
 		// T2's current revision has no rules.missing: the stored threshold is cleared with it.
-		await user.click(screen.getByRole("button", { name: "Resume Dropped" }));
-		expect(await within(await rowOf("Dropped")).findByText("Active")).toBeVisible();
+		await user.click(activeOf("Dropped"));
+		await waitFor(() => expect(activeOf("Dropped")).toBeChecked());
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, enabled: true, templateId: "T1", templateRevision: 3 },
 			{
@@ -818,7 +987,7 @@ describe("the Schedules tab", () => {
 		]);
 	});
 
-	it("re-pins on Resume to the template's revision as read now, not a cached one", async () => {
+	it("re-pins on switching on to the template's revision as read now, not a cached one", async () => {
 		const changed = schedule({
 			id: "SC1",
 			name: "Nightly",
@@ -842,7 +1011,8 @@ describe("the Schedules tab", () => {
 		// The host keeps data fresh for 60 s; a dialog read revision 2 a moment ago.
 		queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
 		queryClient.setQueryData(queryKeys.template("T1"), saved({ ...T1, revision: 2 }));
-		await user.click(await screen.findByRole("button", { name: "Resume Nightly" }));
+		await rowOf("Nightly");
+		await user.click(activeOf("Nightly"));
 		await waitFor(() => expect(bodyOf(calls, "schedules/update")).toHaveLength(1));
 		expect(bodyOf(calls, "schedules/update")).toEqual([
 			{ id: "SC1", revision: 4, enabled: true, templateId: "T1", templateRevision: 3 },
@@ -920,7 +1090,7 @@ describe("the Schedules tab", () => {
 		const row = within(await rowOf("Nightly"));
 		const note = "Its template is no longer saved. Edit the schedule to choose one.";
 		expect(row.getByText(note)).toBeVisible();
-		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
+		await user.click(activeOf("Nightly"));
 		expect(await screen.findByText(`Nightly: ${note}`)).toBeVisible();
 		expect(bodyOf(calls, "schedules/update")).toEqual([]);
 	});
@@ -944,7 +1114,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Resume Nightly" }));
+		await user.click(activeOf("Nightly"));
 		expect(
 			await screen.findByText(
 				"Nightly: This template tracks missing entries, so the schedule has to say what to do about them.",
@@ -966,7 +1136,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		const dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		// No stored choice is the template's own, as the engine reads it.
 		expect(
@@ -994,7 +1164,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		const dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		await choose(user, "Template", "Products feed");
 		await within(dialog).findByRole("radio", { name: "As the template sets" });
@@ -1027,7 +1197,7 @@ describe("the Schedules tab", () => {
 		});
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		let dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		const name = within(dialog).getByRole("textbox", { name: "Name" });
 		expect(name).toHaveValue("Nightly");
@@ -1043,7 +1213,7 @@ describe("the Schedules tab", () => {
 		expect(await rowOf("Nightly 2")).toBeVisible();
 		expect(live()).toHaveTextContent("Saved Nightly 2.");
 
-		await user.click(screen.getByRole("button", { name: "Edit Nightly 2" }));
+		await pick(user, "Nightly 2", "Edit");
 		dialog = await screen.findByRole("dialog", { name: "Edit Nightly 2" });
 		await choose(user, "Template", "Prices");
 		await user.click(within(dialog).getByRole("radio", { name: "Hourly" }));
@@ -1054,7 +1224,7 @@ describe("the Schedules tab", () => {
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
 		// Nothing changed: no request.
-		await user.click(screen.getByRole("button", { name: "Edit Nightly 2" }));
+		await pick(user, "Nightly 2", "Edit");
 		dialog = await screen.findByRole("dialog", { name: "Edit Nightly 2" });
 		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -1080,7 +1250,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		let dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		expect(await within(dialog).findByRole("radio", { name: "A lower threshold" })).toBeChecked();
 		expect(
@@ -1094,7 +1264,7 @@ describe("the Schedules tab", () => {
 		);
 		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		await user.click(await within(dialog).findByRole("radio", { name: "Off" }));
 		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
@@ -1120,7 +1290,7 @@ describe("the Schedules tab", () => {
 		);
 		const { user } = renderTab();
 		await rowOf("Orphan");
-		await user.click(screen.getByRole("button", { name: "Edit Orphan" }));
+		await pick(user, "Orphan", "Edit");
 		const dialog = await screen.findByRole("dialog", { name: "Edit Orphan" });
 		expect(await within(dialog).findByText("This template no longer exists.")).toBeVisible();
 		expect(within(dialog).getByRole("combobox", { name: "Template" })).toHaveTextContent(
@@ -1144,7 +1314,7 @@ describe("the Schedules tab", () => {
 		});
 		const { user } = renderTab();
 		await rowOf("Nightly");
-		await user.click(screen.getByRole("button", { name: "Edit Nightly" }));
+		await pick(user, "Nightly", "Edit");
 		const dialog = await screen.findByRole("dialog", { name: "Edit Nightly" });
 		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), " A");
 		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
@@ -1167,7 +1337,7 @@ describe("the Schedules tab", () => {
 	it("offers no Try again in the dialog after a 403 on its templates", async () => {
 		routes({}, { "templates/list": () => fail("FORBIDDEN", "Insufficient permissions", 403) });
 		const { user } = renderTab();
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
 		expect(await within(dialog).findByText("Only administrators can import.")).toBeVisible();
@@ -1185,11 +1355,14 @@ describe("the Schedules tab", () => {
 			},
 		);
 		const { user } = renderTab();
+		expect(await screen.findByText("Schedules could not be loaded.")).toBeVisible();
 		expect(
-			await screen.findByText("The list changed while it was being read. Reload it."),
+			screen.getByText(
+				"The list changed while it was being read. Reload it. Your imports are not affected.",
+			),
 		).toBeVisible();
 		failing = false;
 		await user.click(screen.getByRole("button", { name: "Try again" }));
-		expect(await screen.findByText("No schedules yet.")).toBeVisible();
+		expect(await screen.findByText("No schedules yet")).toBeVisible();
 	});
 });

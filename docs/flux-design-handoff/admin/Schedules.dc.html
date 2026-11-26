@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Schedules tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 12px">
+
+<sc-if value="{{ locked }}" hint-placeholder-val="{{ true }}">
+<div role="status" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid {{ k.warnLn }}; background: {{ k.warnBg }}; color: {{ k.warnTx }}">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M6 11h12v10H6zM8.5 11V7.5a3.5 3.5 0 0 1 7 0V11"></path></svg>
+<span style="flex: 1 1 260px"><strong style="font-weight: 600">The site is locked for an export.</strong> Scheduled runs wait until it ends.</span>
+</div>
+</sc-if>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<span style="color: {{ k.sub }}"><strong style="color: {{ k.tx }}; font-weight: 600">3 schedules</strong> · 2 active · times in UTC</span>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>New schedule</span>
+</div>
+
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 16px; padding: 10px 16px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600"><span>Schedule</span><span>Source</span><span>When</span><span>Last run</span><span>Active</span><span></span></div>
+</sc-if>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="3">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: {{ rowGap }}; align-items: center; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}">
+<span style="display: flex; flex-direction: column; min-width: 0; grid-column: {{ c1 }}"><span style="font-weight: 600; color: {{ k.strong }}">{{ r.name }}</span><span style="font-size: 13px; color: {{ k.sub }}">{{ r.tpl }}</span></span>
+<span style="display: flex; flex-direction: column; min-width: 0; font-family: 'Noto Sans Mono', monospace; font-size: 13px; grid-column: {{ c1 }}"><span style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.host }}</span><span style="color: {{ k.sub }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.path }}</span></span>
+<span style="display: flex; flex-direction: column; font-size: 13px; grid-column: {{ c1 }}"><span>{{ r.when }}</span><span style="color: {{ k.sub }}">{{ r.next }}</span></span>
+<span style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; grid-column: {{ c1 }}"><span style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: {{ r.bg }}; color: {{ r.fg }}; font-size: 12px; font-weight: 600"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: currentColor"></span>{{ r.last }}</span><span style="color: {{ k.link }}; font-weight: 500">Run log</span></span>
+<span style="grid-column: {{ c2 }}; grid-row: {{ swRow }}; justify-self: {{ swJustify }}"><span role="switch" aria-checked="{{ r.on }}" aria-label="Active" style="display: inline-flex; width: 36px; height: 20px; border-radius: 999px; background: {{ r.swBg }}; padding: 2px; box-sizing: border-box; justify-content: {{ r.swPos }}; transition: background-color .2s ease"><span style="width: 16px; height: 16px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,.3)"></span></span></span>
+<span style="justify-self: end; display: flex; gap: 4px; grid-column: {{ c2 }}; grid-row: {{ mRow }}"><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; font-weight: 500; white-space: nowrap">Run now</span><span role="button" aria-label="More actions for {{ r.name }}" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></span></span>
+</div>
+</sc-for>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"view":{"editor":"text","default":"locked"},"$preview":{"width":1020,"height":420}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', base: '#ffffff', ctrl: '#ffffff', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)', link: 'oklch(42.4% 0.199 265.638)', brand: 'oklch(0.5772 0.2324 260)', off: 'oklch(80% 0 0)', okBg: '#ccfbf1', okTx: '#115e59', badBg: '#fee2e2', badTx: '#991b1b', neuBg: '#f5f5f5', neuTx: '#262626', warnBg: '#ffedd5', warnTx: '#9a3412', warnLn: '#fdba74' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', ctrl: 'oklch(21% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(32% 0 0)', link: 'oklch(70.7% 0.165 254.624)', brand: 'oklch(0.52 0.21 260)', off: 'oklch(40% 0 0)', okBg: '#042f2e', okTx: '#99f6e4', badBg: '#450a0a', badTx: '#fca5a5', neuBg: '#262626', neuTx: '#e5e5e5', warnBg: '#431407', warnTx: '#fed7aa', warnLn: '#9a3412' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const n = !!this.props.narrow;
+const view = String(this.props.view ?? 'locked');
+const row = (name, tpl, host, path, when, next, last, on) => ({
+name: name, tpl: tpl, host: host, path: path, when: when, next: next, last: last, on: on ? 'true' : 'false',
+bg: last === 'Completed' ? k.okBg : (last === 'Failed' ? k.badBg : k.neuBg), fg: last === 'Completed' ? k.okTx : (last === 'Failed' ? k.badTx : k.neuTx),
+swBg: on ? k.brand : k.off, swPos: on ? 'flex-end' : 'flex-start'
+});
+return {
+k: k, wide: !n, locked: view.indexOf('locked') >= 0,
+cols: n ? 'minmax(0, 1fr) auto' : 'minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 1fr) 56px 120px',
+rowGap: n ? '6px 12px' : '16px',
+c1: n ? '1' : 'auto', c2: n ? '2' : 'auto', swRow: n ? '1' : 'auto', mRow: n ? '4' : 'auto', swJustify: n ? 'end' : 'start',
+rows: [
+row('Nightly products', 'Products feed → posts · en', 'shop.example.com', '/feeds/products.json', 'Daily at 03:00', 'Next: tomorrow 03:00', 'Completed', true),
+row('Stock levels', 'Stock → products · en', 'erp.example.com', '/export/stock.csv', 'Hourly at :15', 'Next: today 19:15', 'Failed', true),
+row('Weekly events', 'Events → events · de', 'events.example.org', '/feed.xml', 'Custom: 0 6 * * 1', 'Paused', 'Completed', false)
+]
+};
+}
+}
+</script>
+</body>
+</html>

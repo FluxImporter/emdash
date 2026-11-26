@@ -1,4 +1,4 @@
-import { Banner, Button, Dialog, Loader } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Dialog, Loader } from "@cloudflare/kumo";
 import {
 	type Announcements,
 	DndContext,
@@ -10,14 +10,16 @@ import {
 	useSensors,
 } from "@dnd-kit/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useId, useMemo, useRef, useState } from "react";
 import { describeError, describeWarning } from "../../errors.js";
-import { type Msg, useT, type Values } from "../../i18n.js";
+import { type Msg, useT, useTn, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { queryKeys, useFields, useSite } from "../../queries.js";
 import type { SampleColumn, SchemaField } from "../../types.js";
+import { useNarrow } from "../../ui/use-narrow.js";
 import { useWizard } from "../context.js";
-import { StepFooter } from "../StepFooter.js";
+import { COUNT as SHELL_COUNT, SUMMARY } from "../messages.js";
+import { StepHeader } from "../StepHeader.js";
 import {
 	type Blocker,
 	mapBlockers,
@@ -29,9 +31,16 @@ import {
 } from "../state.js";
 import { compatibleTypes, DetailPanel, type DetailRow } from "./detail/DetailPanel.js";
 import { KeyPicker } from "./detail/KeyPicker.js";
-import { FieldsPane, mapRows, NEW_FIELD, type Selection } from "./FieldsPane.js";
+import {
+	FieldsPane,
+	isRequired,
+	isUnmappable,
+	mapRows,
+	NEW_FIELD,
+	type Selection,
+} from "./FieldsPane.js";
 import { KeysPane, keyOfDrag } from "./KeysPane.js";
-import { M } from "./messages.js";
+import { COUNT, M } from "./messages.js";
 import { proposeField } from "./new-fields/infer.js";
 import { NewFields } from "./new-fields/NewFields.js";
 import { SchemaDiffDialog } from "./new-fields/SchemaDiffDialog.js";
@@ -59,49 +68,70 @@ function withKey(row: DetailRow, mapping: RowMapping | undefined, key: string): 
 	return (type === undefined ? { from: key } : { type, from: key }) as RowMapping;
 }
 
-/** The source keys the draft reads: every row's `from` and every proposed field's key. */
-function usedKeys(state: WizardState): Set<string> {
-	const used = new Set<string>();
-	for (const m of Object.values(state.rows)) {
-		if (typeof m?.from === "string") used.add(m.from);
+/**
+ * The source keys the draft reads, each with the rows that read it (by label): every row's `from`
+ * and every proposed field's key.
+ */
+function keyUsage(state: WizardState, rows: readonly DetailRow[]): Map<string, string[]> {
+	const usage = new Map<string, string[]>();
+	const add = (key: string, label: string) => usage.set(key, [...(usage.get(key) ?? []), label]);
+	for (const [id, m] of Object.entries(state.rows)) {
+		if (typeof m?.from !== "string") continue;
+		add(m.from, rows.find((r) => r.id === id)?.label ?? id);
 	}
-	for (const f of state.newFields) used.add(f.key);
-	return used;
+	for (const f of state.newFields) add(f.key, f.label === "" ? f.slug : f.label);
+	return usage;
 }
 
-/** The suggestion's rows as they stand: filled, and those still to check. */
-function suggestedCounts(state: WizardState): { filled: number; check: number } {
-	let filled = 0;
-	let check = 0;
-	for (const [row, meta] of Object.entries(state.meta)) {
-		if (meta === undefined || (meta.origin !== "ai" && meta.origin !== "name")) continue;
-		if (state.rows[row as RowId] === undefined) continue;
-		if (meta.check) check += 1;
-		else filled += 1;
-	}
-	return { filled, check };
+/** The summary bar's counts: rows mapped of those that can be, required rows done, and checks. */
+function mapCounts(state: WizardState, rows: readonly DetailRow[]) {
+	const open = rows.filter((r) => !isUnmappable(r));
+	const mapped = open.filter((r) => state.rows[r.id] !== undefined);
+	const required = open.filter(isRequired);
+	const requiredLeft = required.filter((r) => state.rows[r.id] === undefined).length;
+	const check = mapped.filter((r) => state.meta[r.id]?.check === true).length;
+	return {
+		total: open.length,
+		mapped: mapped.length,
+		required: required.length,
+		requiredLeft,
+		check,
+	};
 }
 
-/** The status line (spec "Suggestions"): the method and counts, or name matching. */
+/** How the suggestions were made (spec "Suggestions"): by AI and its provider, or by name. */
 function statusText(t: T, state: WizardState): string | null {
 	const reply = state.suggestion.reply;
 	if (state.suggestion.status !== "done" || reply === undefined) return null;
 	const { provider, available } = reply.ai;
 	if (reply.method === "ai" && provider !== undefined) {
-		return t(M.statusAi, { provider: t(M.providers[provider]), ...suggestedCounts(state) });
+		return t(M.statusAi, { provider: t(M.providers[provider]) });
 	}
 	// A provider that is set but cannot be used; "none" sets no provider and expects none.
 	return !available && provider !== undefined ? t(M.statusNameUnavailable) : t(M.statusName);
 }
 
 /**
- * Step 3 (spec "3. Map"): source keys on the left, the collection's rows in the middle, and the
- * selected row's detail panel on the right. A key is dragged onto a row (pointer or keyboard), or
+ * Step 3 (spec "3. Map", StepMap.dc.html): a summary bar (fields mapped, what to check, how the
+ * suggestions were made), then the source keys, the collection's rows and the selected row's
+ * detail panel, side by side on a wide page and stacked on a narrow one. A key is dragged onto a row (pointer or keyboard), or
  * picked in the panel. Next is blocked by `mapBlockers`; with proposed fields it opens the schema
  * diff first (preflight F3), and leaves once they are applied and mapped.
  */
 export function MapStep() {
 	const t = useT();
+	const tn = useTn();
+	// Three panes need about 1,000px; below that the keys span the page, and below 700px every
+	// pane does (measured on the step, not the viewport).
+	const [narrowRef, narrow] = useNarrow<HTMLDivElement>();
+	const [mediumRef, medium] = useNarrow<HTMLDivElement>(1000);
+	const panesRef = useCallback(
+		(node: HTMLDivElement | null) => {
+			narrowRef(node);
+			mediumRef(node);
+		},
+		[narrowRef, mediumRef],
+	);
 	const { state, dispatch } = useWizard();
 	const latest = useRef(state);
 	latest.current = state;
@@ -127,14 +157,14 @@ export function MapStep() {
 		() => (state.target === null ? [] : mapRows(t, fieldList, taxonomies ?? [], state.target)),
 		[t, fieldList, taxonomies, state.target],
 	);
-	const used = usedKeys(state);
+	const usage = keyUsage(state, rows);
 	const known = new Set(columns.map((c) => c.key));
-	const extraKeys = [...used].filter((k) => !known.has(k));
+	const extraKeys = [...usage.keys()].filter((k) => !known.has(k));
 	const blockers: Blocker[] = fields.data === undefined ? [] : mapBlockers(state, fields.data);
 	const loading = suggestions.status === "loading";
 
 	const labelOf = (id: string | number) =>
-		id === NEW_FIELD ? t(M.addField) : (rows.find((r) => r.id === id)?.label ?? String(id));
+		id === NEW_FIELD ? t(M.newFieldTarget) : (rows.find((r) => r.id === id)?.label ?? String(id));
 
 	const propose = (key: string) => {
 		const s = latest.current;
@@ -239,9 +269,61 @@ export function MapStep() {
 		pending = <Loader aria-label={t(M.fieldsLoading)} />;
 	}
 
+	const counts = mapCounts(state, rows);
+	const sourceName = state.source?.label ?? state.base?.name ?? "";
+	const summary =
+		state.target === null
+			? undefined
+			: t(SUMMARY.map, {
+					source: sourceName,
+					keys: tn(SHELL_COUNT.keys, columns.length),
+					collection: state.target.collection,
+					locale: state.target.locale,
+				});
+
 	return (
-		<div className="space-y-4">
+		<div className="flex flex-col gap-4">
+			<StepHeader
+				{...(summary === undefined ? {} : { summary })}
+				next={{
+					canNext: fields.data !== undefined && !loading && blockers.length === 0,
+					...(reason === undefined ? {} : { reason }),
+					onNext,
+				}}
+			/>
 			<SuggestionNotices onRetry={askAgain} />
+			<div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-kumo-hairline bg-kumo-base px-4 py-2.5">
+				{fields.data === undefined ? null : (
+					<p className="text-sm">
+						<span className="font-semibold">
+							{tn(COUNT.mapped, counts.total, { mapped: counts.mapped })}
+						</span>{" "}
+						<span className="text-kumo-subtle">
+							{counts.requiredLeft > 0
+								? tn(COUNT.requiredLeft, counts.requiredLeft)
+								: tn(COUNT.requiredDone, counts.required)}
+						</span>
+					</p>
+				)}
+				{counts.check > 0 ? (
+					<Badge variant="orange">{tn(COUNT.toCheck, counts.check)}</Badge>
+				) : null}
+				<div className="ml-auto flex flex-wrap items-center gap-3 text-sm">
+					<span aria-live="polite" className="flex items-center gap-2 text-kumo-subtle">
+						{loading ? (
+							<>
+								<Loader />
+								{t(M.asking)}
+							</>
+						) : (
+							statusText(t, state)
+						)}
+					</span>
+					<Button variant="outline" size="sm" disabled={loading} onClick={askAgain}>
+						{t(M.askAgain)}
+					</Button>
+				</div>
+			</div>
 			<DndContext
 				sensors={sensors}
 				onDragStart={({ active }) => setDragging(keyOfDrag(active.id))}
@@ -252,22 +334,40 @@ export function MapStep() {
 					screenReaderInstructions: { draggable: t(M.instructions) },
 				}}
 			>
-				<div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-12">
-					<KeysPane columns={columns} extraKeys={extraKeys} used={used} />
-					<FieldsPane
-						heading={t(M.fieldsHeading, { collection: collectionLabel })}
-						rows={rows}
-						mappings={state.rows}
-						meta={state.meta}
-						blockers={blockers}
-						selected={selected}
-						onSelect={setSelected}
-						onClear={(id) => setRow(id, null)}
-						pending={pending}
-					/>
+				<div
+					ref={panesRef}
+					className={
+						narrow
+							? "flex flex-col gap-3"
+							: medium
+								? "flex flex-wrap items-start gap-3"
+								: "flex items-start gap-3"
+					}
+				>
+					<div className={narrow ? "" : medium ? "w-full" : "w-56 shrink-0"}>
+						<KeysPane columns={columns} extraKeys={extraKeys} usage={usage} wide={medium} />
+					</div>
+					<div className={narrow ? "" : "min-w-0 flex-1"}>
+						<FieldsPane
+							heading={t(M.fieldsHeading, { collection: collectionLabel })}
+							rows={rows}
+							mappings={state.rows}
+							meta={state.meta}
+							blockers={blockers}
+							keys={known}
+							selected={selected}
+							onSelect={setSelected}
+							onClear={(id) => setRow(id, null)}
+							pending={pending}
+						/>
+					</div>
 					<aside
 						aria-label={t(M.detailHeading)}
-						className="min-w-0 space-y-4 rounded-lg border border-kumo-line p-3 xl:col-span-4"
+						className={
+							narrow
+								? "flex min-w-0 flex-col gap-3 rounded-lg border border-kumo-hairline bg-kumo-base p-4"
+								: "flex w-72 min-w-0 shrink-0 flex-col gap-3 rounded-lg border border-kumo-hairline bg-kumo-base p-4"
+						}
 					>
 						{selected === NEW_FIELD ? (
 							<NewFieldPicker columns={columns} onPick={propose} />
@@ -290,7 +390,7 @@ export function MapStep() {
 						<div
 							aria-hidden="true"
 							data-testid="drag-overlay"
-							className="max-w-full cursor-grab truncate rounded-md border border-kumo-brand bg-kumo-base px-2 py-1 text-sm font-medium shadow-sm"
+							className="max-w-full cursor-grab truncate rounded-md border border-kumo-brand bg-kumo-base px-2 py-1 font-mono text-sm font-medium shadow-sm"
 						>
 							{dragging}
 						</div>
@@ -302,22 +402,6 @@ export function MapStep() {
 				onChange={(slug, patch) => dispatch({ type: "fieldChanged", slug, patch })}
 				onRemove={(slug) => dispatch({ type: "fieldRemoved", slug })}
 			/>
-			<div className="flex flex-wrap items-center gap-3 text-sm">
-				<span className="font-medium">{t(M.suggestions)}</span>
-				<span aria-live="polite" className="flex items-center gap-2 text-kumo-subtle">
-					{loading ? (
-						<>
-							<Loader />
-							{t(M.asking)}
-						</>
-					) : (
-						statusText(t, state)
-					)}
-				</span>
-				<Button variant="secondary" size="sm" disabled={loading} onClick={askAgain}>
-					{t(M.askAgain)}
-				</Button>
-			</div>
 			{blockers.some((b) => b.row === null) ? (
 				<ul className="space-y-1 text-sm text-kumo-danger">
 					{blockers
@@ -327,11 +411,6 @@ export function MapStep() {
 						))}
 				</ul>
 			) : null}
-			<StepFooter
-				canNext={fields.data !== undefined && !loading && blockers.length === 0}
-				{...(reason === undefined ? {} : { reason })}
-				onNext={onNext}
-			/>
 			<AskAgainDialog
 				open={confirming}
 				onClose={() => setConfirming(false)}

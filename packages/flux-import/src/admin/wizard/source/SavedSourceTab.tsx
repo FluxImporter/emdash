@@ -25,14 +25,14 @@ export function SavedSourceTab({ busy, run, pick }: TabProps) {
 		return <Empty size="sm" title={t(M.noSources)} description={t(M.noSourcesHint)} />;
 	}
 	return (
-		<ul className="divide-y divide-kumo-line">
+		<ul className="divide-y divide-kumo-line rounded-lg border border-kumo-hairline bg-kumo-base">
 			{sources.data.map((row) => (
-				<li key={row.id} className="flex items-center justify-between gap-3 py-2">
+				<li key={row.id} className="flex items-center justify-between gap-3 px-4 py-3">
 					<div className="min-w-0">
-						<p className="truncate font-medium" title={row.name}>
+						<p className="truncate font-semibold" title={row.name}>
 							{row.name}
 						</p>
-						<p className="truncate text-sm text-kumo-subtle">{hostAndPath(row.url)}</p>
+						<p className="truncate font-mono text-sm text-kumo-subtle">{hostAndPath(row.url)}</p>
 						{row.lastError !== undefined ? (
 							<p className="text-sm text-kumo-danger">{t(M.lastFetchFailed)}</p>
 						) : row.lastFetch === undefined ? (

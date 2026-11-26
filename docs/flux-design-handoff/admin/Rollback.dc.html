@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rollback dialog</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div role="dialog" aria-modal="true" aria-labelledby="rb-title" style="width: {{ w }}; max-width: 100%; box-sizing: border-box; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; background: {{ k.overlay }}; border: 1px solid {{ k.line }}; border-radius: 14px; box-shadow: {{ k.sh }}; padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; animation: ad-in .2s ease both">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 id="rb-title" style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; color: {{ k.strong }}">{{ title }}</h2>
+<span style="color: {{ k.sub }}">Products feed · posts · en · Yesterday 18:38 UTC</span>
+</div>
+
+<sc-if value="{{ isCheck }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="width: 16px; height: 16px; border-radius: 50%; border: 2px solid {{ k.tint }}; border-top-color: {{ k.brand }}; animation: ad-spin .8s linear infinite"></span>Checking what a rollback would change…</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+<sc-for list="{{ skel }}" as="s" hint-placeholder-count="4"><span style="height: 64px; border-radius: 10px; background: {{ k.tint }}; animation: ad-pulse 1.4s ease-in-out infinite"></span></sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSummary }}" hint-placeholder-val="{{ true }}">
+<p style="margin: 0">A dry rollback found 14 entries. 13 will change.</p>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+<sc-for list="{{ tiles }}" as="t" hint-placeholder-count="4">
+<div style="display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 10px; border: 1px solid {{ t.ln }}; background: {{ t.bg }}">
+<span style="font-size: 22px; line-height: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: {{ t.nfg }}">{{ t.n }}</span>
+<span style="font-weight: 600">{{ t.label }}</span>
+<span style="font-size: 13px; color: {{ k.sub }}">{{ t.hint }}</span>
+</div>
+</sc-for>
+</div>
+<div role="note" style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; background: {{ k.warnBg }}; color: {{ k.warnTx }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 2px"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"></path></svg><span>1 entry was edited after the import. It is kept as it is.</span></div>
+</sc-if>
+
+<sc-if value="{{ isProgress }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; align-items: baseline"><span style="font-weight: 600">8 of 13 entries</span><span style="color: {{ k.sub }}; font-variant-numeric: tabular-nums">62%</span></div>
+<span role="meter" aria-label="Rollback progress" aria-valuenow="8" aria-valuemin="0" aria-valuemax="13" style="display: block; height: 8px; border-radius: 8px; background: {{ k.tint }}; overflow: hidden"><span style="display: block; width: 62%; height: 100%; border-radius: 8px; background: {{ k.brand }}; transition: width .4s ease"></span></span>
+</div>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px">
+<sc-for list="{{ prog }}" as="p" hint-placeholder-count="4"><li style="display: flex; justify-content: space-between; gap: 12px"><span style="display: inline-flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{ p.dot }}"></span>{{ p.label }}</span><span style="font-variant-numeric: tabular-nums; color: {{ k.sub }}">{{ p.v }}</span></li></sc-for>
+</ul>
+<p style="margin: 0; color: {{ k.sub }}">You can close this. The rollback keeps running and shows in Jobs.</p>
+</sc-if>
+
+<div style="display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 4px">
+<sc-for list="{{ buttons }}" as="b" hint-placeholder-count="2">
+<span style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid {{ b.ln }}; background: {{ b.bg }}; color: {{ b.fg }}; font-weight: 600; opacity: {{ b.op }}">{{ b.label }}</span>
+</sc-for>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"stage":{"editor":"enum","options":["check","summary","progress"],"default":"summary"},"$preview":{"width":560,"height":440}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', overlay: '#ffffff', ctrl: '#ffffff', tint: 'oklch(94% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)', brand: 'oklch(0.5772 0.2324 260)', bad: 'oklch(50.5% 0.213 27.518)', badSolid: 'oklch(63.7% 0.237 25.331)', ok: 'oklch(59.6% 0.145 163.225)', warnBg: '#ffedd5', warnTx: '#9a3412', warnLn: '#fdba74', sh: '0 24px 64px rgba(0,0,0,.18)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', overlay: 'oklch(21% 0 0)', ctrl: 'oklch(25% 0 0)', tint: 'oklch(30% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(32% 0 0)', brand: 'oklch(0.52 0.21 260)', bad: 'oklch(70.4% 0.191 22.216)', badSolid: 'oklch(57.7% 0.245 27.325)', ok: 'oklch(76.5% 0.177 163.223)', warnBg: '#431407', warnTx: '#fed7aa', warnLn: '#9a3412', sh: '0 24px 64px rgba(0,0,0,.6)' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const st = this.props.stage || 'summary';
+const sec = (label, op) => ({ label: label, bg: k.ctrl, fg: k.tx, ln: k.line, op: op });
+const danger = (label, op) => ({ label: label, bg: k.ctrl, fg: k.bad, ln: k.bad, op: op });
+return {
+k: k, w: this.props.narrow ? '460px' : '560px',
+title: st === 'progress' ? 'Rolling back Products feed' : 'Roll back Products feed?',
+isCheck: st === 'check', isSummary: st === 'summary', isProgress: st === 'progress',
+skel: [1, 2, 3, 4],
+tiles: [
+{ n: '2', label: 'to delete', hint: 'Created by this import', bg: 'transparent', ln: k.hair, nfg: k.bad },
+{ n: '10', label: 'to restore', hint: 'Updated by this import', bg: 'transparent', ln: k.hair, nfg: k.strong },
+{ n: '1', label: 'to bring back', hint: 'Removed as a missing entry', bg: 'transparent', ln: k.hair, nfg: k.strong },
+{ n: '1', label: 'kept', hint: 'Edited after the import', bg: k.warnBg, ln: k.warnLn, nfg: k.warnTx }
+],
+prog: [
+{ label: 'Deleted', v: '2 of 2', dot: k.ok },
+{ label: 'Restored', v: '5 of 10', dot: k.brand },
+{ label: 'Brought back', v: '0 of 1', dot: k.tint },
+{ label: 'Kept', v: '1', dot: k.tint }
+],
+buttons: st === 'check' ? [sec('Cancel', 1), danger('Roll back', 0.45)] : (st === 'summary' ? [sec('Keep the import', 1), danger('Roll back 13 entries', 1)] : [sec('Close', 1)])
+};
+}
+}
+</script>
+</body>
+</html>

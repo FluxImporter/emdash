@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sources tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 28px">
+
+<section style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<div style="display: flex; flex-direction: column"><h2 style="margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; color: {{ k.strong }}">URL sources</h2><span style="color: {{ k.sub }}">Feeds that imports and schedules fetch.</span></div>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>Add a source</span>
+</div>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><div style="display: grid; grid-template-columns: {{ cols }}; gap: 16px; padding: 10px 16px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600"><span>Source</span><span>Credential</span><span>Last fetch</span><span></span></div></sc-if>
+<sc-for list="{{ sources }}" as="s" hint-placeholder-count="2">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: {{ rowGap }}; align-items: center; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}">
+<span style="display: flex; flex-direction: column; min-width: 0; grid-column: {{ c1 }}"><span style="font-weight: 600; color: {{ k.strong }}">{{ s.name }}</span><span style="font-family: 'Noto Sans Mono', monospace; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span style="font-weight: 500">{{ s.host }}</span><span style="color: {{ k.sub }}">{{ s.path }}</span></span></span>
+<span style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: {{ s.credFg }}; grid-column: {{ c1 }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 9.5a4 4 0 1 0-3.6 4L7 17.5V20h2.5v-2h2v-2l1.9-1.9a4 4 0 0 0 1.1-4.6z"></path></svg>{{ s.cred }}</span>
+<span style="display: flex; align-items: center; gap: 8px; font-size: 13px; grid-column: {{ c1 }}"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{ s.dot }}"></span><span style="display: flex; flex-direction: column"><span>{{ s.fetched }}</span><span style="color: {{ s.detFg }}">{{ s.detail }}</span></span></span>
+<span style="justify-self: end; display: flex; gap: 4px; grid-column: {{ c2 }}; grid-row: {{ aRow }}"><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; font-weight: 500; white-space: nowrap">Fetch now</span><span role="button" aria-label="More actions for {{ s.name }}" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></span></span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<div style="display: flex; flex-direction: column"><h2 style="margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; color: {{ k.strong }}">Credentials</h2><span style="color: {{ k.sub }}">Write-only. Values are stored on the site and never shown again.</span></div>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>Add a credential</span>
+</div>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<sc-for list="{{ creds }}" as="c" hint-placeholder-count="2">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid {{ k.hair }}">
+<span style="font-family: 'Noto Sans Mono', monospace; font-weight: 500; min-width: 140px">{{ c.name }}</span>
+<span style="color: {{ k.sub }}; flex: 1 1 200px">Sent in the <code style="font-family: 'Noto Sans Mono', monospace; color: {{ k.tx }}">{{ c.header }}</code> header · {{ c.used }}</span>
+<span style="font-family: 'Noto Sans Mono', monospace; color: {{ k.sub }}; letter-spacing: 2px" aria-label="Value hidden">••••••••</span>
+<span style="display: flex; gap: 4px"><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; font-weight: 500">Replace</span><span style="display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 8px; font-weight: 500; color: {{ k.bad }}">Delete</span></span>
+</div>
+</sc-for>
+</div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":520}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', base: '#ffffff', ctrl: '#ffffff', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .12)', bad: 'oklch(50.5% 0.213 27.518)', ok: 'oklch(59.6% 0.145 163.225)', badDot: 'oklch(63.7% 0.237 25.331)' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', ctrl: 'oklch(21% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(32% 0 0)', bad: 'oklch(70.4% 0.191 22.216)', ok: 'oklch(76.5% 0.177 163.223)', badDot: 'oklch(57.7% 0.245 27.325)' }
+};
+const k = K[this.props.theme === 'dark' ? 'dark' : 'light'];
+const n = !!this.props.narrow;
+return {
+k: k, wide: !n,
+cols: n ? 'minmax(0, 1fr) auto' : 'minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.2fr) 130px',
+rowGap: n ? '6px 12px' : '16px', c1: n ? '1' : 'auto', c2: n ? '2' : 'auto', aRow: n ? '1' : 'auto',
+sources: [
+{ name: 'Products (secure)', host: 'shop.example.com', path: '/feeds/secure.json', cred: 'feed-token', credFg: k.tx, fetched: 'Today 18:40 UTC', detail: '10 records · 4 KB', detFg: k.sub, dot: k.ok },
+{ name: 'Stock levels', host: 'erp.example.com', path: '/export/stock.csv', cred: 'No credential', credFg: k.sub, fetched: 'Today 18:15 UTC', detail: 'HTTP 503 from the server', detFg: k.bad, dot: k.badDot }
+],
+creds: [
+{ name: 'feed-token', header: 'Authorization', used: 'used by 1 source' },
+{ name: 'erp-key', header: 'X-Api-Key', used: 'not used yet' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

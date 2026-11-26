@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Flux Importer footer</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<footer style="font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: {{ t.b1 }}; color: {{ t.tx2 }}; border-top: 1px solid {{ t.ln }}; font-size: 15px; line-height: 22px">
+<div style="max-width: {{ maxW }}; margin: 0 auto; padding: {{ pad }}; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 40px">
+<div style="display: flex; flex-direction: column; gap: 10px">
+<span style="display: inline-flex; align-items: center; gap: 10px; color: {{ t.tx }}">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#ffd23f"></rect><rect x="4" y="6.2" width="6" height="2.6" rx="1.3" fill="#0f2233"></rect><rect x="4" y="10.7" width="8.5" height="2.6" rx="1.3" fill="#0f2233"></rect><rect x="4" y="15.2" width="6" height="2.6" rx="1.3" fill="#0f2233"></rect><rect x="13.8" y="5.2" width="6.2" height="13.6" rx="1.6" fill="#0f2233"></rect></svg>
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-size: 18px; letter-spacing: -0.02em"><span style="font-weight: 700">flux</span><span style="font-weight: 500; color: {{ t.tx2 }}">importer</span></span>
+</span>
+<span style="display: flex; flex-wrap: wrap; gap: 6px 16px; color: {{ t.tx3 }}; font-size: 14px"><span>MIT licensed</span><span aria-hidden="true">·</span><span>Built for EmDash</span></span>
+</div>
+<nav aria-label="Project links" style="display: flex; flex-wrap: wrap; gap: 4px 8px">
+<a href="https://github.com/" style="display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; color: {{ t.tx }}; text-decoration: none; font-weight: 500; border: 1px solid {{ t.ln }}; border-radius: 8px"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"></path></svg>GitHub</a>
+<a href="https://www.npmjs.com/" style="display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; color: {{ t.tx }}; text-decoration: none; font-weight: 500; border: 1px solid {{ t.ln }}; border-radius: 8px"><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px">npm</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ t.tx3 }}">@fluximporter/emdash</span></a>
+</nav>
+</div>
+</footer>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"variant":{"editor":"enum","options":["home","docs"],"default":"home"},"$preview":{"width":1440,"height":200}}'>
+class Component extends DCLogic {
+renderVals() {
+const T = {
+dark: { b1: '#0f2233', ln: '#24425c', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7' },
+light: { b1: '#f2f5f7', ln: '#d5dde3', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a' }
+};
+const docs = this.props.variant === 'docs';
+return {
+t: T[this.props.theme === 'light' ? 'light' : 'dark'],
+maxW: docs ? 'none' : '1200px',
+pad: docs ? '24px' : '48px 24px'
+};
+}
+}
+</script>
+</body>
+</html>

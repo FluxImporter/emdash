@@ -278,8 +278,10 @@ function unloadPrevented(): boolean {
 	window.dispatchEvent(event);
 	return event.defaultPrevented;
 }
-const next = () => screen.getByRole("button", { name: "Next" });
-const stepLink = (n: number, name: string) => screen.getByRole("link", { name: `${n} ${name}` });
+const next = () => screen.getByRole("button", { name: /^Next: / });
+/** A step bar link, done (named "… (done)") or not. */
+const stepLink = (n: number, name: string) =>
+	screen.getByRole("link", { name: new RegExp(`^${n} ${name}( \\(done\\))?$`) });
 
 /** Opens the select named `name` and picks `option`. */
 async function choose(user: UserEvent, name: string | RegExp, option: string | RegExp) {
@@ -311,14 +313,14 @@ async function target(user: UserEvent, collection = "Posts") {
 /** Map: waits until the suggestion has filled the rows and Next is free. */
 async function mapped() {
 	await heading("Map");
-	await screen.findByText("Name matching");
+	await screen.findByText("Suggestions by name matching");
 	await waitFor(() => expect(next()).toBeEnabled());
 }
 
 /** Preview: waits for the dry run to finish. */
 async function previewed() {
 	await heading("Preview");
-	await screen.findByText(`Dry run finished. Records checked: ${RECORDS}`);
+	await screen.findByText(`Dry run of ${RECORDS} records. Nothing is written yet.`);
 	await screen.findByRole("table");
 	await waitFor(() => expect(screen.getByRole("button", { name: "Run import" })).toBeEnabled());
 }
@@ -327,7 +329,7 @@ async function previewed() {
 async function run(user: UserEvent) {
 	await user.click(screen.getByRole("button", { name: "Run import" }));
 	await heading("Run");
-	await screen.findByText("The import is complete.");
+	await screen.findByText("Import complete.");
 }
 
 /** Source: loads the saved template, which opens Preview. */
@@ -344,7 +346,9 @@ async function csvFlow(user: UserEvent) {
 	await user.click(next());
 	await target(user);
 	await mapped();
-	await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+	await user.click(
+		screen.getByRole("button", { name: "+ Drop a key here to propose a new field" }),
+	);
 	const details = screen.getByRole("complementary", { name: "Details" });
 	await user.click(within(details).getByRole("combobox", { name: "Key for the new field" }));
 	await user.click(await screen.findByRole("option", { name: "Released" }));
@@ -454,7 +458,7 @@ describe("the import wizard, end to end", () => {
 		);
 
 		expect(unloadPrevented()).toBe(false);
-		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		await user.click(screen.getByRole("button", { name: "New import" }));
 		// Source, focused, with nothing of the last import: no sample, no later step linked.
 		const source = await heading("Source");
 		await waitFor(() => expect(source).toHaveFocus());
@@ -504,7 +508,7 @@ describe("the import wizard, end to end", () => {
 		await heading("Run");
 		expect(await screen.findByText("This item no longer exists.")).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
-		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		await user.click(screen.getByRole("button", { name: "New import" }));
 		const source = await heading("Source");
 		await waitFor(() => expect(source).toHaveFocus());
 		const params = new URLSearchParams(window.location.search);
@@ -533,7 +537,7 @@ describe("the import wizard, end to end", () => {
 		await user.click(next());
 		await previewed();
 		await run(user);
-		await user.click(screen.getByRole("button", { name: "Start a new import" }));
+		await user.click(screen.getByRole("button", { name: "New import" }));
 		await upload(user);
 		const picker = await screen.findByRole("combobox", { name: "Saved template" });
 		await waitFor(() => expect(picker).toBeEnabled());
@@ -686,8 +690,8 @@ describe("the import wizard, end to end", () => {
 		);
 		await screen.findByTestId("field:content");
 		// Nothing of the posts mapping is left: the key and the title wait for a key again.
-		expect(within(screen.getByTestId("key")).getByText("Drop a key")).toBeVisible();
-		expect(within(screen.getByTestId("field:title")).getByText("Drop a key")).toBeVisible();
+		expect(within(screen.getByTestId("key")).getByText("No key")).toBeVisible();
+		expect(within(screen.getByTestId("field:title")).getByText("No key")).toBeVisible();
 		expect(next()).toBeDisabled();
 		for (const [n, step] of [
 			[4, "Options"],
@@ -737,7 +741,7 @@ describe("the import wizard, end to end", () => {
 		await user.click(await screen.findByRole("option", { name: "title" }));
 		expect(stepLink(4, "Options")).toBeVisible();
 		expect(stepLink(5, "Preview")).toBeVisible();
-		expect(screen.queryByRole("link", { name: "6 Run" })).toBeNull();
+		expect(screen.queryByRole("link", { name: /^6 Run/ })).toBeNull();
 	});
 
 	it("links no Preview in the step bar while an Options input is refused (final review 4)", async () => {
@@ -757,14 +761,14 @@ describe("the import wizard, end to end", () => {
 		await user.clear(threshold);
 		await user.type(threshold, "250");
 		expect(next()).toBeDisabled();
-		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		expect(screen.queryByRole("link", { name: /^5 Preview/ })).toBeNull();
 		await user.clear(threshold);
 		await user.type(threshold, "30");
 		expect(stepLink(5, "Preview")).toBeVisible();
 
 		// Leaving Options drops the text it refused: the draft keeps its last valid value.
 		await user.clear(threshold);
-		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		expect(screen.queryByRole("link", { name: /^5 Preview/ })).toBeNull();
 		await user.click(stepLink(3, "Map"));
 		await heading("Map");
 		expect(stepLink(5, "Preview")).toBeVisible();
@@ -784,11 +788,11 @@ describe("the import wizard, end to end", () => {
 		await heading("Options");
 		await user.click(screen.getByRole("checkbox", { name: "Save as template" }));
 		await user.type(screen.getByRole("textbox", { name: "Template name" }), "Posts from CSV");
-		await waitFor(() => expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull());
+		await waitFor(() => expect(screen.queryByRole("link", { name: /^5 Preview/ })).toBeNull());
 		// The name is the draft's own, so the check holds away from Options too.
 		await user.click(stepLink(3, "Map"));
 		await heading("Map");
-		expect(screen.queryByRole("link", { name: "5 Preview" })).toBeNull();
+		expect(screen.queryByRole("link", { name: /^5 Preview/ })).toBeNull();
 		await user.click(stepLink(4, "Options"));
 		await heading("Options");
 		const name = screen.getByRole("textbox", { name: "Template name" });
@@ -806,7 +810,9 @@ describe("the import wizard, end to end", () => {
 		expect(stepLink(4, "Options")).toBeVisible();
 
 		// A proposal goes through Map's Next and the schema diff, never around them.
-		await user.click(screen.getByRole("button", { name: "+ Add a new field" }));
+		await user.click(
+			screen.getByRole("button", { name: "+ Drop a key here to propose a new field" }),
+		);
 		const details = screen.getByRole("complementary", { name: "Details" });
 		await user.click(within(details).getByRole("combobox", { name: "Key for the new field" }));
 		await user.click(await screen.findByRole("option", { name: "Released" }));

@@ -42,6 +42,17 @@ describe("DryRuns", () => {
 		await screen.findByText("sentinel");
 		await waitFor(() => expect(container.textContent).not.toContain("Dry runs"));
 	});
+	it("says they are not written to the site, offers Clear dry runs closed, and opens as a disclosure", async () => {
+		mockRoutes({ "jobs/summaries": () => THREE });
+		const { user } = show();
+		const trigger = await screen.findByRole("button", { name: "Dry runs: 3" });
+		expect(trigger).toHaveAttribute("aria-expanded", "false");
+		expect(screen.getByText("Not written to the site.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "Clear dry runs" })).toBeVisible();
+		await user.click(trigger);
+		expect(trigger).toHaveAttribute("aria-expanded", "true");
+		expect(await screen.findByText("Name of D1")).toBeVisible();
+	});
 	it("says more than 8 when the first page has more", async () => {
 		mockRoutes({ "jobs/summaries": () => page(8, true) });
 		show();

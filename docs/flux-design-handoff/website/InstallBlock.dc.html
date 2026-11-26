@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Install command block</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: Inter, system-ui, sans-serif; text-align: left; background: {{ codeBg }}; border: 1px solid {{ codeLn }}; border-radius: 12px; overflow: hidden; box-shadow: {{ sh }}">
+<div role="tablist" aria-label="Package manager" style="display: flex; align-items: stretch; gap: 4px; padding: 0 8px; border-bottom: 1px solid #24425c">
+<sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="3">
+<button type="button" role="tab" aria-selected="{{ tb.sel }}" onClick="{{ tb.pick }}" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 500; min-height: 44px; padding: 0 12px; border: 0; background: transparent; cursor: pointer; color: {{ tb.fg }}; box-shadow: inset 0 -2px 0 {{ tb.line }}; transition: color .2s ease, box-shadow .2s ease">{{ tb.label }}</button>
+</sc-for>
+<span style="margin-left: auto; align-self: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8aa0b2">terminal</span>
+</div>
+<div style="display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 18px">
+<code style="flex: 1 1 auto; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 16px; line-height: 26px; color: #e6edf2; white-space: pre; overflow-x: auto"><span style="color: #8aa0b2; user-select: none">$ </span><span style="color: #ffd23f">{{ pmTyped }}</span>{{ restTyped }}<span aria-hidden="true" style="display: inline-block; width: 9px; height: 18px; margin-left: 2px; vertical-align: -3px; background: #ffd23f; animation: fx-blink 1s steps(1) infinite"></span></code>
+<button type="button" onClick="{{ copy }}" aria-label="{{ copyLabel }}" style="flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; min-width: 44px; justify-content: center; padding: 0 12px; border: 1px solid {{ copyLn }}; border-radius: 8px; background: {{ copyBg }}; color: {{ copyFg }}; font: 600 14px/20px Inter, system-ui, sans-serif; cursor: pointer; transition: background-color .2s ease, color .2s ease, border-color .2s ease">
+<sc-if value="{{ copied }}" hint-placeholder-val="{{ false }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span>Copied</span></sc-if>
+<sc-if value="{{ notCopied }}" hint-placeholder-val="{{ true }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9h10v11H9zM5 15V4h10"></path></svg><span>Copy</span></sc-if>
+</button>
+</div>
+<p style="margin: 0; padding: 0 18px 14px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; color: #8aa0b2; opacity: {{ nextOpacity }}; transition: opacity .5s ease"># next: register the plugin in astro.config.mjs</p>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":680,"height":150}}'>
+class Component extends DCLogic {
+constructor(props) {
+super(props);
+this.state = { pm: 'pnpm', n: 0, copied: false };
+this.cmds = { pnpm: 'pnpm add @fluximporter/emdash', npm: 'npm install @fluximporter/emdash', yarn: 'yarn add @fluximporter/emdash' };
+}
+componentDidMount() {
+this.reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+if (this.reduce) { this.setState({ n: 999 }); return; }
+this.timer = setInterval(() => {
+const full = this.cmds[this.state.pm].length;
+if (this.state.n < full) this.setState({ n: this.state.n + 1 });
+}, 38);
+}
+componentWillUnmount() { clearInterval(this.timer); clearTimeout(this.copyT); }
+renderVals() {
+const s = this.state;
+const dark = this.props.theme !== 'light';
+const cmd = this.cmds[s.pm];
+const typed = cmd.slice(0, s.n);
+const pmLen = s.pm.length;
+return {
+codeBg: dark ? '#07131d' : '#0f2233',
+codeLn: dark ? '#24425c' : '#0f2233',
+sh: dark ? '0 16px 40px rgba(0,0,0,.35)' : '0 16px 40px rgba(15,34,51,.18)',
+tabs: ['pnpm', 'npm', 'yarn'].map((k) => ({
+label: k,
+sel: k === s.pm ? 'true' : 'false',
+fg: k === s.pm ? '#ffffff' : '#93a7b7',
+line: k === s.pm ? '#ffd23f' : 'transparent',
+pick: () => this.setState({ pm: k, n: this.reduce ? 999 : 0, copied: false })
+})),
+pmTyped: typed.slice(0, pmLen),
+restTyped: typed.slice(pmLen),
+nextOpacity: s.n >= cmd.length ? 1 : 0,
+copied: s.copied,
+notCopied: !s.copied,
+copyLabel: s.copied ? 'Copied' : 'Copy install command',
+copyBg: s.copied ? '#5fd39a' : 'transparent',
+copyFg: s.copied ? '#0f2233' : '#e6edf2',
+copyLn: s.copied ? '#5fd39a' : '#3a5a76',
+copy: () => {
+try { if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {}); } catch (e) {}
+this.setState({ copied: true, n: 999 });
+clearTimeout(this.copyT);
+this.copyT = setTimeout(() => this.setState({ copied: false }), 1600);
+}
+};
+}
+}
+</script>
+</body>
+</html>

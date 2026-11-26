@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Code block</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<figure style="margin: 0; font-family: Inter, system-ui, sans-serif; background: {{ bg }}; border: 1px solid {{ ln }}; border-radius: 12px; overflow: hidden; text-align: left">
+<div style="display: flex; align-items: stretch; gap: 2px; padding: 0 6px 0 8px; border-bottom: 1px solid #24425c; min-height: 44px">
+<sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="1">
+<button type="button" onClick="{{ tb.pick }}" aria-pressed="{{ tb.sel }}" style="display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border: 0; background: transparent; cursor: {{ tb.cursor }}; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500; color: {{ tb.fg }}; box-shadow: inset 0 -2px 0 {{ tb.line }}; transition: color .2s ease, box-shadow .2s ease"><sc-if value="{{ tb.isFile }}" hint-placeholder-val="{{ true }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6zM14 3v4h4"></path></svg></sc-if>{{ tb.label }}</button>
+</sc-for>
+<button type="button" onClick="{{ copy }}" aria-label="{{ copyLabel }}" style="margin-left: auto; align-self: center; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; min-width: 36px; justify-content: center; padding: 0 10px; border: 1px solid {{ copyLn }}; border-radius: 7px; background: {{ copyBg }}; color: {{ copyFg }}; font: 600 13px/18px Inter, system-ui, sans-serif; cursor: pointer; transition: background-color .2s ease, color .2s ease">
+<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ copyIcon }}"></path></svg>{{ copyText }}</button>
+</div>
+<pre style="margin: 0; padding: 14px 0; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 24px; color: #e6edf2"><code style="display: block; min-width: max-content"><sc-for list="{{ lines }}" as="ln" hint-placeholder-count="8"><span style="display: flex; padding-right: 20px; background: {{ ln.bg }}; box-shadow: inset 3px 0 0 {{ ln.bar }}"><span aria-hidden="true" style="flex: none; width: 44px; padding-right: 14px; text-align: right; color: #8299ad; user-select: none">{{ ln.num }}</span><span aria-hidden="true" style="flex: none; width: 16px; color: {{ ln.markC }}; user-select: none">{{ ln.mark }}</span><span><sc-for list="{{ ln.toks }}" as="k" hint-placeholder-count="3"><span style="color: {{ k.c }}">{{ k.s }}</span></sc-for></span></span></sc-for></code></pre>
+</figure>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"file":{"editor":"text","default":"astro.config.mjs"},"lang":{"editor":"enum","options":["js","json","sh"],"default":"js"},"code":{"editor":null},"tabs":{"editor":null},"hl":{"editor":null},"diff":{"editor":"boolean","default":false},"$preview":{"width":720,"height":320}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { tab: 0, copied: false }; }
+componentWillUnmount() { clearTimeout(this.ct); }
+tokens(line, lang) {
+const C = { kw: '#ffd23f', str: '#a6e3a1', cm: '#8aa0b2', fn: '#8fd6ff', num: '#ffb4a2', key: '#8fd6ff', pl: '#e6edf2', pun: '#93a7b7' };
+const re = lang === 'sh'
+? /(#.*$)|("[^"]*"|'[^']*')|(^\s*\w[\w-]*|\s-{1,2}[\w-]+)|(\\$)/g
+: /(\/\/.*$)|("(?:[^"\\]|\\.)*"|'[^']*'|`[^`]*`)|\b(import|from|export|default|const|let|await|async|return|true|false|null|new)\b|([A-Za-z_$][\w$]*)(?=\s*\()|(\b\d[\d_.]*\b)/g;
+const out = []; let last = 0; let m;
+while ((m = re.exec(line)) !== null) {
+if (m.index > last) out.push({ s: line.slice(last, m.index), c: C.pl });
+let c = C.pl;
+if (m[1]) c = C.cm;
+else if (m[2]) c = (lang === 'json' && /^\s*:/.test(line.slice(m.index + m[2].length))) ? C.key : C.str;
+else if (m[3]) c = lang === 'sh' ? C.kw : C.kw;
+else if (m[4]) c = lang === 'sh' ? C.pun : C.fn;
+else if (m[5]) c = C.num;
+out.push({ s: m[0], c: c });
+last = m.index + m[0].length;
+if (m[0].length === 0) re.lastIndex++;
+}
+if (last < line.length) out.push({ s: line.slice(last), c: C.pl });
+if (!out.length) out.push({ s: ' ', c: C.pl });
+return out;
+}
+renderVals() {
+const dark = this.props.theme !== 'light';
+const tabs = this.props.tabs && this.props.tabs.length ? this.props.tabs : [{ label: this.props.file || 'astro.config.mjs', code: this.props.code || '', lang: this.props.code ? (this.props.lang || 'js') : 'sh', hl: this.props.hl || [] }];
+const i = Math.min(this.state.tab, tabs.length - 1);
+const cur = tabs[i];
+const lang = cur.lang || this.props.lang || 'js';
+const hl = cur.hl || this.props.hl || [];
+const diff = !!this.props.diff;
+const code = String(cur.code || 'pnpm add @fluximporter/emdash');
+const s = this.state;
+return {
+bg: dark ? '#07131d' : '#0f2233',
+ln: dark ? '#24425c' : '#0f2233',
+tabs: tabs.map((tb, n) => ({
+label: tb.label, isFile: tabs.length === 1, sel: n === i ? 'true' : 'false',
+fg: n === i ? '#ffffff' : '#93a7b7', line: n === i && tabs.length > 1 ? '#ffd23f' : 'transparent',
+cursor: tabs.length > 1 ? 'pointer' : 'default',
+pick: () => this.setState({ tab: n, copied: false })
+})),
+lines: code.split('\n').map((raw, n) => {
+const d = diff ? raw.charAt(0) : '';
+const body = diff && (d === '+' || d === '-' || d === ' ') ? raw.slice(1) : raw;
+const isHl = hl.indexOf(n + 1) >= 0;
+const add = d === '+'; const del = d === '-';
+return {
+num: n + 1,
+mark: add ? '+' : (del ? '−' : ''),
+markC: add ? '#5fd39a' : '#ff7a7a',
+bg: add ? 'rgba(95,211,154,.12)' : (del ? 'rgba(255,122,122,.12)' : (isHl ? 'rgba(255,210,63,.12)' : 'transparent')),
+bar: add ? '#5fd39a' : (del ? '#ff7a7a' : (isHl ? '#ffd23f' : 'transparent')),
+toks: this.tokens(body, lang)
+};
+}),
+copied: s.copied,
+copyText: s.copied ? 'Copied' : 'Copy',
+copyLabel: s.copied ? 'Copied' : 'Copy code',
+copyIcon: s.copied ? 'M5 12.5l4.5 4.5L19 7.5' : 'M9 9h10v11H9zM5 15V4h10',
+copyBg: s.copied ? '#5fd39a' : 'transparent',
+copyFg: s.copied ? '#0f2233' : '#e6edf2',
+copyLn: s.copied ? '#5fd39a' : '#3a5a76',
+copy: () => {
+const text = diff ? code.split('\n').filter((l) => l.charAt(0) !== '-').map((l) => l.slice(1)).join('\n') : code;
+try { if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {}); } catch (e) {}
+this.setState({ copied: true });
+clearTimeout(this.ct);
+this.ct = setTimeout(() => this.setState({ copied: false }), 1600);
+}
+};
+}
+}
+</script>
+</body>
+</html>

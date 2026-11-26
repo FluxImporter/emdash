@@ -19,10 +19,10 @@ export function NewFields(p: {
 	if (p.fields.length === 0) return null;
 	return (
 		<section aria-labelledby={headingId} className="space-y-3">
-			<h3 id={headingId} className="text-base font-semibold">
+			<h3 id={headingId} className="font-semibold">
 				{t(M.heading)}
 			</h3>
-			<p className="text-sm text-kumo-subtle">{t(M.intro)}</p>
+			<p className="text-sm text-kumo-default">{t(M.intro)}</p>
 			{p.fields.map((field) => (
 				<FieldRow
 					key={field.slug}
@@ -44,7 +44,7 @@ function FieldRow(p: {
 	const { field } = p;
 	const name = field.label === "" ? field.slug : field.label;
 	return (
-		<fieldset className="space-y-3 rounded-lg border border-kumo-line p-4">
+		<fieldset className="space-y-3 rounded-lg border border-kumo-hairline bg-kumo-base p-4">
 			<legend className="sr-only">{name}</legend>
 			<div className="flex items-center justify-between gap-3">
 				<span className="truncate text-sm text-kumo-subtle" title={field.key}>

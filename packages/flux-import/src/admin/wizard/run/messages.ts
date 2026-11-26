@@ -1,4 +1,4 @@
-import type { Msg } from "../../i18n.js";
+import type { Msg, PluralMsg } from "../../i18n.js";
 
 /** The Run step's messages. */
 export const M = {
@@ -14,7 +14,7 @@ export const M = {
 	},
 	retryPass: { id: "flux-import.run.retry-pass", message: "Retrying failed records" },
 	paused: { id: "flux-import.run.paused", message: "The import is paused." },
-	completed: { id: "flux-import.run.completed", message: "The import is complete." },
+	completed: { id: "flux-import.run.completed", message: "Import complete." },
 	cancelled: { id: "flux-import.run.cancelled", message: "The import was cancelled." },
 	dryRun: { id: "flux-import.run.dry-run", message: "This was a dry run: nothing was written." },
 	leaving: {
@@ -24,7 +24,6 @@ export const M = {
 	},
 	progress: { id: "flux-import.run.progress", message: "Import progress" },
 	progressCount: { id: "flux-import.run.progress-count", message: "{done} of {total} records" },
-	rate: { id: "flux-import.run.rate", message: "Records per second: {rate}" },
 	timeLeft: { id: "flux-import.run.time-left", message: "About {time} left" },
 	pause: { id: "flux-import.run.pause", message: "Pause" },
 	resume: { id: "flux-import.run.resume", message: "Resume" },
@@ -39,16 +38,25 @@ export const M = {
 	downloadFailed: { id: "flux-import.run.download-failed", message: "Download failed records" },
 	retryFailed: { id: "flux-import.run.retry-failed", message: "Retry failed records" },
 	viewEntries: { id: "flux-import.run.view-entries", message: "View the entries" },
-	startNew: { id: "flux-import.run.start-new", message: "Start a new import" },
-	seeAll: { id: "flux-import.run.see-all", message: "See all imports" },
-	counters: {
-		created: { id: "flux-import.run.counter.created", message: "Created" },
-		updated: { id: "flux-import.run.counter.updated", message: "Updated" },
-		unchanged: { id: "flux-import.run.counter.unchanged", message: "Unchanged" },
-		failed: { id: "flux-import.run.counter.failed", message: "Failed" },
-		locked: { id: "flux-import.run.counter.locked", message: "Locked" },
-		conflict: { id: "flux-import.run.counter.conflict", message: "Conflicts" },
-		filtered: { id: "flux-import.run.counter.filtered", message: "Filtered" },
-		removed: { id: "flux-import.run.counter.removed", message: "Removed" },
+	startNew: { id: "flux-import.run.start-new", message: "New import" },
+	counts: { id: "flux-import.run.counts", message: "Records so far" },
+	/** The line under Run's heading (Wizard.dc.html); `{when}` is the job's start, in UTC. */
+	summary: {
+		id: "flux-import.run.summary",
+		message: "{source} → {collection} · {locale} · started {when}",
 	},
-} satisfies Record<string, Msg | Record<string, Msg>>;
+	summaryNoSource: {
+		id: "flux-import.run.summary-no-source",
+		message: "{collection} · {locale} · started {when}",
+	},
+} satisfies Record<string, Msg>;
+
+/** The Run step's counts. */
+export const COUNT = {
+	/** `{count}` is the records a second, to one decimal place. */
+	rate: {
+		id: "flux-import.run.rate",
+		one: "{count} record a second",
+		other: "{count} records a second",
+	},
+} satisfies Record<string, PluralMsg>;

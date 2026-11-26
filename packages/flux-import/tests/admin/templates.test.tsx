@@ -1,5 +1,6 @@
 import { LinkButton } from "@cloudflare/kumo";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import { TemplatesTab } from "../../src/admin/home/templates/TemplatesTab.js";
@@ -22,25 +23,89 @@ function show() {
 
 const page = (items: unknown[]) => ({ items, hasMore: false });
 
+/** Opens the template's menu and picks `item` (its accessible name names the row). */
+async function pick(user: UserEvent, name: string, item: string) {
+	await user.click(await screen.findByRole("button", { name: `Actions for ${name}` }));
+	await user.click(await screen.findByRole("menuitem", { name: `${item} ${name}` }));
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
 
 describe("Templates tab", () => {
-	it("lists every template with collection and locale, description, revision and last change", async () => {
+	it("lists every template with its description under the name, collection and locale, revision and last change", async () => {
 		mockRoutes({
 			"templates/list": () =>
-				page([templateRow({ description: "Hourly products", revision: 3, locale: "fr" })]),
+				page([
+					templateRow({ description: "Hourly products", revision: 3, locale: "fr" }),
+					templateRow({ id: "T2", name: "Events" }),
+				]),
 			"schedules/list": () => page([]),
 		});
 		show();
 		const row = (await screen.findByText("Products feed")).closest("tr")!;
-		expect(within(row).getByText("posts \u00b7 fr")).toBeTruthy();
-		expect(within(row).getByText("Hourly products")).toBeTruthy();
-		expect(within(row).getByText("Revision 3")).toBeTruthy();
+		const cells = within(row).getAllByRole("cell");
+		expect(cells[0]).toHaveTextContent(/^Products feedHourly products$/);
+		expect(cells[1]).toHaveTextContent(/^posts \u00b7 fr$/);
+		// Under "Revision", just the number.
+		expect(cells[2]).toHaveTextContent(/^3$/);
+		expect(cells[3]).toHaveTextContent(/09:00 UTC/);
 		expect(row.querySelector("time")).toBeTruthy();
-		expect(screen.getByRole("columnheader", { name: "Description" })).toBeTruthy();
+		for (const head of ["Template", "Collection", "Revision", "Last change"]) {
+			expect(screen.getByRole("columnheader", { name: head })).toBeTruthy();
+		}
+		expect(screen.queryByRole("columnheader", { name: "Description" })).toBeNull();
+		const events = (await screen.findByText("Events")).closest("tr")!;
+		expect(within(events).getByText("No description")).toBeTruthy();
+		// The summary line: the count, and what templates are for.
+		expect(screen.getByText("2 templates").parentElement).toHaveTextContent(
+			/^2 templates · saved mappings you can reuse or share$/,
+		);
+	});
+
+	it("puts Export, Rename and describe, and Delete in the row's menu, Delete last in the danger colour", async () => {
+		mockRoutes({ "templates/list": () => page([templateRow()]), "schedules/list": () => page([]) });
+		const { user } = show();
+		const trigger = await screen.findByRole("button", { name: "Actions for Products feed" });
+		await user.click(trigger);
+		const items = await screen.findAllByRole("menuitem");
+		expect(items.map((i) => [i.getAttribute("aria-label"), i.textContent])).toEqual([
+			["Export Products feed", "Export"],
+			["Rename and describe Products feed", "Rename and describe"],
+			["Delete Products feed", "Delete"],
+		]);
+		expect(items[2]).toHaveClass("text-kumo-danger");
+		// One visible action besides the menu: Use.
+		const row = (await screen.findByText("Products feed")).closest("tr")!;
+		expect(within(row).getAllByRole("button")).toEqual([trigger]);
+		expect(within(row).getByRole("link", { name: "Use Products feed" })).toHaveTextContent(/^Use$/);
+	});
+
+	it("stacks the rows when the tab is narrow", async () => {
+		// The width is measured on the tab (ResizeObserver), not the viewport.
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe() {}
+				disconnect() {}
+			},
+		);
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+			width: 460,
+		} as DOMRect);
+		mockRoutes({
+			"templates/list": () => page([templateRow({ revision: 3 })]),
+			"schedules/list": () => page([]),
+		});
+		show();
+		const row = (await screen.findByText("Products feed")).closest("li")!;
+		expect(row).not.toBeNull();
+		expect(screen.queryByRole("table")).toBeNull();
+		expect(row).toHaveTextContent(/posts \u00b7 en \u00b7 Rev\. 3 \u00b7 /);
+		expect(within(row).getByRole("link", { name: "Use Products feed" })).toBeTruthy();
+		expect(within(row).getByRole("button", { name: "Actions for Products feed" })).toBeTruthy();
 	});
 
 	it("links Use to the wizard with ?template=", async () => {
@@ -67,7 +132,7 @@ describe("Templates tab", () => {
 			"templates/export": () => ({ filename: "products-feed.json", file: { v: 1 } }),
 		});
 		const { user } = show();
-		await user.click(await screen.findByRole("button", { name: "Export Products feed" }));
+		await pick(user, "Products feed", "Export");
 		await waitFor(() => expect(click).toHaveBeenCalled());
 		expect(calls.find((c) => c.route === "templates/export")?.body).toEqual({ id: "T1" });
 		expect(download).toBe("products-feed.json");
@@ -100,9 +165,7 @@ describe("Templates tab", () => {
 			},
 		});
 		const view = show();
-		await view.user.click(
-			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-		);
+		await pick(view.user, "Products feed", "Rename and describe");
 		const dialog = await screen.findByRole("dialog");
 		const name = within(dialog).getByLabelText("Name");
 		await view.user.clear(name);
@@ -189,9 +252,7 @@ describe("Templates tab", () => {
 			"templates/update": () => fail("TEMPLATE_CHANGED", "x", 409),
 		});
 		const { user } = show();
-		await user.click(
-			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-		);
+		await pick(user, "Products feed", "Rename and describe");
 		const dialog = await screen.findByRole("dialog");
 		await user.type(within(dialog).getByLabelText(/Description/), "x");
 		await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -207,7 +268,7 @@ describe("Templates tab", () => {
 			"templates/delete": () => fail("TEMPLATE_IN_USE", "x", 409, { scheduleIds: ["S1"] }),
 		});
 		const { user } = show();
-		await user.click(await screen.findByRole("button", { name: "Delete Products feed" }));
+		await pick(user, "Products feed", "Delete");
 		const dialog = await screen.findByRole("dialog");
 		expect(
 			within(dialog).getByText(
@@ -233,7 +294,7 @@ describe("Templates tab", () => {
 			},
 		});
 		const { user } = show();
-		await user.click(await screen.findByRole("button", { name: "Delete Products feed" }));
+		await pick(user, "Products feed", "Delete");
 		const dialog = await screen.findByRole("dialog");
 		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 		await waitFor(() => expect(bodies).toEqual([{ id: "T1", revision: 3 }]));
@@ -351,9 +412,7 @@ describe("Templates tab", () => {
 		});
 		const { user } = show();
 		const open = async () => {
-			await user.click(
-				await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-			);
+			await pick(user, "Products feed", "Rename and describe");
 			return screen.findByRole("dialog");
 		};
 		let dialog = await open();
@@ -372,9 +431,7 @@ describe("Templates tab", () => {
 			"schedules/list": () => new Promise(() => {}),
 		});
 		const { user } = show();
-		await user.click(
-			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-		);
+		await pick(user, "Products feed", "Rename and describe");
 		const dialog = await screen.findByRole("dialog");
 		expect(within(dialog).getByRole("status", { name: "Checking the schedules" })).toBeTruthy();
 		await user.type(within(dialog).getByLabelText(/Description/), "x");
@@ -393,9 +450,7 @@ describe("Templates tab", () => {
 					: page([schedule({ id: "S1", name: "Nightly" }), schedule({ id: "S2", name: "Hourly" })]),
 		});
 		const { user } = show();
-		await user.click(
-			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-		);
+		await pick(user, "Products feed", "Rename and describe");
 		const dialog = await screen.findByRole("dialog");
 		expect(
 			await within(dialog).findByText(/couldn't check which schedules run this template/i),
@@ -419,9 +474,7 @@ describe("Templates tab", () => {
 			"schedules/list": () => fail("FORBIDDEN", "x", 403),
 		});
 		const { user } = show();
-		await user.click(
-			await screen.findByRole("button", { name: "Rename and describe Products feed" }),
-		);
+		await pick(user, "Products feed", "Rename and describe");
 		const dialog = await screen.findByRole("dialog");
 		expect(await within(dialog).findByText(/couldn't check which schedules/i)).toBeTruthy();
 		expect(within(dialog).queryByRole("button", { name: "Try again" })).toBeNull();
@@ -455,13 +508,14 @@ describe("Templates tab", () => {
 	it("shows the empty state with the pointer to Save as template", async () => {
 		mockRoutes({ "templates/list": () => page([]), "schedules/list": () => page([]) });
 		show();
-		expect(await screen.findByText("No saved templates yet.")).toBeTruthy();
+		expect(await screen.findByRole("heading", { name: "No templates yet" })).toBeTruthy();
 		expect(screen.getByText("Save one from the wizard: Options, Save as template.")).toBeTruthy();
+		expect(screen.getByText("0 templates")).toBeTruthy();
 		const link = screen.getByRole("link", { name: "Open the wizard" });
 		expect(link.getAttribute("href")).toBe("/_emdash/admin/plugins/flux-import/import");
-		// A button look, as the empty Jobs tab's New import (Task 16): the default variant reads as text.
+		// A button look, but secondary: New import on the home is the page's only primary button.
 		const { container } = render(
-			<LinkButton variant="primary" href="/x">
+			<LinkButton variant="secondary" href="/x">
 				x
 			</LinkButton>,
 		);
@@ -486,9 +540,14 @@ describe("Templates tab", () => {
 			"schedules/list": () => page([]),
 		});
 		const { user } = show();
+		expect(await screen.findByText("Templates could not be loaded.")).toBeTruthy();
 		expect(
-			await screen.findByText("The request was not valid. Check your entries and try again."),
+			screen.getByText(
+				"The request was not valid. Check your entries and try again. Your imports are not affected.",
+			),
 		).toBeTruthy();
+		// Importing a file needs no list: the action stays.
+		expect(screen.getByRole("button", { name: "Import a template" })).toBeTruthy();
 		await user.click(await screen.findByRole("button", { name: "Try again" }));
 		expect(await screen.findByText("Products feed")).toBeTruthy();
 	});

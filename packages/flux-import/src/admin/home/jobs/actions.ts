@@ -1,6 +1,7 @@
 import type { JobStatus } from "../../../engine/types.js";
 import type { JobListItem } from "../../../plugin/summaries.js";
 import type { Msg, Values } from "../../i18n.js";
+import type { CountKey } from "../../ui/messages.js";
 import { M } from "./messages.js";
 import { STATUS_MESSAGES } from "./status.js";
 
@@ -107,24 +108,29 @@ export function jobName(
 	return { msg: M.rollbackOf, ...(own.values === undefined ? {} : { values: own.values }) };
 }
 
-/** Who started a job (plan Ruling 4, Fact D2): only agents and schedules are recorded. */
-export function originMsg(i: JobListItem): Msg {
+/** Who started a job (plan Ruling 4, Fact D2): only agents and schedules are recorded; null otherwise. */
+export function originMsg(i: JobListItem): Msg | null {
 	if (i.origin === "agent") return M.originAgent;
 	if (i.origin === "schedule") return M.originSchedule;
-	return M.originAdmin;
+	return null;
 }
 
-/** A row's counts: an import's four, or a rollback's reverted and kept (as the rollback dialog counts them). */
-export function countsOf(i: JobListItem): { msg: Msg; values: Values } {
+/**
+ * A row's counts for `RecordCounts`: an import's created, updated, unchanged and the records to
+ * retry (failed, conflict, locked); a rollback's restored and kept (as the rollback dialog counts
+ * them).
+ */
+export function countsOf(i: JobListItem): Partial<Record<CountKey, number>> {
 	const c = i.counters;
 	if (i.kind === "rollback") {
-		return {
-			msg: M.rollbackCounts,
-			values: { reverted: c.reverted, kept: c.conflict + c.failed + c.locked },
-		};
+		return { reverted: c.reverted, kept: c.conflict + c.failed + c.locked };
 	}
 	return {
-		msg: M.counts,
-		values: { created: c.created, updated: c.updated, unchanged: c.unchanged, failed: c.failed },
+		created: c.created,
+		updated: c.updated,
+		unchanged: c.unchanged,
+		conflict: c.conflict,
+		locked: c.locked,
+		failed: c.failed,
 	};
 }

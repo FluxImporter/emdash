@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Component sheet column, one theme</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: Inter, system-ui, sans-serif; background: {{ t.bg }}; color: {{ t.tx }}; font-size: 15px; line-height: 22px; padding: 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 36px; border-radius: 20px; border: 1px solid {{ t.ln }}">
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 24px">{{ name }}</span>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Install block</span>
+<dc-import name="InstallBlock" theme="{{ theme }}" hint-size="100%,150px"></dc-import>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Product card · available and coming soon</span>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<a href="EmDash.dc.html" class="fx-lift" style="flex: 1 1 240px; min-width: 0; padding: 20px; border: 2px solid #ffd23f; border-radius: 16px; background: {{ t.b1 }}; color: {{ t.tx }}; text-decoration: none; display: flex; flex-direction: column; gap: 10px">
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; padding: 2px 10px 2px 8px; border-radius: 999px; background: {{ t.okb }}; color: {{ t.ok }}"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{ t.ok }}; animation: fx-pulse 1.8s ease-out infinite"></span>Available · v0.7</span>
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 24px; line-height: 30px">EmDash</span>
+<span class="fx-ul" style="align-self: flex-start; font-weight: 600">Read the docs</span>
+</a>
+<div style="flex: 1 1 240px; min-width: 0; padding: 20px; border: 2px dashed {{ t.ln2 }}; border-radius: 16px; color: {{ t.tx2 }}; display: flex; flex-direction: column; gap: 10px">
+<span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: {{ t.b2 }}">Coming soon</span>
+<span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 24px; line-height: 30px">WordPress</span>
+<span style="color: {{ t.tx3 }}">Docs at /wordpress/ later.</span>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Status and version badges · method/path badge</span>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; padding: 2px 10px 2px 8px; border-radius: 999px; background: {{ t.okb }}; color: {{ t.ok }}"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{ t.ok }}"></span>Available</span>
+<span style="font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: {{ t.b2 }}; color: {{ t.tx2 }}">Coming soon</span>
+<span style="font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px dashed {{ t.ln2 }}; color: {{ t.tx3 }}">soon</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: #ffd23f; color: #0f2233">v0.7</span>
+<span style="font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: {{ t.reqBg }}; color: {{ t.reqFg }}">required</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: {{ t.warnBg }}; color: {{ t.warn }}">409</span>
+<span style="font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #ffd23f; color: #0f2233">AI</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{ methods }}" as="mt" hint-placeholder-count="3">
+<div style="display: flex; align-items: stretch; border: 1px solid {{ t.ln2 }}; border-radius: 10px; overflow: hidden; background: {{ t.b1 }}">
+<span style="flex: none; width: 64px; display: flex; align-items: center; justify-content: center; background: {{ mt.bg }}; color: {{ mt.fg }}; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 12px">{{ mt.m }}</span>
+<code style="padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px; overflow-wrap: anywhere"><span style="color: {{ t.tx3 }}">/_emdash/api/plugins/flux-import/</span><span style="font-weight: 600">{{ mt.p }}</span></code>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Parameter table · nested, expandable</span>
+<div style="border: 1px solid {{ t.ln }}; border-radius: 12px; overflow: hidden">
+<sc-for list="{{ params }}" as="p" hint-placeholder-count="4">
+<div style="display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.4fr); gap: 10px; align-items: center; padding: 10px 14px; padding-left: {{ p.pad }}; border-bottom: 1px solid {{ t.ln }}; background: {{ p.bg }}; animation: {{ p.anim }}">
+<span style="display: inline-flex; align-items: center; gap: 8px; min-width: 0"><sc-if value="{{ p.canExpand }}" hint-placeholder-val="{{ false }}"><button type="button" aria-expanded="{{ p.exp }}" aria-label="{{ p.label }}" onClick="{{ p.toggle }}" style="flex: none; width: 26px; height: 26px; border: 1px solid {{ t.ln2 }}; border-radius: 6px; background: transparent; color: {{ t.tx }}; cursor: pointer; display: inline-flex; align-items: center; justify-content: center"><svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate({{ p.rot }}); transition: transform .2s ease"><path d="M9 6l6 6-6 6"></path></svg></button></sc-if><code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600">{{ p.name }}</code></span>
+<code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: {{ t.type }}">{{ p.type }}</code>
+<span style="font-size: 14px; color: {{ t.tx2 }}">{{ p.desc }}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Code block · filename, highlight, diff, tabs</span>
+<dc-import name="Code" theme="{{ theme }}" file="astro.config.mjs" lang="js" code="{{ diffCode }}" diff="{{ true }}" hint-size="100%,250px"></dc-import>
+<dc-import name="Code" theme="{{ theme }}" tabs="{{ tabs }}" hint-size="100%,150px"></dc-import>
+<p style="margin: 0">Inline <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; padding: 2px 6px; border-radius: 5px; background: {{ t.b2 }}; border: 1px solid {{ t.ln }}">dryRun: true</code> and keys <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 1px 7px; border: 1px solid {{ t.ln2 }}; border-bottom-width: 3px; border-radius: 6px; background: {{ t.b1 }}">⌘</kbd> <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 1px 7px; border: 1px solid {{ t.ln2 }}; border-bottom-width: 3px; border-radius: 6px; background: {{ t.b1 }}">K</kbd>, and a <a href="#" class="fx-ul" style="color: {{ t.tx }}">text link</a>.</p>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 10px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Callouts</span>
+<sc-for list="{{ callouts }}" as="c" hint-placeholder-count="4">
+<div role="note" style="display: flex; gap: 12px; padding: 14px 16px; border: 1px solid {{ c.ln }}; border-radius: 12px; background: {{ c.bg }}">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{ c.fg }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 2px"><path d="{{ c.icon }}"></path></svg>
+<span><strong style="font-weight: 600; color: {{ c.fg }}">{{ c.title }}</strong> <span style="color: {{ t.tx2 }}">{{ c.text }}</span></span>
+</div>
+</sc-for>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Sidebar with product switcher · outline · previous/next</span>
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<div style="flex: 0 0 280px; border: 1px solid {{ t.ln }}; border-radius: 14px; background: {{ t.bg }}">
+<dc-import name="Sidebar" theme="{{ theme }}" current="Schedules" menu-open="{{ menuOpen }}" hint-size="100%,1100px"></dc-import>
+</div>
+<div style="flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+<nav aria-label="On this page" style="font-size: 14px; line-height: 20px"><span style="display: block; font-weight: 600; margin-bottom: 10px">On this page</span>
+<ul style="margin: 0; padding: 0; list-style: none; border-left: 1px solid {{ t.ln }}">
+<li><a href="#" style="display: block; padding: 6px 12px; margin-left: -1px; border-left: 2px solid #ffd23f; color: {{ t.tx }}; font-weight: 600; text-decoration: none">Before you start</a></li>
+<li><a href="#" style="display: block; padding: 6px 12px; color: {{ t.tx2 }}; text-decoration: none">Create the schedule</a></li>
+<li><a href="#" style="display: block; padding: 6px 12px 6px 24px; color: {{ t.tx2 }}; text-decoration: none">Frequencies</a></li>
+<li><a href="#" style="display: block; padding: 6px 12px; color: {{ t.tx2 }}; text-decoration: none">On Cloudflare Workers</a></li>
+</ul></nav>
+<dc-import name="PrevNext" theme="{{ theme }}" prev="Templates" next="Rollback" hint-size="100%,190px"></dc-import>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Search modal</span>
+<div style="border: 1px solid {{ t.ln2 }}; border-radius: 14px; background: {{ t.b1 }}; overflow: hidden; box-shadow: {{ t.sh }}">
+<div style="display: flex; align-items: center; gap: 10px; padding: 0 14px; min-height: 52px; border-bottom: 1px solid {{ t.ln }}"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{ t.icon }}" stroke-width="2.2" stroke-linecap="round"><path d="M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4"></path></svg><span style="font-size: 17px; font-weight: 500">dry</span><span aria-hidden="true" style="width: 2px; height: 20px; background: {{ t.icon }}; animation: fx-blink 1s steps(1) infinite"></span></div>
+<div style="padding: 8px">
+<span style="display: block; padding: 4px 10px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Guides</span>
+<span style="display: flex; flex-direction: column; padding: 8px 10px; border-radius: 8px; background: {{ t.b2 }}"><span style="font-weight: 600"><mark style="background: rgba(255,210,63,.35); color: inherit; border-radius: 3px">Dry</mark>-run preview</span><span style="font-size: 13px; color: {{ t.tx3 }}">Guides › The import wizard</span></span>
+<span style="display: block; padding: 4px 10px; margin-top: 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Reference</span>
+<span style="display: flex; flex-direction: column; padding: 8px 10px"><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600"><mark style="background: rgba(255,210,63,.35); color: inherit; border-radius: 3px">dry</mark>_run</span><span style="font-size: 13px; color: {{ t.tx3 }}">Reference › Agent tools</span></span>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px"><span style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{ t.tx3 }}">Footer</span>
+<div style="border-radius: 12px; overflow: hidden; border: 1px solid {{ t.ln }}"><dc-import name="Footer" theme="{{ theme }}" variant="docs" hint-size="100%,140px"></dc-import></div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":680,"height":3700}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { open: true }; }
+renderVals() {
+const T = {
+dark: { bg: '#0b1824', b1: '#0f2233', b2: '#152d42', ln: '#24425c', ln2: '#3a5a76', tx: '#f4f7f9', tx2: '#c9d5de', tx3: '#93a7b7', ok: '#5fd39a', okb: 'rgba(95,211,154,.14)', reqBg: 'rgba(255,210,63,.16)', reqFg: '#ffd23f', warn: '#ffa257', warnBg: 'rgba(255,162,87,.14)', type: '#8fd6ff', child: '#0d1f2f', icon: '#ffd23f', sh: '0 20px 50px rgba(0,0,0,.4)' },
+light: { bg: '#ffffff', b1: '#f2f5f7', b2: '#e7edf1', ln: '#d5dde3', ln2: '#9fb0bd', tx: '#0f2233', tx2: '#3a4c5c', tx3: '#55667a', ok: '#146c3f', okb: '#e3f4ea', reqBg: '#fff1bf', reqFg: '#6b5000', warn: '#b45309', warnBg: '#fff3e8', type: '#0a5c6b', child: '#f7f9fa', icon: '#0f2233', sh: '0 18px 40px rgba(15,34,51,.12)' }
+};
+const C = {
+dark: { note: ['#0f2233', '#3a5a76', '#8fd6ff'], tip: ['rgba(255,210,63,.08)', 'rgba(255,210,63,.55)', '#ffd23f'], caution: ['rgba(255,162,87,.08)', 'rgba(255,162,87,.55)', '#ffa257'], danger: ['rgba(255,122,122,.08)', 'rgba(255,122,122,.55)', '#ff7a7a'] },
+light: { note: ['#f2f5f7', '#9fb0bd', '#0a5c6b'], tip: ['#fff8dc', '#e0b000', '#7a5b00'], caution: ['#fff3e8', '#e8a065', '#b45309'], danger: ['#fdeeee', '#e59a9a', '#c62828'] }
+};
+const theme = this.props.theme === 'light' ? 'light' : 'dark';
+const t = T[theme]; const c = C[theme];
+const open = this.state.open;
+const params = [{ name: 'uploadId', type: 'string', desc: 'ID of the uploaded file.' }, { name: 'template', type: 'object', desc: 'See Template format.', kids: true }];
+const kids = [{ name: 'collection', type: 'string', desc: 'Target collection.' }, { name: 'mappings', type: 'array', desc: 'Column-to-field pairs.' }];
+let rows = [{ ...params[0], pad: '14px', bg: 'transparent', anim: 'none', canExpand: false }, { ...params[1], pad: '14px', bg: 'transparent', anim: 'none', canExpand: true, exp: open ? 'true' : 'false', rot: open ? '90deg' : '0deg', label: (open ? 'Collapse' : 'Expand') + ' template', toggle: () => this.setState({ open: !this.state.open }) }];
+if (open) rows = rows.concat(kids.map((k) => ({ ...k, name: '└ ' + k.name, pad: '48px', bg: t.child, anim: 'fx-in .25s ease both', canExpand: false })));
+rows.push({ name: 'dryRun', type: 'boolean', desc: 'Default false.', pad: '14px', bg: 'transparent', anim: 'none', canExpand: false });
+const mk = (k, title, text, icon) => ({ bg: c[k][0], ln: c[k][1], fg: c[k][2], title: title, text: text, icon: icon });
+return {
+theme: theme, t: t,
+name: theme === 'dark' ? 'Dark' : 'Light',
+menuOpen: theme === 'light',
+methods: [{ m: 'POST', p: 'jobs/create', bg: '#ffd23f', fg: '#0f2233' }, { m: 'GET', p: '[group]/[route]', bg: t.ok, fg: theme === 'dark' ? '#0f2233' : '#ffffff' }, { m: 'DELETE', p: '[group]/[route]', bg: theme === 'dark' ? '#ff7a7a' : '#c62828', fg: theme === 'dark' ? '#0f2233' : '#ffffff' }],
+params: rows,
+diffCode: [' import emdash from "emdash/astro";', '+import fluxImporter from "@fluximporter/emdash";', ' ', ' emdash({', '-  plugins: [],', '+  plugins: [fluxImporter()],', ' })'].join('\n'),
+tabs: [{ label: 'pnpm', code: 'pnpm add @fluximporter/emdash', lang: 'sh' }, { label: 'npm', code: 'npm install @fluximporter/emdash', lang: 'sh' }, { label: 'yarn', code: 'yarn add @fluximporter/emdash', lang: 'sh' }],
+callouts: [
+mk('note', 'Note', 'Schedule times are in UTC.', 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5'),
+mk('tip', 'Tip', 'Run a dry run before every first import.', 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z'),
+mk('caution', 'Caution', 'Without a Cron Trigger, schedules do not run.', 'M12 3l10 18H2zM12 10v5M12 18v.5'),
+mk('danger', 'Danger', 'Never put an API key in a feed URL.', 'M8 3h8l5 5v8l-5 5H8l-5-5V8zM12 8v5M12 16v.5')
+]
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proposed copy changes</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; box-sizing: border-box; padding: 48px 56px; font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 21px; background: #ffffff; color: #171717; display: flex; flex-direction: column; gap: 18px">
+<header style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; letter-spacing: .06em; color: #9a3412">COPY CHANGES</span>
+<h1 style="margin: 0; font-size: 30px; line-height: 38px; font-weight: 700; letter-spacing: -0.02em">Say what happened, then what to do next.</h1>
+<p style="margin: 0; color: #525252">Same nouns as the website: import, template, source, schedule, dry run, rollback, record rules. Every string stays translatable; counts use plural forms.</p>
+</header>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 210px; gap: 0 24px; font-size: 12px; font-weight: 600; color: #525252; padding-bottom: 6px; border-bottom: 2px solid #171717"><span>Now</span><span>Proposed</span><span>Where</span></div>
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="20">
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 210px; gap: 0 24px; padding: 10px 0; border-bottom: 1px solid #e5e5e5">
+<span style="color: #525252; text-decoration: line-through; text-decoration-color: #d4d4d4">{{ r.now }}</span>
+<span style="font-weight: 500">{{ r.next }}</span>
+<span style="font-size: 12px; color: #525252">{{ r.where }}</span>
+</div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":1700}}'>
+class Component extends DCLogic {
+renderVals() {
+const R = [
+['Created 0 · Updated 10 · Unchanged 0 · Failed 0', '10 updated (zero counts hidden; all zero: "No changes")', 'Jobs, run log'],
+['Started by: Admin or API', 'Wizard / Schedule / Agent, under the start time', 'Jobs'],
+['today 18:38', 'Today 18:38 UTC', 'Everywhere'],
+['Dry runs: 2', 'Dry runs 2 · Not written to the site.', 'Jobs'],
+['Entries it updated, to restore to their earlier version: 10', 'A dry rollback found 14 entries. 13 will change. + 2 to delete · 10 to restore · 1 to bring back · 1 kept', 'Rollback dialog'],
+['Roll back', 'Roll back 13 entries', 'Rollback dialog'],
+['Rolling back… / Entries rolled back', 'Rolling back Products feed · 8 of 13 entries · You can close this. The rollback keeps running and shows in Jobs.', 'Rollback dialog'],
+['Run log of Nightly products · The schedule’s latest runs, newest first.', 'Nightly products: run log · Daily at 03:00 UTC · last 10 runs, newest first', 'Run log'],
+['Created: 2. Updated: 10. Unchanged: 0. Failed: 0.', '2 created · 10 updated', 'Run log'],
+['No imports yet.', 'No imports yet · Bring in a CSV, JSON, XML or Excel file, or a URL feed. Every run shows up here.', 'Jobs empty'],
+['No schedules yet. A schedule imports from a saved URL source with a saved template, on a timer.', 'No schedules yet · A schedule runs a saved template on a saved URL source, on a timer. + what is missing', 'Schedules empty'],
+['(none)', 'The site is locked for an export. Scheduled runs wait until it ends.', 'Schedules banner'],
+['(none)', 'Imports could not be loaded. The server did not answer. Your imports are not affected. [Try again]', 'Failed state'],
+['(none)', 'A site import is running. Imports, schedules and the wizard wait until it ends. This page updates by itself.', 'Site import state'],
+['Add or replace a credential (always-open form)', 'Add a credential (dialog) · Write-only. Values are stored on the site and never shown again.', 'Sources'],
+['Fetched today 18:40', 'Today 18:40 UTC · 10 records · 4 KB (or the failure: HTTP 503 from the server)', 'Sources'],
+['Collection and locale · Revision 1', 'Collection · 1 (under "Revision")', 'Templates'],
+['Browse files · How to read products-10.csv', 'Choose a file / Choose another file · How to read it', 'Wizard: Source'],
+['Next', 'Next: Target / Next: Options / Run import', 'Wizard'],
+['AI (OpenAI-compatible) · 3 filled, 1 to check', '6 of 9 fields mapped. Both required fields are done. · 1 to check', 'Wizard: Map'],
+['check', 'Check: a number into a text field. AI was not sure.', 'Wizard: Map'],
+['Drop a key · + Add a new field / Drop a key here, or choose it, to propose a new field', 'No key · + Drop a key here to propose a new field', 'Wizard: Map'],
+['Dry run finished. Records checked: 10', 'Dry run of 10 records. Nothing is written yet.', 'Wizard: Preview'],
+['The import is complete. [View the entries] [Download log] [Start a new import] [See all imports]', 'Import complete. 10 entries updated. [View the entries] primary · Download log · New import', 'Wizard: Run']
+];
+return { rows: R.map((r) => ({ now: r[0], next: r[1], where: r[2] })) };
+}
+}
+</script>
+</body>
+</html>

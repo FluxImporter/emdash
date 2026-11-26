@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Previous and next page links</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<nav aria-label="Previous and next pages" style="font-family: Inter, system-ui, sans-serif; display: flex; flex-wrap: wrap; gap: 16px">
+<a href="{{ prevHref }}" rel="prev" class="fx-lift" style="flex: 1 1 260px; min-width: 0; min-height: 88px; box-sizing: border-box; display: flex; align-items: center; gap: 14px; padding: 16px 20px; border: 1px solid {{ t.ln }}; border-radius: 14px; background: {{ t.b1 }}; color: {{ t.tx }}; text-decoration: none">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{ t.tx3 }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 13px; line-height: 18px; color: {{ t.tx3 }}">Previous</span><span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 18px; line-height: 26px">{{ prev }}</span></span>
+</a>
+<a href="{{ nextHref }}" rel="next" class="fx-lift" style="flex: 1 1 260px; min-width: 0; min-height: 88px; box-sizing: border-box; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 16px 20px; border: 1px solid {{ t.ln }}; border-radius: 14px; background: {{ t.b1 }}; color: {{ t.tx }}; text-decoration: none; text-align: right">
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 13px; line-height: 18px; color: {{ t.tx3 }}">Next</span><span style="font-family: 'Space Grotesk', Inter, sans-serif; font-weight: 600; font-size: 18px; line-height: 26px">{{ next }}</span></span>
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffd23f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+</a>
+</nav>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"prev":{"editor":"text","default":"URL sources and credentials"},"next":{"editor":"text","default":"Rollback"},"prevHref":{"editor":"text","default":"#"},"nextHref":{"editor":"text","default":"#"},"$preview":{"width":800,"height":120}}'>
+class Component extends DCLogic {
+renderVals() {
+const T = {
+dark: { b1: '#0f2233', ln: '#24425c', tx: '#f4f7f9', tx3: '#93a7b7' },
+light: { b1: '#ffffff', ln: '#d5dde3', tx: '#0f2233', tx3: '#55667a' }
+};
+return {
+t: T[this.props.theme === 'light' ? 'light' : 'dark'],
+prev: this.props.prev ?? 'URL sources and credentials',
+next: this.props.next ?? 'Rollback',
+prevHref: this.props.prevHref ?? '#',
+nextHref: this.props.nextHref ?? '#'
+};
+}
+}
+</script>
+</body>
+</html>

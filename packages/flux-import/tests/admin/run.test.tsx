@@ -89,10 +89,15 @@ function renderRun(
 	);
 }
 
-/** The value shown beside a counter's label. */
+/**
+ * The count shown for `label` in the record counts ("2 created"); a zero count is hidden
+ * (RecordCounts), so it reads "0".
+ */
 function counter(label: string): string | null {
-	const term = screen.getByText(label, { selector: "dt" });
-	return term.nextElementSibling?.textContent ?? null;
+	const counts = screen.getByRole("region", { name: "Records so far" });
+	const word = ` ${label.toLowerCase()}`;
+	const item = [...counts.querySelectorAll("p > span")].find((s) => s.textContent?.endsWith(word));
+	return item === undefined ? "0" : (item.querySelector(".tabular-nums")?.textContent ?? null);
 }
 
 /** Lets fake timers run `ms` and the promises they release settle. */
@@ -114,7 +119,7 @@ describe("the Run step", () => {
 			"jobs/next": () => real({ status: "completed", counters: counters(4) }),
 		});
 		renderRun(draft());
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "templates/create")).toEqual([]);
 		const [create, ...more] = named(calls, "jobs/create");
 		expect(more).toEqual([]);
@@ -161,7 +166,7 @@ describe("the Run step", () => {
 				},
 			}),
 		);
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(calls.map((c) => c.route).slice(0, 2)).toEqual(["templates/create", "jobs/create"]);
 		const saved = named(calls, "templates/create")[0]!.body as {
 			name: string;
@@ -193,7 +198,7 @@ describe("the Run step", () => {
 				options: { ...DEFAULT_OPTIONS, save: { kind: "new", name: "Posts copy" } },
 			}),
 		);
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "templates/create")).toEqual([]);
 		const body = named(calls, "jobs/create")[0]!.body as Record<string, unknown>;
 		expect(body).toMatchObject({ templateId: "tpl-9", templateRevision: 2, uploadId: DRY_UPLOAD });
@@ -219,7 +224,7 @@ describe("the Run step", () => {
 		expect(screen.getByText(LEAVING)).toBeVisible();
 		expect(counter("Created")).toBe("2");
 		held.open(real({ status: "completed", counters: counters(4) }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(screen.queryByText(LEAVING)).toBeNull();
 	});
 
@@ -241,16 +246,16 @@ describe("the Run step", () => {
 			},
 		});
 		renderRun(draft({ dryRun: { jobId: "D", uploadId: DRY_UPLOAD, total: 62 } }));
-		expect(await screen.findByText("Records per second: 1")).toBeVisible();
+		expect(await screen.findByText("1 record a second")).toBeVisible();
 		expect(screen.getByText("About 1 minute left")).toBeVisible();
 		// Every record read, the missing phase still to come: a rate, but no time left.
 		vi.setSystemTime(start + 3000);
 		third.open(real({ counters: counters(62), cursor: { offset: 62, seq: 62 } }));
 		expect(await screen.findByText("62 of 62 records")).toBeVisible();
-		expect(screen.getByText(/^Records per second/)).toBeVisible();
+		expect(screen.getByText(/ a second$/)).toBeVisible();
 		expect(screen.queryByText(/left$/)).toBeNull();
 		held.open(real({ status: "completed", counters: counters(62) }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 	});
 
 	it("reopens ?job= with a live lease: waits, then counts (Review Focus 1)", async () => {
@@ -279,7 +284,7 @@ describe("the Run step", () => {
 		expect(screen.getByText("Waiting for the previous batch to finish")).toBeVisible();
 		expect(named(calls, "jobs/next")).toHaveLength(2);
 		await tick(2000);
-		expect(screen.getByText("The import is complete.")).toBeVisible();
+		expect(screen.getByText("Import complete.")).toBeVisible();
 		expect(screen.queryByText("Waiting for the previous batch to finish")).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
 		expect(screen.queryByText(/went wrong/)).toBeNull();
@@ -287,7 +292,7 @@ describe("the Run step", () => {
 		expect(named(calls, "jobs/get").map((c) => c.body)).toEqual([{ id: JOB_ID }]);
 		expect(counter("Created")).toBe("4");
 		expect(live).toBeInTheDocument();
-		expect(live).toHaveTextContent("The import is complete.");
+		expect(live).toHaveTextContent("Import complete.");
 	});
 
 	it("shows an indeterminate bar for a reopened job", async () => {
@@ -305,7 +310,7 @@ describe("the Run step", () => {
 		await waitFor(() => expect(counter("Created")).toBe("6"));
 		expect(screen.queryByText(/left$/)).toBeNull();
 		held.open(real({ status: "completed", counters: counters(6) }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(screen.queryByRole("progressbar")).toBeNull();
 	});
 
@@ -328,7 +333,7 @@ describe("the Run step", () => {
 		});
 		const restart = vi.fn();
 		const { user } = renderRun(reopened, { restart });
-		const startNew = () => screen.queryByRole("button", { name: "Start a new import" });
+		const startNew = () => screen.queryByRole("button", { name: "New import" });
 		await user.click(await screen.findByRole("button", { name: "Pause" }));
 		expect(await screen.findByText("The import is paused.")).toBeVisible();
 		// A paused job can still be resumed here: no new import is offered over it.
@@ -426,7 +431,7 @@ describe("the Run step", () => {
 			"jobs/retry": () => retrying,
 		});
 		const { user } = renderRun(draft());
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(counter("Failed")).toBe("1");
 		expect(screen.getByRole("link", { name: "View the entries" })).toHaveAttribute(
 			"href",
@@ -434,17 +439,17 @@ describe("the Run step", () => {
 		);
 		expect(screen.getByRole("button", { name: "Download log" })).toBeVisible();
 		// Only a page that can restart the wizard offers a new import.
-		expect(screen.queryByRole("button", { name: "Start a new import" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "New import" })).toBeNull();
 		await user.click(screen.getByRole("button", { name: "Retry failed records" }));
 		expect(await screen.findByText("Retrying failed records")).toBeVisible();
 		await waitFor(() => expect(named(calls, "jobs/next")).toHaveLength(4));
 		// The retry pass recounts, so the counters' sum stands still: no rate of 0 is shown.
-		expect(screen.queryByText(/^Records per second/)).toBeNull();
+		expect(screen.queryByText(/ a second$/)).toBeNull();
 		expect(named(calls, "jobs/retry").map((c) => c.body)).toEqual([{ id: JOB_ID }]);
 		const order = calls.map((c) => c.route);
 		expect(order.indexOf("jobs/retry")).toBeLessThan(order.lastIndexOf("jobs/next"));
 		held.open(real({ status: "completed", counters: counters(4) }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Retry failed records" })).toBeNull();
 	});
 
@@ -485,7 +490,7 @@ describe("the Run step", () => {
 		expect(screen.queryByText(/retrying/)).toBeNull();
 		await user.click(screen.getByRole("button", { name: "Try again" }));
 		await tick();
-		expect(screen.getByText("The import is complete.")).toBeVisible();
+		expect(screen.getByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/next")).toHaveLength(5);
 	});
 
@@ -553,49 +558,34 @@ describe("the Run step", () => {
 			const { user } = renderRun(reopened, { restart });
 			expect(await screen.findByText(sentence)).toBeVisible();
 			expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-			await user.click(screen.getByRole("button", { name: "Start a new import" }));
+			await user.click(screen.getByRole("button", { name: "New import" }));
 			expect(restart).toHaveBeenCalledOnce();
 			expect(named(calls, "jobs/resume")).toEqual([]);
 		},
 	);
 
-	it("links to the Imports home beside Start a new import once the job ends (Task 16)", async () => {
+	it("offers New import once the job ends, and leaves See all imports to the page title", async () => {
 		const held = gate();
 		const answer = replies(real({ counters: counters(1) }), held.promise);
 		mockRoutes({ "jobs/get": () => real({ counters: counters(1) }), "jobs/next": answer });
 		renderRun(reopened, { restart: vi.fn() });
-		const home = () => screen.queryByRole("link", { name: "See all imports" });
 		expect(await screen.findByRole("button", { name: "Pause" })).toBeVisible();
-		// A running job keeps the page on its own controls.
-		expect(home()).toBeNull();
+		expect(screen.queryByRole("button", { name: "New import" })).toBeNull();
 		held.open(real({ status: "completed", counters: counters(3) }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
-		expect(home()).toHaveAttribute("href", "/_emdash/admin/plugins/flux-import/imports");
-		expect(screen.getByRole("button", { name: "Start a new import" })).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "New import" })).toBeVisible();
+		// The wizard's title links to the Imports home on Run (wizard.test.tsx), so the step does not.
+		expect(screen.queryByRole("link", { name: "See all imports" })).toBeNull();
 	});
 
-	it.each([
-		["cancelled", undefined],
-		["failed", { code: "internal", message: "x" }],
-	] as const)(
-		"links to the Imports home for a %s job, also without a restart",
-		async (status, error) => {
-			const done = real({ status, counters: counters(2), ...(error ? { error } : {}) });
-			mockRoutes({ "jobs/get": () => done, "jobs/next": () => done });
-			renderRun(reopened);
-			expect(await screen.findByRole("link", { name: "See all imports" })).toHaveAttribute(
-				"href",
-				"/_emdash/admin/plugins/flux-import/imports",
-			);
-		},
-	);
-
-	it("offers no Imports home link for a dry run", async () => {
-		const dry = real({ status: "completed", dryRun: true, counters: counters(2) });
-		mockRoutes({ "jobs/get": () => dry, "jobs/next": () => dry });
+	it("makes View the entries the one primary action of a completed import (Copy)", async () => {
+		const done = real({ status: "completed", counters: counters(2) });
+		mockRoutes({ "jobs/get": () => done, "jobs/next": () => done });
 		renderRun(reopened, { restart: vi.fn() });
-		expect(await screen.findByText("This was a dry run: nothing was written.")).toBeVisible();
-		expect(screen.queryByRole("link", { name: "See all imports" })).toBeNull();
+		const view = await screen.findByRole("link", { name: "View the entries" });
+		expect(view).toHaveAttribute("href", "/_emdash/admin/content/posts");
+		expect(counter("Created")).toBe("2");
+		expect(screen.getByRole("button", { name: "Download log" })).toBeVisible();
 	});
 
 	it("offers Start a new import beside Resume for a job that failed otherwise", async () => {
@@ -607,7 +597,7 @@ describe("the Run step", () => {
 		mockRoutes({ "jobs/get": () => failed, "jobs/next": () => failed });
 		renderRun(reopened, { restart: vi.fn() });
 		expect(await screen.findByRole("button", { name: "Resume" })).toBeVisible();
-		expect(screen.getByRole("button", { name: "Start a new import" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "New import" })).toBeVisible();
 	});
 
 	it.each([
@@ -622,7 +612,7 @@ describe("the Run step", () => {
 			expect(await screen.findByText(sentence)).toBeVisible();
 			expect(screen.getByRole("alert")).toHaveTextContent(sentence);
 			expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
-			await user.click(screen.getByRole("button", { name: "Start a new import" }));
+			await user.click(screen.getByRole("button", { name: "New import" }));
 			expect(restart).toHaveBeenCalledOnce();
 		},
 	);
@@ -642,9 +632,9 @@ describe("the Run step", () => {
 		});
 		const { user } = renderRun(reopened, { restart: vi.fn() });
 		const again = await screen.findByRole("button", { name: "Try again" });
-		expect(screen.queryByRole("button", { name: "Start a new import" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "New import" })).toBeNull();
 		await user.click(again);
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/get")).toHaveLength(2);
 	});
 
@@ -673,7 +663,7 @@ describe("the Run step", () => {
 			),
 		).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Resume" }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/resume").map((c) => c.body)).toEqual([{ id: JOB_ID }]);
 	});
 
@@ -694,7 +684,7 @@ describe("the Run step", () => {
 		expect(screen.getByText('Field "title" has type "text"')).toBeVisible();
 		expect(window.location.search).not.toContain("job=");
 		await user.click(screen.getByRole("button", { name: "Try again" }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/create")).toHaveLength(2);
 	});
 
@@ -725,7 +715,7 @@ describe("the Run step", () => {
 		await user.click(screen.getByRole("button", { name: "remount" }));
 		await user.click(screen.getByRole("button", { name: "remount" }));
 		held.open(real({ status: "created" }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 		expect(new URLSearchParams(window.location.search).get("job")).toBe(JOB_ID);
 	});
@@ -752,12 +742,12 @@ describe("the Run step", () => {
 		act(() => probe.dispatch?.({ type: "stepChanged", step: "preview" }));
 		expect(screen.getByText("step: preview")).toBeVisible();
 		held.open(real({ status: "created" }));
-		expect(await screen.findByText("The import is complete.")).toBeVisible();
+		expect(await screen.findByText("Import complete.")).toBeVisible();
 		expect(probe.state?.step).toBe("run");
 		// Once a run exists, only Run can be shown.
 		act(() => probe.dispatch?.({ type: "stepChanged", step: "preview" }));
 		expect(probe.state?.step).toBe("run");
-		expect(screen.getByText("The import is complete.")).toBeVisible();
+		expect(screen.getByText("Import complete.")).toBeVisible();
 		expect(named(calls, "jobs/create")).toHaveLength(1);
 	});
 
@@ -776,7 +766,7 @@ describe("the Run step", () => {
 			expect(await screen.findByText("Importing")).toBeVisible();
 			expect(screen.getByText("Entries will be saved as drafts.")).toBeVisible();
 			next.open(real({ status: "completed", publish: false, counters: counters(4) }));
-			expect(await screen.findByText("The import is complete.")).toBeVisible();
+			expect(await screen.findByText("Import complete.")).toBeVisible();
 			expect(screen.queryByText("Entries will be saved as drafts.")).toBeNull();
 		});
 

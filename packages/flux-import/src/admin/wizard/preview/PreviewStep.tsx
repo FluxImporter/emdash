@@ -1,18 +1,20 @@
 import { Banner, Button, Empty, Loader } from "@cloudflare/kumo";
+import { useLingui } from "@lingui/react";
 import { useEffect, useState } from "react";
 import type { Counters, Job } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { ApiError, isForbidden, redact } from "../../api-error.js";
 import { describeError, describeJobError, ERROR_MESSAGES, FINAL_JOB_ERRORS } from "../../errors.js";
-import { type Msg, useT, type Values } from "../../i18n.js";
+import { type Msg, type PluralMsg, useT, useTn, type Values } from "../../i18n.js";
 import { M as SHARED } from "../../messages.js";
 import { useJobDriver } from "../../run-driver.js";
+import { InfoIcon } from "../../ui/icons.js";
 import { DRY_RUN_KEY, useWizard } from "../context.js";
 import { PublishingLine } from "../Publishing.js";
 import { useStepLinked } from "../StepBar.js";
-import { StepFooter } from "../StepFooter.js";
+import { StepHeader } from "../StepHeader.js";
 import { jobInput } from "../state.js";
-import { M } from "./messages.js";
+import { COUNT, M } from "./messages.js";
 import { RecordsTable } from "./RecordsTable.js";
 
 /** The records a dry run read: every outcome but the missing phase's `removed`. */
@@ -44,34 +46,56 @@ function missingNote(job: Job): { msg: Msg; values?: Values } | null {
 }
 
 /**
- * The counts per action; "Missing → <action>" only when the template has a missing phase, marked
- * "Not applied", with the reason under the counts, when it was refused or skipped.
+ * The counts per action as one strip (StepPreview.dc.html): zero counts are quiet, the others
+ * stand out. "Missing → <action>" only when the template has a missing phase, marked "Not
+ * applied", with the reason under the strip, when it was refused or skipped.
  */
 function Counts(p: { job: Job }) {
 	const t = useT();
+	const tn = useTn();
+	const { i18n } = useLingui();
+	const format = (n: number) => new Intl.NumberFormat(i18n.locale || "en").format(n);
 	const c = p.job.counters;
 	const missing = p.job.template.rules?.missing?.action;
 	const note = missing === undefined ? null : missingNote(p.job);
-	const items: [Msg, number][] = [
-		[M.create, c.created],
-		[M.update, c.updated],
-		[M.unchanged, c.unchanged],
-		[M.failed, c.failed],
-		[M.conflict, c.conflict],
-		[M.locked, c.locked],
-		[M.filtered, c.filtered],
+	const items: [PluralMsg, number][] = [
+		[COUNT.create, c.created],
+		[COUNT.update, c.updated],
+		[COUNT.unchanged, c.unchanged],
+		[COUNT.failed, c.failed],
+		[COUNT.conflict, c.conflict],
+		[COUNT.locked, c.locked],
+		[COUNT.filtered, c.filtered],
 	];
-	const missingMsg = missing === "trash" ? M.missingTrash : M.missingUnpublish;
+	const missingMsg = missing === "trash" ? COUNT.missingTrash : COUNT.missingUnpublish;
 	if (missing !== undefined) items.push([missingMsg, c.removed ?? 0]);
 	return (
-		<section aria-label={t(M.counts)} className="space-y-2">
-			<dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+		<section aria-label={t(M.counts)} className="flex flex-col gap-2">
+			<dl className="flex flex-wrap divide-x divide-kumo-line rounded-lg border border-kumo-hairline bg-kumo-base">
 				{items.map(([msg, n]) => (
-					<div key={msg.id} className="rounded-lg border border-kumo-line p-3">
-						<dt className="text-sm text-kumo-subtle">{t(msg)}</dt>
-						<dd className="text-2xl font-semibold tabular-nums">{n}</dd>
+					// The number first, then its label: `order-1` moves the label (and its note) after it,
+					// while the label stays first for screen readers, as a <dl> needs.
+					<div key={msg.id} className="flex min-w-28 flex-1 flex-col gap-0.5 px-4 py-3">
+						<dt
+							className={
+								n === 0 ? "order-1 text-sm text-kumo-subtle" : "order-1 text-sm text-kumo-default"
+							}
+						>
+							{tn(msg, n)}
+						</dt>
+						<dd
+							className={
+								n === 0
+									? "text-2xl font-bold text-kumo-subtle tabular-nums"
+									: msg === COUNT.failed || msg === COUNT.conflict
+										? "text-2xl font-bold text-kumo-danger tabular-nums"
+										: "text-2xl font-bold text-kumo-default tabular-nums"
+							}
+						>
+							{format(n)}
+						</dd>
 						{note !== null && msg === missingMsg ? (
-							<dd className="text-sm text-kumo-subtle">{t(M.notApplied)}</dd>
+							<dd className="order-1 text-sm text-kumo-subtle">{t(M.notApplied)}</dd>
 						) : null}
 					</div>
 				))}
@@ -125,6 +149,7 @@ function ErrorNotice(p: { error: unknown; onRetry?: () => void }) {
  */
 export function PreviewStep() {
 	const t = useT();
+	const tn = useTn();
 	const { state, dispatch, once } = useWizard();
 	const [createError, setCreateError] = useState<unknown>(null);
 	const [resuming, setResuming] = useState(false);
@@ -234,7 +259,30 @@ export function PreviewStep() {
 	};
 
 	return (
-		<div className="space-y-4">
+		<div className="flex flex-col gap-4">
+			<StepHeader
+				summary={
+					// One live region throughout, so the end of the dry run is announced.
+					<span role="status" className="flex items-center gap-2">
+						{checking ? (
+							<>
+								<span aria-hidden="true">
+									<Loader size="sm" />
+								</span>
+								<span>{t(M.checking)}</span>
+							</>
+						) : total === null ? null : (
+							<span>{tn(COUNT.finished, total)}</span>
+						)}
+					</span>
+				}
+				next={{
+					canNext: canRun,
+					...(reason === null ? {} : { reason: t(reason) }),
+					nextLabel: t(M.runImport),
+					onNext: () => dispatch({ type: "stepChanged", step: "run" }),
+				}}
+			/>
 			{warnings.length === 0 ? null : (
 				<Banner
 					variant="alert"
@@ -274,47 +322,32 @@ export function PreviewStep() {
 				/>
 			)}
 			{resumeError === null || stopped === null ? null : <ErrorNotice error={resumeError} />}
-			{/* One live region throughout, so the end of the dry run is announced. */}
-			<div role="status" className="flex items-center gap-2 text-sm text-kumo-subtle">
-				{checking ? (
-					<>
-						<span aria-hidden="true">
-							<Loader size="sm" />
-						</span>
-						<span>{t(M.checking)}</span>
-					</>
-				) : total === null ? null : (
-					<span>{t(M.finished, { total })}</span>
-				)}
-			</div>
-			{/* A loaded template skips Options, so the status it runs with is said here (final review 1). */}
-			<div className="flex flex-wrap items-center gap-3">
-				<PublishingLine publishing={state.options} />
-				{optionsLinked ? (
-					<Button
-						variant="ghost"
-						onClick={() => dispatch({ type: "stepChanged", step: "options" })}
-					>
-						{t(M.changeInOptions)}
-					</Button>
-				) : null}
-			</div>
 			{job === null ? null : <Counts job={job} />}
+			{/* A loaded template skips Options, so the status it runs with is said here (final review 1). */}
+			<Banner
+				variant="default"
+				icon={<InfoIcon aria-hidden="true" />}
+				description={<PublishingLine publishing={state.options} />}
+				action={
+					optionsLinked ? (
+						<Button
+							variant="secondary"
+							onClick={() => dispatch({ type: "stepChanged", step: "options" })}
+						>
+							{t(M.changeInOptions)}
+						</Button>
+					) : undefined
+				}
+			/>
 			{total === 0 ? <Empty title={t(M.noRecords)} description={t(M.noRecordsHint)} /> : null}
 			{total !== null && total > 0 && jobId !== null ? (
-				<RecordsTable key={jobId} jobId={jobId} />
+				<RecordsTable key={jobId} jobId={jobId} counters={job?.counters ?? null} />
 			) : null}
 			<div>
-				<Button variant="secondary" onClick={() => dispatch({ type: "stepChanged", step: "map" })}>
+				<Button variant="ghost" onClick={() => dispatch({ type: "stepChanged", step: "map" })}>
 					{t(M.backToMap)}
 				</Button>
 			</div>
-			<StepFooter
-				canNext={canRun}
-				{...(reason === null ? {} : { reason: t(reason) })}
-				nextLabel={t(M.runImport)}
-				onNext={() => dispatch({ type: "stepChanged", step: "run" })}
-			/>
 		</div>
 	);
 }

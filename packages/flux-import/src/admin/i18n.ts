@@ -37,3 +37,40 @@ export function useT(): (msg: Msg, values?: Values) => string {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `i18n` is the same object in every locale; the provider binds a new `_` on each change, so `t` changes with the locale.
 	return useCallback((msg: Msg, values?: Values) => translate(i18n, msg, values), [i18n, _]);
 }
+
+/**
+ * A count's message, one English form per plural category: `one` and `other` (English needs no
+ * more). A catalog holds a form for each category its language has, under `{id}.{category}`
+ * ("flux-import.jobs.updated.few"); `{count}` is the count, formatted for the locale.
+ */
+export interface PluralMsg {
+	readonly id: string;
+	readonly one: string;
+	readonly other: string;
+}
+
+/** The form of `msg` for `count` in the active locale, with `{count}` and any other values. */
+export function translatePlural(
+	i18n: I18n,
+	msg: PluralMsg,
+	count: number,
+	values?: Values,
+): string {
+	const locale = i18n.locale || "en";
+	const all = { ...values, count: new Intl.NumberFormat(locale).format(count) };
+	const category = new Intl.PluralRules(locale).select(count);
+	for (const id of [`${msg.id}.${category}`, `${msg.id}.other`]) {
+		if (Object.hasOwn(i18n.messages, id)) return i18n._(id, all);
+	}
+	return interpolate(category === "one" ? msg.one : msg.other, all);
+}
+
+/** `translatePlural` bound to the admin's own Lingui instance. */
+export function useTn(): (msg: PluralMsg, count: number, values?: Values) => string {
+	const { i18n, _ } = useLingui();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: as useT, `_` changes with the locale.
+	return useCallback(
+		(msg: PluralMsg, count: number, values?: Values) => translatePlural(i18n, msg, count, values),
+		[i18n, _],
+	);
+}

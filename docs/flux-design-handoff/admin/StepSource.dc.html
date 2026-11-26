@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard step 1: Source</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;family=Noto+Sans+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans', system-ui, sans-serif; font-size: 14px; line-height: 20px; color: {{ k.tx }}; display: flex; flex-direction: column; gap: 20px">
+
+<div role="tablist" aria-label="Where the data comes from" style="display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: {{ k.rec }}; border: 1px solid {{ k.hair }}; align-self: flex-start; max-width: 100%; overflow-x: auto">
+<sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4"><span role="tab" aria-selected="{{ t.sel }}" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 7px; white-space: nowrap; background: {{ t.bg }}; box-shadow: {{ t.sh }}; color: {{ t.fg }}; font-weight: {{ t.fw }}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ t.icon }}"></path></svg>{{ t.label }}</span></sc-for>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 16px; border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}">
+<span aria-hidden="true" style="width: 40px; height: 40px; border-radius: 8px; background: {{ k.okBg }}; color: {{ k.okTx }}; display: flex; align-items: center; justify-content: center; font-family: 'Noto Sans Mono', monospace; font-size: 11px; font-weight: 600">CSV</span>
+<span style="flex: 1 1 220px; display: flex; flex-direction: column"><span style="font-weight: 600; color: {{ k.strong }}">products-10.csv</span><span style="color: {{ k.sub }}">10 records · 5 keys · 1.2 KB</span></span>
+<span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-weight: 600">Choose another file</span>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px 24px">
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+<h3 style="margin: 0; font-size: 14px; font-weight: 600">How to read it</h3>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px">
+<sc-for list="{{ fields }}" as="f" hint-placeholder-count="4">
+<label style="display: flex; flex-direction: column; gap: 4px"><span style="font-size: 13px; font-weight: 500">{{ f.label }}</span><span style="display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}">{{ f.value }}<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span></label>
+</sc-for>
+</div>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+<h3 style="margin: 0; font-size: 14px; font-weight: 600">Row filter <span style="font-weight: 400; color: {{ k.sub }}">· optional</span></h3>
+<span style="display: flex; align-items: center; height: 36px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}; font-family: 'Noto Sans Mono', monospace; font-size: 13px; color: {{ k.ph }}">Price &gt; 0 and Released != ""</span>
+<span style="font-size: 13px; color: {{ k.sub }}">A JSONata expression. Only records it is true for are imported.</span>
+<h3 style="margin: 6px 0 0; font-size: 14px; font-weight: 600">Start from a template <span style="font-weight: 400; color: {{ k.sub }}">· optional</span></h3>
+<span style="display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 10px; border: 1px solid {{ k.line }}; border-radius: 8px; background: {{ k.ctrl }}">Products feed<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></span>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px"><h3 style="margin: 0; font-size: 14px; font-weight: 600">Sample</h3><span style="font-size: 13px; color: {{ k.sub }}">First 5 of 10 records</span></div>
+<div style="border: 1px solid {{ k.hair }}; border-radius: 10px; background: {{ k.base }}; overflow: hidden">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 12px; padding: 9px 14px; border-bottom: 1px solid {{ k.hair }}; font-size: 12px; font-weight: 600"><span>Key</span><span>Looks like</span><span>First values</span></div>
+<sc-for list="{{ sample }}" as="s" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: {{ cols }}; gap: 12px; align-items: center; padding: 9px 14px; border-bottom: 1px solid {{ k.hair }}">
+<code style="font-family: 'Noto Sans Mono', monospace; font-size: 13px; font-weight: 500">{{ s.key }}</code>
+<span style="font-size: 13px; color: {{ k.sub }}">{{ s.type }}</span>
+<span style="display: flex; gap: 6px; overflow: hidden; white-space: nowrap"><sc-for list="{{ s.vals }}" as="v" hint-placeholder-count="4"><span style="font-family: 'Noto Sans Mono', monospace; font-size: 12px; padding: 1px 7px; border-radius: 5px; background: {{ k.rec }}">{{ v }}</span></sc-for></span>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"narrow":{"editor":"boolean","default":false},"$preview":{"width":1020,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+light: { tx: 'oklch(21% 0.006 285.885)', strong: 'oklch(14.5% 0 0)', sub: 'oklch(55.6% 0 0)', ph: 'oklch(55.6% 0 0)', base: '#ffffff', ctrl: '#ffffff', rec: 'oklch(96% 0 0)', hair: 'oklch(93.5% 0 0)', line: 'oklch(14.5% 0 0 / .14)', okBg: '#ccfbf1', okTx: '#115e59' },
+dark: { tx: 'oklch(97% 0 0)', strong: 'oklch(98.5% 0 0)', sub: 'oklch(70.8% 0 0)', ph: 'oklch(70.8% 0 0)', base: 'oklch(17% 0 0)', ctrl: 'oklch(21% 0 0)', rec: 'oklch(23% 0 0)', hair: 'oklch(26.9% 0 0)', line: 'oklch(36% 0 0)', okBg: '#042f2e', okTx: '#99f6e4' }
+};
+const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+const k = K[theme];
+const n = !!this.props.narrow;
+const tabs = [['Upload a file', 'M12 15V4M7 9l5-5 5 5M5 20h14'], ['From a URL', 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1'], ['Paste', 'M8 4h8v3H8zM6 6H5v15h14V6h-1'], ['Saved source', 'M5 4h14v17l-7-4-7 4z']];
+return {
+k: k,
+cols: n ? '90px 70px minmax(0, 1fr)' : '140px 120px minmax(0, 1fr)',
+tabs: tabs.map((t, i) => ({ label: t[0], icon: t[1], sel: i === 0 ? 'true' : 'false', bg: i === 0 ? (theme === 'dark' ? 'oklch(23% 0 0)' : '#ffffff') : 'transparent', sh: i === 0 ? '0 1px 2px rgba(0,0,0,.12)' : 'none', fg: i === 0 ? k.strong : (theme === 'light' ? k.tx : k.sub), fw: i === 0 ? 600 : 500 })),
+fields: [{ label: 'Format', value: 'CSV' }, { label: 'Delimiter', value: 'Comma' }, { label: 'First row', value: 'Column names' }, { label: 'Encoding', value: 'UTF-8' }],
+sample: [
+{ key: 'sku', type: 'Text', vals: ['SKU-0', 'SKU-1', 'SKU-2', 'SKU-3', 'SKU-4'] },
+{ key: 'Name', type: 'Text', vals: ['Product 0, "quoted"', 'Product 1, "quoted"', 'Product 2, "quoted"'] },
+{ key: 'Price', type: 'Number', vals: ['0.5', '1.5', '2.5', '3.5', '4.5'] },
+{ key: 'Released', type: 'Date', vals: ['01/03/2026', '02/03/2026', '03/03/2026', '04/03/2026'] },
+{ key: 'Handle', type: 'Text', vals: ['product-0', 'product-1', 'product-2', 'product-3'] }
+]
+};
+}
+}
+</script>
+</body>
+</html>

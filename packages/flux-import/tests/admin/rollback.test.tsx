@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { HomeProvider } from "../../src/admin/home/Home.js";
 import {
@@ -14,7 +14,7 @@ const START: RollbackTarget = {
 	kind: "start",
 	jobId: "J1",
 	name: "Products feed",
-	when: "today 10:14",
+	when: "Today 10:14 UTC",
 	schedule: null,
 };
 
@@ -101,24 +101,90 @@ function renderDialog(target: RollbackTarget, onClose = vi.fn()) {
 const rollbackBodies = (calls: { route: string; body: unknown }[]) =>
 	calls.filter((c) => c.route === "jobs/rollback").map((c) => c.body);
 
+/** The summary's counts, each as "2 to delete Created by this import". */
+const tiles = () =>
+	within(screen.getByRole("dialog"))
+		.getAllByRole("listitem")
+		.map((li) => [...li.children].map((c) => c.textContent).join(" "));
+
+/** The summary's confirm button, named with what will change. */
+const confirm = (n: number) =>
+	screen.findByRole("button", { name: `Roll back ${n} ${n === 1 ? "entry" : "entries"}` });
+
 describe("RollbackDialog", () => {
-	it("runs a dry rollback first and says exactly what it will delete, restore and bring back", async () => {
+	it("runs a dry rollback first, then shows its four counts and what will change", async () => {
 		const { calls } = mockRoutes({
 			"jobs/rollback": (b) => ((b as { dryRun: boolean }).dryRun ? DRY : REAL),
 			"jobs/next": nextScript,
 		});
 		renderDialog(START);
-		expect(await screen.findByText("Entries the import created, to delete: 2")).toBeVisible();
-		expect(
-			screen.getByText("Entries it updated, to restore to their earlier version: 1"),
-		).toBeVisible();
-		expect(
-			screen.getByText("Entries that can't be rolled back (edited since, locked or failed): 1"),
-		).toBeVisible();
-		expect(screen.queryByText(/to bring back/)).toBeNull();
+		const roll = await confirm(3);
+		expect(roll).toBeEnabled();
+		expect(screen.getByText("A dry rollback found 4 entries. 3 will change.")).toBeVisible();
+		expect(tiles()).toEqual([
+			"2 to delete Created by this import",
+			"1 to restore Updated by this import",
+			"0 to bring back Moved to Trash or unpublished by it",
+			"1 kept Edited since, locked or failed",
+		]);
 		expect(screen.getByRole("dialog", { name: "Roll back Products feed?" })).toBeVisible();
 		expect(rollbackBodies(calls)).toEqual([{ id: "J1", dryRun: true }]);
 		expect(calls.filter((c) => c.route === "jobs/next").map((c) => c.body)).toEqual([{ id: "D1" }]);
+	});
+
+	it("warns when entries are kept, and only then", async () => {
+		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": nextScript });
+		const first = renderDialog(START);
+		await confirm(3);
+		expect(
+			screen.getByText(
+				"1 entry was edited since the import, is locked or failed. It is kept as it is.",
+			),
+		).toBeVisible();
+		first.unmount();
+		mockRoutes({
+			"jobs/rollback": () => DRY,
+			"jobs/next": () => ({ ...DRY_DONE, counters: counters({ reverted: 3 }) }),
+		});
+		renderDialog(START);
+		await confirm(3);
+		expect(screen.queryByText(/is kept as it is|are kept as they are/)).toBeNull();
+	});
+
+	it("names the confirm button with the count in its plural form", async () => {
+		mockRoutes({
+			"jobs/rollback": () => DRY,
+			"jobs/next": () => ({
+				...DRY_DONE,
+				counters: counters({ reverted: 1 }),
+				undo: { deleted: 1, restored: 0, recovered: 0 },
+			}),
+		});
+		renderDialog(START);
+		expect(await screen.findByRole("button", { name: "Roll back 1 entry" })).toBeVisible();
+		expect(screen.getByText("A dry rollback found 1 entry. 1 will change.")).toBeVisible();
+	});
+
+	it("says what is already gone, and that nothing will change when nothing will", async () => {
+		mockRoutes({
+			"jobs/rollback": () => DRY,
+			"jobs/next": () => ({ ...DRY_DONE, counters: counters({ reverted: 3, unchanged: 2 }) }),
+		});
+		const first = renderDialog(START);
+		await confirm(3);
+		expect(screen.getByText("2 entries are already gone.")).toBeVisible();
+		first.unmount();
+		mockRoutes({
+			"jobs/rollback": () => DRY,
+			"jobs/next": () => ({
+				...DRY_DONE,
+				counters: counters(),
+				undo: { deleted: 0, restored: 0, recovered: 0 },
+			}),
+		});
+		renderDialog(START);
+		expect(await screen.findByText("The rollback has no entries to change.")).toBeVisible();
+		expect(screen.queryByRole("listitem")).toBeNull();
 	});
 
 	it("reads the jobs, the dry runs and the schedules again when the rollback finishes", async () => {
@@ -128,21 +194,33 @@ describe("RollbackDialog", () => {
 		});
 		const { user, queryClient } = renderDialog(START);
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		await waitFor(() => expect(announced()).toContain("Rollback finished."));
 		// A scheduled import's rollback pauses its schedule.
 		for (const queryKey of [queryKeys.jobs, queryKeys.dryRuns, queryKeys.schedules]) {
 			expect(invalidate).toHaveBeenCalledWith({ queryKey });
 		}
 	});
-	it("says what it is doing while the dry rollback runs", async () => {
+	it("says what it is doing while the dry rollback runs, Roll back waiting disabled", async () => {
 		const held = gate<Job>();
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": () => held.promise });
-		renderDialog(START);
-		expect(await screen.findByText("Checking what the rollback will do…")).toBeVisible();
-		expect(screen.queryByRole("button", { name: "Roll back" })).toBeNull();
+		const { onClose } = renderDialog(START);
+		expect(await screen.findByRole("status")).toHaveTextContent(
+			"Checking what a rollback would change…",
+		);
+		expect(screen.getByRole("button", { name: "Roll back" })).toBeDisabled();
 		held.open(DRY_DONE);
-		expect(await screen.findByRole("button", { name: "Roll back" })).toBeEnabled();
+		expect(await confirm(3)).toBeEnabled();
+		expect(screen.queryByRole("button", { name: "Roll back" })).toBeNull();
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it("closes with Cancel while it checks", async () => {
+		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": () => new Promise(() => {}) });
+		const { user, onClose } = renderDialog(START);
+		await screen.findByRole("status");
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(onClose).toHaveBeenCalledOnce();
 	});
 
 	it("falls back to the total for a rollback made before 0.7.0 (Review Focus 2)", async () => {
@@ -154,9 +232,11 @@ describe("RollbackDialog", () => {
 		});
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": () => old });
 		renderDialog(START);
-		expect(await screen.findByText("Entries to roll back: 3")).toBeVisible();
-		expect(screen.queryByText(/to delete/)).toBeNull();
-		expect(screen.queryByText(/to restore/)).toBeNull();
+		await confirm(3);
+		expect(tiles()).toEqual([
+			"3 to roll back Created or updated by this import",
+			"0 kept Edited since, locked or failed",
+		]);
 	});
 
 	it("rolls back only on Roll back, drives it with progress and announces Rollback finished.", async () => {
@@ -172,12 +252,20 @@ describe("RollbackDialog", () => {
 		});
 		const { user, queryClient, onClose } = renderDialog(START);
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
-		const rollBack = await screen.findByRole("button", { name: "Roll back" });
+		const rollBack = await confirm(3);
 		expect(rollbackBodies(calls)).toEqual([{ id: "J1", dryRun: true }]);
 		await user.click(rollBack);
-		const meter = await screen.findByRole("meter");
+		expect(await screen.findByRole("dialog", { name: "Rolling back Products feed" })).toBeVisible();
+		const meter = await screen.findByRole("meter", { name: "Rollback progress" });
 		await waitFor(() => expect(meter).toHaveAttribute("aria-valuenow", "2"));
 		expect(meter).toHaveAttribute("aria-valuemax", "4");
+		expect(screen.getByText("2 of 4 entries")).toBeVisible();
+		// Each kind against the dry run's plan: 2 of 2 deleted, 0 of 1 restored.
+		expect(
+			within(screen.getByRole("dialog"))
+				.getAllByRole("listitem")
+				.map((li) => [...li.children].map((c) => c.textContent).join(" ")),
+		).toEqual(["Deleted 2 of 2", "Restored 0 of 1", "Kept 0"]);
 		expect(rollbackBodies(calls)).toEqual([
 			{ id: "J1", dryRun: true },
 			{ id: "J1", dryRun: false },
@@ -198,30 +286,38 @@ describe("RollbackDialog", () => {
 			"jobs/next": nextScript,
 		});
 		const { user, onClose } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Keep the import" }));
+		await confirm(3);
+		await user.click(screen.getByRole("button", { name: "Keep the import" }));
 		expect(onClose).toHaveBeenCalledOnce();
 		expect(rollbackBodies(calls)).toEqual([{ id: "J1", dryRun: true }]);
 	});
 
-	it("does not close on Escape while the rollback runs", async () => {
+	it("can be closed while the rollback runs, and says how to finish it later", async () => {
 		const held = gate<Job>();
 		mockRoutes({
 			"jobs/rollback": (b) => ((b as { dryRun: boolean }).dryRun ? DRY : REAL),
 			"jobs/next": (b) => ((b as { id: string }).id === "D1" ? DRY_DONE : held.promise),
 		});
 		const { user, onClose } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		expect(await screen.findByText("Rolling back…")).toBeVisible();
-		expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+		// The dialog drives the rollback: closing stops it where it is; its row continues it.
+		expect(
+			screen.getByText(
+				"You can close this. To finish the rollback later, continue it from its row in Jobs.",
+			),
+		).toBeVisible();
+		expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
 		await user.keyboard("{Escape}");
-		expect(onClose).not.toHaveBeenCalled();
-		expect(screen.getByRole("dialog", { name: "Roll back Products feed?" })).toBeVisible();
+		expect(onClose).toHaveBeenCalledOnce();
+		await user.click(screen.getByRole("button", { name: "Close" }));
+		expect(onClose).toHaveBeenCalledTimes(2);
 	});
 
 	it("closes on Escape before the rollback starts", async () => {
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": nextScript });
 		const { user, onClose } = renderDialog(START);
-		await screen.findByRole("button", { name: "Roll back" });
+		await confirm(3);
 		await user.keyboard("{Escape}");
 		expect(onClose).toHaveBeenCalledOnce();
 	});
@@ -242,7 +338,7 @@ describe("RollbackDialog", () => {
 	it("says nothing of a schedule for a job no schedule ran", async () => {
 		mockRoutes({ "jobs/rollback": () => DRY, "jobs/next": nextScript });
 		renderDialog(START);
-		await screen.findByRole("button", { name: "Roll back" });
+		await confirm(3);
 		expect(screen.queryByText(/schedule/)).toBeNull();
 	});
 
@@ -264,7 +360,7 @@ describe("RollbackDialog", () => {
 			"jobs/next": (b) => ((b as { id: string }).id === "D1" ? DRY_DONE : R9_DONE),
 		});
 		const { user } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		expect(await screen.findByText("This import is already being rolled back.")).toBeVisible();
 		expect(calls.find((c) => c.route === "jobs/get")?.body).toEqual({ id: "J1" });
 		await user.click(screen.getByRole("button", { name: "Continue the rollback" }));
@@ -317,7 +413,7 @@ describe("RollbackDialog", () => {
 					: rollbackJob({ id: "R9", status: "completed", counters: counters({ reverted: 4 }) }),
 		});
 		const { user } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		await user.click(await screen.findByRole("button", { name: "Continue the rollback" }));
 		await waitFor(() => expect(announced()).toContain("Rollback finished."));
 		expect(calls.filter((c) => c.route !== "jobs/rollback").map((c) => [c.route, c.body])).toEqual([
@@ -343,7 +439,7 @@ describe("RollbackDialog", () => {
 			"jobs/next": nextScript,
 		});
 		const { user } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		expect(
 			await screen.findByText("The import cannot do that in its current state."),
 		).toBeVisible();
@@ -357,6 +453,7 @@ describe("RollbackDialog", () => {
 			"jobs/next": nextScript,
 		});
 		renderDialog({ kind: "continue", rollbackId: "R1", status: "paused", name: "Products feed" });
+		expect(screen.getByRole("dialog", { name: "Rolling back Products feed" })).toBeVisible();
 		await waitFor(() => expect(announced()).toContain("Rollback finished."));
 		expect(calls.map((c) => [c.route, c.body])).toEqual([
 			["jobs/resume", { id: "R1" }],
@@ -379,10 +476,11 @@ describe("RollbackDialog", () => {
 		});
 		const { user } = renderDialog(START);
 		expect(await screen.findByText("Something went wrong on the server. Try again.")).toBeVisible();
-		expect(screen.queryByRole("button", { name: "Roll back" })).toBeNull();
+		expect(screen.queryByRole("button", { name: /^Roll back/ })).toBeNull();
 		failing = false;
 		await user.click(screen.getByRole("button", { name: "Try again" }));
-		expect(await screen.findByText("Entries the import created, to delete: 2")).toBeVisible();
+		expect(await confirm(3)).toBeVisible();
+		expect(tiles()[0]).toBe("2 to delete Created by this import");
 		expect(rollbackBodies(calls)).toEqual([
 			{ id: "J1", dryRun: true },
 			{ id: "J1", dryRun: true },
@@ -416,7 +514,7 @@ describe("RollbackDialog", () => {
 							}),
 		});
 		const { user } = renderDialog(START);
-		await user.click(await screen.findByRole("button", { name: "Roll back" }));
+		await user.click(await confirm(3));
 		expect(
 			await screen.findByText(
 				"The import stopped after repeated unexpected errors. Resume it to try again.",

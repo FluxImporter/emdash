@@ -2,6 +2,7 @@ import type { Msg } from "../../../i18n.js";
 
 /** The Map detail panel's and the key picker's messages. */
 export const M = {
+	selectedField: { id: "flux-import.detail.selected-field", message: "Selected field" },
 	valueFrom: { id: "flux-import.detail.value-from", message: "Value from" },
 	sourceKey: { id: "flux-import.detail.source-key", message: "Source key" },
 	expression: { id: "flux-import.detail.expression", message: "Expression" },

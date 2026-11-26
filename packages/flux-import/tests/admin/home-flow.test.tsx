@@ -12,7 +12,14 @@ import type { JobListItem } from "../../src/plugin/summaries.js";
 import type { TemplateFile } from "../../src/plugin/template-files.js";
 import type { TemplateSummary } from "../../src/plugin/templates.js";
 import { job } from "./fixtures.js";
-import { fail, mockRoutes, type RouteCall, type RouteHandler, renderAdmin } from "./harness.js";
+import {
+	fail,
+	HOME_ROUTES,
+	mockRoutes,
+	type RouteCall,
+	type RouteHandler,
+	renderAdmin,
+} from "./harness.js";
 import { item, schedule, sourceRow, templateRow } from "./home-fixtures.js";
 
 /**
@@ -20,10 +27,10 @@ import { item, schedule, sourceRow, templateRow } from "./home-fixtures.js";
  * every tab real and every request answered by `mockRoutes` beneath the real `apiFetch`.
  */
 
-/** 15:00 local on 24 Nov 2026: a job made at 10:14 local that day reads "today 10:14". */
-const NOW = new Date(2026, 10, 24, 15, 0).getTime();
-const AT = new Date(2026, 10, 24, 10, 14).toISOString();
-const WHEN = "today 10:14";
+/** 15:00 UTC on 24 Nov 2026: a job made at 10:14 UTC that day reads "Today 10:14 UTC". */
+const NOW = Date.UTC(2026, 10, 24, 15, 0);
+const AT = new Date(Date.UTC(2026, 10, 24, 10, 14)).toISOString();
+const WHEN = "Today 10:14 UTC";
 
 const PRODUCTS = templateRow({ id: "T1", name: "Products feed", revision: 3 });
 
@@ -32,6 +39,7 @@ const pageOf = <T,>(items: readonly T[]) => ({ items, hasMore: false });
 /** The plugin's routes the page reads on any tab, then `over`. */
 function site(over: Record<string, RouteHandler>): Record<string, RouteHandler> {
 	return {
+		...HOME_ROUTES,
 		"credentials/list": () => [],
 		"jobs/summaries": () => pageOf([]),
 		"templates/list": () => pageOf([PRODUCTS]),
@@ -110,12 +118,19 @@ const imported = (over: Partial<JobListItem> = {}): JobListItem =>
 		...over,
 	});
 
-/** The table row whose first cell reads `name`. */
+/** The table row whose first cell reads `name`, or starts with it as its own line. */
 async function rowOf(name: string): Promise<HTMLElement> {
-	const cell = await screen.findByRole("cell", { name });
-	const row = cell.closest("tr");
-	if (!row) throw new Error(`no row for ${name}`);
-	return row;
+	return waitFor(() => {
+		const rows = screen.getAllByRole("row").filter((row) => {
+			const first = row.querySelector("td");
+			if (!first) return false;
+			if (first.textContent === name) return true;
+			const line = first.firstElementChild;
+			return line?.textContent === name || line?.firstElementChild?.textContent?.trim() === name;
+		});
+		if (rows.length !== 1) throw new Error(`${rows.length} rows for ${name}`);
+		return rows[0] as HTMLElement;
+	});
 }
 
 async function choose(user: UserEvent, name: string, option: string) {
@@ -191,13 +206,13 @@ describe("the Imports home, assembled", () => {
 		);
 		const dialog = await screen.findByRole("dialog", { name: "Roll back Products feed?" });
 		expect(
-			await within(dialog).findByText("Entries the import created, to delete: 10"),
+			await within(dialog).findByRole("button", { name: "Roll back 10 entries" }),
 		).toBeVisible();
 		expect(writes(calls, ["jobs/rollback"])).toEqual([
 			["jobs/rollback", { id: "J1", dryRun: true }],
 		]);
 
-		await user.click(within(dialog).getByRole("button", { name: "Roll back" }));
+		await user.click(within(dialog).getByRole("button", { name: "Roll back 10 entries" }));
 		await waitFor(() => expect(announced()).toContain("Rollback finished."));
 		const lastNext = calls.findLastIndex((c) => c.route === "jobs/next");
 		expect(writes(calls, ["jobs/rollback", "jobs/next"])).toEqual([
@@ -259,7 +274,8 @@ describe("the Imports home, assembled", () => {
 		);
 		const { user } = openHome();
 		await user.click(await screen.findByRole("tab", { name: "Templates" }));
-		await user.click(await screen.findByRole("button", { name: "Export Products feed" }));
+		await user.click(await screen.findByRole("button", { name: "Actions for Products feed" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Export Products feed" }));
 		await waitFor(() => expect(announced()).toBe("Exported Products feed."));
 		expect(saved).not.toBeNull();
 
@@ -284,7 +300,7 @@ describe("the Imports home, assembled", () => {
 			["templates/import", { file: exported, name: "Products feed copy" }],
 		]);
 		expect(await rowOf("Products feed copy")).toBeVisible();
-		expect(screen.getByRole("cell", { name: "Products feed" })).toBeVisible();
+		expect(await rowOf("Products feed")).toBeVisible();
 		expect(announced()).toBe("Imported Products feed copy.");
 	});
 
@@ -335,7 +351,7 @@ describe("the Imports home, assembled", () => {
 		);
 		const { user } = openHome();
 		await user.click(await screen.findByRole("tab", { name: "Schedules" }));
-		await screen.findByText("No schedules yet.");
+		await screen.findByText("No schedules yet");
 
 		await user.click(screen.getByRole("button", { name: "New schedule" }));
 		const dialog = await screen.findByRole("dialog", { name: "New schedule" });
@@ -352,15 +368,16 @@ describe("the Imports home, assembled", () => {
 		expect(await row.findByText("Queued")).toBeVisible();
 		expect(announced()).toBe("Queued a run of Nightly products.");
 
-		await user.click(screen.getByRole("button", { name: "Pause Nightly products" }));
+		await user.click(screen.getByRole("switch", { name: "Active: Nightly products" }));
 		expect(await row.findByText("Paused")).toBeVisible();
 		expect(announced()).toBe("Paused Nightly products.");
 
-		await user.click(screen.getByRole("button", { name: "Delete Nightly products" }));
+		await user.click(screen.getByRole("button", { name: "Actions for Nightly products" }));
+		await user.click(await screen.findByRole("menuitem", { name: "Delete Nightly products" }));
 		const confirm = await screen.findByRole("dialog", { name: "Delete Nightly products?" });
 		await user.click(within(confirm).getByRole("button", { name: "Delete schedule" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-		expect(await screen.findByText("No schedules yet.")).toBeVisible();
+		expect(await screen.findByText("No schedules yet")).toBeVisible();
 		expect(announced()).toBe("Deleted Nightly products.");
 
 		expect(
@@ -407,16 +424,16 @@ describe("the Imports home, assembled", () => {
 		await user.click(within(dialog).getByRole("button", { name: "Clear dry runs" }));
 		await waitFor(() => expect(announced()).toBe("Dry runs cleared: 3."));
 		// The line goes with them (the live region's "Dry runs cleared" is not the line), and focus,
-		// which was on its button, goes to the tab's heading.
+		// which was on its button, goes to the tab's panel.
 		await waitFor(() => expect(screen.queryByText(/^Dry runs: /)).toBeNull());
-		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Jobs" }));
+		expect(document.activeElement).toBe(screen.getByRole("tabpanel", { name: "Jobs" }));
 		expect(writes(calls, ["jobs/clear-dry-runs"])).toEqual([["jobs/clear-dry-runs", {}]]);
 		// The real import stays.
 		expect(await rowOf("Products feed")).toBeVisible();
 	});
 
 	it("shows each tab's changes from another tab under the host's 60 s staleTime", async () => {
-		const LATER = new Date(2026, 10, 24, 14, 30).toISOString();
+		const LATER = new Date(Date.UTC(2026, 10, 24, 14, 30)).toISOString();
 		const scheduled = imported({ origin: "schedule", scheduleId: "SC1" });
 		let jobs: JobListItem[] = [scheduled];
 		let schedules: ScheduleView[] = [schedule({ templateId: "T1", sourceId: "S1" })];
@@ -477,7 +494,7 @@ describe("the Imports home, assembled", () => {
 
 		await user.click(screen.getByRole("tab", { name: "Jobs" }));
 		expect(
-			await screen.findByRole("button", { name: "Actions for Products feed, today 14:30" }),
+			await screen.findByRole("button", { name: "Actions for Products feed, Today 14:30 UTC" }),
 		).toBeVisible();
 
 		await user.click(screen.getByRole("button", { name: `Actions for Products feed, ${WHEN}` }));
@@ -485,17 +502,17 @@ describe("the Imports home, assembled", () => {
 			await screen.findByRole("menuitem", { name: `Roll back Products feed, ${WHEN}` }),
 		);
 		const dialog = await screen.findByRole("dialog", { name: "Roll back Products feed?" });
-		await user.click(await within(dialog).findByRole("button", { name: "Roll back" }));
+		await user.click(await within(dialog).findByRole("button", { name: /^Roll back \d+ entr/ }));
 		await waitFor(() => expect(announced()).toContain("Rollback finished."));
 		await user.click(within(dialog).getByRole("button", { name: "Close" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
 		await user.click(screen.getByRole("tab", { name: "Schedules" }));
 		const row = within(await rowOf("Nightly"));
-		expect(await row.findByText("Paused: an import it ran was rolled back")).toBeVisible();
+		expect(await row.findByText("Because an import it ran was rolled back.")).toBeVisible();
 	});
 
-	it("moves focus to the Jobs heading when a failed clear's dialog closes over an empty list", async () => {
+	it("moves focus to the Jobs panel when a failed clear's dialog closes over an empty list", async () => {
 		const dry = (id: string) => item({ id, dryRun: true, rollbackable: false, createdAt: AT });
 		let dryRuns = [dry("D1"), dry("D2")];
 		let n = 0;
@@ -521,10 +538,10 @@ describe("the Imports home, assembled", () => {
 		await waitFor(() => expect(screen.queryByText(/^Dry runs: /)).toBeNull());
 		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-		const heading = screen.getByRole("heading", { level: 2, name: "Jobs" });
-		await waitFor(() => expect(document.activeElement).toBe(heading));
+		const panel = screen.getByRole("tabpanel", { name: "Jobs" });
+		await waitFor(() => expect(document.activeElement).toBe(panel));
 		// Focusable from script only, never a Tab stop.
-		expect(heading).toHaveAttribute("tabindex", "-1");
+		expect(panel).toHaveAttribute("tabindex", "-1");
 	});
 
 	it("takes no focus on opening a page without dry runs", async () => {

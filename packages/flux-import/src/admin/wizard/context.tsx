@@ -2,6 +2,7 @@ import {
 	createContext,
 	type Dispatch,
 	type ReactNode,
+	type RefObject,
 	useCallback,
 	useContext,
 	useMemo,
@@ -75,6 +76,11 @@ interface WizardContextValue {
 	template: string | null;
 	/** Forgets `template`: the picker takes it once. */
 	clearTemplate(): void;
+	/**
+	 * The current step's heading, which the step's `StepHeader` renders: the page moves focus to
+	 * it when the step changes.
+	 */
+	heading: RefObject<HTMLHeadingElement | null>;
 }
 
 const WizardContext = createContext<WizardContextValue | null>(null);
@@ -97,8 +103,9 @@ export function WizardProvider(props: {
 	const restart = props.restart ?? null;
 	const [template, setTemplate] = useState<string | null>(props.template ?? null);
 	const clearTemplate = useCallback(() => setTemplate(null), []);
+	const heading = useRef<HTMLHeadingElement | null>(null);
 	const value = useMemo(
-		() => ({ state, dispatch, once: once.once, restart, template, clearTemplate }),
+		() => ({ state, dispatch, once: once.once, restart, template, clearTemplate, heading }),
 		[state, dispatch, once, restart, template, clearTemplate],
 	);
 	return <WizardContext.Provider value={value}>{props.children}</WizardContext.Provider>;
