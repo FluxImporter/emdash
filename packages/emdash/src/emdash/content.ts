@@ -273,7 +273,8 @@ export const NO_USER = "";
  * `ContentPort` over the EmDash runtime. Writes run as `actor` (revision attribution and hooks
  * only; the author is not changed), or with no user when `actor` is `null`, as EmDash's own
  * unattended writes (spec F12). Lock enforcement is not part of the trusted write path
- * (verification report, question 3), so `isLocked` and `publish` read the lock table.
+ * (verification report, question 3), so `isLocked` and `publish` read the lock table (and, with
+ * co-editing, whether a room holds the entry).
  */
 export class EmDashContent implements ContentPort {
 	constructor(

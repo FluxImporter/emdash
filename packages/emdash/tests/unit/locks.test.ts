@@ -11,7 +11,13 @@ import {
 } from "kysely";
 import { describe, expect, it } from "vitest";
 import { NO_USER } from "../../src/emdash/content.js";
-import { foreignLockQuery, isEntryLocked, isPostgres } from "../../src/emdash/locks.js";
+import {
+	foreignLockQuery,
+	isEntryHeld,
+	isEntryLocked,
+	isPostgres,
+	isRoomOpen,
+} from "../../src/emdash/locks.js";
 
 function dummyDb(dialect: "sqlite" | "postgres"): Kysely<Database> {
 	return new Kysely<Database>({
@@ -60,5 +66,39 @@ describe("foreignLockQuery", () => {
 
 	it("reports unlocked when no row comes back", async () => {
 		expect(await isEntryLocked(dummyDb("sqlite"), "products", "e1", "u1")).toBe(false);
+	});
+});
+
+describe("co-editing rooms (EmDash 1.5)", () => {
+	const rooms = (open: string[]) => {
+		const asked: string[] = [];
+		return {
+			asked,
+			reader: {
+				isOpen: async (id: string) => {
+					asked.push(id);
+					return open.includes(id);
+				},
+			},
+		};
+	};
+
+	it("asks for the room by EmDash's room ID, collection and entry ID", async () => {
+		const r = rooms(["products:e1"]);
+		expect(await isRoomOpen(r.reader, "products", "e1")).toBe(true);
+		expect(await isRoomOpen(r.reader, "products", "e2")).toBe(false);
+		expect(r.asked).toEqual(["products:e1", "products:e2"]);
+	});
+
+	it("finds no room where co-editing is off", async () => {
+		expect(await isRoomOpen(null, "products", "e1")).toBe(false);
+	});
+
+	it("holds an entry with an open room, whoever is in it, though no lease is live", async () => {
+		const db = dummyDb("sqlite");
+		const r = rooms(["products:e1"]);
+		expect(await isEntryHeld(db, r.reader, "products", "e1", "u1")).toBe(true);
+		expect(await isEntryHeld(db, r.reader, "products", "e2", "u1")).toBe(false);
+		expect(await isEntryHeld(db, null, "products", "e1", "u1")).toBe(false);
 	});
 });

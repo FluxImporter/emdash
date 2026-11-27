@@ -3,7 +3,7 @@ import { PluginRouteError, ulid } from "emdash";
 import { allowPrivateNetwork, maxSourceBytes, maxXlsxBytes } from "../astro/config.js";
 import { EmDashContent } from "../emdash/content.js";
 import { resolveSiteLocale, resolveTranslationLocale } from "../emdash/locale.js";
-import { isEntryLocked } from "../emdash/locks.js";
+import { isEntryHeld } from "../emdash/locks.js";
 import { EmDashLookups } from "../emdash/lookups.js";
 import { EmDashMedia } from "../emdash/media.js";
 import { listSchemaFields, readPublishAtCollection } from "../emdash/schema.js";
@@ -88,7 +88,7 @@ export function buildServices(
 	const deps: EngineDeps = {
 		...pluginCollections(ctx.storage),
 		content: new EmDashContent(runtime, actor, (collection, entryId, userId) =>
-			isEntryLocked(runtime.db, collection, entryId, userId),
+			isEntryHeld(runtime.db, runtime.rooms, collection, entryId, userId),
 		),
 		lookups: new EmDashLookups(ctx.taxonomies, ctx.bylines, runtime),
 		// Media is fetched without credentials, behind the same SSRF guard as URL sources.
@@ -141,10 +141,11 @@ export async function createJobFrom(
 	const { template } = resolved;
 	// Read once here and stored on the job, so a resumed or retried job converts the same way.
 	const siteTimezone = needsSiteTimezone(template) ? await readSiteTimezone() : undefined;
-	// Read once here: whether a published entry's update can be scheduled (M5b). The same read
-	// serves the job's schema lookup for that collection.
+	// Read once here: whether a published entry's update can be scheduled (M5b), and whether the
+	// collection allows schedules at all. The same read serves the job's schema lookup for it.
 	const own = await readPublishAtCollection(runtime.schemaRegistry, template);
 	const revisions = own === null ? undefined : own.revisions;
+	const scheduling = own?.scheduling;
 	const start = (upload: string, fromSource?: string) => {
 		const feed = fromSource ?? request.feedSourceId;
 		const options: StartJobInput = {
@@ -165,6 +166,7 @@ export async function createJobFrom(
 			mediaMaxBytes: mediaMaxBytes(runtime.config.maxUploadSize, onWorkers()),
 			...(siteTimezone === undefined ? {} : { siteTimezone }),
 			...(revisions === undefined ? {} : { revisions }),
+			...(scheduling === undefined ? {} : { scheduling }),
 			...(request.publish === undefined ? {} : { publish: request.publish }),
 			...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
 			...(request.budgetMs === undefined ? {} : { budgetMs: request.budgetMs }),
