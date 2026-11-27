@@ -75,6 +75,14 @@ import { CF_SITE_DIR } from "./global-setup.js";
 
 const client = new Client(inject("cfBaseUrl"), inject("cfToken"));
 
+/**
+ * The 10,000-row import's own timeout. Alone under local workerd it took 1,365 s at M6b, 1,490.8 s
+ * at M6d and 1,780.8 s on EmDash 1.6 (other work on the machine), past the suite's 1,800 s
+ * `testTimeout` under load. A test that times out keeps driving its job, which then takes later
+ * tests with it (D1 `SQLITE_BUSY`), so it gets room to finish.
+ */
+const SCALE_TIMEOUT_MS = 3_600_000;
+
 /** Runs SQL on the local D1 database the dev server uses (Task 14 Step 3 checks they share it). */
 function d1(sql: string): void {
 	execFileSync(
@@ -656,22 +664,26 @@ describe("workerd parity (D1, R2)", () => {
 		expect(chaise?.data).toMatchObject({ sku: "S3", price: 30, flux_source_id: "E3" });
 	});
 
-	it("imports 10,000 rows with ranged R2 reads and does not re-read past the end", async () => {
-		await client.createProducts("cf_scale");
-		const { uploadId } = await client.upload(productsCsv(10_000));
-		const job = await client.plugin("jobs/create", {
-			uploadId,
-			template: template("cf_scale"),
-			dryRun: false,
-			batchSize: 500,
-			budgetMs: 20_000,
-		});
-		const done = await client.runToEnd(job.id);
-		expect(done).toMatchObject({ status: "completed", counters: { created: 10_000 } });
-		expect((await client.plugin("jobs/next", { id: job.id })).counters.created).toBe(10_000);
-		const entries = await client.listAll("cf_scale");
-		expect(new Set(entries.map((e) => e.data.flux_source_id)).size).toBe(10_000);
-	});
+	it(
+		"imports 10,000 rows with ranged R2 reads and does not re-read past the end",
+		async () => {
+			await client.createProducts("cf_scale");
+			const { uploadId } = await client.upload(productsCsv(10_000));
+			const job = await client.plugin("jobs/create", {
+				uploadId,
+				template: template("cf_scale"),
+				dryRun: false,
+				batchSize: 500,
+				budgetMs: 20_000,
+			});
+			const done = await client.runToEnd(job.id);
+			expect(done).toMatchObject({ status: "completed", counters: { created: 10_000 } });
+			expect((await client.plugin("jobs/next", { id: job.id })).counters.created).toBe(10_000);
+			const entries = await client.listAll("cf_scale");
+			expect(new Set(entries.map((e) => e.data.flux_source_id)).size).toBe(10_000);
+		},
+		SCALE_TIMEOUT_MS,
+	);
 
 	it("rolls back an M5a create-and-update job on D1, resumed after a stop mid-batch", async () => {
 		await client.createProducts("cf_m5a");
@@ -1234,6 +1246,11 @@ describe("workerd parity (D1, R2)", () => {
 		const unheadered = await fetch(`${client.baseUrl}/test/stop-cron-timer`, { method: "POST" });
 		expect(unheadered.status).toBe(403);
 		await stopCronTimer(client.baseUrl);
+		// EmDash 1.3.0 (#2768): the dev server's own maintenance request, every 60 s, now does nothing.
+		const bridge = await fetch(`${client.baseUrl}/_emdash/api/dev/scheduled-tasks`, {
+			method: "POST",
+		});
+		expect(bridge.headers.get("X-Flux-Maintenance")).toBe("skipped");
 		const scheduled = async (names: string[]) => {
 			d1(dueSql(names));
 			const res = await fetch(`${client.baseUrl}/cdn-cgi/handler/scheduled?cron=*+*+*+*+*`);
