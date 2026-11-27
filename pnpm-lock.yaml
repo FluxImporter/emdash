@@ -23,15 +23,9 @@ importers:
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      '@emdash-cms/auth':
-        specifier: 1.2.0
-        version: 1.2.0(astro@7.3.7(@types/node@22.20.5)(yaml@2.9.1))(kysely@0.29.6)
       jsonata:
         specifier: 2.2.2
         version: 2.2.2
-      kysely:
-        specifier: ^0.29.0
-        version: 0.29.6
       luxon:
         specifier: ^3.7.2
         version: 3.7.2
@@ -54,6 +48,9 @@ importers:
       '@emdash-cms/admin':
         specifier: 1.2.0
         version: 1.2.0(@atcute/cbor@2.3.8(@atcute/cid@2.5.0))(@atcute/cid@2.5.0)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tiptap/extensions@3.31.4(@tiptap/core@3.31.4(@tiptap/pm@3.31.4))(@tiptap/pm@3.31.4))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(echarts@6.1.0)(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)(zod@4.5.4)
+      '@emdash-cms/auth':
+        specifier: 1.2.0
+        version: 1.2.0(astro@7.3.7(@types/node@22.20.5)(yaml@2.9.1))(kysely@0.29.6)
       '@lingui/core':
         specifier: 5.9.5
         version: 5.9.5
@@ -102,6 +99,9 @@ importers:
       happy-dom:
         specifier: 21.0.4
         version: 21.0.4
+      kysely:
+        specifier: ^0.29.0
+        version: 0.29.6
       react:
         specifier: 19.2.4
         version: 19.2.4
