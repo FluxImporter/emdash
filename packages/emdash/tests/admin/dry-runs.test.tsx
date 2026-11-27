@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { HomeProvider } from "../../src/admin/home/Home.js";
+import { HomeProvider, useHome } from "../../src/admin/home/Home.js";
 import { DryRuns } from "../../src/admin/home/jobs/dry-runs/DryRuns.js";
 import { STATUS_MESSAGES } from "../../src/admin/home/jobs/status.js";
 import { queryKeys } from "../../src/admin/queries.js";
@@ -24,9 +25,21 @@ const page = (n: number, more = false) => ({
 function show() {
 	return renderAdmin(
 		<HomeProvider>
-			<DryRuns names={names} />
-			<p>sentinel</p>
+			<Panel>
+				<DryRuns names={names} />
+				<p>sentinel</p>
+			</Panel>
 		</HomeProvider>,
+	);
+}
+
+/** The open tab's panel as `Home` renders it: `focusHeading` focuses it. */
+function Panel(props: { children: ReactNode }) {
+	const { headingRef } = useHome();
+	return (
+		<div ref={headingRef} tabIndex={-1} role="tabpanel" aria-label="Jobs">
+			{props.children}
+		</div>
 	);
 }
 
@@ -96,6 +109,27 @@ describe("DryRuns", () => {
 		await waitFor(() =>
 			expect(calls.filter((c) => c.route === "jobs/summaries").length).toBeGreaterThan(1),
 		);
+	});
+	it("moves focus to the tab's panel, not the page, when clearing by keyboard empties the line", async () => {
+		let items = THREE.items;
+		mockRoutes({
+			"jobs/summaries": () => ({ items }),
+			"jobs/clear-dry-runs": () => {
+				items = [];
+				return { cleared: 3, more: false };
+			},
+		});
+		const { user } = show();
+		const clear = await screen.findByRole("button", { name: "Clear dry runs" });
+		clear.focus();
+		await user.keyboard("{Enter}");
+		const dialog = await screen.findByRole("dialog");
+		const buttons = dialog.querySelectorAll("button");
+		buttons[buttons.length - 1]!.focus();
+		await user.keyboard("{Enter}");
+		await waitFor(() => expect(screen.queryByText("Dry runs: 3")).toBeNull());
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tabpanel")));
 	});
 	it("sends no cursor when a call was cut short", async () => {
 		let n = 0;
