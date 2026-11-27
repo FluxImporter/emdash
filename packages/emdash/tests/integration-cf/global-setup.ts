@@ -2,10 +2,14 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path";
 import type { TestProject } from "vitest/node";
 import { devBypass } from "../integration/client.js";
-import { startAstroDev, stopServer, TEST_ENCRYPTION_KEY } from "../integration/server.js";
+import {
+	portFromEnv,
+	startAstroDev,
+	stopServer,
+	TEST_ENCRYPTION_KEY,
+} from "../integration/server.js";
 
 export const CF_SITE_DIR = resolve(import.meta.dirname, "../../../../sites/dev-cf");
-const PORT = 4396;
 /** EmDash reads EMDASH_ENCRYPTION_KEY from the Worker's vars on workerd (Fact D7). */
 const DEV_VARS = join(CF_SITE_DIR, ".dev.vars");
 /**
@@ -79,7 +83,8 @@ export default async function setup(project: TestProject) {
 	await writeDevVars();
 	let server: Awaited<ReturnType<typeof startAstroDev>>;
 	try {
-		server = await startAstroDev(CF_SITE_DIR, PORT);
+		// `FLUX_CF_PORT` picks the port; by default a free one.
+		server = await startAstroDev(CF_SITE_DIR, await portFromEnv("FLUX_CF_PORT"));
 	} catch (e) {
 		await restoreDevVars();
 		throw e;

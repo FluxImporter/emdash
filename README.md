@@ -46,6 +46,8 @@ The workspace runs the plugin's TypeScript source directly, so there's no build 
 | `pnpm test:cf`                                      | The same flows against `sites/dev-cf` under workerd.                          |
 | `pnpm test:build`                                   | A production Cloudflare build of `sites/dev-cf`, run with `wrangler dev`.     |
 
+`pnpm test:cf` serves `sites/dev-cf` on the port in `FLUX_CF_PORT`, or on a free port.
+
 ### Packaging
 
 `pnpm --filter @fluximporter/emdash pack` typechecks, compiles `src` (except the admin) into

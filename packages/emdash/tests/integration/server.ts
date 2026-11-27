@@ -71,6 +71,35 @@ async function waitForHealth(server: AstroProcess, timeoutMs: number): Promise<v
 	);
 }
 
+/** Ports other tools on this machine hold; `freePort` never returns one. */
+export const AVOID_PORTS = new Set([4392, 4396, 4397, 5432]);
+
+/** A port the system reports free, other than `AVOID_PORTS`. */
+export async function freePort(): Promise<number> {
+	for (;;) {
+		const port = await new Promise<number>((done, fail) => {
+			const probe = createServer();
+			probe.once("error", fail);
+			probe.listen(0, "127.0.0.1", () => {
+				const address = probe.address();
+				probe.close(() => done(typeof address === "object" && address ? address.port : 0));
+			});
+		});
+		if (port > 0 && !AVOID_PORTS.has(port)) return port;
+	}
+}
+
+/** The port in the environment variable `name`, else a free one. */
+export async function portFromEnv(name: string): Promise<number> {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") return freePort();
+	const port = Number(raw);
+	if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+		throw new Error(`${name} must be a port number, got ${JSON.stringify(raw)}`);
+	}
+	return port;
+}
+
 async function assertPortFree(port: number): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
 		const probe = createServer();
@@ -132,7 +161,8 @@ export async function startAstroDev(
 /**
  * Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted), with
  * an upload limit of `maxSourceBytes`. `allowPrivateNetwork` lets URL sources and media reach
- * this machine; `maxUploadSize` sets EmDash's media upload limit.
+ * this machine; `maxUploadSize` sets EmDash's media upload limit; `env` adds to the site's
+ * environment (such as `FLUX_DEV_I18N`).
  */
 export async function startServer(
 	port: number,
@@ -140,6 +170,7 @@ export async function startServer(
 	maxSourceBytes = TEST_MAX_SOURCE_BYTES,
 	allowPrivateNetwork = false,
 	maxUploadSize?: number,
+	env: Record<string, string> = {},
 ): Promise<DevServer> {
 	const root = dir ?? (await mkdtemp(join(tmpdir(), "fluximporter-it-")));
 	const dbPath = join(root, "test.db");
@@ -153,6 +184,7 @@ export async function startServer(
 			FLUX_DEV_ALLOW_PRIVATE_NETWORK: allowPrivateNetwork ? "1" : "0",
 			...(maxUploadSize === undefined ? {} : { FLUX_DEV_MAX_UPLOAD_SIZE: String(maxUploadSize) }),
 			EMDASH_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+			...env,
 		});
 	} catch (e) {
 		if (!dir) await rm(root, { recursive: true, force: true });

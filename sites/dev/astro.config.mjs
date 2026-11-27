@@ -13,11 +13,18 @@ const maxSourceBytes = Number(process.env.FLUX_DEV_MAX_SOURCE_BYTES) || undefine
 const allowPrivateNetwork = process.env.FLUX_DEV_ALLOW_PRIVATE_NETWORK === "1";
 // Media tests lower EmDash's upload limit, so a too-large file stays small.
 const maxUploadSize = Number(process.env.FLUX_DEV_MAX_UPLOAD_SIZE) || undefined;
+// Locale tests use Astro's `{ path, codes }` locales (EmDash 1.3.1 and later).
+const paths = process.env.FLUX_DEV_I18N === "paths";
+const PATH_LOCALES = [
+	{ path: "en", codes: ["en-US"] },
+	{ path: "fr", codes: ["fr-FR", "fr-CA"] },
+	"de",
+];
 
 export default defineConfig({
 	output: "server",
 	// Translation imports (M4e) need i18n with more than one locale.
-	i18n: { defaultLocale: "en", locales: ["en", "fr", "de"] },
+	i18n: { defaultLocale: "en", locales: paths ? PATH_LOCALES : ["en", "fr", "de"] },
 	adapter: node({
 		mode: "standalone",
 	}),

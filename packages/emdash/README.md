@@ -10,7 +10,8 @@ Documentation: **[fluximporter.com/emdash](https://www.fluximporter.com/emdash/)
 
 - EmDash 1.6 or later, on Node 22 or Cloudflare Workers
 - Astro 6 or later, with `@astrojs/react` (EmDash's admin needs it already). Releases are tested
-  with Astro 7.
+  with Astro 7; 0.8 was also checked on Node with Astro 6.4 (`@astrojs/node` 10, `@astrojs/react`
+  5).
 - `@cloudflare/kumo` at the exact version EmDash's admin uses: 2.19.0 for EmDash 1.6
 
 Each release follows one Kumo version, because EmDash's admin only styles the Kumo version it

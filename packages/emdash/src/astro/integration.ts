@@ -34,7 +34,8 @@ const PACKAGE = "@fluximporter/emdash";
  * `@astrojs/cloudflare` 14, a site's build splits kysely into chunks that import each other, and
  * the built Worker fails at load with "Class extends value undefined is not a constructor or
  * null" (a class there extends `OperationNodeTransformer` before its chunk has run). This happens
- * without the plugin too; the Node build happens to load the chunks in a safe order.
+ * without the plugin too; the Node build happens to load the chunks in a safe order. Astro 6
+ * (Vite 7) bundles with Rollup and ignores `rolldownOptions`; its Node build works without it.
  */
 export function fluxImporterRoutes(options: FluxImporterRoutesOptions = {}): AstroIntegration {
 	const max = options.maxSourceBytes ?? MAX_SOURCE_BYTES_DEFAULT;

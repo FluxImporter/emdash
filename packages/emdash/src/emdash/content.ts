@@ -11,6 +11,7 @@ import {
 	type WriteResult,
 } from "../engine/ports.js";
 import { type FieldValue, SOURCE_ID_FIELD } from "../engine/template.js";
+import { canonicalLocale, sameSiteLocale } from "./locale.js";
 import { ensureSourceIdField, type SchemaRegistryLike } from "./schema.js";
 
 /** The envelope every runtime content handler returns (`emdash` src/api/types.ts:105). */
@@ -249,9 +250,12 @@ function snapshotOf(
 	};
 }
 
-/** Whether an entry's locale (null without i18n) is `locale`, ignoring case. */
+/**
+ * Whether an entry's locale (null without i18n) is `locale`, ignoring case. An entry stamped with
+ * an Astro locale code (`en-US`) is in that code's locale (`en`), as EmDash reads it.
+ */
 function sameLocale(entryLocale: string | null, locale: string): boolean {
-	return entryLocale === null || entryLocale.toLowerCase() === locale.toLowerCase();
+	return entryLocale === null || sameSiteLocale(entryLocale, locale);
 }
 
 /** The links of a write, without the ones not given. */
@@ -476,7 +480,10 @@ export class EmDashContent implements ContentPort {
 		return { id, rev };
 	}
 
-	/** Rows without a locale (never written by EmDash with i18n) are left out. */
+	/**
+	 * Rows without a locale (never written by EmDash with i18n) are left out. A row stamped with an
+	 * Astro locale code is listed under that code's locale.
+	 */
 	async translations(collection: string, id: string): Promise<{ id: string; locale: string }[]> {
 		const result = await this.runtime.handleContentTranslations(collection, id);
 		if (!result.success) {
@@ -484,7 +491,9 @@ export class EmDashContent implements ContentPort {
 			throw writeError("Reading the translations", result.error);
 		}
 		const { translations } = parse(translationsResult, result.data, "Reading the translations");
-		return translations.flatMap((t) => (t.locale === null ? [] : [{ id: t.id, locale: t.locale }]));
+		return translations.flatMap((t) =>
+			t.locale === null ? [] : [{ id: t.id, locale: canonicalLocale(t.locale) }],
+		);
 	}
 
 	async update(

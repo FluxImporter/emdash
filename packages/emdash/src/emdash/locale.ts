@@ -21,14 +21,44 @@ export function resolveSiteLocale(
 	}
 }
 
+/**
+ * The configured locale a stored or requested locale stands for, as EmDash reads it
+ * (`resolveConfiguredLocale`, `emdash` src/i18n/config.ts:43-61, not exported): a configured
+ * locale in its configured casing, an Astro locale code (`{ path, codes }`, EmDash 1.3.1, #4224)
+ * as its locale's path, and any other locale as given. Rows written before a site moved a locale
+ * to `{ path: "en", codes: ["en-US"] }` keep the code `en-US`, and EmDash still reads them as `en`.
+ */
+export function canonicalLocale(
+	locale: string,
+	config: I18nConfig | null = getI18nConfig(),
+): string {
+	const lower = locale.toLowerCase();
+	const configured = config?.locales.find((c) => c.toLowerCase() === lower);
+	if (configured !== undefined) return configured;
+	const alias = Object.entries(config?.localeAliases ?? {}).find(
+		([code]) => code.toLowerCase() === lower,
+	)?.[1];
+	if (alias === undefined) return locale;
+	return config?.locales.find((c) => c.toLowerCase() === alias.toLowerCase()) ?? alias;
+}
+
+/** Whether two locales stand for the same configured locale, ignoring case. */
+export function sameSiteLocale(
+	a: string,
+	b: string,
+	config: I18nConfig | null = getI18nConfig(),
+): boolean {
+	return canonicalLocale(a, config).toLowerCase() === canonicalLocale(b, config).toLowerCase();
+}
+
 export const I18N_REQUIRED_MESSAGE = "translationOf needs i18n with at least two locales";
 
 /**
  * Resolves a template's `translationOf.locale` against the job's resolved `locale`: refused
  * without i18n with at least two locales (EmDash syncs shared values only then, spec M4e F6, F7;
  * the same test as `isI18nEnabled`, src/i18n/config.ts:81-85), resolved like `locale` when given,
- * and the site's default locale when left out, which must then differ from `locale`. Messages
- * are whole template problems.
+ * and the site's default locale when left out. Either way it must differ from `locale`, which an
+ * Astro locale code can hide (`en-US` for the locale `en`). Messages are whole template problems.
  */
 export function resolveTranslationLocale(
 	sourceLocale: string | undefined,
@@ -48,7 +78,13 @@ export function resolveTranslationLocale(
 		return { ok: true, locale: config.defaultLocale };
 	}
 	const resolved = resolveSiteLocale(sourceLocale, config);
-	return resolved.ok
-		? resolved
-		: { ok: false, message: `translationOf.locale: ${resolved.message}` };
+	if (!resolved.ok) return { ok: false, message: `translationOf.locale: ${resolved.message}` };
+	// The template check compares the locales as written; an Astro code can hide the same locale.
+	if (sameSiteLocale(resolved.locale, locale, config)) {
+		return {
+			ok: false,
+			message: `translationOf.locale must differ from locale ("${locale}")`,
+		};
+	}
+	return resolved;
 }
