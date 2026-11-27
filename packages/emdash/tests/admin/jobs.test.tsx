@@ -38,22 +38,26 @@ function inline(r: JobListItem): JobListItem {
 	return rest;
 }
 
-const pageOf = <T,>(items: T[], cursor?: string) => ({
+/** A `jobs/summaries` page; a first page (with `total`) also says how many jobs the list holds. */
+const pageOf = <T,>(items: T[], cursor?: string, total?: number) => ({
 	items,
 	hasMore: cursor !== undefined,
 	...(cursor === undefined ? {} : { cursor }),
+	...(total === undefined ? {} : { total }),
 });
+
+type SummariesBody = { dryRun: boolean; status?: string; cursor?: string };
 
 /** Routes for a Jobs tab showing `items` (one page), no dry runs, one template and one schedule. */
 function routes(
-	items: JobListItem[] | ((body: { dryRun: boolean; cursor?: string }) => unknown),
+	items: JobListItem[] | ((body: SummariesBody) => unknown),
 	extra: Record<string, RouteHandler> = {},
 ): Record<string, RouteHandler> {
 	return {
 		"jobs/summaries": (b) => {
-			const body = b as { dryRun: boolean; cursor?: string };
-			if (body.dryRun) return pageOf([]);
-			return typeof items === "function" ? items(body) : pageOf(items);
+			const body = b as SummariesBody;
+			if (body.dryRun) return pageOf([], undefined, 0);
+			return typeof items === "function" ? items(body) : pageOf(items, undefined, items.length);
 		},
 		"templates/list": () => pageOf([templateRow()]),
 		"schedules/list": () => pageOf([schedule()]),
@@ -153,15 +157,15 @@ describe("JobsTab", () => {
 			routes((b) =>
 				b.cursor === "c1"
 					? pageOf([row({ id: "J2", templateId: "T9" })])
-					: pageOf([row({ id: "J1" })], "c1"),
+					: pageOf([row({ id: "J1" })], "c1", 2),
 			),
 		);
 		const { user } = show();
 		await screen.findByText("Products feed");
 		expect(screen.queryByText("Deleted template")).toBeNull();
 		const pages = screen.getByRole("navigation", { name: "Pages" });
-		// No total: the range says "+" while more pages exist, never a made-up total.
-		expect(screen.getByText("1–1 of 1+")).toBeVisible();
+		// The first page's exact total, before the second page is loaded.
+		expect(screen.getByText("1–1 of 2")).toBeVisible();
 		expect(within(pages).getByRole("button", { name: "Previous page" })).toBeDisabled();
 		await user.click(within(pages).getByRole("button", { name: "Next page" }));
 		expect(await screen.findByText("Deleted template")).toBeVisible();
@@ -184,7 +188,7 @@ describe("JobsTab", () => {
 		expect(screen.queryByRole("navigation", { name: "Pages" })).toBeNull();
 	});
 
-	it("opens with a summary line: imports, running and failed, of the loaded rows only", async () => {
+	it("opens with a summary line: the exact total, running and failed once every row is loaded", async () => {
 		mockRoutes(
 			routes([
 				row({ id: "J1", status: "running" }),
@@ -198,13 +202,101 @@ describe("JobsTab", () => {
 			/^3 imports · 1 running · 1 failed$/,
 		);
 		first.unmount();
-		mockRoutes(routes(() => pageOf([row({ id: "J1" })], "c1")));
+		mockRoutes(routes(() => pageOf([row({ id: "J1", status: "running" })], "c1", 23)));
 		show();
-		// More pages exist and no total is known: the line counts what is loaded, and says so.
-		expect(await screen.findByText("Latest 1 import")).toBeVisible();
-		expect(screen.getByText("Latest 1 import").parentElement).toHaveTextContent(
-			/^Latest 1 import$/,
+		// More pages exist: the lead is the server's total, and running and failed, which only the
+		// rows could count, are left out rather than counted from one page.
+		expect(await screen.findByText("23 imports")).toBeVisible();
+		expect(screen.getByText("23 imports").parentElement).toHaveTextContent(/^23 imports$/);
+		expect(screen.getByText("1–1 of 23")).toBeVisible();
+	});
+
+	it("filters by status on the server, from page 1, and keeps the filter when nothing matches", async () => {
+		const failed = [row({ id: "F1", status: "failed" }), row({ id: "F2", status: "failed" })];
+		const { calls } = mockRoutes(
+			routes((b) => {
+				if (b.status === "failed") return pageOf(failed, undefined, 2);
+				if (b.status === "paused") return pageOf([], undefined, 0);
+				return b.cursor === "c1"
+					? pageOf([row({ id: "J2", templateId: "T9" })])
+					: pageOf([row({ id: "J1" })], "c1", 2);
+			}),
 		);
+		const { user } = show();
+		await screen.findByText("Products feed");
+		await user.click(screen.getByRole("button", { name: "Next page" }));
+		expect(await screen.findByText("Deleted template")).toBeVisible();
+
+		const filter = screen.getByRole("combobox", { name: "Status" });
+		expect(filter).toHaveTextContent("All statuses");
+		await user.click(filter);
+		const listbox = await screen.findByRole("listbox");
+		expect(
+			within(listbox)
+				.getAllByRole("option")
+				.map((o) => o.textContent),
+		).toEqual([
+			"All statuses",
+			"Waiting to start",
+			"Running",
+			"Paused",
+			"Completed",
+			"Failed",
+			"Cancelled",
+		]);
+		await user.click(within(listbox).getByRole("option", { name: "Failed" }));
+		const table = await screen.findByRole("table");
+		await waitFor(() => expect(bodyRows(table)).toHaveLength(2));
+		expect(screen.getByText("2 imports").parentElement).toHaveTextContent(/^2 imports$/);
+		expect(screen.queryByRole("navigation", { name: "Pages" })).toBeNull();
+		expect(real(calls).map((c) => c.body)).toContainEqual({ dryRun: false, status: "failed" });
+
+		await user.click(screen.getByRole("combobox", { name: "Status" }));
+		await user.click(
+			within(await screen.findByRole("listbox")).getByRole("option", { name: "Paused" }),
+		);
+		expect(await screen.findByText("No imports with this status")).toBeVisible();
+		expect(screen.getByText("Choose All statuses to see every import.")).toBeVisible();
+		expect(screen.getByText("0 imports")).toBeVisible();
+		expect(screen.queryByText("No imports yet")).toBeNull();
+		expect(screen.getByRole("combobox", { name: "Status" })).toHaveTextContent("Paused");
+
+		await user.click(screen.getByRole("combobox", { name: "Status" }));
+		await user.click(
+			within(await screen.findByRole("listbox")).getByRole("option", { name: "All statuses" }),
+		);
+		// Back on page 1 of every status.
+		expect(await screen.findByText("Products feed")).toBeVisible();
+		expect(screen.getByText("1–1 of 2")).toBeVisible();
+	});
+
+	it("shows a running row's records read as a Meter when its total is known, and a stopped row's as a line", async () => {
+		mockRoutes(
+			routes([
+				row({
+					id: "J1",
+					status: "running",
+					progress: { processed: 640, total: 1000 },
+					counters: counters({ created: 0, updated: 412, unchanged: 228 }),
+				}),
+				row({ id: "J2", status: "paused", progress: { processed: 200, total: 540 } }),
+				// No known total: the counts so far, as before.
+				row({ id: "J3", status: "running" }),
+			]),
+		);
+		show();
+		const table = await screen.findByRole("table");
+		const records = (n: number) => within(bodyRows(table)[n]!).getAllByRole("cell")[3]!;
+		const meter = within(records(0)).getByRole("meter", { name: "Records read" });
+		expect(meter).toHaveAttribute("aria-valuenow", "640");
+		expect(meter).toHaveAttribute("aria-valuemax", "1000");
+		expect(within(records(0)).getByText("640 of 1,000")).toBeVisible();
+		expect(records(0)).toHaveTextContent(/412 updated$/);
+		expect(within(records(1)).queryByRole("meter")).toBeNull();
+		expect(within(records(1)).getByText("200 of 540 records read")).toBeVisible();
+		expect(within(records(2)).queryByRole("meter")).toBeNull();
+		expect(records(2)).toHaveTextContent(/^3 created2 updated$/);
+		expect(screen.getAllByRole("meter")).toHaveLength(1);
 	});
 
 	it("stacks the rows below 700px of content: name, collection and time, status and counts, the same menu", async () => {
@@ -288,6 +380,7 @@ describe("JobsTab", () => {
 					rollbackable: false,
 					counters: counters({ reverted: 4, conflict: 1, locked: 1 }),
 				}),
+				row({ id: "J4", origin: "wizard" }),
 			]),
 		);
 		show();
@@ -304,7 +397,8 @@ describe("JobsTab", () => {
 		expect(time).toHaveAttribute("datetime", AT);
 		expect(time.textContent).toContain(WHEN);
 		expect(time.querySelector(".sr-only")?.textContent).toContain("Nov 24, 2026");
-		// A job from the wizard or the API has no recorded origin: nothing under its time.
+		// A job from the API (or from the wizard before 0.9) has no recorded origin: nothing under
+		// its time.
 		expect(first[1]!.textContent).toBe(time.textContent);
 		expect(first[2]).toHaveTextContent(/^Completed$/);
 		// Zero counts hidden; unchanged only when nothing else changed.
@@ -323,6 +417,10 @@ describe("JobsTab", () => {
 
 		expect(nameOf(bodyRows(table)[3]!)).toBe("Rollback of Products feed");
 		expect(cells(3)[3]).toHaveTextContent(/^4 restored2 kept$/);
+
+		const wizard = cells(4);
+		expect(within(wizard[1]!).getByText("Wizard")).toBeVisible();
+		expect(wizard[1]!.querySelector("svg[aria-hidden='true']")).not.toBeNull();
 	});
 
 	it("reads Rolling back while the rollback runs and Rolled back once it is done", async () => {
@@ -782,7 +880,7 @@ describe("JobsTab", () => {
 					? failing
 						? fail("INTERNAL_ERROR", "boom", 500)
 						: pageOf([row({ id: "J2", templateId: "T9" })])
-					: pageOf([row({ id: "J1" })], "c1"),
+					: pageOf([row({ id: "J1" })], "c1", 2),
 			),
 		);
 		const { user } = show();

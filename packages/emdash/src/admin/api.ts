@@ -1,7 +1,7 @@
 import type { Field } from "emdash";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import type { Fence } from "../emdash/fence.js";
-import type { Job, RecordRow, RecordStatus } from "../engine/types.js";
+import type { Job, JobStatus, RecordRow, RecordStatus } from "../engine/types.js";
 import type { CredentialInfo } from "../plugin/credentials.js";
 import type {
 	CreateScheduleInput,
@@ -9,10 +9,10 @@ import type {
 	UpdateScheduleInput,
 } from "../plugin/schedules.js";
 import type { ApplyResult, FieldRequest } from "../plugin/schema-apply.js";
-import type { Page } from "../plugin/service.js";
+import type { JobSummariesPage, Page } from "../plugin/service.js";
 import type { FetchOutcome, SourceRow } from "../plugin/sources.js";
 import type { SuggestReply } from "../plugin/suggest.js";
-import type { ClearDryRunsReply, JobListItem } from "../plugin/summaries.js";
+import type { ClearDryRunsReply } from "../plugin/summaries.js";
 import type { TemplateFile } from "../plugin/template-files.js";
 import type { SavedResult, SavedTemplate, TemplateSummary } from "../plugin/templates.js";
 import type { CsvSample } from "../sources/csv.js";
@@ -281,8 +281,10 @@ export const api = {
 		cursor?: string;
 	}) => callRoute<Page<RecordRow>>("jobs/records", i),
 	/** One page of the Jobs table: real imports, or the dry runs (`jobs/summaries`, never `jobs/list`). */
-	jobSummaries: (i: { dryRun: boolean; cursor?: string }, signal?: AbortSignal) =>
-		callRoute<Page<JobListItem>>("jobs/summaries", i, signal),
+	jobSummaries: (
+		i: { dryRun: boolean; status?: JobStatus; cursor?: string },
+		signal?: AbortSignal,
+	) => callRoute<JobSummariesPage>("jobs/summaries", i, signal),
 	/** One bounded step of clearing the dry runs; the caller repeats it while `more`. */
 	clearDryRuns: (i: { cursor?: string }) =>
 		callRoute<ClearDryRunsReply>(

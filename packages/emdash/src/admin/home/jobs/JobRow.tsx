@@ -1,13 +1,15 @@
-import { Badge, Button, DropdownMenu, Table } from "@cloudflare/kumo";
+import { Badge, Button, DropdownMenu, Meter, Table } from "@cloudflare/kumo";
+import { useLingui } from "@lingui/react";
 import { Fragment, type ReactNode } from "react";
 import type { JobListItem } from "../../../plugin/summaries.js";
-import { type Msg, useT } from "../../i18n.js";
+import { type Msg, useT, useTn } from "../../i18n.js";
 import {
 	ArrowClockwiseIcon,
 	ArrowCounterClockwiseIcon,
 	ClockIcon,
 	DotsThreeIcon,
 	DownloadSimpleIcon,
+	MagicWandIcon,
 	PauseIcon,
 	PlayIcon,
 	RobotIcon,
@@ -25,7 +27,7 @@ import {
 	stateMsg,
 } from "./actions.js";
 import { ArrowSquareOutIcon } from "./icons.js";
-import { M } from "./messages.js";
+import { M, N } from "./messages.js";
 
 /** A menu item: a `JobAction`, with the log split into all records and failed only. */
 export type RowAction = JobAction | "failedLog";
@@ -121,18 +123,21 @@ function StatusBadge(props: { item: JobListItem }) {
 	);
 }
 
-/** Who started the job, with its icon; nothing for a job started from the wizard or the API. */
+/** Each recorded origin's icon (Jobs.dc.html). */
+const ORIGIN_ICONS: Readonly<Record<NonNullable<JobListItem["origin"]>, ReactNode>> = {
+	agent: <RobotIcon aria-hidden="true" />,
+	schedule: <ClockIcon aria-hidden="true" />,
+	wizard: <MagicWandIcon aria-hidden="true" />,
+};
+
+/** Who started the job, with its icon; nothing for an API job or an older wizard job. */
 function Origin(props: { item: JobListItem }) {
 	const t = useT();
 	const msg = originMsg(props.item);
-	if (msg === null) return null;
+	if (msg === null || props.item.origin === undefined) return null;
 	return (
 		<span className="inline-flex items-center gap-1 text-kumo-subtle">
-			{props.item.origin === "agent" ? (
-				<RobotIcon aria-hidden="true" />
-			) : (
-				<ClockIcon aria-hidden="true" />
-			)}
+			{ORIGIN_ICONS[props.item.origin]}
 			{t(msg)}
 		</span>
 	);
@@ -150,9 +155,39 @@ function Name(props: { item: JobListItem; name: string }) {
 	);
 }
 
-/** The row's counts: zeros hidden, unchanged only when nothing else changed. */
+/** States whose progress moves: a Meter shows it; a stopped row says how far it got. */
+const LIVE: ReadonlySet<JobListItem["status"]> = new Set(["created", "running"]);
+
+/**
+ * The row's counts: zeros hidden, unchanged only when nothing else changed. With a known record
+ * total (`progress`), a running row's Meter of records read comes first, and a stopped row's
+ * "200 of 540 records read"; without one, the counts so far, as on older jobs.
+ */
 function Counts(props: { item: JobListItem }) {
-	return <RecordCounts counts={countsOf(props.item)} quiet={["unchanged"]} small />;
+	const t = useT();
+	const tn = useTn();
+	const { i18n } = useLingui();
+	const number = (n: number) => new Intl.NumberFormat(i18n.locale || "en").format(n);
+	const { progress } = props.item;
+	const counts = <RecordCounts counts={countsOf(props.item)} quiet={["unchanged"]} small />;
+	if (progress === undefined) return counts;
+	const done = Math.min(progress.processed, progress.total);
+	return (
+		<div className="flex flex-col gap-1">
+			{LIVE.has(props.item.status) ? (
+				<Meter
+					className="max-w-60"
+					label={t(M.progress)}
+					value={done}
+					max={Math.max(progress.total, 1)}
+					customValue={tn(N.progressOf, progress.total, { done: number(done) })}
+				/>
+			) : (
+				<p className="text-xs">{tn(N.readOf, progress.total, { done: number(done) })}</p>
+			)}
+			{counts}
+		</div>
+	);
 }
 
 /**

@@ -21,6 +21,7 @@ interface Page<T> {
 	items: T[];
 	cursor?: string;
 	hasMore: boolean;
+	total?: number;
 }
 
 beforeAll(async () => {
@@ -34,7 +35,7 @@ afterAll(async () => {
 	await rm(server.dir, { recursive: true, force: true });
 });
 
-const summaries = (input: { dryRun?: boolean; cursor?: string } = {}) =>
+const summaries = (input: { dryRun?: boolean; status?: string; cursor?: string } = {}) =>
 	client.plugin<Page<JobListItem>>("jobs/summaries", input);
 
 async function createJob(csv: string, dryRun: boolean, extra: object = {}): Promise<Job> {
@@ -197,6 +198,82 @@ describe("M7b server additions on sites/dev", () => {
 			const listed = await summaries({ dryRun });
 			expect(listed.items.find((j) => j.id === rollback.id)).toMatchObject({ kind: "rollback" });
 		}
+	});
+
+	it("filters jobs/summaries by status on the server and answers the exact total on page 1", async () => {
+		const before = await summaries();
+		const all = before.total as number;
+		// A job of a status no other test makes: cancelled.
+		const cancelled: Job[] = [];
+		for (let i = 0; i < 9; i++) {
+			const job = await createJob(productsCsv(1), false);
+			await client.plugin("jobs/cancel", { id: job.id });
+			cancelled.push(job);
+		}
+		const first = await summaries();
+		expect(first.total).toBe(all + 9);
+
+		const page = await summaries({ status: "cancelled" });
+		expect(page.items).toHaveLength(8);
+		expect(page.items.every((j) => j.status === "cancelled")).toBe(true);
+		expect(page.total).toBe(9);
+		expect(page.items.map((j) => j.id)).toEqual(
+			[...cancelled]
+				.reverse()
+				.slice(0, 8)
+				.map((j) => j.id),
+		);
+		const rest = await summaries({ status: "cancelled", cursor: page.cursor as string });
+		expect(rest.items.map((j) => j.id)).toEqual([cancelled[0]?.id]);
+		expect(rest).not.toHaveProperty("total");
+		expect(rest.hasMore).toBe(false);
+		// Dry runs keep to their own list.
+		const dry = await summaries({ dryRun: true, status: "cancelled" });
+		expect(dry.items).toEqual([]);
+		expect(dry.total).toBe(0);
+		await expect(client.plugin("jobs/summaries", { status: "rolled_back" })).rejects.toMatchObject({
+			status: 400,
+		});
+	});
+
+	it("records the wizard's origin, and no origin a caller of jobs/create makes up", async () => {
+		const wizard = await createJob(productsCsv(1), true, { origin: "wizard" });
+		expect(wizard.origin).toBe("wizard");
+		const agent = await createJob(productsCsv(1), true, { origin: "agent" });
+		expect(agent).not.toHaveProperty("origin");
+		const listed = await summaries({ dryRun: true });
+		expect(listed.items.find((j) => j.id === wizard.id)).toMatchObject({ origin: "wizard" });
+		expect(listed.items.find((j) => j.id === agent.id)).not.toHaveProperty("origin");
+	});
+
+	it("gives a real run of a dry run's file its record total, and shows its progress", async () => {
+		const { uploadId } = await client.upload(productsCsv(5));
+		const create = (dryRun: boolean, extra: object = {}) =>
+			client.plugin<Job>("jobs/create", {
+				uploadId,
+				template: template(COLLECTION),
+				dryRun,
+				origin: "wizard",
+				...extra,
+			});
+		const dry = await create(true);
+		expect(dry).not.toHaveProperty("recordTotal");
+		expect(await client.runToEnd(dry.id)).toMatchObject({ status: "completed" });
+		const real = await create(false, { batchSize: 2 });
+		expect(real.recordTotal).toBe(5);
+		const listed = async () => (await summaries()).items.find((j) => j.id === real.id);
+		expect(await listed()).toMatchObject({ progress: { processed: 0, total: 5 } });
+		expect((await client.plugin<Job>("jobs/next", { id: real.id })).status).toBe("running");
+		expect(await listed()).toMatchObject({
+			status: "running",
+			progress: { processed: 2, total: 5 },
+		});
+		await client.runToEnd(real.id);
+		expect(await listed()).not.toHaveProperty("progress");
+		// A file no dry run read has no total: the counts so far, as before.
+		const plain = await createJob(productsCsv(2), false);
+		expect(plain).not.toHaveProperty("recordTotal");
+		expect(await listed()).toBeDefined();
 	});
 
 	it("builds the dryRun index at the first scheduler tick (Fact V3)", async () => {

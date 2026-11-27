@@ -106,8 +106,10 @@ export type CreateJobInput = {
 	skippedRows?: number;
 	/** M6a: the saved template `template` was read from; the job records its ID and revision. */
 	savedTemplate?: { id: string; revision: number };
-	/** M6c: created by the agent routes; M6b: by a schedule's launch (`Job.origin`). */
-	origin?: "agent" | "schedule";
+	/** M6c: created by the agent routes; M6b: by a schedule's launch; the wizard (`Job.origin`). */
+	origin?: "agent" | "schedule" | "wizard";
+	/** XLSX: the converted sheet's row count (`Job.recordTotal`). */
+	recordTotal?: number;
 	/** M6b: `Job.scheduleId`. */
 	scheduleId?: string;
 	/** M6b: a scheduled job starts open (`Job.scheduled`). */
@@ -254,6 +256,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const now = new Date(deps.now()).toISOString();
 	const dryRun = input.dryRun ?? false;
 	const missingLimit = missingLimitOf(template, input.missing);
+	const recordTotal =
+		input.recordTotal ??
+		(dryRun ? undefined : await dryRunTotal(deps, input.uploadId, template.source));
 	const job: Job = {
 		id: input.id ?? deps.newId(),
 		status: "created",
@@ -277,6 +282,7 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 			: { scheduling: input.scheduling }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
+		...(recordTotal === undefined ? {} : { recordTotal }),
 		uploadId: input.uploadId,
 		...(input.sourceUploadId === undefined ? {} : { sourceUploadId: input.sourceUploadId }),
 		template,
@@ -311,6 +317,29 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 	const result = await deps.jobs.compareAndSet(job.id, null, job);
 	if (!result.applied) throw new JobExistsError(job.id);
 	return job;
+}
+
+/** The dry runs of one staged file `dryRunTotal` looks through (the wizard's is the newest). */
+const TOTAL_LOOKUP = 10;
+
+/**
+ * The records a finished dry run of the staged file read with the same source block (format and
+ * records path: what the reader depends on), so a real run of that file, as the wizard's after
+ * Preview, knows its total. One query on the `uploadId` index; undefined without such a dry run.
+ */
+async function dryRunTotal(
+	deps: Pick<EngineDeps, "jobs">,
+	uploadId: string,
+	source: Template["source"],
+): Promise<number | undefined> {
+	const { items } = await deps.jobs.query({ where: { uploadId }, limit: TOTAL_LOOKUP });
+	for (const { data } of items) {
+		if (!data.dryRun || data.kind === "rollback" || data.status !== "completed") continue;
+		const read = jobTemplate(data).source;
+		if (read.format !== source.format || read.records !== source.records) continue;
+		return data.missing?.fromSeq ?? data.cursor.seq;
+	}
+	return undefined;
 }
 
 /** A missing upload or an unreadable source fails job creation with `invalid_source`. */

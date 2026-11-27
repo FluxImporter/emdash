@@ -133,7 +133,14 @@ describe("PreviewStep", () => {
 			expect(probe.state.dryRun).toEqual({ jobId: JOB_ID, uploadId: UPLOAD_ID, total: 2 }),
 		);
 		expect(created(calls).map((c) => c.body)).toEqual([
-			{ uploadId: UPLOAD_ID, dryRun: true, template: DRAFT_TEMPLATE, publish: true, journal: true },
+			{
+				uploadId: UPLOAD_ID,
+				dryRun: true,
+				template: DRAFT_TEMPLATE,
+				publish: true,
+				journal: true,
+				origin: "wizard",
+			},
 		]);
 		expect(calls.filter((c) => c.route === "jobs/next").map((c) => c.body)).toEqual([
 			{ id: JOB_ID },
@@ -170,6 +177,7 @@ describe("PreviewStep", () => {
 				templateRevision: 3,
 				publish: true,
 				journal: true,
+				origin: "wizard",
 			},
 		]);
 	});

@@ -111,19 +111,24 @@ describe("Home", () => {
 		expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
 	});
 
-	it("counts each tab's list, and Jobs with a + while more pages exist", async () => {
+	it("counts each tab's list, and Jobs by the exact total its first page answers", async () => {
 		const row = (id: string) => ({ id });
 		mockRoutes({
 			...HOME_ROUTES,
 			"credentials/list": () => [],
-			"jobs/summaries": () => ({ items: [row("a"), row("b")], hasMore: true, cursor: "c" }),
+			"jobs/summaries": () => ({
+				items: [row("a"), row("b")],
+				hasMore: true,
+				cursor: "c",
+				total: 23,
+			}),
 			"templates/list": () => ({ items: [row("t")], hasMore: false }),
 			"sources/list": () => ({ items: [row("s1"), row("s2"), row("s3")], hasMore: false }),
 		});
 		renderAdmin(<Home tabs={DUMMY} />);
 		await waitFor(() =>
 			expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
-				"Jobs2+",
+				"Jobs23",
 				"Templates1",
 				"Sources3",
 				"Schedules0",
