@@ -12,6 +12,12 @@
 		"wordpress"
 	],
 	"homepage": "https://www.fluximporter.com/emdash/",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/FluxImporter/emdash.git",
+		"directory": "packages/emdash"
+	},
+	"bugs": "https://github.com/FluxImporter/emdash/issues",
 	"license": "MIT",
 	"type": "module",
 	"exports": {
