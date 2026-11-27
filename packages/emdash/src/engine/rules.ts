@@ -366,9 +366,36 @@ export function ownPending(entry: EntrySnapshot, link: LinkRow | null): boolean 
  * (`publishAt`, from the entry's schedule to `at`); or the `not_scheduled` warning when an update
  * of a published entry goes live at once; or nothing when the entry is already scheduled for
  * exactly `at` (an update keeps the schedule), when nothing is pending, or when the pending state
- * is someone else's.
+ * is someone else's. In a collection that refuses schedules, the `scheduling_disabled` warning
+ * instead of the change.
  */
 export function schedulePlan(
+	job: Job,
+	entry: EntrySnapshot | null,
+	link: LinkRow | null,
+	plan: RecordPlan,
+	record: MappedRecord,
+	at: string,
+): { change: Change } | { warning: RecordError } | null {
+	const planned = plannedSchedule(job, entry, link, plan, record, at);
+	// EmDash refuses the schedule in a `no-scheduling` collection, so the write stays a draft, as
+	// EmDash's own WordPress import keeps a future-dated post (EmDash 1.5, #4729).
+	if (planned !== null && "change" in planned && job.scheduling === false) {
+		return { warning: schedulingDisabled() };
+	}
+	return planned;
+}
+
+export const SCHEDULING_DISABLED_MESSAGE =
+	"Saved as a draft: the collection does not allow scheduling, so it was not scheduled";
+
+/** The warning of a record kept as a draft because its collection refuses schedules. */
+export function schedulingDisabled(): RecordError {
+	return { code: "scheduling_disabled", message: SCHEDULING_DISABLED_MESSAGE };
+}
+
+/** `schedulePlan` as it is wherever schedules are allowed. */
+function plannedSchedule(
 	job: Job,
 	entry: EntrySnapshot | null,
 	link: LinkRow | null,

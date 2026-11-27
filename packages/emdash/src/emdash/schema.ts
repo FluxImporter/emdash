@@ -164,8 +164,9 @@ function relationOf(
 }
 
 /**
- * The collection a request's template maps `publishAt` into, read once: its fields and whether
- * it keeps revisions (M5b). Null when the template maps no `publishAt` or the collection is missing.
+ * The collection a request's template maps `publishAt` into, read once: its fields, whether it
+ * keeps revisions (M5b) and whether it refuses schedules. Null when the template maps no
+ * `publishAt` or the collection is missing.
  */
 export async function readPublishAtCollection(
 	registry: SchemaRegistryLike,
@@ -201,13 +202,19 @@ export async function listSchemaFields(
 	return (await readCollection(registry, collection))?.fields ?? null;
 }
 
-/** A collection's schema fields and whether it keeps revisions, from one registry read (M5b). */
-export type CollectionRead = { fields: SchemaField[]; revisions: boolean };
+/**
+ * A collection's schema fields, whether it keeps revisions (M5b) and, as `scheduling: false`,
+ * that it refuses schedules, from one registry read.
+ */
+export type CollectionRead = { fields: SchemaField[]; revisions: boolean; scheduling?: false };
 
 /**
  * A collection's fields (`listSchemaFields`) and whether it keeps revisions (M5b): its `supports`
- * lists `"revisions"` (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). Null when the
- * collection does not exist, which job creation then refuses.
+ * lists `"revisions"` (`emdash` src/schema/types.ts:264-272, spec M5b F12, V6). EmDash 1.5 added
+ * `"no-scheduling"`, which refuses creating or changing a schedule (`handleContentSchedule`'s
+ * `VALIDATION_ERROR`, src/api/handlers/content.ts:262-276 and :2324-2327); the legacy
+ * `"scheduling"` value has no effect. Null when the collection does not exist, which job creation
+ * then refuses.
  */
 export async function readCollection(
 	registry: SchemaRegistryLike,
@@ -216,7 +223,12 @@ export async function readCollection(
 	const found = await registry.getCollectionWithFields(collection);
 	if (!found) return null;
 	const revisions = found.supports?.includes("revisions") ?? false;
-	return { fields: found.fields.map(schemaFieldOf), revisions };
+	const noScheduling = found.supports?.includes("no-scheduling") ?? false;
+	return {
+		fields: found.fields.map(schemaFieldOf),
+		revisions,
+		...(noScheduling ? { scheduling: false as const } : {}),
+	};
 }
 
 /** One registry field as `checkTemplate` reads it. */

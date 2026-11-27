@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { runBatch } from "../../src/engine/batch.js";
 import { createJob, transitionJob } from "../../src/engine/jobs.js";
 import { decodeRev } from "../../src/engine/revs.js";
-import { NOT_SCHEDULED_MESSAGE, SCHEDULE_LEAD_MS } from "../../src/engine/rules.js";
+import {
+	NOT_SCHEDULED_MESSAGE,
+	SCHEDULE_LEAD_MS,
+	SCHEDULING_DISABLED_MESSAGE,
+} from "../../src/engine/rules.js";
 import type { SchemaField } from "../../src/engine/template.js";
 import type { LinkRow } from "../../src/engine/types.js";
 import { makeDeps } from "./fakes.js";
@@ -854,5 +858,98 @@ describe("publishAt on a routable collection without a slug (M5b, spec F2)", () 
 				writtenRev: deps.content.revOf(e.id),
 			});
 		}
+	});
+});
+
+describe("publishAt in a collection that refuses schedules (EmDash 1.5 no-scheduling)", () => {
+	const noScheduling = (deps: Deps, opts: StartOptions = {}): StartOptions => {
+		deps.content.unschedulable.add("products");
+		return { ...scheduleAt(at(HOUR), opts), scheduling: false };
+	};
+	const disabled = { code: "scheduling_disabled", message: SCHEDULING_DISABLED_MESSAGE };
+
+	it("creates a record whose time is ahead as a draft, with a warning, and never schedules", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk], noScheduling(deps));
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "created", action: "create", warnings: [disabled] });
+		expect(row?.changes?.map((c) => c.field)).not.toContain("publishAt");
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		expect(later(deps)).toEqual([]);
+		expect(deps.content.calls).not.toContain(`publish:${entryOf(deps, "A1").id}`);
+		expect(job.counters).toMatchObject({ created: 1, failed: 0 });
+	});
+
+	it("stages an update of a published entry as a draft, with a warning", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		await importRows(deps, [desk]);
+		const job = await importRows(deps, [{ ...desk, price: 12 }], noScheduling(deps));
+		expect((await records(deps, job.id))[0]).toMatchObject({
+			status: "updated",
+			changes: [{ field: "price", before: 10, after: 12 }],
+			warnings: [disabled],
+		});
+		expect(await deps.content.get("products", "en", entryOf(deps, "A1").id)).toMatchObject({
+			status: "published",
+			hasDraft: true,
+			scheduledAt: null,
+			live: { price: 10 },
+		});
+		expect(later(deps)).toEqual([]);
+	});
+
+	it("keeps the importer's own draft on the next run, warned again, and schedules nothing", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		await importRows(deps, [desk], noScheduling(deps));
+		const again = await importRows(deps, [desk], noScheduling(deps));
+		expect((await records(deps, again.id))[0]).toMatchObject({
+			status: "unchanged",
+			warnings: [disabled],
+		});
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		expect(later(deps)).toEqual([]);
+	});
+
+	it("warns in a dry run and plans no publishAt change", async () => {
+		const { deps } = setup();
+		const job = await importRows(deps, [desk], noScheduling(deps, { dryRun: true }));
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "planned", action: "create", warnings: [disabled] });
+		expect(row?.changes?.map((c) => c.field)).not.toContain("publishAt");
+	});
+
+	it("publishes a past or near time at once, as in any collection", async () => {
+		const { deps } = setup();
+		deps.content.unschedulable.add("products");
+		const job = await importRows(deps, [desk], { ...scheduleAt(at(-HOUR)), scheduling: false });
+		const [row] = await records(deps, job.id);
+		expect(row).toMatchObject({ status: "created" });
+		expect(row).not.toHaveProperty("warnings");
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "published" });
+	});
+
+	it("leaves a resumed record's own draft unscheduled", async () => {
+		const { deps, clock } = setup();
+		ticking(clock);
+		const realPut = deps.links.put.bind(deps.links);
+		let crash = true;
+		deps.links.put = async (id, data) => {
+			if (crash && data.writtenRev !== undefined) {
+				crash = false;
+				throw new Error("crash");
+			}
+			return realPut(id, data);
+		};
+		const job = await start(deps, csv([desk]), noScheduling(deps));
+		await expect(runBatch(deps, job.id, "driver")).rejects.toThrow("crash");
+		expect((await records(deps, job.id))[0]).toMatchObject({ status: "writing" });
+		await unlease(deps, job.id);
+		const done = await runToEnd(deps, job.id);
+		const [row] = await records(deps, done.id);
+		expect(row).toMatchObject({ status: "created", warnings: [disabled] });
+		expect(entryOf(deps, "A1")).toMatchObject({ status: "draft", scheduledAt: null });
+		expect(later(deps)).toEqual([]);
 	});
 });

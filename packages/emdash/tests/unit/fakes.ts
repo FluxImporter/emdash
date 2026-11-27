@@ -329,6 +329,8 @@ export class FakeContent implements ContentPort {
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
 	/** M5a: collections without revisions, whose writes go straight to the live columns. */
 	readonly plainCollections = new Set<string>();
+	/** Collections with `no-scheduling` (EmDash 1.5), where `schedule` fails as EmDash's does. */
+	readonly unschedulable = new Set<string>();
 	/**
 	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. A deliberate
 	 * divergence: EmDash makes every collection routable unless `routable` is 0
@@ -879,6 +881,13 @@ export class FakeContent implements ContentPort {
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		// EmDash's VALIDATION_ERROR (src/api/handlers/content.ts:2324-2327), through `writeError`.
+		if (this.unschedulable.has(e.collection)) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				"Scheduling the entry failed: Scheduling is disabled for this collection",
+			);
+		}
 		// The live slug: a slug staged in a draft is not the row's (api/handlers/content.ts:2177-2181).
 		this.requireSlug(e, e.live?.slug ?? e.slug, "Scheduling the entry");
 		const blocked = this.blockStep("schedule", e.id);
