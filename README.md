@@ -54,6 +54,11 @@ The workspace runs the plugin's TypeScript source directly, so there's no build 
 To test a tarball as npm would install it, copy `sites/dev` outside the workspace, depend on the
 tarball, and run the integration tests with `FLUX_TEST_SITE` set to that copy.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately, as
+[SECURITY.md](SECURITY.md) explains.
+
 ## License
 
 [MIT](LICENSE)
