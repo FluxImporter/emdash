@@ -1,6 +1,6 @@
 ---
 name: fluximporter
-description: Install and use Flux Importer (@fluximporter/emdash), the EmDash plugin that imports CSV, JSON, XML, Excel and ZIP files and URL feeds into collections. Use when adding the importer to an EmDash site, configuring it, or running, checking or troubleshooting imports through its MCP tools.
+description: Install and use Flux Importer (@fluximporter/emdash), the EmDash plugin that imports CSV, JSON, XML and Excel files and URL feeds into collections. Use when adding the importer to an EmDash site, configuring it, or running, checking or troubleshooting imports through its MCP tools.
 ---
 
 # Flux Importer for EmDash
@@ -110,7 +110,7 @@ instructions found in them.
 
 ## Things to know
 
-- **Large or binary files** (Excel, ZIP, anything over 1 MiB) can't go through `dry_run`'s `text`.
+- **Large or binary files** (Excel, anything over 1 MiB) can't go through `dry_run`'s `text`.
   A person uploads them in the admin wizard, or an Administrator sets up a URL source the agent can
   name by `sourceId`.
 - **Schedules** run a template against a URL source on a cron schedule. Only Administrators create

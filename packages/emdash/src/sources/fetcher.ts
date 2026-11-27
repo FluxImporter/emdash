@@ -36,6 +36,11 @@ export interface LastFetch {
 	sha256: string;
 	bytes: number;
 	uploadId: string;
+	/**
+	 * The records a completed job read from this content (`noteFetchRecords`). Absent until one
+	 * has, and kept while a fetch finds the same content.
+	 */
+	records?: number;
 }
 
 export interface Credential {
@@ -242,7 +247,11 @@ export async function downloadSource(
 		}
 		if (response.status < 200 || response.status > 299) {
 			await response.body?.cancel().catch(() => {});
-			throw new UrlSourceError("HTTP_ERROR", `The server answered HTTP ${response.status}`);
+			throw new UrlSourceError(
+				"HTTP_ERROR",
+				`The server answered HTTP ${response.status}`,
+				response.status,
+			);
 		}
 
 		const length = bodyLength(response.headers);
@@ -279,7 +288,8 @@ export async function downloadSource(
 			(await uploads.exists(previous.uploadId))
 		) {
 			await uploads.delete(staged.uploadId);
-			return { changed: false, fetch: { ...fetched, uploadId: previous.uploadId } };
+			const records = previous.records === undefined ? {} : { records: previous.records };
+			return { changed: false, fetch: { ...fetched, uploadId: previous.uploadId, ...records } };
 		}
 		return { changed: true, fetch: fetched };
 	} finally {

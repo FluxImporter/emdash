@@ -19,8 +19,9 @@ import { foundOf, type PlanTile, planOf, planTiles, type RollbackPlan } from "./
  * The rollback dialog (Rollback.dc.html): a dry rollback driven to its end while the dialog says
  * it is checking, a summary of the four counts, then the real rollback driven with progress.
  * `continue` picks up an unfinished rollback job: resumed first when paused or failed, then
- * driven. `schedule` is the schedule a scheduled job's rollback pauses (its name null when it
- * cannot be read), null for any other job.
+ * driven. A real rollback the server drives too (`scheduled: "open"`) keeps running once the
+ * dialog closes; while the dialog is open it only goes faster. `schedule` is the schedule a
+ * scheduled job's rollback pauses (its name null when it cannot be read), null for any other job.
  */
 export type RollbackTarget =
 	| {
@@ -51,9 +52,16 @@ type State =
 	| { phase: "ready"; jobId: string; plan: RollbackPlan; total: number }
 	/**
 	 * `driveId` is the rollback, null while its request is in flight; `total` the dry run's rows
-	 * and `plan` its counts, both null for a rollback continued without a dry run.
+	 * and `plan` its counts, both null for a rollback continued without a dry run. `server` is
+	 * whether the server drives it too, as the last reply said; null before one.
 	 */
-	| { phase: "rolling"; driveId: string | null; total: number | null; plan: RollbackPlan | null }
+	| {
+			phase: "rolling";
+			driveId: string | null;
+			total: number | null;
+			plan: RollbackPlan | null;
+			server: boolean | null;
+	  }
 	| { phase: "done" }
 	| { phase: "raced"; rollbackId: string }
 	| { phase: "error"; problem: Problem; retry: Step };
@@ -66,6 +74,7 @@ type Action =
 			driveId: string | null;
 			total: number | null;
 			plan: RollbackPlan | null;
+			server: boolean | null;
 	  }
 	| { type: "done" }
 	| { type: "raced"; rollbackId: string }
@@ -91,6 +100,7 @@ function reducer(_state: State, action: Action): State {
 				driveId: action.driveId,
 				total: action.total,
 				plan: action.plan,
+				server: action.server,
 			};
 		case "done":
 			return { phase: "done" };
@@ -100,6 +110,9 @@ function reducer(_state: State, action: Action): State {
 			return { phase: "error", problem: action.problem, retry: action.retry };
 	}
 }
+
+/** Whether the server drives `job` too, so it runs on once the dialog closes. */
+const serverDrives = (job: Job) => job.scheduled === "open";
 
 /** A rollback job `jobs/resume` must restart before it is driven again. */
 const stopped = (status: JobStatus) => status === "paused" || status === "failed";
@@ -116,7 +129,7 @@ function firstStep(target: RollbackTarget): Step | null {
 function initialState(target: RollbackTarget): State {
 	if (target.kind === "start") return { phase: "checking", jobId: target.jobId, driveId: null };
 	const driveId = stopped(target.status) ? null : target.rollbackId;
-	return { phase: "rolling", driveId, total: null, plan: null };
+	return { phase: "rolling", driveId, total: null, plan: null, server: null };
 }
 
 /** Whether the person has not confirmed yet: the title is still a question (Spec "Rollback"). */
@@ -174,23 +187,27 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 					}
 					case "real": {
 						const { total, plan } = step;
-						dispatch({ type: "rolling", driveId: null, total, plan });
+						dispatch({ type: "rolling", driveId: null, total, plan, server: null });
 						const real = await rollbackOrRace(step.jobId, false);
-						if (real !== null) dispatch({ type: "rolling", driveId: real.id, total, plan });
+						if (real === null) return;
+						const server = serverDrives(real);
+						dispatch({ type: "rolling", driveId: real.id, total, plan, server });
 						return;
 					}
 					case "resume": {
 						const { total, plan } = step;
-						dispatch({ type: "rolling", driveId: null, total, plan });
-						await api.resume({ id: step.id });
-						dispatch({ type: "rolling", driveId: step.id, total, plan });
+						dispatch({ type: "rolling", driveId: null, total, plan, server: null });
+						const server = serverDrives(await api.resume({ id: step.id }));
+						dispatch({ type: "rolling", driveId: step.id, total, plan, server });
 						return;
 					}
 					case "find": {
-						dispatch({ type: "rolling", driveId: null, total: null, plan: null });
-						const found = await api.getJob({ id: step.id });
-						if (stopped(found.status)) await api.resume({ id: step.id });
-						dispatch({ type: "rolling", driveId: step.id, total: null, plan: null });
+						const none = { total: null, plan: null };
+						dispatch({ type: "rolling", driveId: null, ...none, server: null });
+						let found = await api.getJob({ id: step.id });
+						if (stopped(found.status)) found = await api.resume({ id: step.id });
+						const server = serverDrives(found);
+						dispatch({ type: "rolling", driveId: step.id, ...none, server });
 						return;
 					}
 				}
@@ -240,9 +257,13 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 
 	const driverFailed = driveId !== null && driver.phase === "error";
 	const name = target.name;
-	// The rollback runs while this dialog drives it. Close stays enabled (Spec "Rollback"):
-	// closing stops the rollback where it is, and its row offers "Continue the rollback".
+	// Close stays enabled (Spec "Rollback"). A rollback the server drives keeps running once the
+	// dialog closes; one it does not drive stops where it is, and its row offers "Continue the
+	// rollback".
 	const close = onClose;
+	const drivenNow = driver.job !== null && driver.job.id === driveId ? driver.job : null;
+	const server =
+		drivenNow !== null ? serverDrives(drivenNow) : state.phase === "rolling" ? state.server : null;
 
 	return (
 		<Dialog.Root
@@ -263,9 +284,10 @@ export function RollbackDialog(props: { target: RollbackTarget; onClose(): void 
 				) : state.phase === "rolling" ? (
 					<Progress
 						text={t(driver.phase === "waiting" ? M.waiting : M.rolling)}
-						job={driver.job !== null && driver.job.id === driveId ? driver.job : null}
+						job={drivenNow}
 						total={state.total}
 						plan={state.plan}
+						note={server === null ? null : server ? M.closeNoteRunning : M.closeNote}
 					/>
 				) : state.phase === "done" ? (
 					<p className="text-sm">{t(M.finished)}</p>
@@ -441,13 +463,14 @@ function Summary(props: { plan: RollbackPlan; schedule: { name: string | null } 
 
 /**
  * Stage 3: the rollback driven, measured against its dry run ("8 of 14 entries"), each kind's
- * progress when the dry run split them, and why Close is safe.
+ * progress when the dry run split them, and why Close is safe (`note`, once a reply told).
  */
 function Progress(props: {
 	text: string;
 	job: Job | null;
 	total: number | null;
 	plan: RollbackPlan | null;
+	note: Msg | null;
 }) {
 	const t = useT();
 	const tn = useTn();
@@ -508,7 +531,7 @@ function Progress(props: {
 					))}
 				</ul>
 			)}
-			<p className="text-sm text-kumo-subtle">{t(M.closeNote)}</p>
+			{props.note === null ? null : <p className="text-sm text-kumo-subtle">{t(props.note)}</p>}
 		</div>
 	);
 }

@@ -292,7 +292,70 @@ describe("RollbackDialog", () => {
 		expect(rollbackBodies(calls)).toEqual([{ id: "J1", dryRun: true }]);
 	});
 
-	it("can be closed while the rollback runs, and says how to finish it later", async () => {
+	it("can be closed while the rollback runs, and says it keeps running once the server drives it", async () => {
+		const held = gate<Job>();
+		const { calls } = mockRoutes({
+			"jobs/rollback": (b) =>
+				(b as { dryRun: boolean }).dryRun ? DRY : { ...REAL, scheduled: "open" },
+			"jobs/next": (b) => ((b as { id: string }).id === "D1" ? DRY_DONE : held.promise),
+		});
+		const { user, onClose } = renderDialog(START);
+		await user.click(await confirm(3));
+		expect(await screen.findByText("Rolling back…")).toBeVisible();
+		// The dialog drives it while open, and the server drives it too: closing leaves it running.
+		await waitFor(() =>
+			expect(calls.filter((c) => c.route === "jobs/next").map((c) => c.body)).toContainEqual({
+				id: "R1",
+			}),
+		);
+		expect(
+			screen.getByText("You can close this. The rollback keeps running and shows in Jobs."),
+		).toBeVisible();
+		expect(screen.queryByText(/continue it from its row/)).toBeNull();
+		expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+		await user.click(screen.getByRole("button", { name: "Close" }));
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("says it keeps running for a rollback continued from its row once a reply says the server drives it", async () => {
+		const held = gate<Job>();
+		mockRoutes({ "jobs/next": () => held.promise });
+		renderDialog({ kind: "continue", rollbackId: "R1", status: "running", name: "Products feed" });
+		expect(await screen.findByText("Rolling back…")).toBeVisible();
+		// Nothing is said about closing before the first reply tells who drives it.
+		expect(screen.queryByText(/You can close this/)).toBeNull();
+		held.open(rollbackJob({ id: "R1", status: "running", scheduled: "open", lease: null }));
+		expect(
+			await screen.findByText("You can close this. The rollback keeps running and shows in Jobs."),
+		).toBeVisible();
+	});
+
+	it("says it keeps running for a paused rollback the resume hands back to the server", async () => {
+		const held = gate<Job>();
+		mockRoutes({
+			"jobs/resume": () => rollbackJob({ id: "R1", status: "running", scheduled: "open" }),
+			"jobs/next": () => held.promise,
+		});
+		renderDialog({ kind: "continue", rollbackId: "R1", status: "paused", name: "Products feed" });
+		expect(
+			await screen.findByText("You can close this. The rollback keeps running and shows in Jobs."),
+		).toBeVisible();
+	});
+
+	it("says the server is one of those a waiting batch may belong to", async () => {
+		const lease = { holder: "rollback:01PUMP", expiresAt: Date.now() + 30_000 };
+		mockRoutes({
+			"jobs/next": () => rollbackJob({ id: "R1", status: "running", scheduled: "open", lease }),
+		});
+		renderDialog({ kind: "continue", rollbackId: "R1", status: "running", name: "Products feed" });
+		expect(
+			await screen.findByText(
+				"Another tab or the server is running a batch of this rollback; waiting for it.",
+			),
+		).toBeVisible();
+	});
+
+	it("can be closed while a rollback only the dialog drives runs, and says how to finish it later", async () => {
 		const held = gate<Job>();
 		mockRoutes({
 			"jobs/rollback": (b) => ((b as { dryRun: boolean }).dryRun ? DRY : REAL),
@@ -301,7 +364,8 @@ describe("RollbackDialog", () => {
 		const { user, onClose } = renderDialog(START);
 		await user.click(await confirm(3));
 		expect(await screen.findByText("Rolling back…")).toBeVisible();
-		// The dialog drives the rollback: closing stops it where it is; its row continues it.
+		// A rollback the server does not drive (a site without EmDash's cron API): closing stops
+		// it where it is, and its row continues it.
 		expect(
 			screen.getByText(
 				"You can close this. To finish the rollback later, continue it from its row in Jobs.",

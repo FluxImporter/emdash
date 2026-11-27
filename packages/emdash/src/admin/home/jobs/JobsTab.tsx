@@ -1,4 +1,4 @@
-import { Button, Empty, Pagination, Select, Table } from "@cloudflare/kumo";
+import { Button, Empty, Link, Pagination, Select, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -15,7 +15,7 @@ import { FileTextIcon } from "../../ui/icons.js";
 import { Forbidden, LoadFailed, LoadingRows } from "../../ui/states.js";
 import { useNarrow } from "../../ui/use-narrow.js";
 import { useHome } from "../Home.js";
-import { openPage, runUrl } from "../links.js";
+import { openPage, runUrl, WIZARD_GUIDE_URL } from "../links.js";
 import { ConfirmDialog } from "../shared/ConfirmDialog.js";
 import { TabSummary } from "../shared/TabSummary.js";
 import { whenLabel } from "../shared/When.js";
@@ -316,6 +316,13 @@ export function JobsTab() {
 						icon={<FileTextIcon aria-hidden="true" size={28} />}
 						title={t(M.empty)}
 						description={t(M.emptyText)}
+						contents={
+							<Link href={WIZARD_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+								{t(M.howImportsWork)}
+								<Link.ExternalIcon />
+								<span className="sr-only"> {t(PAGE.newTab)}</span>
+							</Link>
+						}
 					/>
 				</div>
 				<DryRuns names={nameOf} standalone />

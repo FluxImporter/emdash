@@ -1,4 +1,7 @@
-/** The pump (M6b spec "The pump", Ruling 35): finalize, then one batch, else one launch. */
+/**
+ * The pump (M6b spec "The pump", Ruling 35): finalize, then one batch, else one launch. It drives
+ * scheduled jobs and real rollbacks (`pumpDrives`), so a rollback finishes once its dialog closes.
+ */
 import type { PluginContext } from "emdash";
 import { type Fence, readFence } from "../emdash/fence.js";
 import { onWorkers } from "../emdash/workers.js";
@@ -13,6 +16,7 @@ import {
 	type PauseReason,
 	PUMP_TASK,
 	pausedKeeping,
+	pumpDrives,
 	RUN_LOG_SIZE,
 	type RunEntry,
 	type ScheduleRow,
@@ -23,11 +27,16 @@ import {
 } from "./schedules.js";
 import { nextBatch, tickLimits } from "./service.js";
 import type { Services } from "./services.js";
-import { clearLastImport } from "./sources.js";
+import { clearLastImport, noteFetchRecords } from "./sources.js";
 import { redact } from "./summaries.js";
 
 /** Finished scheduled jobs finalized per tick (spec Ruling 37). */
 export const FINALIZE_PER_TICK = 2;
+/**
+ * The oldest open jobs a tick considers for its batch: one whose lease another driver holds (a
+ * rollback its dialog drives, an Admin's `jobs/next`) does not keep the next one waiting.
+ */
+export const BATCH_CANDIDATES = 3;
 const FINISHED: readonly JobStatus[] = ["completed", "failed", "cancelled"];
 /** The unfinished statuses a batch moves on; a paused job waits for an Admin (spec "The pump"). */
 const ACTIVE: readonly JobStatus[] = UNFINISHED.filter((status) => status !== "paused");
@@ -232,34 +241,40 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 		limit: FINALIZE_PER_TICK,
 	});
 	for (const { data } of done.items) {
-		if (data.origin !== "schedule") {
+		if (!pumpDrives(data)) {
 			await closeForeign(deps, tick, data);
 			continue;
 		}
-		await finalize(deps, data);
+		// A rollback has no schedule to log a run on: finalizing it is closing it.
+		if (data.origin === "schedule") await finalize(deps, data);
+		else await close(deps.jobs, data.id, true);
 		tick.finalized.push(data.id);
 	}
-	// 3. One batch of the oldest open job, unless an Admin's call holds its lease (plan Ruling 4).
+	// 3. One batch of the oldest open job whose lease no other driver holds (plan Ruling 4).
 	const active = await deps.jobs.query({
 		where: { scheduled: "open", status: { in: [...ACTIVE] } },
 		orderBy: { createdAt: "asc" },
-		limit: 1,
+		limit: BATCH_CANDIDATES,
 	});
-	const oldest = active.items[0]?.data;
-	if (oldest !== undefined && oldest.origin !== "schedule") {
-		// Closing it is the tick's unit; the next tick looks again.
-		await closeForeign(deps, tick, oldest);
-		return tick;
-	}
-	if (oldest !== undefined && !(oldest.lease !== null && oldest.lease.expiresAt > deps.now())) {
-		const holder = `schedule:${oldest.scheduleId ?? "none"}:${deps.newId()}`;
+	for (const { data: job } of active.items) {
+		if (!pumpDrives(job)) {
+			// Closing it is the tick's unit; the next tick looks again.
+			await closeForeign(deps, tick, job);
+			return tick;
+		}
+		if (job.lease !== null && job.lease.expiresAt > deps.now()) continue;
+		const scheduled = job.origin === "schedule";
+		const holder = scheduled
+			? `schedule:${job.scheduleId ?? "none"}:${deps.newId()}`
+			: `rollback:${deps.newId()}`;
 		try {
-			await deps.batch(oldest.id, holder);
+			await deps.batch(job.id, holder);
 		} catch (e) {
 			// The engine has already noted it on the job (P3); the batch was the tick's unit.
-			deps.error(`fluximporter: scheduled job ${oldest.id}: batch failed: ${messageOf(e)}`);
+			const what = scheduled ? "scheduled job" : "rollback job";
+			deps.error(`fluximporter: ${what} ${job.id}: batch failed: ${messageOf(e)}`);
 		}
-		tick.batch = oldest.id;
+		tick.batch = job.id;
 		return tick;
 	}
 	// 4. At most one launch.
@@ -272,7 +287,7 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 	// Rulings 36, 88).
 	if (tick.finalized.length > 0) return tick;
 	const open = (await deps.jobs.query({ where: { scheduled: "open" }, limit: 1 })).items[0]?.data;
-	if (open !== undefined && open.origin !== "schedule") {
+	if (open !== undefined && !pumpDrives(open)) {
 		// Review 6: a paused job no schedule launched is closed here, so the pump can idle.
 		await closeForeign(deps, tick, open);
 		return tick;
@@ -288,20 +303,27 @@ export async function pumpTick(deps: PumpDeps): Promise<PumpTick> {
 	return tick;
 }
 
-/** The pump's dependencies in the cron hook, with the scheduled (actorless) services. */
+/**
+ * The pump's dependencies in the cron hook, with the scheduled (actorless) services: every batch
+ * the pump runs, a rollback's included, writes as nobody (spec Rulings 4, 5).
+ */
 export function pumpDeps(ctx: PluginContext, services: Services): PumpDeps {
 	return {
 		...launchDeps(ctx, services),
 		fence: () => readFence(services.runtime.db),
-		batch: (id, holder) =>
-			nextBatch(
+		batch: async (id, holder) => {
+			const job = await nextBatch(
 				services.deps,
 				services.uploads,
 				id,
 				holder,
 				services.keep,
 				tickLimits(onWorkers()),
-			),
+			);
+			// Best effort: the run is done whether or not its source's record count is saved.
+			await noteFetchRecords(services.sources, job).catch(() => {});
+			return job;
+		},
 		clearLastImport: (sourceId, jobId) => clearLastImport(services.sources, sourceId, jobId),
 		error: (message) => ctx.log.error(message),
 	};

@@ -57,6 +57,7 @@ export const M = {
 	changeInOptions: { id: "fluximporter.preview.change-in-options", message: "Change in Options" },
 	filterAll: { id: "fluximporter.preview.filter-all", message: "All" },
 	filterPlanned: { id: "fluximporter.preview.filter-planned", message: "Will change" },
+	filterWarnings: { id: "fluximporter.preview.filter-warnings", message: "Warnings" },
 	filterFailed: { id: "fluximporter.preview.filter-failed", message: "Failed" },
 	filterConflict: { id: "fluximporter.preview.filter-conflict", message: "Conflicts" },
 	filterLocked: { id: "fluximporter.preview.filter-locked", message: "Locked" },
@@ -105,5 +106,11 @@ export const COUNT = {
 		id: "fluximporter.preview.count-missing-unpublish",
 		one: "missing → unpublish",
 		other: "missing → unpublish",
+	},
+	/** After the publishing sentence, in the note above the records. */
+	warned: {
+		id: "fluximporter.preview.count-warned",
+		one: "{count} record has a warning.",
+		other: "{count} records have warnings.",
 	},
 } satisfies Record<string, PluralMsg>;

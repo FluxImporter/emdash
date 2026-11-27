@@ -180,7 +180,7 @@ describe("downloadSource", () => {
 		const { deps, requests } = setup(() => new Response(null, { status: 304 }));
 		const previous = await previousFetch(deps, BODY);
 		expect(await failure(run(deps, { previous }))).toEqual(
-			new UrlSourceError("HTTP_ERROR", "The server answered HTTP 304"),
+			new UrlSourceError("HTTP_ERROR", "The server answered HTTP 304", 304),
 		);
 		expect(Object.fromEntries(requests[0]!.entries())).toEqual({});
 	});
@@ -188,7 +188,7 @@ describe("downloadSource", () => {
 	it("treats a 304 to an unconditional request as an HTTP error", async () => {
 		const { deps } = setup(() => new Response(null, { status: 304 }));
 		expect(await failure(run(deps))).toEqual(
-			new UrlSourceError("HTTP_ERROR", "The server answered HTTP 304"),
+			new UrlSourceError("HTTP_ERROR", "The server answered HTTP 304", 304),
 		);
 	});
 
@@ -201,7 +201,7 @@ describe("downloadSource", () => {
 		});
 		const { deps, staged } = setup(() => new Response(body, { status }));
 		expect(await failure(run(deps))).toEqual(
-			new UrlSourceError("HTTP_ERROR", `The server answered HTTP ${status}`),
+			new UrlSourceError("HTTP_ERROR", `The server answered HTTP ${status}`, status),
 		);
 		expect(cancelled).toBe(true);
 		expect(staged()).toEqual([]);

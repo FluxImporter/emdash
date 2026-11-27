@@ -1,9 +1,16 @@
 import { Empty, Table } from "@cloudflare/kumo";
 import type { SourceFormat } from "../../../sources/reader.js";
-import { useT, useTn } from "../../i18n.js";
+import { type Msg, useT, useTn } from "../../i18n.js";
 import { KEYS_SHOWN } from "../../limits.js";
 import type { SampleColumn } from "../../types.js";
+import { type LooksLike, looksLike } from "../map/new-fields/infer.js";
 import { COUNT, M } from "./messages.js";
+
+const LOOKS: Readonly<Record<LooksLike, Msg>> = {
+	text: M.looksText,
+	number: M.looksNumber,
+	date: M.looksDate,
+};
 
 /** The values shown per key: the sample holds `SAMPLE_MAX` records (preflight F24). */
 const VALUES_SHOWN = 5;
@@ -39,6 +46,11 @@ export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFo
 	}
 	const rows = columns.slice(0, KEYS_SHOWN);
 	const records = columns[0]?.values.length ?? 0;
+	// Read from every sampled value, not only the ones shown.
+	const looksOf = (column: SampleColumn) => {
+		const looks = looksLike(column.values);
+		return looks === null ? null : t(LOOKS[looks]);
+	};
 	return (
 		<section className="flex flex-col gap-3">
 			<div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -62,6 +74,7 @@ export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFo
 					<Table.Header>
 						<Table.Row>
 							<Table.Head>{t(M.sampleKey)}</Table.Head>
+							<Table.Head>{t(M.sampleLooks)}</Table.Head>
 							<Table.Head>{t(M.sampleValues)}</Table.Head>
 						</Table.Row>
 					</Table.Header>
@@ -75,6 +88,9 @@ export function SamplePreview(props: { columns: SampleColumn[]; format: SourceFo
 									>
 										{column.key}
 									</code>
+								</Table.Cell>
+								<Table.Cell className="whitespace-nowrap text-sm text-kumo-subtle">
+									{looksOf(column)}
 								</Table.Cell>
 								<Table.Cell>
 									<ul className="flex flex-wrap gap-1.5">

@@ -89,8 +89,8 @@ function TakenOffer({
 					disabled={busy}
 					onClick={() =>
 						run(async () => {
-							const { uploadId } = await api.fetchSource({ id: row.id });
-							await pick({ kind: "saved", uploadId, label: row.name }, formatOfUrl(row.url));
+							const { uploadId, bytes } = await api.fetchSource({ id: row.id });
+							await pick({ kind: "saved", uploadId, label: row.name, bytes }, formatOfUrl(row.url));
 						})
 					}
 				>
@@ -142,8 +142,8 @@ export function UrlTab(props: TabProps) {
 				throw e;
 			}
 			void queryClient.invalidateQueries({ queryKey: queryKeys.sources });
-			const { uploadId } = await api.fetchSource({ id: row.id });
-			await pick({ kind: "url", uploadId, label: row.name }, formatOfUrl(row.url));
+			const { uploadId, bytes } = await api.fetchSource({ id: row.id });
+			await pick({ kind: "url", uploadId, label: row.name, bytes }, formatOfUrl(row.url));
 		});
 
 	const names = credentials.data?.map((c) => c.name) ?? [];

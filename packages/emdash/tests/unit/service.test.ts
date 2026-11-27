@@ -629,7 +629,8 @@ describe("pump tick caps (M6b, Fact V5)", () => {
 		} as unknown as Job;
 		const rollback = { ...job, kind: "rollback" } as Job;
 		const jobs = [job, tagged, counting, acting, rollback];
-		expect(jobs.map(tickBatchCap)).toEqual([6, 3, 20, 5, WORKERS_ROLLBACK_BATCH_CAP]);
+		// A rollback the pump drives reverts fewer rows than a jobs/next batch.
+		expect(jobs.map(tickBatchCap)).toEqual([6, 3, 20, 5, 2]);
 		// The shared helper: jobs/next keeps its own caps for the same jobs.
 		expect(jobs.map(workersBatchCap)).toEqual([
 			WORKERS_BATCH_CAP,

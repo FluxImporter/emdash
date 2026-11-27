@@ -123,6 +123,33 @@ describe("SourcesTab", () => {
 		expect(screen.getByText("10 byte")).toBeVisible();
 	});
 
+	it("says how many records the last fetch held, and the HTTP status a failed one got", async () => {
+		const fetch = { status: 200, sha256: "abc", bytes: 4096, uploadId: UPLOAD_ID };
+		setup({
+			"sources/list": () =>
+				page([
+					sourceRow({
+						lastFetch: { ...fetch, at: "2026-11-22T10:00:00.000Z", records: 10 },
+					}),
+					sourceRow({
+						id: "S2",
+						name: "Stock",
+						lastFetch: { ...fetch, at: "2026-11-20T10:00:00.000Z" },
+						lastError: {
+							at: "2026-11-22T10:00:00.000Z",
+							code: "HTTP_ERROR",
+							message: `The server answered HTTP 503 at ${SECRET_URL}`,
+							status: 503,
+						},
+					}),
+				]),
+		});
+		expect(await screen.findByText("10 records · 4 kB")).toBeVisible();
+		const failed = screen.getByText("Stock").closest("tr")!;
+		expect(within(failed).getByText("HTTP 503 from the server")).toBeVisible();
+		expect(document.body.textContent).not.toContain("s3cret");
+	});
+
 	it("adds a source with name, URL and credential", async () => {
 		const { calls, user } = setup({
 			"credentials/list": () => [{ name: "feed-token", header: "Authorization" }],

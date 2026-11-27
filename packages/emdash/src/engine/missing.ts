@@ -4,7 +4,7 @@
  * Trash or unpublished. Each change is journalled before it is made, so `jobs/rollback` undoes
  * it. A dry run plans the same rows and changes nothing.
  */
-import { counterFor } from "./counters.js";
+import { counterFor, storedRow, warnedRow } from "./counters.js";
 import { linkBefore } from "./journal.js";
 import { ownerOf } from "./owner.js";
 import { ContentWriteError, type EntrySnapshot, JOB_LEVEL_WRITE_ERRORS } from "./ports.js";
@@ -602,8 +602,7 @@ function saver(ctx: Pick<ActCtx, "deps" | "job">, seq: number) {
 			seq,
 			start: 0,
 			end: 0,
-			...fields,
-			updatedAt: iso(deps),
+			...storedRow(fields, deps),
 		});
 }
 
@@ -628,10 +627,15 @@ const issue = (code: string, message: string): RecordError => ({ code, message }
  * `conflict`, so it never counts toward `removed`: Ruling 20's bound (`removed` never past `found`) holds for the removals the phase can prove. A call that
  * threw or a stop it cannot tell apart from an editor's change may still have removed its entry.
  */
-function tally(job: Job, m: MissingState, row: Pick<RecordRow, "status" | "action">): void {
+function tally(
+	job: Job,
+	m: MissingState,
+	row: Pick<RecordRow, "status" | "action" | "warnings">,
+): void {
 	const counter = counterFor(row);
 	if (counter) bump(job.counters, counter);
 	if (counter === "removed") m.removed++;
+	if (warnedRow(row)) job.warned = (job.warned ?? 0) + 1;
 }
 
 /**

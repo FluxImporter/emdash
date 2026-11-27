@@ -30,7 +30,10 @@ const AI_KEY_DESCRIPTION =
  * checks of `templates/delete` and `sources/delete`; `jobs` `["scheduled", "status", "createdAt"]`
  * serves the pump's finalization and batch queries, `["feedSourceId", "status"]` the busy check
  * (plan Ruling 2). `jobs` `["dryRun", "createdAt"]` serves `jobs/summaries` and
- * `jobs/clear-dry-runs` (M7b), built by EmDash at its first scheduler tick (Fact V3).
+ * `jobs/clear-dry-runs` (M7b), built by EmDash at its first scheduler tick (Fact V3). `records`
+ * `["jobId", "facet", "seq"]` serves `jobs/records`' `facet` filter (Preview's "Will change" and
+ * "Warnings"): plugin storage filters on indexed fields only, and one combined field keeps it to
+ * one more index on `_plugin_storage`, whose indexes cover every plugin's rows.
  */
 export const STORAGE = {
 	jobs: {
@@ -53,6 +56,7 @@ export const STORAGE = {
 			["jobId", "seq"],
 			["jobId", "status", "seq"],
 			["jobId", "sourceKey"],
+			["jobId", "facet", "seq"],
 		],
 	},
 	// M5c: the missing phase pages an owner's links in the template's collection and locale.

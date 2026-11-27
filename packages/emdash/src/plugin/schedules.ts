@@ -367,9 +367,38 @@ export async function pauseSchedule(
 }
 
 /**
- * Reopens a finalized scheduled job that an Admin resumed or retried, and arms the pump, so the
- * pump drives it again (spec Ruling 38, plan Ruling 11). Returns the reopened row (preflight F19);
- * null, changing nothing, for any other job or when every attempt lost.
+ * The jobs the pump drives while they are `scheduled: "open"`: a schedule's (spec Ruling 80) and
+ * a real rollback, which `jobs/rollback` opens so it finishes when no dialog drives it. Any other
+ * open job is closed unrun.
+ */
+export function pumpDrives(job: Pick<Job, "origin" | "kind" | "dryRun">): boolean {
+	return job.origin === "schedule" || (job.kind === "rollback" && !job.dryRun);
+}
+
+/**
+ * Opens a new real rollback job to the pump (`scheduled: "open"`), after `createRollback` marked
+ * its original: before that a pump batch could revert rows for a rollback that loses its race and
+ * is deleted. Returns the opened row; null, changing nothing, for any other job or when every
+ * attempt lost. A rollback that is not opened (one stored by 0.8 or earlier included) is driven
+ * by `jobs/next` alone.
+ */
+export async function openRollback(jobs: KvCollection<Job>, id: string): Promise<Job | null> {
+	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+		const read = await jobs.getVersioned(id);
+		if (!read) return null;
+		const job = read.value;
+		if (job.kind !== "rollback" || job.dryRun || job.scheduled !== undefined) return null;
+		const opened: Job = { ...job, scheduled: "open" };
+		if ((await jobs.compareAndSet(id, read.revision, opened)).applied) return opened;
+	}
+	return null;
+}
+
+/**
+ * Reopens a finalized scheduled job or rollback that an Admin resumed or retried, and arms the
+ * pump, so the pump drives it again (spec Ruling 38, plan Ruling 11). Returns the reopened row
+ * (preflight F19); null, changing nothing, for any other job (a rollback never opened included)
+ * or when every attempt lost.
  */
 export async function reopenScheduled(
 	jobs: KvCollection<Job>,
@@ -378,7 +407,7 @@ export async function reopenScheduled(
 ): Promise<Job | null> {
 	for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
 		const read = await jobs.getVersioned(id);
-		if (read?.value.origin !== "schedule" || read.value.scheduled !== "closed") return null;
+		if (!read || !pumpDrives(read.value) || read.value.scheduled !== "closed") return null;
 		const reopened: Job = { ...read.value, scheduled: "open" };
 		if ((await jobs.compareAndSet(id, read.revision, reopened)).applied) {
 			await armPump(cron);

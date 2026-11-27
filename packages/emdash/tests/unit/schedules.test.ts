@@ -10,11 +10,13 @@ import {
 	LAUNCH_CLAIM_STALE_MS,
 	listSchedules,
 	MAX_SCHEDULES,
+	openRollback,
 	PUMP_SCHEDULE,
 	PUMP_TASK,
 	paused,
 	pausedKeeping,
 	pauseSchedule,
+	pumpDrives,
 	type RunEntry,
 	reconcile,
 	reopenScheduled,
@@ -1009,5 +1011,49 @@ describe("scheduler writes and pauses", () => {
 		expect(await deps.jobs.get("J2")).not.toHaveProperty("scheduled");
 		expect(await deps.jobs.get("J3")).toMatchObject({ scheduled: "closed" });
 		expect(deps.cron.calls).toEqual([`schedule ${PUMP_TASK} ${PUMP_SCHEDULE}`]);
+	});
+
+	it("reopens a finalized rollback that is resumed or retried, but never one it never opened", async () => {
+		const { deps } = await scheduleDeps();
+		const real = { kind: "rollback", rollbackOf: "J0", status: "running" } as const;
+		await deps.jobs.put("R1", jobRow("R1", { ...real, scheduled: "closed" }));
+		// Stored before the pump drove rollbacks: jobs/next alone drives it, as it always did.
+		await deps.jobs.put("R2", jobRow("R2", real));
+		await deps.jobs.put("D1", jobRow("D1", { ...real, dryRun: true, scheduled: "closed" }));
+		for (const id of ["R1", "R2", "D1"]) await reopenScheduled(deps.jobs, deps.cron, id);
+		expect(await deps.jobs.get("R1")).toMatchObject({ scheduled: "open" });
+		expect(await deps.jobs.get("R2")).not.toHaveProperty("scheduled");
+		expect(await deps.jobs.get("D1")).toMatchObject({ scheduled: "closed" });
+		expect(deps.cron.calls).toEqual([`schedule ${PUMP_TASK} ${PUMP_SCHEDULE}`]);
+	});
+});
+
+describe("openRollback and pumpDrives (a rollback keeps running once its dialog closes)", () => {
+	it("opens a new real rollback to the pump, and nothing else", async () => {
+		const { deps } = await scheduleDeps();
+		const rollback = { kind: "rollback", rollbackOf: "J0" } as const;
+		await deps.jobs.put("R1", jobRow("R1", rollback));
+		await deps.jobs.put("D1", jobRow("D1", { ...rollback, dryRun: true }));
+		await deps.jobs.put("R2", jobRow("R2", { ...rollback, scheduled: "closed" }));
+		await deps.jobs.put("J1", jobRow("J1"));
+		expect(await openRollback(deps.jobs, "R1")).toMatchObject({ id: "R1", scheduled: "open" });
+		expect(await deps.jobs.get("R1")).toMatchObject({ scheduled: "open" });
+		for (const id of ["D1", "R2", "J1", "missing"]) {
+			expect(await openRollback(deps.jobs, id)).toBeNull();
+		}
+		expect(await deps.jobs.get("D1")).not.toHaveProperty("scheduled");
+		// A finalized rollback is reopened only by a resume or a retry (reopenScheduled).
+		expect(await deps.jobs.get("R2")).toMatchObject({ scheduled: "closed" });
+		expect(await deps.jobs.get("J1")).not.toHaveProperty("scheduled");
+		// Opening arms nothing by itself: the route arms the pump.
+		expect(deps.cron.calls).toEqual([]);
+	});
+
+	it("drives scheduled jobs and real rollbacks only", () => {
+		expect(pumpDrives(jobRow("J1", { origin: "schedule" }))).toBe(true);
+		expect(pumpDrives(jobRow("R1", { kind: "rollback" }))).toBe(true);
+		expect(pumpDrives(jobRow("D1", { kind: "rollback", dryRun: true }))).toBe(false);
+		expect(pumpDrives(jobRow("G1", { origin: "agent" }))).toBe(false);
+		expect(pumpDrives(jobRow("J2"))).toBe(false);
 	});
 });

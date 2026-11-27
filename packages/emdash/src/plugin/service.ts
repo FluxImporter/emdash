@@ -2,6 +2,7 @@ import { I18N_REQUIRED_MESSAGE, type LocaleResolution } from "../emdash/locale.j
 import { type StagedUpload, stageUpload, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
+import { FACETS } from "../engine/counters.js";
 import {
 	type CreateJobInput,
 	createJob,
@@ -151,13 +152,15 @@ export function workersBatchCap(job: Job): number {
 /**
  * A pump tick's batch on Workers (M6b spec "Bounded work"): the tick also finalizes, reads the
  * fence and may be one of ten tasks in one scheduled event, so its batch stays under
- * `PUMP_QUERY_TARGET` (550 D1 queries; Fact V5 measured at most 506 at these caps). The pump
- * never drives a rollback (a rollback job has no `origin`), so its cap is the Workers one.
+ * `PUMP_QUERY_TARGET` (550 D1 queries; Fact V5 measured at most 506 at these caps). A rollback
+ * the pump drives reverts two rows: three of the longest revert sequence measured 555 queries
+ * (`WORKERS_ROLLBACK_BATCH_CAP`), about 185 a row, so two stay near 370 with the batch's own reads.
  */
 export const TICK_BATCH_CAP = 6;
 export const TICK_LINKED_BATCH_CAP = 3;
 export const TICK_MISSING_SCAN_CAP = 20;
 export const TICK_MISSING_BATCH_CAP = 5;
+export const TICK_ROLLBACK_BATCH_CAP = 2;
 export const TICK_LOOKUP_BUDGET = 350;
 
 const TICK_CAPS: BatchCaps = {
@@ -165,7 +168,7 @@ const TICK_CAPS: BatchCaps = {
 	linked: TICK_LINKED_BATCH_CAP,
 	missingScan: TICK_MISSING_SCAN_CAP,
 	missingAct: TICK_MISSING_BATCH_CAP,
-	rollback: WORKERS_ROLLBACK_BATCH_CAP,
+	rollback: TICK_ROLLBACK_BATCH_CAP,
 };
 
 /** The records one pump tick processes on Workers for this job. */
@@ -597,21 +600,29 @@ export async function listJobSummaries(
 	return { ...jobs, items, total };
 }
 
-export async function listRecords(
-	deps: EngineDeps,
-	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
-): Promise<Page<RecordRow>> {
+/** Which records a page lists: one status or all, and only the rows of one facet (`FACETS`). */
+export type RecordFilter = {
+	id: string;
+	status?: RecordStatus;
+	facet?: keyof typeof FACETS;
+	cursor?: string;
+	limit?: number;
+};
+
+export async function listRecords(deps: EngineDeps, opts: RecordFilter): Promise<Page<RecordRow>> {
 	await getJob(deps, opts.id);
 	return recordPage(deps, opts);
 }
 
 /**
  * A page of a job's records by `seq`, one status or all, without reading the job (M6c,
- * `jobs/status` has read it). `limit` is 1-100 (EmDash's page clamp), default `PAGE_SIZE`.
+ * `jobs/status` has read it). With `facet`, only the rows that change an entry or that have
+ * warnings; rows saved before facets were kept have none. `limit` is 1-100 (EmDash's page clamp),
+ * default `PAGE_SIZE`.
  */
 export async function recordPage(
 	deps: Pick<EngineDeps, "records">,
-	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
+	opts: RecordFilter,
 ): Promise<Page<RecordRow>> {
 	const limit = opts.limit ?? PAGE_SIZE;
 	if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -619,7 +630,11 @@ export async function recordPage(
 	}
 	return page(
 		await deps.records.query({
-			where: opts.status ? { jobId: opts.id, status: opts.status } : { jobId: opts.id },
+			where: {
+				jobId: opts.id,
+				...(opts.status ? { status: opts.status } : {}),
+				...(opts.facet ? { facet: { in: FACETS[opts.facet] } } : {}),
+			},
 			orderBy: { seq: "asc" },
 			limit,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),

@@ -274,8 +274,12 @@ export const api = {
 	resume: (i: ById) => callRoute<Job>("jobs/resume", i),
 	cancel: (i: ById) => callRoute<Job>("jobs/cancel", i),
 	retry: (i: ById) => callRoute<Job>("jobs/retry", i),
-	records: (i: { id: string; status?: RecordStatus; cursor?: string }) =>
-		callRoute<Page<RecordRow>>("jobs/records", i),
+	records: (i: {
+		id: string;
+		status?: RecordStatus;
+		facet?: "change" | "warning";
+		cursor?: string;
+	}) => callRoute<Page<RecordRow>>("jobs/records", i),
 	/** One page of the Jobs table: real imports, or the dry runs (`jobs/summaries`, never `jobs/list`). */
 	jobSummaries: (
 		i: { dryRun: boolean; status?: JobStatus; cursor?: string },

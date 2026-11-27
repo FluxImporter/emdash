@@ -41,7 +41,7 @@ import {
 } from "./FieldsPane.js";
 import { KeysPane, keyOfDrag } from "./KeysPane.js";
 import { COUNT, M } from "./messages.js";
-import { proposeField } from "./new-fields/infer.js";
+import { looksLike, proposeField } from "./new-fields/infer.js";
 import { NewFields } from "./new-fields/NewFields.js";
 import { SchemaDiffDialog } from "./new-fields/SchemaDiffDialog.js";
 import { useSuggestions } from "./useSuggestions.js";
@@ -158,7 +158,11 @@ export function MapStep() {
 		[t, fieldList, taxonomies, state.target],
 	);
 	const usage = keyUsage(state, rows);
-	const known = new Set(columns.map((c) => c.key));
+	const looks = useMemo(
+		() => new Map(columns.map((c) => [c.key, looksLike(c.values)] as const)),
+		[columns],
+	);
+	const known = new Set(looks.keys());
 	const extraKeys = [...usage.keys()].filter((k) => !known.has(k));
 	const blockers: Blocker[] = fields.data === undefined ? [] : mapBlockers(state, fields.data);
 	const loading = suggestions.status === "loading";
@@ -354,7 +358,7 @@ export function MapStep() {
 							mappings={state.rows}
 							meta={state.meta}
 							blockers={blockers}
-							keys={known}
+							looks={looks}
 							selected={selected}
 							onSelect={setSelected}
 							onClear={(id) => setRow(id, null)}
@@ -378,6 +382,7 @@ export function MapStep() {
 								meta={state.meta[selectedRow.id]}
 								columns={columns}
 								onChange={(m) => setRow(selectedRow.id, m)}
+								onKeep={() => dispatch({ type: "rowKept", row: selectedRow.id })}
 							/>
 						) : (
 							<p className="text-sm text-kumo-subtle">{t(M.nothingSelected)}</p>

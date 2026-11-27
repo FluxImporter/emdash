@@ -1,7 +1,7 @@
 # Flux Importer for EmDash
 
 The source of [`@fluximporter/emdash`](packages/emdash/README.md), an importer plugin for
-[EmDash](https://emdashcms.com). It brings CSV, JSON, XML, Excel and ZIP files, and live URL feeds,
+[EmDash](https://emdashcms.com). It brings CSV, JSON, XML and Excel files, and live URL feeds,
 into EmDash. You map columns in a visual wizard, preview a dry run, schedule repeat imports and
 roll back any run.
 

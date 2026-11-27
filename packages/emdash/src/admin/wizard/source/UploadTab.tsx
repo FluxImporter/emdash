@@ -32,8 +32,9 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 		run(async () => {
 			setProgress({ name: file.name, percent: 0 });
 			let uploadId: string;
+			let bytes: number;
 			try {
-				({ uploadId } = await api.uploadFile(file, {
+				({ uploadId, bytes } = await api.uploadFile(file, {
 					onProgress: (sent, total) =>
 						setProgress({
 							name: file.name,
@@ -43,7 +44,7 @@ export function UploadTab({ busy, run, pick, fail }: TabProps) {
 			} finally {
 				setProgress(null);
 			}
-			await pick({ kind: "upload", uploadId, label: file.name }, format);
+			await pick({ kind: "upload", uploadId, label: file.name, bytes }, format);
 		});
 	};
 
