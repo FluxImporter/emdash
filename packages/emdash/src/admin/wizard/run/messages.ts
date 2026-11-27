@@ -59,4 +59,32 @@ export const COUNT = {
 		one: "{count} record a second",
 		other: "{count} records a second",
 	},
+	/** A log line's records: the first part, before what they did. */
+	logRecords: {
+		id: "fluximporter.run.log-records",
+		one: "{count} record",
+		other: "{count} records",
+	},
+	logWarned: {
+		id: "fluximporter.run.log-warned",
+		one: "{count} record with a warning",
+		other: "{count} records with warnings",
+	},
 } satisfies Record<string, PluralMsg>;
+
+/** Run's live log (StepRun.dc.html): one line per change the driver's replies show. */
+export const LOG = {
+	title: { id: "fluximporter.run.log-title", message: "Log" },
+	started: { id: "fluximporter.run.log-started", message: "Started" },
+	resumed: { id: "fluximporter.run.log-resumed", message: "Resumed" },
+	paused: { id: "fluximporter.run.log-paused", message: "Paused" },
+	completed: { id: "fluximporter.run.log-completed", message: "Finished" },
+	cancelled: { id: "fluximporter.run.log-cancelled", message: "Cancelled" },
+	retry: { id: "fluximporter.run.log-retry", message: "Retry of the failed records started" },
+	missing: {
+		id: "fluximporter.run.log-missing",
+		message: "Checking for entries missing from the source",
+	},
+	jobWarning: { id: "fluximporter.run.log-job-warning", message: "Warning:" },
+	failed: { id: "fluximporter.run.log-failed", message: "The import stopped with an error." },
+} satisfies Record<string, Msg>;
