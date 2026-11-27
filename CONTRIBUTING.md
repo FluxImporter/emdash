@@ -58,6 +58,9 @@ Pull requests go to `main`. Keep each one to one change, with a title that says 
 3. The Release workflow (`.github/workflows/release.yml`) checks the tag against the version, runs
    the checks and publishes to npm through trusted publishing, with provenance.
 4. Write the GitHub release notes for the tag.
+5. Update the website. The site's "Sync release version" workflow picks up npm's `latest` within
+   6 hours; run it now with `gh workflow run sync-version.yml --repo FluxImporter/fluximporter-site`.
+   Document new features and changed requirements on the site in the same release.
 
 ## License
 
