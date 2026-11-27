@@ -1,10 +1,13 @@
 import type { PluginContext } from "emdash";
 import { describe, expect, it, vi } from "vitest";
 import type { Fence } from "../../src/emdash/fence.js";
+import { runBatch } from "../../src/engine/batch.js";
+import { createRollback } from "../../src/engine/rollback.js";
 import type { Job } from "../../src/engine/types.js";
 import type { JobRequest } from "../../src/plugin/job-templates.js";
 import { type PumpDeps, pumpDeps, pumpTick } from "../../src/plugin/pump.js";
 import {
+	openRollback,
 	PUMP_SCHEDULE,
 	PUMP_TASK,
 	type RunEntry,
@@ -532,6 +535,140 @@ describe('pumpTick (spec "The pump")', () => {
 		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: [], closed: ["G1"] });
 		expect(await t.base.jobs.get("G1")).toMatchObject({ status: "paused", scheduled: "closed" });
 		expect((await pumpTick(t.deps)).idle).toBe("cancelled");
+	});
+});
+
+describe("pumpTick and rollbacks (a rollback keeps running once its dialog closes)", () => {
+	/** A real rollback `jobs/rollback` opened to the pump: no origin, no schedule. */
+	const rollback = (id: string, extra: Partial<Job> = {}) =>
+		jobRow(id, { kind: "rollback", rollbackOf: "J0", scheduled: "open", ...extra });
+
+	it("runs a batch of an open rollback no one drives, under a rollback holder", async () => {
+		const t = await setup({ due: { at: AT } });
+		await t.base.jobs.put("R1", rollback("R1", { status: "running" }));
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: [], batch: "R1" });
+		expect(t.batches).toEqual([["R1", "rollback:N1"]]);
+		// A batch is the tick's unit: no launch beside it, and nothing closed or warned.
+		expect(t.requests).toEqual([]);
+		expect(t.warnings).toEqual([]);
+	});
+
+	it("leaves a rollback whose lease a dialog holds, and batches the next open job", async () => {
+		const t = await setup({ due: { at: AT } });
+		const lease = { holder: "admin:x", expiresAt: NOW + 30_000 };
+		const older = { createdAt: "2026-11-17T10:59:00.000Z" };
+		await t.base.jobs.put("R1", rollback("R1", { status: "running", lease, ...older }));
+		await t.base.jobs.put("J1", jobRow("J1", { ...open, status: "running" }));
+		expect((await pumpTick(t.deps)).batch).toBe("J1");
+		expect(t.batches).toEqual([["J1", "schedule:A:N1"]]);
+		// Once the dialog's lease has run out, the rollback is the pump's again.
+		t.clock.t = NOW + 30_001;
+		await t.base.jobs.put("J1", finished("J1"));
+		expect((await pumpTick(t.deps)).batch).toBe("R1");
+	});
+
+	it("treats rollbacks whose leases are all held as no batch, and launches", async () => {
+		const t = await setup({ due: { at: AT } });
+		const lease = { holder: "admin:x", expiresAt: NOW + 30_000 };
+		for (const id of ["R1", "R2", "R3"]) {
+			await t.base.jobs.put(id, rollback(id, { status: "running", lease, feedSourceId: "S9" }));
+		}
+		const tick = await pumpTick(t.deps);
+		expect(t.batches).toEqual([]);
+		expect(tick.launch).toEqual({ scheduleId: "A", outcome: "started" });
+	});
+
+	it("closes a finished rollback with no run entry and no pause, then idles", async () => {
+		const t = await setup();
+		for (const [id, status] of [
+			["R1", "completed"],
+			["R2", "failed"],
+		] as const) {
+			await t.base.jobs.put(id, rollback(id, { status }));
+		}
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: ["R1", "R2"] });
+		expect(await t.base.jobs.get("R1")).toMatchObject({ status: "completed", scheduled: "closed" });
+		expect(await t.base.jobs.get("R2")).toMatchObject({ status: "failed", scheduled: "closed" });
+		expect(await t.row()).toMatchObject({ enabled: true, runs: [] });
+		expect(t.cleared).toEqual([]);
+		expect(t.warnings).toEqual([]);
+		expect((await pumpTick(t.deps)).idle).toBe("cancelled");
+	});
+
+	it("keeps the pump while a paused rollback is open, and never batches it", async () => {
+		const t = await setup();
+		await t.base.jobs.put("R1", rollback("R1", { status: "paused" }));
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: [] });
+		expect(t.batches).toEqual([]);
+		expect(t.base.cron.tasks.has(PUMP_TASK)).toBe(true);
+	});
+
+	it("never runs a dry rollback: one open to it is closed unrun", async () => {
+		const t = await setup();
+		await t.base.jobs.put("D1", rollback("D1", { dryRun: true, status: "running" }));
+		expect(await pumpTick(t.deps)).toEqual({ fence: "clear", finalized: [], closed: ["D1"] });
+		expect(t.batches).toEqual([]);
+		expect(await t.base.jobs.get("D1")).toMatchObject({ scheduled: "closed" });
+	});
+
+	it("stands down while the site fence is up, a rollback included", async () => {
+		const t = await setup();
+		t.state.fence = "import";
+		await t.base.jobs.put("R1", rollback("R1", { status: "running" }));
+		expect(await pumpTick(t.deps)).toEqual({ fence: "import", finalized: [] });
+		expect(t.batches).toEqual([]);
+	});
+
+	it("logs a rollback's batch error as a rollback's", async () => {
+		const t = await setup();
+		await t.base.jobs.put("R1", rollback("R1", { status: "running" }));
+		t.deps.batch = async () => {
+			throw new Error("D1_ERROR: too many SQL variables");
+		};
+		expect((await pumpTick(t.deps)).batch).toBe("R1");
+		expect(t.errors).toEqual([
+			"fluximporter: rollback job R1: batch failed: D1_ERROR: too many SQL variables",
+		]);
+	});
+
+	it("finishes a rollback its dialog drove one batch of and then left, on the real engine", async () => {
+		const engine = engineSetup().deps;
+		const rows = ["A1", "A2", "A3", "A4"].map((sku) => ({ sku, name: `Desk ${sku}` }));
+		const original = await importRows(engine, rows);
+		expect(engine.content.entries.size).toBe(4);
+		const { rollback: created } = await createRollback(engine, { id: original.id, batchSize: 1 });
+		expect(await openRollback(engine.jobs, created.id)).toMatchObject({ scheduled: "open" });
+		// The dialog's one batch, as the Admin, before it closed.
+		const driven = await runBatch(engine, created.id, "admin:01DIALOG");
+		expect(driven).toMatchObject({ status: "running", counters: { reverted: 1 } });
+		const t = await setup();
+		const batches: string[] = [];
+		const deps: PumpDeps = {
+			...t.deps,
+			jobs: engine.jobs,
+			now: engine.now,
+			batch: (id, holder) => {
+				batches.push(holder);
+				return runBatch(engine, id, holder);
+			},
+		};
+		const ticks = [];
+		for (let i = 0; i < 10; i++) {
+			const tick = await pumpTick(deps);
+			ticks.push(tick);
+			if (tick.idle !== undefined) break;
+		}
+		// Three rows left, one a batch, and a last batch that finds the journal's end.
+		expect(batches).toEqual(["rollback:N1", "rollback:N2", "rollback:N3", "rollback:N4"]);
+		expect(ticks.map((tick) => tick.finalized)).toEqual([[], [], [], [], [created.id], []]);
+		expect(ticks.at(-1)?.idle).toBe("cancelled");
+		expect(await engine.jobs.get(created.id)).toMatchObject({
+			status: "completed",
+			scheduled: "closed",
+			counters: { reverted: 4 },
+		});
+		// Every entry the import created is gone: trashed, then deleted.
+		expect(engine.content.entries.size).toBe(0);
 	});
 });
 

@@ -151,13 +151,15 @@ export function workersBatchCap(job: Job): number {
 /**
  * A pump tick's batch on Workers (M6b spec "Bounded work"): the tick also finalizes, reads the
  * fence and may be one of ten tasks in one scheduled event, so its batch stays under
- * `PUMP_QUERY_TARGET` (550 D1 queries; Fact V5 measured at most 506 at these caps). The pump
- * never drives a rollback (a rollback job has no `origin`), so its cap is the Workers one.
+ * `PUMP_QUERY_TARGET` (550 D1 queries; Fact V5 measured at most 506 at these caps). A rollback
+ * the pump drives reverts two rows: three of the longest revert sequence measured 555 queries
+ * (`WORKERS_ROLLBACK_BATCH_CAP`), about 185 a row, so two stay near 370 with the batch's own reads.
  */
 export const TICK_BATCH_CAP = 6;
 export const TICK_LINKED_BATCH_CAP = 3;
 export const TICK_MISSING_SCAN_CAP = 20;
 export const TICK_MISSING_BATCH_CAP = 5;
+export const TICK_ROLLBACK_BATCH_CAP = 2;
 export const TICK_LOOKUP_BUDGET = 350;
 
 const TICK_CAPS: BatchCaps = {
@@ -165,7 +167,7 @@ const TICK_CAPS: BatchCaps = {
 	linked: TICK_LINKED_BATCH_CAP,
 	missingScan: TICK_MISSING_SCAN_CAP,
 	missingAct: TICK_MISSING_BATCH_CAP,
-	rollback: WORKERS_ROLLBACK_BATCH_CAP,
+	rollback: TICK_ROLLBACK_BATCH_CAP,
 };
 
 /** The records one pump tick processes on Workers for this job. */
