@@ -107,6 +107,21 @@ export const M = {
 		id: "fluximporter.map.check-format",
 		message: "Check: the format of its values is unclear.",
 	},
+	/** `{type}` is the field's type, as the row shows it. A `why…` sentence follows. */
+	checkNumberInto: {
+		id: "fluximporter.map.check-number-into",
+		message: "Check: a number into a {type} field.",
+	},
+	checkDateInto: {
+		id: "fluximporter.map.check-date-into",
+		message: "Check: a date into a {type} field.",
+	},
+	whyUnsureAi: { id: "fluximporter.map.why-unsure-ai", message: "AI was not sure." },
+	whyUnsure: { id: "fluximporter.map.why-unsure", message: "The suggestion was not sure." },
+	whyFormat: {
+		id: "fluximporter.map.why-format",
+		message: "The format of its values is unclear.",
+	},
 	providers: {
 		anthropic: { id: "fluximporter.map.provider-anthropic", message: "Anthropic" },
 		"openai-compatible": {

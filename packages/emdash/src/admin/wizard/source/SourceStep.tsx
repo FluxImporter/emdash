@@ -1,8 +1,10 @@
 import { Badge, Banner, Link, Tabs } from "@cloudflare/kumo";
+import { useLingui } from "@lingui/react";
 import { type ComponentProps, type ComponentType, useCallback, useRef, useState } from "react";
 import type { SourceFormat } from "../../../sources/reader.js";
 import { api } from "../../api.js";
 import { describeError } from "../../errors.js";
+import { sizeLabel } from "../../home/sources/display.js";
 import { type Msg, useT, useTn } from "../../i18n.js";
 import { SAMPLE_MAX } from "../../limits.js";
 import type { SampleColumn, SourceBlock } from "../../types.js";
@@ -97,7 +99,9 @@ function ErrorNote({ error }: { error: Described }) {
 function ChosenData(props: { choice: SourceChoice; block: SourceBlock; columns: SampleColumn[] }) {
 	const t = useT();
 	const tn = useTn();
+	const { i18n } = useLingui();
 	const records = props.columns[0]?.values.length ?? 0;
+	const { bytes } = props.choice;
 	return (
 		<div className="flex flex-wrap items-center gap-4 rounded-lg border border-kumo-hairline bg-kumo-base p-4">
 			<Badge variant="teal">{t(FORMAT_LABELS[props.block.format])}</Badge>
@@ -109,6 +113,7 @@ function ChosenData(props: { choice: SourceChoice; block: SourceBlock; columns: 
 					{tn(records < SAMPLE_MAX ? COUNT.records : COUNT.recordsAtLeast, records)}
 					{" · "}
 					{tn(COUNT.keys, props.columns.length)}
+					{typeof bytes === "number" ? ` · ${sizeLabel(bytes, i18n.locale)}` : null}
 				</p>
 			</div>
 		</div>

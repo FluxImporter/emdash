@@ -181,4 +181,33 @@ export const M = {
 	bandMedium: { id: "fluximporter.detail.band-medium", message: "medium" },
 	bandLow: { id: "fluximporter.detail.band-low", message: "low" },
 	check: { id: "fluximporter.detail.check", message: "check" },
+
+	/** The banner of a row to check (StepMap.dc.html): what to look at, then Keep it or Remove the key. */
+	reviewAiLow: {
+		id: "fluximporter.detail.review-ai-low",
+		message: "AI suggested {key} with low confidence.",
+	},
+	reviewNameLow: {
+		id: "fluximporter.detail.review-name-low",
+		message: "Name matching suggested {key} with low confidence.",
+	},
+	reviewAiFormat: {
+		id: "fluximporter.detail.review-ai-format",
+		message: "AI suggested {key}, but the format of its values is unclear.",
+	},
+	reviewNameFormat: {
+		id: "fluximporter.detail.review-name-format",
+		message: "Name matching suggested {key}, but the format of its values is unclear.",
+	},
+	reviewMissing: {
+		id: "fluximporter.detail.review-missing",
+		message: "The sample has no key {key}.",
+	},
+	reviewKey: {
+		id: "fluximporter.detail.review-key",
+		message: "Check that {key} is the right key for this field.",
+	},
+	reviewValues: { id: "fluximporter.detail.review-values", message: "Values look like {values}." },
+	keepIt: { id: "fluximporter.detail.keep-it", message: "Keep it" },
+	removeTheKey: { id: "fluximporter.detail.remove-the-key", message: "Remove the key" },
 } satisfies Record<string, Msg | Record<string, Msg>>;

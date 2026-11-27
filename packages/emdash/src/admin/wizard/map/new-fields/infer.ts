@@ -93,6 +93,22 @@ export function inferFieldType(values: readonly unknown[]): string {
 	return "string";
 }
 
+/** What a key's values look like (StepSource.dc.html's "Looks like": Text, Number, Date). */
+export type LooksLike = "text" | "number" | "date";
+
+/**
+ * What a column's non-empty values look like, read as `inferFieldType` reads them: numbers (an
+ * integer or number field), dates (a datetime field), or text for everything else, booleans and
+ * URLs too. Null when the column has no values.
+ */
+export function looksLike(values: readonly unknown[]): LooksLike | null {
+	const present = values.filter((v) => !isEmpty(v));
+	if (present.length === 0) return null;
+	const type = inferFieldType(present);
+	if (type === "integer" || type === "number") return "number";
+	return type === "datetime" ? "date" : "text";
+}
+
 /** `unit_price` → `Unit price`: `schema/apply`'s label for a field requested without one. */
 export function labelOf(slug: string): string {
 	const words = slug.replace(/_+/g, " ").trim();

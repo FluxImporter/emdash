@@ -882,6 +882,11 @@ describe("JobsTab", () => {
 			),
 		).toBeVisible();
 		expect(screen.queryByRole("link", { name: "New import" })).toBeNull();
+		// "How imports work" (States.dc.html) opens the website's wizard guide in a new tab.
+		const guide = screen.getByRole("link", { name: "How imports work (opens in a new tab)" });
+		expect(guide).toHaveAttribute("href", "https://www.fluximporter.com/emdash/guides/wizard/");
+		expect(guide).toHaveAttribute("target", "_blank");
+		expect(guide).toHaveAttribute("rel", "noopener noreferrer");
 		expect(screen.queryByRole("table")).toBeNull();
 		expect(screen.queryByRole("navigation", { name: "Pages" })).toBeNull();
 	});
