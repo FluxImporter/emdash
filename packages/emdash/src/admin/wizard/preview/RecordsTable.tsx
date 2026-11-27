@@ -2,7 +2,7 @@ import { Badge, Banner, Button, Loader, Pagination, Table, Tabs } from "@cloudfl
 import { useLingui } from "@lingui/react";
 import { useQuery } from "@tanstack/react-query";
 import { type ComponentProps, type ReactNode, useState } from "react";
-import type { Counters, RecordError, RecordRow, RecordStatus } from "../../../engine/types.js";
+import type { Job, RecordError, RecordRow, RecordStatus } from "../../../engine/types.js";
 import { api } from "../../api.js";
 import { isRetryable, redact } from "../../api-error.js";
 import { describeError, describeRecordWarning } from "../../errors.js";
@@ -15,25 +15,52 @@ import { M } from "./messages.js";
 const VALUE_MAX = 120;
 
 /**
- * `jobs/records` filters by status. A dry run's missing-phase rows are `planned` (with action
- * `trash` or `unpublish`) or `unchanged`, so no status selects them: the counts show them instead.
+ * `jobs/records` filters by status, or by facet: "Will change" lists the rows that would create,
+ * update, trash or unpublish an entry (the missing phase's included), "Warnings" those with
+ * warnings, whatever their action.
  */
 type Filter =
 	| "all"
-	| Extract<RecordStatus, "planned" | "failed" | "conflict" | "locked" | "filtered">;
+	| "change"
+	| "warning"
+	| Extract<RecordStatus, "failed" | "conflict" | "locked" | "filtered">;
 
-/**
- * The filters, each with the counter that counts its rows exactly. "All" and "Will change" have
- * none: the `unchanged` counter mixes planned and unchanged rows, and the missing phase's rows
- * are planned too.
- */
-const FILTERS: readonly { value: Filter; msg: Msg; counter?: keyof Counters }[] = [
+/** The records a dry run's job counts, all exact: every row counts toward one counter. */
+type Counted = Pick<Job, "counters" | "warned">;
+
+/** How many rows `filter` lists, from the job: its counters, and `warned` for the warnings. */
+function countOf(filter: Filter, job: Counted): number {
+	const c = job.counters;
+	const removed = c.removed ?? 0;
+	switch (filter) {
+		case "all":
+			return (
+				c.created +
+				c.updated +
+				c.unchanged +
+				c.locked +
+				c.conflict +
+				c.failed +
+				c.filtered +
+				removed
+			);
+		case "change":
+			return c.created + c.updated + removed;
+		case "warning":
+			return job.warned ?? 0;
+		default:
+			return c[filter];
+	}
+}
+
+const FILTERS: readonly { value: Filter; msg: Msg }[] = [
 	{ value: "all", msg: M.filterAll },
-	{ value: "planned", msg: M.filterPlanned },
-	{ value: "failed", msg: M.filterFailed, counter: "failed" },
-	{ value: "conflict", msg: M.filterConflict, counter: "conflict" },
-	{ value: "locked", msg: M.filterLocked, counter: "locked" },
-	{ value: "filtered", msg: M.filterFiltered, counter: "filtered" },
+	{ value: "change", msg: M.filterPlanned },
+	{ value: "warning", msg: M.filterWarnings },
+	{ value: "failed", msg: M.filterFailed },
+	{ value: "conflict", msg: M.filterConflict },
+	{ value: "locked", msg: M.filterLocked },
+	{ value: "filtered", msg: M.filterFiltered },
 ];
 
 const isFilter = (value: string): value is Filter => FILTERS.some((f) => f.value === value);
@@ -118,11 +145,18 @@ function shown(value: unknown): string | null {
 	return text.length > VALUE_MAX ? `${text.slice(0, VALUE_MAX - 1)}…` : text;
 }
 
+/** The `jobs/records` input that selects `filter`'s rows. */
+function selection(filter: Filter): { status?: RecordStatus; facet?: "change" | "warning" } {
+	if (filter === "all") return {};
+	if (filter === "change" || filter === "warning") return { facet: filter };
+	return { status: filter };
+}
+
 /**
- * A dry run's records from `jobs/records`, one status or all, paged by cursor: page `n` is read
- * from the cursor page `n - 1` returned, so Next is offered only while a page says `hasMore`.
+ * A dry run's records from `jobs/records`, one filter at a time, paged by cursor: page `n` is
+ * read from the cursor page `n - 1` returned, so Next is offered only while a page says `hasMore`.
  */
-export function RecordsTable(p: { jobId: string; counters: Counters | null }) {
+export function RecordsTable(p: { jobId: string; job: Counted | null }) {
 	const t = useT();
 	const { i18n } = useLingui();
 	const format = (n: number) => new Intl.NumberFormat(i18n.locale || "en").format(n);
@@ -136,7 +170,7 @@ export function RecordsTable(p: { jobId: string; counters: Counters | null }) {
 		queryFn: () =>
 			api.records({
 				id: p.jobId,
-				...(filter === "all" ? {} : { status: filter }),
+				...selection(filter),
 				...(cursor === undefined ? {} : { cursor }),
 			}),
 		retry,
@@ -255,7 +289,7 @@ export function RecordsTable(p: { jobId: string; counters: Counters | null }) {
 					variant="segmented"
 					size="sm"
 					tabs={FILTERS.map((f) => {
-						const n = f.counter === undefined ? null : (p.counters?.[f.counter] ?? null);
+						const n = p.job === null ? null : countOf(f.value, p.job);
 						// A filter no row matches is disabled (Kumo's tabs take no `disabled` of their own).
 						const none = n === 0 && f.value !== filter;
 						return {

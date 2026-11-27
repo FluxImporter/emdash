@@ -434,6 +434,7 @@ describe("the import wizard, end to end", () => {
 			template,
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		// The run imports exactly what Preview checked: the dry run's upload and the same draft.
 		expect(real).toEqual({ ...dry, dryRun: false });
@@ -573,6 +574,7 @@ describe("the import wizard, end to end", () => {
 			...byId,
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		expect(real).toEqual({ ...dry, dryRun: false });
 	});
@@ -613,6 +615,7 @@ describe("the import wizard, end to end", () => {
 			},
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		expect(real).toEqual({ ...dry, dryRun: false });
 	});
@@ -645,6 +648,7 @@ describe("the import wizard, end to end", () => {
 			...byId,
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		expect(real).toEqual({ ...dry, dryRun: false });
 	});

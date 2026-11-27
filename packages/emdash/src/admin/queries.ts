@@ -9,9 +9,10 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import type { Fence } from "../emdash/fence.js";
+import type { JobStatus } from "../engine/types.js";
 import type { CredentialInfo } from "../plugin/credentials.js";
 import type { ScheduleView } from "../plugin/schedules.js";
-import type { Page } from "../plugin/service.js";
+import type { JobSummariesPage, Page } from "../plugin/service.js";
 import type { SourceRow } from "../plugin/sources.js";
 import type { JobListItem } from "../plugin/summaries.js";
 import type { SavedTemplate, TemplateSummary } from "../plugin/templates.js";
@@ -33,8 +34,10 @@ export const queryKeys = {
 	 * key, and every read of it asks again (`staleTime: 0`).
 	 */
 	template: (id: string | null) => ["fluximporter", "template", id],
-	/** The Jobs tab's pages of real imports. */
+	/** The Jobs tab's pages of real imports, every status filter's: what a job change makes stale. */
 	jobs: ["fluximporter", "jobs"],
+	/** The pages of one status (null: all), under `jobs`. */
+	jobPages: (status: JobStatus | null) => ["fluximporter", "jobs", status ?? "all"],
 	/** The first page of dry runs. */
 	dryRuns: ["fluximporter", "dry-runs"],
 	schedules: ["fluximporter", "schedules"],
@@ -154,15 +157,22 @@ export function useAllTemplates(collection?: string): UseQueryResult<TemplateSum
 	});
 }
 
-/** The Jobs tab's real imports, a `JOB_PAGE` at a time; "Load more" asks for the next cursor. */
-export function useJobPages(): UseInfiniteQueryResult<
-	InfiniteData<Page<JobListItem>, string | undefined>
-> {
+/**
+ * The Jobs tab's real imports, of one status or all (null), a `JOB_PAGE` at a time; the next page
+ * is asked for with the last one's cursor. The first page carries the list's `total`.
+ */
+export function useJobPages(
+	status: JobStatus | null = null,
+): UseInfiniteQueryResult<InfiniteData<JobSummariesPage, string | undefined>> {
 	return useInfiniteQuery({
-		queryKey: queryKeys.jobs,
+		queryKey: queryKeys.jobPages(status),
 		queryFn: ({ pageParam, signal }) =>
 			api.jobSummaries(
-				{ dryRun: false, ...(pageParam === undefined ? {} : { cursor: pageParam }) },
+				{
+					dryRun: false,
+					...(status === null ? {} : { status }),
+					...(pageParam === undefined ? {} : { cursor: pageParam }),
+				},
 				signal,
 			),
 		initialPageParam: undefined as string | undefined,

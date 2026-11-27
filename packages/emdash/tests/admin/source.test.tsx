@@ -172,7 +172,12 @@ describe("the Source step", () => {
 				body: { uploadId: UPLOAD_ID, n: SAMPLE_MAX, source: { format: "csv" } },
 			}),
 		]);
-		expect(readState().source).toEqual({ kind: "upload", uploadId: UPLOAD_ID, label: "posts.csv" });
+		expect(readState().source).toEqual({
+			kind: "upload",
+			uploadId: UPLOAD_ID,
+			label: "posts.csv",
+			bytes: file.size,
+		});
 		// The sample shows each key and its values.
 		const preview = screen.getByRole("table", { name: "Sample" });
 		expect(within(preview).getByText("title")).toBeInTheDocument();
@@ -200,7 +205,8 @@ describe("the Source step", () => {
 		chooseFile("posts.csv");
 		await waitFor(() => expect(readState().keys).toEqual(["id", "title"]));
 		expect(screen.getByText("posts.csv")).toBeVisible();
-		expect(screen.getByText("2 records · 2 keys")).toBeVisible();
+		// The size is the upload route's `bytes`.
+		expect(screen.getByText("2 records · 2 keys · 20 byte")).toBeVisible();
 		expect(screen.getByRole("heading", { level: 3, name: "How to read it" })).toBeVisible();
 		// The sample says how many records it shows values of.
 		expect(screen.getByText("2 records", { selector: "p" })).toBeVisible();
@@ -209,12 +215,54 @@ describe("the Source step", () => {
 		await screen.findByText(/no saved templates/i);
 	});
 
+	it("shows the staged data's size in the viewer's words, for every kind of source", async () => {
+		routes({
+			upload: () => ({ uploadId: UPLOAD_ID, bytes: 1234 }),
+			"sources/paste": () => ({ uploadId: FETCHED_ID, bytes: 2_500_000 }),
+		});
+		const { user } = renderSource();
+		chooseFile("posts.csv");
+		expect(await screen.findByText("2 records · 2 keys · 1.2 kB")).toBeVisible();
+		await user.click(screen.getByRole("tab", { name: "Paste" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Text" }), {
+			target: { value: "id,title\n1,First" },
+		});
+		await user.click(screen.getByRole("button", { name: "Use this text" }));
+		expect(await screen.findByText("2 records · 2 keys · 2.4 MB")).toBeVisible();
+		await screen.findByText(/no saved templates/i);
+	});
+
+	it("says what each key's values look like: Text, Number or Date (StepSource.dc.html)", async () => {
+		routes({
+			"sources/sample": () =>
+				sampleCsv(
+					["sku", "Price", "Released", "Notes"],
+					[
+						["SKU-0", "0.5", "01/03/2026", ""],
+						["SKU-1", "1.5", "2026-03-02", ""],
+					],
+				),
+		});
+		renderSource();
+		chooseFile("posts.csv");
+		const table = await screen.findByRole("table", { name: "Sample" });
+		expect(within(table).getByRole("columnheader", { name: "Looks like" })).toBeVisible();
+		const looks = (key: string) =>
+			within(within(table).getByText(key).closest("tr") as HTMLElement).getAllByRole("cell")[1];
+		expect(looks("sku")).toHaveTextContent(/^Text$/);
+		expect(looks("Price")).toHaveTextContent(/^Number$/);
+		expect(looks("Released")).toHaveTextContent(/^Date$/);
+		// A key without values looks like nothing.
+		expect(looks("Notes")).toHaveTextContent(/^$/);
+		await screen.findByText(/no saved templates/i);
+	});
+
 	it("says a full sample may be the start of a longer source", async () => {
 		const rows = Array.from({ length: SAMPLE_MAX }, (_, i) => [String(i), `Title ${i}`]);
 		routes({ "sources/sample": () => sampleCsv(["id", "title"], rows) });
 		renderSource();
 		chooseFile("posts.csv");
-		expect(await screen.findByText(`${SAMPLE_MAX}+ records · 2 keys`)).toBeVisible();
+		expect(await screen.findByText(`${SAMPLE_MAX}+ records · 2 keys · 20 byte`)).toBeVisible();
 		expect(screen.getByText(`First 5 of ${SAMPLE_MAX} records`)).toBeVisible();
 		await screen.findByText(/no saved templates/i);
 	});
@@ -292,6 +340,7 @@ describe("the Source step", () => {
 			kind: "url",
 			uploadId: FETCHED_ID,
 			label: "example.com/feeds/products.json",
+			bytes: 10,
 		});
 	});
 
@@ -903,6 +952,7 @@ describe("the Source step", () => {
 			kind: "saved",
 			uploadId: FETCHED_ID,
 			label: "example.com/feeds/products.json",
+			bytes: 10,
 		});
 	});
 

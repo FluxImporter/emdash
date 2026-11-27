@@ -34,6 +34,8 @@ export interface SourceChoice {
 	kind: "upload" | "url" | "paste" | "saved";
 	uploadId: string;
 	label: string;
+	/** The staged upload's size in bytes, as its route answered. */
+	bytes?: number;
 }
 export interface ProposedField {
 	key: string;
@@ -113,6 +115,8 @@ export type WizardAction =
 	| { type: "warningsDismissed" }
 	| { type: "rowSet"; row: RowId; mapping: RowMapping }
 	| { type: "rowCleared"; row: RowId }
+	/** "Keep it": the user keeps a row's mapping as it is, which ends its check. */
+	| { type: "rowKept"; row: RowId }
 	| { type: "fieldProposed"; field: ProposedField }
 	| { type: "fieldChanged"; slug: string; patch: Partial<ProposedField> }
 	| { type: "fieldRemoved"; slug: string }
@@ -186,6 +190,8 @@ const KEEPS_DRAFT = new Set<WizardAction["type"]>([
 	"jobReopened",
 	"templateSaved",
 	"optionsInputChecked",
+	// Only the row's check changes: the draft template stays the same.
+	"rowKept",
 ]);
 
 /**
@@ -369,6 +375,11 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
 				rows: without(state.rows, action.row),
 				meta: without(state.meta, action.row),
 			};
+		case "rowKept": {
+			const m = state.meta[action.row];
+			if (m === undefined || !m.check) return state;
+			return { ...state, meta: { ...state.meta, [action.row]: { ...m, check: false } } };
+		}
 		case "fieldProposed":
 			return {
 				...state,
@@ -888,8 +899,9 @@ export function ownerOf(state: WizardState): string {
 
 /**
  * The `jobs/create` body. A dry run reads the chosen file; the real run reads the dry run's
- * upload, so it imports exactly what Preview showed (Coordinator's call 2). An unedited saved
- * template runs by ID and revision (preflight F1); otherwise the draft runs inline.
+ * upload, so it imports exactly what Preview showed (Coordinator's call 2), and the server takes
+ * its record total from that dry run. An unedited saved template runs by ID and revision
+ * (preflight F1); otherwise the draft runs inline. Both say they are the wizard's.
  */
 export function jobInput(state: WizardState, dryRun: boolean): CreateJobInput {
 	const uploadId = dryRun ? state.source?.uploadId : state.dryRun?.uploadId;
@@ -908,5 +920,6 @@ export function jobInput(state: WizardState, dryRun: boolean): CreateJobInput {
 		publish: options.status !== "draft",
 		...(options.batchSize === null ? {} : { batchSize: options.batchSize }),
 		journal: true,
+		origin: "wizard",
 	};
 }

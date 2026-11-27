@@ -14,6 +14,7 @@ import {
 	type LastImport,
 	latestSourceUploads,
 	listSources,
+	noteFetchRecords,
 	type SourceDeps,
 	type SourceRow,
 	sameTemplate,
@@ -279,6 +280,7 @@ describe("fetchSource", () => {
 			at: "2026-10-26T09:01:00.000Z",
 			code: "HTTP_ERROR",
 			message: "The server answered HTTP 404",
+			status: 404,
 		});
 		expect(failed.lastFetch?.uploadId).toBe(first.uploadId);
 
@@ -743,5 +745,63 @@ describe("latestSourceUploads", () => {
 		const a = await fetchSource(deps, "S1");
 		const b = await fetchSource(deps, "S3");
 		expect(await latestSourceUploads(deps.sources)).toEqual(new Set([a.uploadId, b.uploadId]));
+	});
+});
+
+describe("noteFetchRecords", () => {
+	/** A completed job of source S1 that read `uploadId`, with `seq` records read. */
+	const done = (uploadId: string, seq: number, extra: Record<string, unknown> = {}): Job =>
+		({
+			id: "J1",
+			kind: "import",
+			status: "completed",
+			feedSourceId: "S1",
+			uploadId,
+			cursor: { offset: 0, seq },
+			...extra,
+		}) as unknown as Job;
+
+	async function fetched() {
+		const t = setup();
+		t.routes.set(FEED, () => new Response(BODY));
+		await createSource(t.deps, { name: "A", url: FEED });
+		const first = await fetchSource(t.deps, "S1");
+		return { ...t, first };
+	}
+
+	it("saves the records a completed job read from the source's latest fetch", async () => {
+		const { deps, first } = await fetched();
+		await noteFetchRecords(deps, done(first.uploadId, 12));
+		expect((await getSource(deps, "S1")).lastFetch?.records).toBe(12);
+		// The missing phase's rows follow the records: its first seq is their count.
+		await noteFetchRecords(deps, done(first.uploadId, 15, { missing: { fromSeq: 13 } }));
+		expect((await getSource(deps, "S1")).lastFetch?.records).toBe(13);
+	});
+
+	it("matches an XLSX job by the workbook it was converted from", async () => {
+		const { deps, first } = await fetched();
+		await noteFetchRecords(deps, done("converted", 4, { sourceUploadId: first.uploadId }));
+		expect((await getSource(deps, "S1")).lastFetch?.records).toBe(4);
+	});
+
+	it("leaves the source alone for another fetch, an unfinished job or a rollback", async () => {
+		const { deps, first } = await fetched();
+		const before = await getSource(deps, "S1");
+		await noteFetchRecords(deps, done("older-upload", 3));
+		await noteFetchRecords(deps, done(first.uploadId, 3, { status: "running" }));
+		await noteFetchRecords(deps, done(first.uploadId, 3, { kind: "rollback" }));
+		await noteFetchRecords(deps, done(first.uploadId, 3, { feedSourceId: undefined }));
+		await noteFetchRecords(deps, done(first.uploadId, 3, { feedSourceId: "gone" }));
+		expect(await getSource(deps, "S1")).toEqual(before);
+	});
+
+	it("keeps the count through a fetch of the same content, and drops it for new content", async () => {
+		const { deps, routes, first } = await fetched();
+		await noteFetchRecords(deps, done(first.uploadId, 1));
+		expect((await fetchSource(deps, "S1")).changed).toBe(false);
+		expect((await getSource(deps, "S1")).lastFetch?.records).toBe(1);
+		routes.set(FEED, () => new Response(`${BODY}B,Two\n`));
+		expect((await fetchSource(deps, "S1")).changed).toBe(true);
+		expect((await getSource(deps, "S1")).lastFetch).not.toHaveProperty("records");
 	});
 });

@@ -311,19 +311,42 @@ export const DATE_CANDIDATES: readonly (string | undefined)[] = [
 ];
 const UNIX_DIGITS: Record<string, RegExp> = { unix: /^\d{9,10}$/, unixMs: /^\d{12,13}$/ };
 
-export function numberFailures(values: readonly unknown[], options: NumberOptions): number {
+/**
+ * How many of `values` fail to read, the count stopping at `limit`: `best` only needs to know
+ * whether a candidate fails fewer values than the best one so far.
+ */
+function countFailures(
+	values: readonly unknown[],
+	fails: (v: unknown) => boolean,
+	limit: number,
+): number {
+	let n = 0;
+	for (const v of values) if (fails(v) && ++n >= limit) break;
+	return n;
+}
+
+export function numberFailures(
+	values: readonly unknown[],
+	options: NumberOptions,
+	limit = Number.POSITIVE_INFINITY,
+): number {
 	const convert = numberConverter(options);
-	return values.filter((v) => !convert(v).ok).length;
+	return countFailures(values, (v) => !convert(v).ok, limit);
 }
 
 /** With the engine's own converter (Luxon, `en-US`), read in UTC into a `datetime` field. */
-export function dateFailures(values: readonly unknown[], format: string | undefined): number {
+export function dateFailures(
+	values: readonly unknown[],
+	format: string | undefined,
+	limit = Number.POSITIVE_INFINITY,
+): number {
 	const convert = dateConverter({ format, tz: "UTC" }, "datetime");
 	const digits = format === undefined ? undefined : UNIX_DIGITS[format];
-	return values.filter((v) => {
-		if (digits !== undefined && !digits.test(textOf(v) ?? "")) return true;
-		return !convert(v).ok;
-	}).length;
+	return countFailures(
+		values,
+		(v) => (digits !== undefined && !digits.test(textOf(v) ?? "")) || !convert(v).ok,
+		limit,
+	);
 }
 
 /** The candidate a column of values reads with, how many values it fails, and a warning flag. */
@@ -335,35 +358,50 @@ export interface Best<T> {
 
 /**
  * The first candidate that reads every value; else the one that reads the most, the first on a
- * tie (spec Ruling 63).
+ * tie (spec Ruling 63). Candidates are tried in order, up to the first that reads every value, and
+ * each counts its failures only while it can still win (a later one wins only with strictly
+ * fewer), so the winner's count is exact and a loser's is never counted in full.
  */
 function best<T>(
 	candidates: readonly T[],
-	failures: (c: T) => number,
-): { index: number; failures: number[] } {
-	const counts = candidates.map(failures);
-	const all = counts.indexOf(0);
-	if (all >= 0) return { index: all, failures: counts };
+	failures: (c: T, limit: number) => number,
+): { index: number; failures: number } {
 	let index = 0;
-	for (let i = 1; i < counts.length; i++) if ((counts[i] ?? 0) < (counts[index] ?? 0)) index = i;
-	return { index, failures: counts };
+	let fewest = Number.POSITIVE_INFINITY;
+	for (const [i, c] of candidates.entries()) {
+		const n = failures(c, fewest);
+		if (n >= fewest) continue;
+		index = i;
+		fewest = n;
+		if (n === 0) break;
+	}
+	return { index, failures: Number.isFinite(fewest) ? fewest : 0 };
 }
 
 export function bestNumber(values: readonly unknown[]): Best<NumberOptions> {
-	const { index, failures } = best(NUMBER_CANDIDATES, (o) => numberFailures(values, o));
+	const { index, failures } = best(NUMBER_CANDIDATES, (o, limit) =>
+		numberFailures(values, o, limit),
+	);
 	// Every value reads with `thousands ","` and with `decimal ","` (`1,234`): thousands, warned.
-	const ambiguous = index === 1 && failures[2] === 0;
-	return { option: NUMBER_CANDIDATES[index] ?? {}, failures: failures[index] ?? 0, ambiguous };
+	// `decimal ","` comes later, so it can read every value only when `thousands ","` does.
+	const ambiguous =
+		index === 1 && failures === 0 && numberFailures(values, NUMBER_CANDIDATES[2] ?? {}, 1) === 0;
+	return { option: NUMBER_CANDIDATES[index] ?? {}, failures, ambiguous };
 }
 
 export function bestDate(values: readonly unknown[]): Best<string | undefined> {
-	const { index, failures } = best(DATE_CANDIDATES, (f) => dateFailures(values, f));
+	const { index, failures } = best(DATE_CANDIDATES, (f, limit) => dateFailures(values, f, limit));
 	const option = DATE_CANDIDATES[index];
-	// Both day-first and month-first read every value: no format, warned (spec step 4).
-	if (option === "dd/MM/yyyy" && failures[index + 1] === 0) {
+	// Both day-first and month-first read every value: no format, warned (spec step 4). Month-first
+	// comes next, so it can read every value only when day-first does.
+	if (
+		option === "dd/MM/yyyy" &&
+		failures === 0 &&
+		dateFailures(values, DATE_CANDIDATES[index + 1], 1) === 0
+	) {
 		return { option: undefined, failures: 0, ambiguous: true };
 	}
-	return { option, failures: failures[index] ?? 0, ambiguous: false };
+	return { option, failures, ambiguous: false };
 }
 
 /** A key's values checked against a mapping type: the mapping, and how many values it refuses. */

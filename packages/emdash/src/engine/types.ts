@@ -117,13 +117,18 @@ export interface Job {
 	/**
 	 * M6c: the job was created by the agent routes (`jobs/plan`, `jobs/start`), under their rules:
 	 * a saved template, no missing phase, always a journal. M6b: `"schedule"`, created by a
-	 * schedule's launch (spec Ruling 22). Never inferred from a job's shape, and never copied by a
-	 * rollback (M6c spec Ruling 31).
+	 * schedule's launch (spec Ruling 22). `"wizard"`: created by the admin's New import wizard,
+	 * which says so in its `jobs/create` call (jobs from before 0.9, and API jobs, have none). Never
+	 * inferred from a job's shape, and never copied by a rollback (M6c spec Ruling 31).
 	 */
-	origin?: "agent" | "schedule";
+	origin?: "agent" | "schedule" | "wizard";
 	/** M6b: the schedule that launched the job; not copied by a rollback. */
 	scheduleId?: string;
-	/** M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). */
+	/**
+	 * M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). A real
+	 * rollback is opened by `jobs/rollback` once its original is marked, so the pump drives it too,
+	 * and closed once it ends; absent on rollbacks stored before that, which only `jobs/next` drives.
+	 */
 	scheduled?: "open" | "closed";
 	/**
 	 * M6b (spec Ruling 33): the URL source whose data the job reads, or that a rollback undoes. Set
@@ -142,6 +147,12 @@ export interface Job {
 	 */
 	revisions?: boolean;
 	/**
+	 * `false` when the collection refuses schedules (EmDash 1.5's `no-scheduling`, read at job
+	 * creation when the template maps `publishAt`): a record whose time is ahead is saved as a draft
+	 * with a `scheduling_disabled` warning instead. Absent otherwise (and on older jobs).
+	 */
+	scheduling?: false;
+	/**
 	 * M5c: the missing phase's threshold, resolved at job creation from `rules.missing` and the job
 	 * option `missing` (`false`: the option turned the phase off). Absent without `rules.missing`.
 	 */
@@ -153,6 +164,17 @@ export interface Job {
 	unkeyed?: number;
 	/** M5c: the missing phase; absent until the job's first pass completes. */
 	missing?: MissingState;
+	/**
+	 * The records the source holds, when known at job creation: the XLSX conversion's row count,
+	 * or, for a real job, what a finished dry run of the same staged file and source block read.
+	 * Absent when unknown (streamed sources are never counted ahead) and on older jobs.
+	 */
+	recordTotal?: number;
+	/**
+	 * Record rows with warnings (`RecordRow.warnings`), kept as the counters are. Absent: 0, also
+	 * on jobs created before it was counted, whose rows have no `facet` either.
+	 */
+	warned?: number;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -242,6 +264,9 @@ export type RecordStatus =
 /** What a rollback row does to its entry (M5a); M5c adds `restore`, for a `trash` journal row. */
 export type RollbackAction = "delete" | "trash" | "revert" | "restore";
 
+/** `RecordRow.facet`: one indexed field, so one index serves both filters. */
+export type RecordFacet = "change" | "warning" | "change+warning";
+
 export interface RecordError {
 	field?: string;
 	code: string;
@@ -276,6 +301,12 @@ export interface RecordRow {
 	 * `MAX_RECORD_WARNINGS`. Absent when there are none.
 	 */
 	warnings?: RecordError[];
+	/**
+	 * What the records filters select the row by (`facetOf`): it changes an entry (it counts toward
+	 * `created`, `updated` or `removed`), it has warnings, or both. Absent when neither, and on rows
+	 * saved before it was kept.
+	 */
+	facet?: RecordFacet;
 	/** Rollback rows: the last revert step done (M5a); absent before the first. */
 	step?: number;
 	/**

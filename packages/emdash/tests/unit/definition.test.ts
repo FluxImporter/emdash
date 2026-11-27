@@ -179,6 +179,7 @@ describe("createPlugin", () => {
 			["jobId", "seq"],
 			["jobId", "status", "seq"],
 			["jobId", "sourceKey"],
+			["jobId", "facet", "seq"],
 		]);
 		expect(STORAGE.jobs.indexes).toEqual([
 			"status",
@@ -689,8 +690,13 @@ describe("createPlugin", () => {
 			feedSourceId: "S1",
 		}) as Record<string, unknown>;
 		expect(parsed).toEqual({ uploadId: UPLOAD_ID, template: {}, dryRun: false });
-		for (const key of ["origin", "id", "dryRunOf", "scheduleId", "scheduled", "feedSourceId"]) {
+		for (const key of ["id", "dryRunOf", "scheduleId", "scheduled", "feedSourceId"]) {
 			expect(key in parsed).toBe(false);
 		}
+		// Only the wizard's origin is kept; createJobFrom leaves an undefined one out of the job.
+		expect(parsed.origin).toBeUndefined();
+		expect(
+			create.parse({ uploadId: UPLOAD_ID, template: {}, dryRun: false, origin: "wizard" }),
+		).toMatchObject({ origin: "wizard" });
 	});
 });

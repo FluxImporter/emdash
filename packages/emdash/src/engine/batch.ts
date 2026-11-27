@@ -1,5 +1,5 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
-import { counterFor } from "./counters.js";
+import { counterFor, storedRow, warnedRow } from "./counters.js";
 import {
 	type Change,
 	type CurrentLinks,
@@ -88,6 +88,7 @@ import {
 	sameInstant,
 	scheduleLanded,
 	schedulePlan,
+	schedulingDisabled,
 	sweptSince,
 	type Target,
 	targetOf,
@@ -108,8 +109,6 @@ import {
 	bump,
 	type Counters,
 	CREATED_LISTED,
-	capErrors,
-	capWarnings,
 	type EngineDeps,
 	emptyCounters,
 	iso,
@@ -183,6 +182,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			...(job.created ? { created: job.created } : {}),
 			...(job.unkeyed ? { unkeyed: job.unkeyed } : {}),
+			...(job.warned === undefined ? {} : { warned: job.warned }),
 			// M5c: the missing phase.
 			...(job.missing ? { missing: job.missing } : {}),
 			// M7b: a rollback job's split counts, kept as its counters are.
@@ -216,19 +216,14 @@ export async function processRecord(
 		const counter = counterFor(existing);
 		if (counter) bump(job.counters, counter);
 		if (unkeyedRow(existing)) job.unkeyed = (job.unkeyed ?? 0) + 1;
+		if (warnedRow(existing)) job.warned = (job.warned ?? 0) + 1;
 		return;
 	}
 
 	const base = { jobId: job.id, seq: rec.seq, start: rec.start, end: rec.end };
 	// Every row is saved through here, so the caps hold whatever produced its errors and warnings.
 	const save = (fields: RowFields) =>
-		deps.records.put(key, {
-			...base,
-			...fields,
-			...(fields.errors ? { errors: capErrors(fields.errors) } : {}),
-			...(fields.warnings ? { warnings: capWarnings(fields.warnings) } : {}),
-			updatedAt: iso(deps),
-		});
+		deps.records.put(key, { ...base, ...storedRow(fields, deps) });
 
 	const cache = opts.cache ?? new LookupCache();
 	const row = await decide(deps, job, template, rec, existing, save, cache);
@@ -236,10 +231,12 @@ export async function processRecord(
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
 		if (old) bump(job.counters, old, -1);
+		if (warnedRow(existing)) job.warned = (job.warned ?? 0) - 1;
 	}
 	const counter = counterFor(row);
 	if (counter) bump(job.counters, counter);
 	if (!opts.retry && unkeyedRow(row)) job.unkeyed = (job.unkeyed ?? 0) + 1;
+	if (warnedRow(row)) job.warned = (job.warned ?? 0) + 1;
 }
 
 /** M5c: a row whose record had no readable key (a reader, filter or key error). */
@@ -315,6 +312,12 @@ const PENDING_SCHEDULE_MESSAGE =
 	"Not imported: the entry is scheduled, and this import did not schedule it";
 const REV_CONFLICT_MESSAGE = "Not imported: the entry changed since it was read; retry to re-apply";
 const LOCKED_MESSAGE = "Not imported: the entry is being edited (locked)";
+/** The rows that carry a record's `not_scheduled` or `scheduling_disabled` warning. */
+const SCHEDULE_WARNED: ReadonlySet<RowFields["status"]> = new Set([
+	"created",
+	"updated",
+	"unchanged",
+]);
 
 function notImported(
 	status: "conflict" | "locked",
@@ -1215,12 +1218,15 @@ async function decideRecord(
 			target.kind === "at" ? schedulePlan(job, entry, link, plan, record, target.at) : null;
 		if (scheduled !== null && "warning" in scheduled) ctx.notScheduled = scheduled.warning;
 		if (scheduled !== null && "change" in scheduled) ctx.schedule = scheduled.change;
-		// `not_scheduled` describes a write that went live, so only a written update carries it.
-		const write = async (p: RecordPlan) => {
-			const row = await writeRecord(ctx, entry, p, unprotected(ctx, record, guarded));
-			if (ctx.notScheduled && row.status === "updated") found.warnings.push(ctx.notScheduled);
+		// `not_scheduled` describes a write that went live, and `scheduling_disabled` one kept as a
+		// draft, so only a row the record wrote, or found written, carries them.
+		const warned = (row: RowFields) => {
+			if (ctx.notScheduled && SCHEDULE_WARNED.has(row.status))
+				found.warnings.push(ctx.notScheduled);
 			return row;
 		};
+		const write = async (p: RecordPlan) =>
+			warned(await writeRecord(ctx, entry, p, unprotected(ctx, record, guarded)));
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
@@ -1246,7 +1252,7 @@ async function decideRecord(
 		if (entry) {
 			if (plan.action === "unchanged") {
 				await setFields(ctx, entry, record, plan, links, guarded);
-				return await finishUnchanged(ctx, entry, link, existing, repaired);
+				return warned(await finishUnchanged(ctx, entry, link, existing, repaired));
 			}
 			// A schedule someone else set is pending too (M5b): a publish would clear it.
 			const pending = entry.pendingPublish || entry.scheduledAt !== null;
@@ -1328,7 +1334,7 @@ async function decideRecord(
 		}
 		await setFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
-			return await finishUnchanged(ctx, entry, link, existing, repaired);
+			return warned(await finishUnchanged(ctx, entry, link, existing, repaired));
 		}
 		return await write(final);
 	} catch (e) {
@@ -1607,6 +1613,9 @@ async function finishUnchanged(
 		const at = target.at;
 		if (landed || (proven && sameInstant(entry.scheduledAt, at))) {
 			await putLink(ctx, entryId, entry.rev, at);
+		} else if (proven && job.scheduling === false) {
+			// The collection refuses schedules: the draft stays, as `schedulePlan` plans it.
+			ctx.notScheduled = schedulingDisabled();
 		} else if (proven) {
 			const scheduled = await scheduleRev(ctx, entryId, entry.rev, at);
 			if (!scheduled.ok)
@@ -2002,9 +2011,16 @@ async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promis
 	throw new SourceError(code, "No record at the saved offset", row.start);
 }
 
-/** Rebuilds counters from the record rows, so a crashed retry batch cannot leave them skewed. */
-async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters> {
+/**
+ * Rebuilds counters and the warned count from the record rows, so a crashed retry batch cannot
+ * leave them skewed.
+ */
+async function tallyCounters(
+	deps: EngineDeps,
+	jobId: string,
+): Promise<{ counters: Counters; warned: number }> {
 	const counters = emptyCounters();
+	let warned = 0;
 	let cursor: string | undefined;
 	for (;;) {
 		const page = await deps.records.query({
@@ -2016,8 +2032,9 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 		for (const { data } of page.items) {
 			const counter = counterFor(data);
 			if (counter) bump(counters, counter);
+			if (warnedRow(data)) warned++;
 		}
-		if (!page.hasMore || !page.cursor) return counters;
+		if (!page.hasMore || !page.cursor) return { counters, warned };
 		cursor = page.cursor;
 	}
 }
@@ -2047,7 +2064,9 @@ async function retryPass(
 			limit: Math.min(limit, RETRY_PAGE),
 		});
 		if (page.items.length === 0) {
-			job.counters = await tallyCounters(deps, job.id);
+			const tally = await tallyCounters(deps, job.id);
+			job.counters = tally.counters;
+			job.warned = tally.warned;
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {

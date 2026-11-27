@@ -258,6 +258,56 @@ describe("the Run step", () => {
 		expect(await screen.findByText("Import complete.")).toBeVisible();
 	});
 
+	it("logs each batch from the replies it reads, newest first, with problems and warnings", async () => {
+		const at = (s: number) => `2026-11-27T18:42:${String(s).padStart(2, "0")}.000Z`;
+		const second = gate();
+		const third = gate();
+		let n = 0;
+		const { calls } = mockRoutes({
+			"jobs/create": () => real({ status: "created", updatedAt: at(1) }),
+			"jobs/next": () => {
+				n += 1;
+				if (n === 1) return real({ counters: counters(40, { updated: 8 }), updatedAt: at(5) });
+				return n === 2 ? second.promise : third.promise;
+			},
+		});
+		renderRun(draft({ dryRun: { jobId: "D", uploadId: DRY_UPLOAD, total: 70 } }));
+		const log = await screen.findByRole("list", { name: "Log" });
+		await within(log).findByText("48 records · 40 created · 8 updated");
+		second.open(
+			real({ counters: counters(60, { updated: 8, failed: 2 }), warned: 1, updatedAt: at(9) }),
+		);
+		await within(log).findByText("2 failed");
+		third.open(
+			real({
+				status: "completed",
+				counters: counters(60, { updated: 8, failed: 2 }),
+				warned: 1,
+				updatedAt: at(12),
+			}),
+		);
+		expect(await screen.findByText("Import complete.")).toBeVisible();
+		expect(
+			within(log)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual([
+			"18:42:12Finished",
+			"18:42:091 record with a warning",
+			"18:42:092 failed",
+			"18:42:0922 records · 20 created",
+			"18:42:0548 records · 40 created · 8 updated",
+			"18:42:01Started",
+		]);
+		// Nothing is fetched for it: the driver's replies are all it reads.
+		expect(calls.map((c) => c.route)).toEqual([
+			"jobs/create",
+			"jobs/next",
+			"jobs/next",
+			"jobs/next",
+		]);
+	});
+
 	it("reopens ?job= with a live lease: waits, then counts (Review Focus 1)", async () => {
 		vi.useFakeTimers();
 		const lease = { holder: "other-tab", expiresAt: Date.now() + 30_000 };

@@ -34,6 +34,7 @@ export function kvCollection<T>(collection: StorageCollection): KvCollection<T> 
 			});
 			return page as { items: { id: string; data: T }[]; cursor?: string; hasMore: boolean };
 		},
+		count: (where) => collection.count(where as StorageWhere | undefined),
 	};
 }
 

@@ -26,6 +26,16 @@ export const M = {
 	fetched: { id: "fluximporter.home-sources.fetched", message: "Fetched {when}" },
 	failed: { id: "fluximporter.home-sources.failed", message: "Failed {when}" },
 	never: { id: "fluximporter.home-sources.never", message: "Never fetched" },
+	/** Under a failed fetch the server answered with an error status (Copy.dc.html). */
+	httpStatus: {
+		id: "fluximporter.home-sources.http-status",
+		message: "HTTP {status} from the server",
+	},
+	/** Under a fetch: `{records}` is the record count's own message (`N.records`). */
+	recordsAndSize: {
+		id: "fluximporter.home-sources.records-and-size",
+		message: "{records} · {size}",
+	},
 	fetchNow: { id: "fluximporter.home-sources.fetch-now", message: "Fetch now" },
 	fetchNowRow: { id: "fluximporter.home-sources.fetch-now-row", message: "Fetch now {name}" },
 	actionsRow: { id: "fluximporter.home-sources.actions-row", message: "Actions for {name}" },
@@ -175,5 +185,11 @@ export const N = {
 		id: "fluximporter.home-sources.used-by",
 		one: "used by {count} source",
 		other: "used by {count} sources",
+	},
+	/** The records the last fetch held, once a completed import or dry run has read it. */
+	records: {
+		id: "fluximporter.home-sources.count-records",
+		one: "{count} record",
+		other: "{count} records",
 	},
 } satisfies Record<string, PluralMsg>;

@@ -20,6 +20,8 @@ const PATH_LOCALES = [
 	{ path: "fr", codes: ["fr-FR", "fr-CA"] },
 	"de",
 ];
+// The co-editing tests turn on EmDash's co-editing rooms (EmDash 1.5).
+const coEditing = process.env.FLUX_DEV_CO_EDITING === "1";
 
 export default defineConfig({
 	output: "server",
@@ -42,6 +44,7 @@ export default defineConfig({
 				baseUrl: "/_emdash/api/media/file",
 			}),
 			...(maxUploadSize ? { maxUploadSize } : {}),
+			...(coEditing ? { coEditing } : {}),
 		}),
 		fluxImporterRoutes({ ...(maxSourceBytes ? { maxSourceBytes } : {}), allowPrivateNetwork }),
 	],

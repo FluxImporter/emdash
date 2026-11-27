@@ -1,0 +1,57 @@
+name: Release
+
+# Pushing a tag like v0.9.0 publishes @fluximporter/emdash to npm through npm's trusted
+# publishing: no npm token, no one-time password, and npm adds a provenance statement.
+# The package's trusted publisher on npmjs.com names this file (release.yml).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Lets npm sign in with the workflow's OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      # Trusted publishing needs npm 11.5.1 or later, which Node 24 ships.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the tag matches the package version
+        working-directory: packages/emdash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version $version"
+            exit 1
+          fi
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+
+      # pnpm pack applies publishConfig (exports pointing at dist/), which npm publish
+      # would ignore, so npm publishes the tarball pnpm made.
+      - name: Build and pack
+        working-directory: packages/emdash
+        run: pnpm pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Publish
+        run: npm publish "$RUNNER_TEMP"/fluximporter-emdash-*.tgz --access public

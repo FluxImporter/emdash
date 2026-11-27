@@ -385,6 +385,9 @@ describe("the threshold (M5c, Rulings 6, 22, 23)", () => {
 		expect(codes(rows.get("K7"))).toEqual(["missing_gone"]);
 		expect(rows.get("K5")?.warnings?.[0]?.message).toBe(MISSING_MESSAGES.missing_edited);
 		expect(rows.get("K7")?.warnings?.[0]?.message).toBe(MISSING_MESSAGES.missing_gone);
+		// Each left-alone row has a warning, so it counts toward `warned` and has the facet.
+		expect(job.warned).toBe(3);
+		expect(rows.get("K5")?.facet).toBe("warning");
 	});
 
 	it("leaves the importer's own pending draft, and counts it", async () => {

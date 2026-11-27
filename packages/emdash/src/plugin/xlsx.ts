@@ -109,6 +109,8 @@ export interface ConvertedSheet {
 	warnings: string[];
 	/** M5c: rows skipped with only unreadable cells, which the job counts as unkeyed. */
 	skippedRows: number;
+	/** The lines converted: the records the job reads (`Job.recordTotal`). */
+	rows: number;
 }
 
 /**
@@ -129,6 +131,7 @@ export async function convertXlsx(
 	const pieces: Uint8Array[] = [];
 	let size = 0;
 	let pending = "";
+	let rows = 0;
 	const flush = () => {
 		const bytes = encoder.encode(pending);
 		pending = "";
@@ -150,6 +153,7 @@ export async function convertXlsx(
 		sheet = await openSheet(deps, staging, uploadId, source);
 		for await (const line of sheet.lines) {
 			pending += `${line}\n`;
+			rows += 1;
 			if (pending.length >= PIECE) flush();
 		}
 	} catch (e) {
@@ -170,6 +174,7 @@ export async function convertXlsx(
 		columns: sheet.columns,
 		warnings: sheet.warnings(),
 		skippedRows: sheet.skipped(),
+		rows,
 	};
 }
 
@@ -201,6 +206,7 @@ export async function startImport(
 				columns: converted.columns,
 				warnings: converted.warnings,
 				...(converted.skippedRows > 0 ? { skippedRows: converted.skippedRows } : {}),
+				recordTotal: converted.rows,
 			},
 			lookupFields,
 			resolveLocale,

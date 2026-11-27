@@ -5,11 +5,14 @@
 	"keywords": [
 		"emdash",
 		"emdash-plugin",
+		"importer",
 		"import",
 		"csv",
-		"xml",
 		"json",
-		"wordpress"
+		"xml",
+		"excel",
+		"xlsx",
+		"astro"
 	],
 	"homepage": "https://www.fluximporter.com/emdash/",
 	"repository": {

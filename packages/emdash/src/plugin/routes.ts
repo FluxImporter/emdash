@@ -36,13 +36,16 @@ import { resolveJobTemplate } from "./job-templates.js";
 import { schedulesOverview, sourcesOverview } from "./overviews.js";
 import { withRuntime } from "./runtime.js";
 import {
+	armPump,
 	createSchedule,
 	cronOf,
 	deleteSchedule,
 	inUse,
 	listSchedules,
 	MAX_SCHEDULES,
+	openRollback,
 	pauseSchedule,
+	pumpDrives,
 	reconcile,
 	reopenScheduled,
 	runSchedule,
@@ -79,6 +82,7 @@ import {
 	fetchSource,
 	getSource,
 	listSources,
+	noteFetchRecords,
 	updateSource,
 } from "./sources.js";
 import { type SuggestDeps, suggestMapping } from "./suggest.js";
@@ -142,8 +146,10 @@ const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
 
-/** `jobs/summaries` (M7b): real imports by default, or dry runs, a page at a time. */
-export const JOB_SUMMARIES_INPUT = z.object({ dryRun: z.boolean().optional(), cursor }).strict();
+/** `jobs/summaries` (M7b): real imports by default, or dry runs, of one status or all, a page at a time. */
+export const JOB_SUMMARIES_INPUT = z
+	.object({ dryRun: z.boolean().optional(), status: z.enum(JOB_STATUSES).optional(), cursor })
+	.strict();
 
 const format = z.enum(SOURCE_FORMATS);
 const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template ID");
@@ -491,6 +497,12 @@ const createInput = z
 		budgetMs: z.number().int().optional(),
 		/** Keep a journal so the job can be rolled back (M5a); default true. */
 		journal: z.boolean().optional(),
+		/**
+		 * The admin's New import wizard says it made the job, for the Jobs tab. Only `wizard`: the
+		 * agent and schedule origins are set by their own routes, never by a caller, so any other
+		 * value is dropped, as before 0.9 (M6c spec Ruling 31).
+		 */
+		origin: z.literal("wizard").optional().catch(undefined),
 		/** M5c: skip the missing phase for this run, or replace its threshold. */
 		missing: z
 			.union([
@@ -626,9 +638,9 @@ function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRout
 					false,
 				);
 			}
-			// Plan Ruling 11: a finalized scheduled job that runs again is the pump's again; the
-			// answer is the reopened row (preflight F19).
-			if ((action === "resume" || action === "retry") && job.origin === "schedule") {
+			// Plan Ruling 11: a finalized scheduled job or rollback that runs again is the pump's
+			// again; the answer is the reopened row (preflight F19).
+			if ((action === "resume" || action === "retry") && pumpDrives(job)) {
 				const id = job.id;
 				const reopen = () => reopenScheduled(deps.jobs, cronOf(ctx), id);
 				job = (await bestEffort(ctx, "reopening a scheduled job", reopen, null)) ?? job;
@@ -847,7 +859,10 @@ export const routes: Record<string, PluginRoute> = {
 				job.origin === "schedule" ? buildServices(ctx, services.runtime, null) : services;
 			// A unique holder per call: two concurrent calls never share a lease.
 			const holder = `${services.actor.id}:${ulid()}`;
-			return withoutPlannedTerms(await nextBatch(deps, uploads, ctx.input.id, holder, keep));
+			const next = await nextBatch(deps, uploads, ctx.input.id, holder, keep);
+			// Best effort: the batch is done whether or not its source's record count is saved.
+			await noteFetchRecords(services.sources, next).catch(() => {});
+			return withoutPlannedTerms(next);
 		}),
 	),
 
@@ -871,11 +886,13 @@ export const routes: Record<string, PluginRoute> = {
 			),
 	),
 
-	// M7b: the admin's Jobs table: list items, not job rows, of real imports or of dry runs.
+	// M7b: the admin's Jobs table: list items, not job rows, of real imports or of dry runs, of
+	// one status or all; the first page also answers the list's total.
 	"jobs/summaries": route(JOB_SUMMARIES_INPUT, (ctx) =>
 		withServices(ctx, ({ deps }) =>
 			listJobSummaries(deps, {
 				dryRun: ctx.input.dryRun ?? false,
+				...(ctx.input.status ? { status: ctx.input.status } : {}),
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 			}),
 		),
@@ -909,6 +926,19 @@ export const routes: Record<string, PluginRoute> = {
 				if (!rollback.dryRun && original.sourceId !== undefined) {
 					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
 				}
+				// A real rollback is handed to the pump too, so it finishes when no dialog drives
+				// it; the two share it by its lease. Best effort: a rollback left unopened is driven
+				// by jobs/next alone, and the hourly reconciliation arms a pump whose arm was lost.
+				let answer = rollback;
+				const cron = ctx.cron;
+				if (!rollback.dryRun && cron !== undefined) {
+					const open = () => openRollback(deps.jobs, rollback.id);
+					answer =
+						(await bestEffort(ctx, "opening the rollback to the pump", open, null)) ?? answer;
+					if (answer.scheduled === "open") {
+						await bestEffort(ctx, "arming the pump", () => armPump(cron), undefined);
+					}
+				}
 				// M6b (spec Ruling 32, plan Ruling 12): a real rollback of a scheduled job pauses its
 				// schedule and marks its run; the pump's finalization repeats both. Best effort, as
 				// the rollback is already created (preflight F11).
@@ -923,7 +953,7 @@ export const routes: Record<string, PluginRoute> = {
 						false,
 					);
 				}
-				return rollback;
+				return answer;
 			}),
 	),
 
@@ -932,13 +962,20 @@ export const routes: Record<string, PluginRoute> = {
 	"jobs/cancel": transition("cancel"),
 	"jobs/retry": transition("retry"),
 
+	// `facet`: only the rows that change an entry, or that have warnings (Preview's filters).
 	"jobs/records": route(
-		z.object({ id: jobId, status: z.enum(RECORD_STATUSES).optional(), cursor }),
+		z.object({
+			id: jobId,
+			status: z.enum(RECORD_STATUSES).optional(),
+			facet: z.enum(["change", "warning"]).optional(),
+			cursor,
+		}),
 		(ctx) =>
 			withServices(ctx, ({ deps }) =>
 				listRecords(deps, {
 					id: ctx.input.id,
 					...(ctx.input.status ? { status: ctx.input.status } : {}),
+					...(ctx.input.facet ? { facet: ctx.input.facet } : {}),
 					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 				}),
 			),
@@ -964,12 +1001,13 @@ export const routes: Record<string, PluginRoute> = {
 		return { job: summarize(job, services.deps.now()) };
 	}),
 
-	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep }) => {
+	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep, sources }) => {
 		const { id } = ctx.input;
 		// As jobs/next: a unique holder per call, so two calls never share a lease.
 		const job = await stepAgentJob(deps.jobs, id, () =>
 			nextBatch(deps, uploads, id, `${actor.id}:${ulid()}`, keep),
 		);
+		await noteFetchRecords(sources, job).catch(() => {});
 		return step(job, deps.now());
 	}),
 

@@ -48,6 +48,20 @@ Pull requests go to `main`. Keep each one to one change, with a title that says 
 - **Tests** come with every change: unit tests next to the code they cover in `tests/unit`, admin
   tests in `tests/admin`, and integration tests for anything that writes content.
 
+## Releasing (maintainers)
+
+1. Bump `version` in `packages/emdash/package.json` and `FLUX_IMPORTER_VERSION` in
+   `packages/emdash/src/meta.ts` (a unit test keeps them equal), update the README's version table
+   if the EmDash range changed, and merge that through a pull request.
+2. Tag the merge commit and push the tag: `git tag -a v0.9.0 -m "@fluximporter/emdash 0.9.0"`,
+   then `git push origin v0.9.0`.
+3. The Release workflow (`.github/workflows/release.yml`) checks the tag against the version, runs
+   the checks and publishes to npm through trusted publishing, with provenance.
+4. Write the GitHub release notes for the tag.
+5. Update the website. The site's "Sync release version" workflow picks up npm's `latest` within
+   6 hours; run it now with `gh workflow run sync-version.yml --repo FluxImporter/fluximporter-site`.
+   Document new features and changed requirements on the site in the same release.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).

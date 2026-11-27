@@ -162,7 +162,7 @@ export async function startAstroDev(
  * Starts `sites/dev` on its own SQLite file and upload directory (`dir`, new when omitted), with
  * an upload limit of `maxSourceBytes`. `allowPrivateNetwork` lets URL sources and media reach
  * this machine; `maxUploadSize` sets EmDash's media upload limit; `env` adds to the site's
- * environment (such as `FLUX_DEV_I18N`).
+ * environment (such as `FLUX_DEV_I18N`, or `FLUX_DEV_CO_EDITING: "1"` for co-editing rooms).
  */
 export async function startServer(
 	port: number,

@@ -1,6 +1,6 @@
 # Flux Importer for EmDash
 
-Import CSV, JSON, XML, Excel and ZIP files, and live URL feeds, into [EmDash](https://emdashcms.com).
+Import CSV, JSON, XML and Excel files, and live URL feeds, into [EmDash](https://emdashcms.com).
 You map columns to fields in a visual wizard, preview a dry run, schedule repeat imports and roll
 back any run. Built for EmDash 1.6 and later.
 

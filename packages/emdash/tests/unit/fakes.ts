@@ -122,16 +122,26 @@ export class MemoryKv<T> implements KvCollection<T> {
 		this.rows.delete(id);
 		return { applied: true };
 	}
+	async count(where?: Where) {
+		this.checkWhere(where);
+		return [...this.rows.values()].filter((r) =>
+			matches(r.value as Record<string, unknown>, where ?? {}),
+		).length;
+	}
+	private checkWhere(where: Where | undefined) {
+		if (!this.indexed) return;
+		for (const field of Object.keys(where ?? {}))
+			if (!this.indexed.has(field))
+				throw new Error(`Cannot query on non-indexed field '${field}'.`);
+	}
 	async query(opts: {
 		where?: Where;
 		orderBy?: Record<string, "asc" | "desc">;
 		limit?: number;
 		cursor?: string;
 	}) {
+		this.checkWhere(opts.where);
 		if (this.indexed) {
-			for (const field of Object.keys(opts.where ?? {}))
-				if (!this.indexed.has(field))
-					throw new Error(`Cannot query on non-indexed field '${field}'.`);
 			for (const field of Object.keys(opts.orderBy ?? {}))
 				if (!this.indexed.has(field))
 					throw new Error(`Cannot order by non-indexed field '${field}'.`);
@@ -329,6 +339,8 @@ export class FakeContent implements ContentPort {
 	readonly sharedFields = new Set<string>(["flux_source_id"]);
 	/** M5a: collections without revisions, whose writes go straight to the live columns. */
 	readonly plainCollections = new Set<string>();
+	/** Collections with `no-scheduling` (EmDash 1.5), where `schedule` fails as EmDash's does. */
+	readonly unschedulable = new Set<string>();
 	/**
 	 * Routable collections (spec M5b F2), whose publish and schedule need a slug. A deliberate
 	 * divergence: EmDash makes every collection routable unless `routable` is 0
@@ -879,6 +891,13 @@ export class FakeContent implements ContentPort {
 		}
 		if (this.locked.has(e.id)) return { ok: false, reason: "locked" };
 		if (this.encoded(e) !== input.rev) return { ok: false, reason: "conflict" };
+		// EmDash's VALIDATION_ERROR (src/api/handlers/content.ts:2324-2327), through `writeError`.
+		if (this.unschedulable.has(e.collection)) {
+			throw new ContentWriteError(
+				"emdash_validation_error",
+				"Scheduling the entry failed: Scheduling is disabled for this collection",
+			);
+		}
 		// The live slug: a slug staged in a draft is not the row's (api/handlers/content.ts:2177-2181).
 		this.requireSlug(e, e.live?.slug ?? e.slug, "Scheduling the entry");
 		const blocked = this.blockStep("schedule", e.id);

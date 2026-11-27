@@ -21,6 +21,7 @@ import {
 	optionsBlockers,
 	ownerOf,
 	type RowId,
+	type RowMeta,
 	reachable,
 	reducer,
 	STEPS,
@@ -225,6 +226,26 @@ describe("reducer", () => {
 			},
 		],
 		[
+			"rowKept",
+			"ends a row's check, keeps its mapping, origin and the dry run",
+			() => {
+				const unsure: RowMeta = { origin: "ai", confidence: 0.3, rationale: "r", check: true };
+				const checked = {
+					...withDryRun,
+					dirty: false,
+					meta: { ...withDryRun.meta, "field:title": unsure },
+				};
+				const s = reducer(checked, { type: "rowKept", row: "field:title" });
+				expect(s.meta["field:title"]).toEqual({ ...unsure, check: false });
+				expect(s.rows).toBe(checked.rows);
+				expect(s.dryRun).toEqual(checked.dryRun);
+				expect(s.dirty).toBe(false);
+				// A row without a check, or without meta, is left as it is.
+				expect(reducer(s, { type: "rowKept", row: "field:title" })).toBe(s);
+				expect(reducer(s, { type: "rowKept", row: "field:nothing" })).toBe(s);
+			},
+		],
+		[
 			"optionsChanged",
 			"clears dryRun",
 			() => {
@@ -373,6 +394,7 @@ describe("reducer", () => {
 			"runStarted",
 			"jobReopened",
 			"templateSaved",
+			"rowKept",
 		]);
 		for (const action of EVERY_ACTION) {
 			const s = reducer(saved, action);
@@ -1372,6 +1394,7 @@ describe("jobInput", () => {
 			template: toTemplate(filled, "wizard-posts-en"),
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		const options = reducer(withDryRun, {
 			type: "optionsChanged",
@@ -1385,6 +1408,7 @@ describe("jobInput", () => {
 			publish: false,
 			batchSize: 50,
 			journal: true,
+			origin: "wizard",
 		});
 		const scheduled = reducer(filled, { type: "optionsChanged", patch: { status: "schedule" } });
 		expect(jobInput(scheduled, true).publish).toBe(true);
@@ -1401,6 +1425,7 @@ describe("jobInput", () => {
 			templateRevision: 3,
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		const edited = reducer(s, { type: "rowSet", row: "slug", mapping: { from: "name" } });
 		const inline = jobInput(edited, true);
@@ -1592,6 +1617,7 @@ const EVERY_ACTION: WizardAction[] = [
 	{ type: "warningsDismissed" },
 	{ type: "rowSet", row: "slug", mapping: { from: "name" } },
 	{ type: "rowCleared", row: "slug" },
+	{ type: "rowKept", row: "key" },
 	{ type: "fieldProposed", field: proposed("colour") },
 	{ type: "fieldChanged", slug: "colour", patch: { label: "Hue" } },
 	{ type: "fieldRemoved", slug: "colour" },

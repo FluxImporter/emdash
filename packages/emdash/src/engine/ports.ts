@@ -23,6 +23,8 @@ export interface KvCollection<T> {
 		limit?: number;
 		cursor?: string;
 	}): Promise<{ items: { id: string; data: T }[]; cursor?: string; hasMore: boolean }>;
+	/** The rows `where` matches (every row without it), on indexed fields only, as `query`. */
+	count(where?: Where): Promise<number>;
 }
 
 /** A linked entry as read back: its translation group and the ID of the variant read. */

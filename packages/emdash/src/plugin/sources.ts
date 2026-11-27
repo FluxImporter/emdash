@@ -28,7 +28,8 @@ export interface SourceRow {
 	/** A credential name. */
 	credential?: string;
 	lastFetch?: LastFetch;
-	lastError?: { at: string; code: string; message: string };
+	/** `status`: the HTTP status the server answered, for `HTTP_ERROR` (absent on older rows). */
+	lastError?: { at: string; code: string; message: string; status?: number };
 	/** The content of the last job created (not a dry run) from a fetch of this source. */
 	lastImport?: LastImport;
 	createdAt: string;
@@ -348,7 +349,13 @@ export async function fetchSource(
 	} catch (e) {
 		const error = toServiceError(e);
 		if (error instanceof ServiceError) {
-			const lastError = { at: iso(deps.now()), code: error.code, message: error.message };
+			const status = e instanceof UrlSourceError ? e.httpStatus : undefined;
+			const lastError = {
+				at: iso(deps.now()),
+				code: error.code,
+				message: error.message,
+				...(status === undefined ? {} : { status }),
+			};
 			await saveFetchResult(deps, read, (row) => ({ ...row, lastError })).catch(() => null);
 		}
 		throw error;
@@ -372,6 +379,26 @@ export async function fetchSource(
 	}
 	const { uploadId, bytes, sha256 } = result.fetch;
 	return { changed: result.changed, uploadId, bytes, sha256 };
+}
+
+/**
+ * Saves on the source how many records its latest fetch held, once a job that read that fetch
+ * (an XLSX job: the workbook it was converted from) has completed: the records its first pass
+ * read. Called after each batch; reads the source only for a completed job, and writes only a
+ * new count. Best effort for the caller: the job is done either way.
+ */
+export async function noteFetchRecords(deps: Pick<SourceDeps, "sources">, job: Job): Promise<void> {
+	const id = job.feedSourceId;
+	if (job.kind === "rollback" || job.status !== "completed" || id === undefined) return;
+	const records = job.missing?.fromSeq ?? job.cursor.seq;
+	const uploadId = job.sourceUploadId ?? job.uploadId;
+	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+		const current = await deps.sources.getVersioned(id);
+		const fetch = current?.value.lastFetch;
+		if (!current || !fetch || fetch.uploadId !== uploadId || fetch.records === records) return;
+		const next = { ...current.value, lastFetch: { ...fetch, records } };
+		if ((await deps.sources.compareAndSet(id, current.revision, next)).applied) return;
+	}
 }
 
 /**

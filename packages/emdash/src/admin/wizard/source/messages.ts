@@ -111,6 +111,10 @@ export const M = {
 
 	sample: { id: "fluximporter.source.sample", message: "Sample" },
 	sampleKey: { id: "fluximporter.source.sample-key", message: "Key" },
+	sampleLooks: { id: "fluximporter.source.sample-looks", message: "Looks like" },
+	looksText: { id: "fluximporter.source.looks-text", message: "Text" },
+	looksNumber: { id: "fluximporter.source.looks-number", message: "Number" },
+	looksDate: { id: "fluximporter.source.looks-date", message: "Date" },
 	sampleValues: { id: "fluximporter.source.sample-values", message: "First values" },
 	keysShown: {
 		id: "fluximporter.source.keys-shown",

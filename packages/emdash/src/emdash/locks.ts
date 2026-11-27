@@ -52,3 +52,41 @@ export async function isEntryLocked(
 ): Promise<boolean> {
 	return (await foreignLockQuery(db, collection, entryId, userId).executeTakeFirst()) !== undefined;
 }
+
+/**
+ * EmDash's co-editing rooms (`EmDashRuntime.rooms`, EmDash 1.5 `coEditing: true`): null where
+ * co-editing is off or the host can't run rooms.
+ */
+export type RoomReader = { isOpen(roomId: string): Promise<boolean> } | null | undefined;
+
+/**
+ * Whether a co-editing room holds the entry. People editing in a room take no edit lock, and a
+ * write from outside merges into the open editors (EmDash 1.5, #4695), so the importer treats an
+ * open room as a lock. A room is open while it has connections or unused join tokens, and for
+ * 10 s after its last connection closes (src/rooms/room.ts:222-228); the check cannot tell who
+ * is in it. The room ID is `roomId` (src/rooms/types.ts:25-27), which EmDash does not export. On
+ * Node.js `isOpen` looks up the process's own rooms and, failing that, another process's claim
+ * with one query (src/rooms/node/registry.ts:115-118); on Cloudflare it is one call to the
+ * entry's Durable Object (`@emdash-cms/cloudflare` src/rooms/host.ts:20).
+ */
+export async function isRoomOpen(
+	rooms: RoomReader,
+	collection: string,
+	entryId: string,
+): Promise<boolean> {
+	return rooms != null && (await rooms.isOpen(`${collection}:${entryId}`));
+}
+
+/** An entry someone else is editing: a live lease (`isEntryLocked`) or an open room. */
+export async function isEntryHeld(
+	db: EmDashDb,
+	rooms: RoomReader,
+	collection: string,
+	entryId: string,
+	userId: string,
+): Promise<boolean> {
+	return (
+		(await isEntryLocked(db, collection, entryId, userId)) ||
+		(await isRoomOpen(rooms, collection, entryId))
+	);
+}

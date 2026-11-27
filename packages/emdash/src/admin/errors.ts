@@ -475,16 +475,17 @@ export const WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
 
 /**
  * The warnings an import job writes on a record row (`RecordRow.warnings`), from the engine:
- * the record rules (`rules.ts`: `exists`, `not_found`, `field_edited`, `not_scheduled`), a
- * translation (`batch.ts`), Portable Text and its images (`portable-text.ts`,
- * `portable-text-images.ts`, `template.ts`), the missing phase (`missing.ts`'s
- * `MISSING_MESSAGES`) and the cap (`types.ts`'s `warnings_truncated`).
+ * the record rules (`rules.ts`: `exists`, `not_found`, `field_edited`, `not_scheduled`,
+ * `scheduling_disabled`), a translation (`batch.ts`), Portable Text and its images
+ * (`portable-text.ts`, `portable-text-images.ts`, `template.ts`), the missing phase
+ * (`missing.ts`'s `MISSING_MESSAGES`) and the cap (`types.ts`'s `warnings_truncated`).
  */
 export const RECORD_WARNING_CODES: readonly string[] = [
 	"exists",
 	"not_found",
 	"field_edited",
 	"not_scheduled",
+	"scheduling_disabled",
 	"translation_source_not_found",
 	"translation_not_linked",
 	"unknown_markup",
@@ -519,6 +520,11 @@ export const RECORD_WARNING_MESSAGES: Readonly<Record<string, Msg>> = {
 		id: "fluximporter.record-warning.not-scheduled",
 		message:
 			"Not scheduled: the update goes live at once (the collection keeps no revisions, or only terms and bylines change).",
+	},
+	scheduling_disabled: {
+		id: "fluximporter.record-warning.scheduling-disabled",
+		message:
+			"Saved as a draft: the collection does not allow scheduling, so the publish date was not used.",
 	},
 	translation_source_not_found: {
 		id: "fluximporter.record-warning.translation-source-not-found",

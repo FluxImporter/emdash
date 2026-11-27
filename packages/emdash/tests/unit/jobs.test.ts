@@ -263,6 +263,62 @@ describe("createJob", () => {
 	});
 });
 
+describe("createJob's record total", () => {
+	const CSV = "sku,Name\nA1,Desk\nA2,Chair\nA3,Lamp\n";
+	const json = (records: string) => ({ ...template, source: { format: "json", records } });
+	const JSON_BODY = '{"a": [{"sku": "A1", "Name": "Desk"}], "b": [{"sku": "B1"}, {"sku": "B2"}]}';
+
+	async function drive(deps: ReturnType<typeof setup>["deps"], id: string) {
+		let run = await deps.jobs.get(id);
+		for (let i = 0; i < 20 && (run?.status === "created" || run?.status === "running"); i++) {
+			run = await runBatch(deps, id, "driver");
+		}
+		return run;
+	}
+
+	it("records the given total, and none when it is not known", async () => {
+		const { deps } = setup(CSV);
+		const given = await createJob(deps, { uploadId: "u1", template, schemaFields, recordTotal: 3 });
+		expect(given.recordTotal).toBe(3);
+		const plain = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(plain).not.toHaveProperty("recordTotal");
+	});
+
+	it("takes a real job's total from a finished dry run that read the same upload the same way", async () => {
+		const { deps } = setup(CSV);
+		const dry = await createJob(deps, { uploadId: "u1", template, schemaFields, dryRun: true });
+		// Unfinished, the dry run has not read the whole source yet.
+		const early = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(early).not.toHaveProperty("recordTotal");
+		expect(await drive(deps, dry.id)).toMatchObject({ status: "completed" });
+		const real = await createJob(deps, { uploadId: "u1", template, schemaFields });
+		expect(real.recordTotal).toBe(3);
+		expect(await deps.jobs.get(real.id)).toMatchObject({ recordTotal: 3 });
+		// A dry run records none, and an upload no dry run read has none.
+		const again = await createJob(deps, { uploadId: "u1", template, schemaFields, dryRun: true });
+		expect(again).not.toHaveProperty("recordTotal");
+		deps.source.add("u2", CSV);
+		const other = await createJob(deps, { uploadId: "u2", template, schemaFields });
+		expect(other).not.toHaveProperty("recordTotal");
+	});
+
+	it("does not take the total of a dry run that read other records of the file", async () => {
+		const { deps } = setup();
+		deps.source.add("j", JSON_BODY);
+		const dry = await createJob(deps, {
+			uploadId: "j",
+			template: json("b"),
+			schemaFields,
+			dryRun: true,
+		});
+		await drive(deps, dry.id);
+		const same = await createJob(deps, { uploadId: "j", template: json("b"), schemaFields });
+		expect(same.recordTotal).toBe(2);
+		const other = await createJob(deps, { uploadId: "j", template: json("a"), schemaFields });
+		expect(other).not.toHaveProperty("recordTotal");
+	});
+});
+
 describe("createJob for converted XLSX", () => {
 	const xlsxT = (fields: object, key: object = { from: "sku" }) => ({
 		...template,

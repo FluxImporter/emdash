@@ -71,6 +71,8 @@ describe("startImport", () => {
 			columns: ["sku", "Name", "Price", "Released", "Active", "Handle"],
 			warnings: [],
 			cursor: { offset: 0, seq: 0 },
+			// The conversion counted the rows: the job knows its total from the start.
+			recordTotal: 3,
 		});
 		expect(job.uploadId).not.toBe(book);
 		expect((await text(job.uploadId)).split("\n")[0]).toBe(

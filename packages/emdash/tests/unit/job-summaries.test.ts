@@ -156,6 +156,74 @@ describe("listJobSummaries (M7b)", () => {
 	});
 });
 
+describe("listJobSummaries' status filter and total", () => {
+	beforeEach(async () => {
+		// Twelve real jobs: J01..J12, every third failed; two dry runs, one failed.
+		for (let n = 1; n <= 12; n++) {
+			await store(
+				job(`J${String(n).padStart(2, "0")}`, n * 2, n % 3 === 0 ? { status: "failed" } : {}),
+			);
+		}
+		await store(
+			job("D1", 30, { dryRun: true, journal: undefined, status: "failed" }),
+			job("D2", 31, { dryRun: true, journal: undefined }),
+		);
+	});
+
+	it("answers the exact total of every page's list on the first page only", async () => {
+		const first = await listJobSummaries(deps, { dryRun: false });
+		expect(first.items).toHaveLength(JOB_PAGE);
+		expect(first.total).toBe(12);
+		const second = await listJobSummaries(deps, { dryRun: false, cursor: first.cursor! });
+		expect(second.items).toHaveLength(4);
+		expect(second).not.toHaveProperty("total");
+		expect((await listJobSummaries(deps, { dryRun: true })).total).toBe(2);
+	});
+
+	it("counts only when the first page is full: a shorter one is the whole list", async () => {
+		const count = vi.spyOn(jobs, "count");
+		expect((await listJobSummaries(deps, { dryRun: true })).total).toBe(2);
+		expect(count).not.toHaveBeenCalled();
+		await listJobSummaries(deps, { dryRun: false });
+		expect(count.mock.calls).toEqual([[{ dryRun: false }]]);
+	});
+
+	it("filters by status on the server, so pages and the total are of that status", async () => {
+		const query = vi.spyOn(jobs, "query");
+		const count = vi.spyOn(jobs, "count");
+		const failed = await listJobSummaries(deps, { dryRun: false, status: "failed" });
+		expect(failed.items.map((j) => j.id)).toEqual(["J12", "J09", "J06", "J03"]);
+		expect(failed.hasMore).toBe(false);
+		expect(failed.total).toBe(4);
+		expect(query).toHaveBeenCalledWith({
+			where: { dryRun: false, status: "failed" },
+			orderBy: { createdAt: "desc" },
+			limit: JOB_PAGE,
+		});
+		expect(count).not.toHaveBeenCalled();
+
+		const completed = await listJobSummaries(deps, { dryRun: false, status: "completed" });
+		expect(completed.items).toHaveLength(JOB_PAGE);
+		expect(completed.items.every((j) => j.status === "completed")).toBe(true);
+		expect(completed.total).toBe(8);
+		await store(job("J13", 40));
+		const more = await listJobSummaries(deps, { dryRun: false, status: "completed" });
+		expect(more.hasMore).toBe(true);
+		expect(more.total).toBe(9);
+		expect(count).toHaveBeenLastCalledWith({ dryRun: false, status: "completed" });
+		const rest = await listJobSummaries(deps, {
+			dryRun: false,
+			status: "completed",
+			cursor: more.cursor!,
+		});
+		expect(rest.items.map((j) => j.id)).toEqual(["J01"]);
+
+		expect((await listJobSummaries(deps, { dryRun: false, status: "paused" })).total).toBe(0);
+		const dry = await listJobSummaries(deps, { dryRun: true, status: "failed" });
+		expect(dry.items.map((j) => j.id)).toEqual(["D1"]);
+	});
+});
+
 describe("listJobSummaries' rollback status (M7b)", () => {
 	it("reads the rollback's status for a rolled-back import, and none once the rollback is gone", async () => {
 		await store(
@@ -286,6 +354,36 @@ describe("listItem (M7b)", () => {
 		}
 	});
 
+	it("keeps a wizard job's origin", () => {
+		expect(listItem(job("W", 1, { origin: "wizard" }), undefined, NOW).origin).toBe("wizard");
+	});
+
+	it("shows the progress of an import's first pass when its record total is known", () => {
+		const cursor = { offset: 10, seq: 40 };
+		const running = job("R", 1, { status: "running", recordTotal: 100, cursor });
+		expect(listItem(running, undefined, NOW).progress).toEqual({ processed: 40, total: 100 });
+		for (const status of ["created", "paused", "failed", "cancelled"] as const) {
+			expect(listItem({ ...running, status }, undefined, NOW).progress, status).toEqual({
+				processed: 40,
+				total: 100,
+			});
+		}
+		const none: Job[] = [
+			// Unknown total: jobs before 0.9, and sources never counted.
+			job("UNKNOWN", 1, { status: "running", cursor }),
+			// Finished, retrying or past the first pass, the counts say it all.
+			{ ...running, status: "completed" },
+			{ ...running, phase: "retry" },
+			{ ...running, phase: "missing" },
+			job("RB", 1, { kind: "rollback", status: "running", recordTotal: 100, cursor }),
+		];
+		for (const row of none) {
+			expect(listItem(row, undefined, NOW), `${row.id} ${row.phase}`).not.toHaveProperty(
+				"progress",
+			);
+		}
+	});
+
 	it("leaves out each optional field that is not set", () => {
 		const bare = jobRow("B", { createdAt: at(1), updatedAt: at(1) });
 		// Absent, not present as undefined: JSON keeps no key, and toEqual alone would not tell.
@@ -363,6 +461,30 @@ describe("the M7b routes", () => {
 		// The cursor reaches the query: past the only real job, the page is empty.
 		const past = (await call("jobs/summaries", { cursor: "1" })) as { items: unknown[] };
 		expect(past.items).toEqual([]);
+	});
+
+	it("passes the status filter through jobs/summaries and refuses an unknown status", async () => {
+		await store(job("F1", 3, { status: "failed" }));
+		const failed = (await call("jobs/summaries", { status: "failed" })) as {
+			items: { id: string }[];
+			total: number;
+		};
+		expect(failed.items.map((j) => j.id)).toEqual(["F1"]);
+		expect(failed.total).toBe(1);
+		expect(() => call("jobs/summaries", { status: "rolled_back" })).toThrow();
+	});
+
+	it("takes origin wizard on jobs/create, and drops any other origin", () => {
+		const input = plugin.routes["jobs/create"]!.input!;
+		const body = { uploadId: UPLOAD_ID, template: {}, dryRun: true };
+		expect(input.parse({ ...body, origin: "wizard" })).toMatchObject({ origin: "wizard" });
+		expect(input.parse(body)).not.toHaveProperty("origin");
+		for (const origin of ["agent", "schedule", "api", 1]) {
+			expect(
+				(input.parse({ ...body, origin }) as { origin?: unknown }).origin,
+				`${origin}`,
+			).toBeUndefined();
+		}
 	});
 
 	it("refuses jobs/summaries without a signed-in user", async () => {

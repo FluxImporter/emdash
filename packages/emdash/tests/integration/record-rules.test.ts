@@ -504,6 +504,58 @@ describe("M5b publish, draft or schedule, and the scheduler", () => {
 	});
 });
 
+describe("publishAt in a collection with no-scheduling (EmDash 1.5)", () => {
+	const collection = "it_rr_nosched";
+	// No terms or bylines: the tag taxonomy is not this collection's.
+	const scheduled = (publishAt: string) =>
+		rulesTemplate(collection, {
+			taxonomies: undefined,
+			bylines: undefined,
+			publishAt: { expr: `'${publishAt}'` },
+		});
+
+	beforeAll(async () => {
+		await client.api("POST", "/_emdash/api/schema/collections", {
+			slug: collection,
+			label: collection,
+			supports: ["drafts", "revisions", "no-scheduling"],
+		});
+		for (const field of [
+			{ slug: "title", label: "Title", type: "string" },
+			{ slug: "price", label: "Price", type: "number" },
+		]) {
+			await client.api("POST", `/_emdash/api/schema/collections/${collection}/fields`, field);
+		}
+	});
+
+	it("warns in a dry run, then keeps future-dated records as drafts with a warning", async () => {
+		const at = new Date(Date.now() + 3_600_000).toISOString();
+		const body = csv([{ id: "N1", name: "Future", price: 1 }]);
+		const dry = await importCsv(body, scheduled(at), { dryRun: true });
+		expect(dry.rows[0]).toMatchObject({ status: "planned", action: "create" });
+		expect(codes(dry.rows[0])).toEqual(["scheduling_disabled"]);
+		expect(fieldsOf(dry.rows[0])).not.toContain("publishAt");
+
+		const real = await importCsv(body, scheduled(at));
+		expect(real.job.counters).toMatchObject({ created: 1, failed: 0 });
+		expect(codes(real.rows[0])).toEqual(["scheduling_disabled"]);
+		expect(await stateOf(collection, await entryId(collection, "N1"))).toMatchObject({
+			status: "draft",
+			scheduledAt: null,
+		});
+
+		// A past time publishes at once, as in any collection.
+		const past = await importCsv(
+			csv([{ id: "N2", name: "Past", price: 1 }]),
+			scheduled("2020-01-01T00:00:00.000Z"),
+		);
+		expect(codes(past.rows[0])).toEqual([]);
+		expect(await stateOf(collection, await entryId(collection, "N2"))).toMatchObject({
+			status: "published",
+		});
+	});
+});
+
 describe("M5b write modes on a translation job", () => {
 	it("updates existing French translations and skips the keys without one", async () => {
 		const n = translationNames("it_rr_i18n");

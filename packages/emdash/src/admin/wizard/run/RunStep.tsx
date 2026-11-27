@@ -26,6 +26,8 @@ import {
 	type WizardAction,
 } from "../state.js";
 import { writeUrl } from "../url.js";
+import { LiveLog } from "./LiveLog.js";
+import { appendLog, type LogEntry } from "./log.js";
 import { COUNT, M } from "./messages.js";
 
 /**
@@ -84,10 +86,21 @@ export function RunStep() {
 	const [confirming, setConfirming] = useState(false);
 	const progressId = useId();
 	const driver = useJobDriver(driveId, api.next);
+	/** The log's lines, from each job reply against the one before (`appendLog`). */
+	const [log, setLog] = useState<readonly LogEntry[]>([]);
+	const seen = useRef<Job | null>(null);
+	const lineId = useRef(0);
 
 	useEffect(() => {
 		if (driver.job) setJob(driver.job);
 	}, [driver.job]);
+
+	useEffect(() => {
+		if (job === null) return;
+		const prev = seen.current;
+		seen.current = job;
+		setLog((lines) => appendLog(lines, prev, job, () => ++lineId.current));
+	}, [job]);
 
 	const begin = useCallback(() => {
 		setProblem(null);
@@ -412,6 +425,7 @@ export function RunStep() {
 
 			{driverFailed ? <ErrorNotice error={driver.error} onRetry={driver.start} /> : null}
 			{problem ? <ErrorNotice error={problem.error} onRetry={problem.retry} /> : null}
+			{log.length === 0 ? null : <LiveLog entries={log} />}
 		</div>
 	);
 }

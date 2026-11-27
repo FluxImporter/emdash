@@ -12,6 +12,7 @@ export const M = {
 		id: "fluximporter.home-jobs.empty-text",
 		message: "Bring in a CSV, JSON, XML or Excel file, or a URL feed. Every run shows up here.",
 	},
+	howImportsWork: { id: "fluximporter.home-jobs.how-imports-work", message: "How imports work" },
 
 	colName: { id: "fluximporter.home-jobs.col-name", message: "Import" },
 	colStarted: { id: "fluximporter.home-jobs.col-started", message: "Started" },
@@ -35,9 +36,25 @@ export const M = {
 
 	target: { id: "fluximporter.home-jobs.target", message: "{collection} · {locale}" },
 
-	/** Origins (plan Ruling 4): only agents and schedules are recorded; wizard and API jobs carry none. */
+	/** Origins (plan Ruling 4): agents, schedules and the wizard; API jobs and older jobs carry none. */
 	originAgent: { id: "fluximporter.home-jobs.origin-agent", message: "Agent" },
 	originSchedule: { id: "fluximporter.home-jobs.origin-schedule", message: "Schedule" },
+	originWizard: { id: "fluximporter.home-jobs.origin-wizard", message: "Wizard" },
+
+	/** The status filter (Jobs.dc.html): the six statuses' words are `STATUS_MESSAGES`. */
+	filterLabel: { id: "fluximporter.home-jobs.filter-label", message: "Status" },
+	filterAll: { id: "fluximporter.home-jobs.filter-all", message: "All statuses" },
+	emptyFiltered: {
+		id: "fluximporter.home-jobs.empty-filtered",
+		message: "No imports with this status",
+	},
+	emptyFilteredText: {
+		id: "fluximporter.home-jobs.empty-filtered-text",
+		message: "Choose All statuses to see every import.",
+	},
+
+	/** A running row's Meter: records read of the source's total. */
+	progress: { id: "fluximporter.home-jobs.progress", message: "Records read" },
 
 	/** The original import's states while and after it is rolled back (plan Ruling 5). */
 	stateRollingBack: { id: "fluximporter.home-jobs.state-rolling-back", message: "Rolling back" },
@@ -101,12 +118,11 @@ export const M = {
 	cancelConfirm: { id: "fluximporter.home-jobs.cancel-confirm", message: "Cancel the import" },
 	cancelKeep: { id: "fluximporter.home-jobs.cancel-keep", message: "Keep the import" },
 
-	/** Pages: `jobs/summaries` has no total, so the range says "+" while more pages exist. */
+	/** Pages, of the list's exact total (`jobs/summaries` answers it on the first page). */
 	pages: { id: "fluximporter.home-jobs.pages", message: "Pages" },
 	previousPage: { id: "fluximporter.home-jobs.previous-page", message: "Previous page" },
 	nextPage: { id: "fluximporter.home-jobs.next-page", message: "Next page" },
 	range: { id: "fluximporter.home-jobs.range", message: "{from}–{to} of {total}" },
-	rangeMore: { id: "fluximporter.home-jobs.range-more", message: "{from}–{to} of {total}+" },
 
 	/** Announcements (the page's one live region). */
 	paused: { id: "fluximporter.home-jobs.paused", message: "Paused {name}." },
@@ -124,12 +140,6 @@ export const N = {
 		one: "{count} import",
 		other: "{count} imports",
 	},
-	/** While more pages exist: the counts are of the loaded rows, newest first. */
-	latest: {
-		id: "fluximporter.home-jobs.summary-latest",
-		one: "Latest {count} import",
-		other: "Latest {count} imports",
-	},
 	running: {
 		id: "fluximporter.home-jobs.summary-running",
 		one: "{count} running",
@@ -139,5 +149,16 @@ export const N = {
 		id: "fluximporter.home-jobs.summary-failed",
 		one: "{count} failed",
 		other: "{count} failed",
+	},
+	/** The Meter's value ("640 of 1,000"), and a stopped row's line, with `done` formatted. */
+	progressOf: {
+		id: "fluximporter.home-jobs.progress-of",
+		one: "{done} of {count}",
+		other: "{done} of {count}",
+	},
+	readOf: {
+		id: "fluximporter.home-jobs.read-of",
+		one: "{done} of {count} record read",
+		other: "{done} of {count} records read",
 	},
 } satisfies Record<string, PluralMsg>;
