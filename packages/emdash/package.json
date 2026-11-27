@@ -2,7 +2,18 @@
 	"name": "@fluximporter/emdash",
 	"version": "0.8.0",
 	"description": "Import CSV, XML, JSON, spreadsheets, RSS feeds and WordPress exports into EmDash, with field mapping, dry runs, schedules and rollback.",
-	"keywords": ["emdash", "emdash-plugin", "importer", "import", "csv", "json", "xml", "excel", "xlsx", "astro"],
+	"keywords": [
+		"emdash",
+		"emdash-plugin",
+		"importer",
+		"import",
+		"csv",
+		"json",
+		"xml",
+		"excel",
+		"xlsx",
+		"astro"
+	],
 	"homepage": "https://www.fluximporter.com/emdash/",
 	"repository": {
 		"type": "git",
