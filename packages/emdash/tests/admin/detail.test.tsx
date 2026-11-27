@@ -51,6 +51,7 @@ function setup(
 	opts: { meta?: RowMeta; columns?: SampleColumn[] } = {},
 ) {
 	const onChange = vi.fn<(m: RowMapping | null) => void>();
+	const onKeep = vi.fn<() => void>();
 	function Host() {
 		const [current, setCurrent] = useState<RowMapping | undefined>(mapping);
 		return (
@@ -63,10 +64,11 @@ function setup(
 					onChange(m);
 					setCurrent(m ?? undefined);
 				}}
+				onKeep={onKeep}
 			/>
 		);
 	}
-	return { ...renderAdmin(<Host />), onChange };
+	return { ...renderAdmin(<Host />), onChange, onKeep };
 }
 
 /** The last mapping the panel wrote. */
@@ -191,6 +193,7 @@ describe("DetailPanel", () => {
 						meta={undefined}
 						columns={COLUMNS}
 						onChange={() => {}}
+						onKeep={() => {}}
 					/>
 				</>
 			);
@@ -740,6 +743,85 @@ describe("DetailPanel", () => {
 			{ meta: { origin: "user", check: false } },
 		);
 		expect(screen.queryByText(/ · /)).toBeNull();
+	});
+});
+
+describe("the review banner (StepMap.dc.html)", () => {
+	const columns: SampleColumn[] = [
+		{ key: "Price", values: ["0.5", "", "1.5", undefined, "2.5", "3.5"] },
+		{ key: "Name", values: ["Mug"] },
+	];
+
+	it("says the AI was unsure, quotes the key's first values, and keeps the row on Keep it", async () => {
+		const { user, onKeep, onChange } = setup(
+			fieldRow("text"),
+			{ type: "text", from: "Price" },
+			{ meta: { origin: "ai", confidence: 0.3, check: true }, columns },
+		);
+		const banner = screen.getByText(
+			"AI suggested Price with low confidence. Values look like 0.5, 1.5, 2.5.",
+		);
+		expect(banner).toBeVisible();
+		const keep = screen.getByRole("button", { name: "Keep it" });
+		expect(keep).toHaveAccessibleDescription(banner.textContent ?? "");
+		await user.click(keep);
+		expect(onKeep).toHaveBeenCalledTimes(1);
+		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it("clears the row on Remove the key", async () => {
+		const { user, onKeep, onChange } = setup(
+			fieldRow("text"),
+			{ type: "text", from: "Price" },
+			{ meta: { origin: "name", confidence: 0.2, check: true }, columns },
+		);
+		expect(
+			screen.getByText(
+				"Name matching suggested Price with low confidence. Values look like 0.5, 1.5, 2.5.",
+			),
+		).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Remove the key" }));
+		expect(onChange).toHaveBeenCalledWith(null);
+		expect(onKeep).not.toHaveBeenCalled();
+	});
+
+	it("names the cause: an unclear format, or a key the sample lacks", () => {
+		const format = setup(
+			fieldRow("datetime"),
+			{ type: "date", from: "Price" },
+			{ meta: { origin: "ai", confidence: 0.9, check: true }, columns },
+		);
+		expect(
+			screen.getByText(
+				"AI suggested Price, but the format of its values is unclear. Values look like 0.5, 1.5, 2.5.",
+			),
+		).toBeVisible();
+		format.unmount();
+
+		setup(
+			fieldRow("text"),
+			{ type: "text", from: "Cost" },
+			{ meta: { origin: "user", check: true }, columns },
+		);
+		expect(screen.getByText("The sample has no key Cost.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "Keep it" })).toBeVisible();
+	});
+
+	it("is not shown for a row without a check, or one that reads an expression", () => {
+		const plain = setup(
+			fieldRow("text"),
+			{ type: "text", from: "Price" },
+			{ meta: { origin: "ai", confidence: 0.9, check: false }, columns },
+		);
+		expect(screen.queryByRole("button", { name: "Keep it" })).toBeNull();
+		plain.unmount();
+
+		setup(
+			fieldRow("text"),
+			{ type: "text", expr: "Price & 'x'" },
+			{ meta: { origin: "ai", confidence: 0.3, check: true }, columns },
+		);
+		expect(screen.queryByRole("button", { name: "Keep it" })).toBeNull();
 	});
 });
 

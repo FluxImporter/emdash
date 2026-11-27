@@ -13,6 +13,7 @@ import {
 } from "../state.js";
 import { badgeText, type DetailRow } from "./detail/DetailPanel.js";
 import { M } from "./messages.js";
+import type { LooksLike } from "./new-fields/infer.js";
 
 /** The drop target and selection of "+ Add a new field" (preflight F25). */
 export const NEW_FIELD = "new-field";
@@ -76,7 +77,7 @@ function unmappableReason(t: T, field: SchemaField | undefined): string | null {
 /**
  * The Map step's fields pane (StepMap.dc.html): one drop target per row, each also a button that
  * selects it for the detail panel. `pending` replaces the rows while the fields load or fail.
- * `keys` are the sample's keys, for the sentence that says what to check.
+ * `looks` says what each sample key's values look like, for the sentence that says what to check.
  */
 export function FieldsPane(p: {
 	heading: string;
@@ -84,7 +85,7 @@ export function FieldsPane(p: {
 	mappings: WizardState["rows"];
 	meta: WizardState["meta"];
 	blockers: readonly Blocker[];
-	keys: ReadonlySet<string>;
+	looks: ReadonlyMap<string, LooksLike | null>;
 	selected: Selection | null;
 	onSelect(id: Selection): void;
 	onClear(id: DetailRow["id"]): void;
@@ -112,7 +113,7 @@ export function FieldsPane(p: {
 							mapping={p.mappings[row.id]}
 							meta={p.meta[row.id]}
 							blockers={p.blockers.filter((b) => b.row === row.id)}
-							keys={p.keys}
+							looks={p.looks}
 							selected={p.selected === row.id}
 							onSelect={() => p.onSelect(row.id)}
 							onClear={() => p.onClear(row.id)}
@@ -160,14 +161,47 @@ function badgeVariant(meta: RowMeta): "info" | "teal" | "orange" | "neutral" {
 	return meta.origin === "ai" ? "info" : "teal";
 }
 
+/** What values a mapping type reads: text, numbers or dates; null for the other types. */
+const READS: Readonly<Record<string, LooksLike>> = {
+	text: "text",
+	slug: "text",
+	number: "number",
+	date: "date",
+};
+
 /**
- * What a "check" asks the user to look at (Copy: "Check: …"): a key the sample lacks, a
- * suggestion that was not sure, or else (the suggestion flagged its format) the values' format.
+ * Whether the key's values look like numbers or dates that the mapping type does not read as such
+ * (Copy: "a number into a text field"). Numbers into a date are not: they may be Unix times.
  */
-function checkText(t: T, meta: RowMeta, from: string | null, keys: ReadonlySet<string>): string {
-	if (from !== null && !keys.has(from)) return t(M.checkMissing, { key: from });
-	if (meta.confidence !== undefined && meta.confidence < 0.5) return t(M.checkUnsure);
-	return t(M.checkFormat);
+function mismatchOf(looks: LooksLike | null, mappingType: unknown): "number" | "date" | null {
+	if (looks === null || looks === "text" || typeof mappingType !== "string") return null;
+	const reads = Object.hasOwn(READS, mappingType) ? READS[mappingType] : undefined;
+	if (reads === undefined || reads === looks) return null;
+	return looks === "number" && reads === "date" ? null : looks;
+}
+
+/**
+ * What a "check" asks the user to look at (Copy: "Check: a number into a text field. AI was not
+ * sure."): a key the sample lacks; values that look like numbers or dates going into another
+ * type, and why the row is checked; else a suggestion that was not sure, or (the suggestion
+ * flagged its format) the values' format.
+ */
+function checkText(
+	t: T,
+	meta: RowMeta,
+	mapping: RowMapping,
+	from: string | null,
+	fieldType: string | null,
+	looks: ReadonlyMap<string, LooksLike | null>,
+): string {
+	if (from !== null && !looks.has(from)) return t(M.checkMissing, { key: from });
+	const unsure = meta.confidence !== undefined && meta.confidence < 0.5;
+	const into =
+		from === null || fieldType === null ? null : mismatchOf(looks.get(from) ?? null, mapping.type);
+	if (into === null || fieldType === null) return t(unsure ? M.checkUnsure : M.checkFormat);
+	const why = !unsure ? M.whyFormat : meta.origin === "ai" ? M.whyUnsureAi : M.whyUnsure;
+	const what = t(into === "number" ? M.checkNumberInto : M.checkDateInto, { type: fieldType });
+	return `${what} ${t(why)}`;
 }
 
 function FieldRow(p: {
@@ -175,7 +209,7 @@ function FieldRow(p: {
 	mapping: RowMapping | undefined;
 	meta: RowMeta | undefined;
 	blockers: readonly Blocker[];
-	keys: ReadonlySet<string>;
+	looks: ReadonlyMap<string, LooksLike | null>;
 	selected: boolean;
 	onSelect(): void;
 	onClear(): void;
@@ -254,10 +288,10 @@ function FieldRow(p: {
 					) : null}
 				</span>
 			</div>
-			{chip !== null && meta?.check === true ? (
+			{mapping !== undefined && meta?.check === true ? (
 				<p className="flex items-center gap-1.5 text-xs">
 					<WarningIcon aria-hidden="true" className="shrink-0 text-kumo-warning" />
-					{checkText(t, meta, from, p.keys)}
+					{checkText(t, meta, mapping, from, row.field?.type ?? null, p.looks)}
 				</p>
 			) : null}
 			{reason === null ? null : <p className="text-xs text-kumo-subtle">{reason}</p>}

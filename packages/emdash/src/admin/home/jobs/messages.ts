@@ -12,6 +12,7 @@ export const M = {
 		id: "fluximporter.home-jobs.empty-text",
 		message: "Bring in a CSV, JSON, XML or Excel file, or a URL feed. Every run shows up here.",
 	},
+	howImportsWork: { id: "fluximporter.home-jobs.how-imports-work", message: "How imports work" },
 
 	colName: { id: "fluximporter.home-jobs.col-name", message: "Import" },
 	colStarted: { id: "fluximporter.home-jobs.col-started", message: "Started" },

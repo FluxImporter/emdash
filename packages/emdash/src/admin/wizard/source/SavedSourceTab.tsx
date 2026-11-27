@@ -45,8 +45,11 @@ export function SavedSourceTab({ busy, run, pick }: TabProps) {
 						aria-label={t(M.useSource, { name: row.name })}
 						onClick={() =>
 							run(async () => {
-								const { uploadId } = await api.fetchSource({ id: row.id });
-								await pick({ kind: "saved", uploadId, label: row.name }, formatOfUrl(row.url));
+								const { uploadId, bytes } = await api.fetchSource({ id: row.id });
+								await pick(
+									{ kind: "saved", uploadId, label: row.name, bytes },
+									formatOfUrl(row.url),
+								);
 							})
 						}
 					>

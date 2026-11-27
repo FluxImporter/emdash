@@ -42,8 +42,11 @@ export function PasteTab(props: TabProps & { paste: Paste; onPaste(paste: Paste)
 	const fits = bytes <= PASTE_MAX_BYTES;
 	const send = () =>
 		run(async () => {
-			const { uploadId } = await api.paste(paste);
-			await pick({ kind: "paste", uploadId, label: t(M.pastedLabel) }, paste.format);
+			const staged = await api.paste(paste);
+			await pick(
+				{ kind: "paste", uploadId: staged.uploadId, label: t(M.pastedLabel), bytes: staged.bytes },
+				paste.format,
+			);
 		}, describePaste);
 	return (
 		<div className="space-y-4">

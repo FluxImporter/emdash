@@ -1,4 +1,5 @@
-import { Badge } from "@cloudflare/kumo";
+import { Badge, Banner, Button } from "@cloudflare/kumo";
+import { useLingui } from "@lingui/react";
 import { useId } from "react";
 import { type Msg, useT, type Values } from "../../../i18n.js";
 import { COMPATIBLE, type MappingType } from "../../../limits.js";
@@ -78,12 +79,21 @@ export function DetailPanel(p: {
 	meta: RowMeta | undefined;
 	columns: readonly SampleColumn[];
 	onChange(m: RowMapping | null): void;
+	/** "Keep it": ends the row's check and keeps its mapping. */
+	onKeep(): void;
 }) {
 	// A new row starts with fresh controls (the source switch, drafts and refusals).
 	return <Panel key={p.row.id} {...p} />;
 }
 
-function Panel({ row, mapping, meta, columns, onChange }: Parameters<typeof DetailPanel>[0]) {
+function Panel({
+	row,
+	mapping,
+	meta,
+	columns,
+	onChange,
+	onKeep,
+}: Parameters<typeof DetailPanel>[0]) {
 	const t = useT();
 	const headingId = useId();
 	const field = row.kind === "field" ? row.field : undefined;
@@ -133,6 +143,15 @@ function Panel({ row, mapping, meta, columns, onChange }: Parameters<typeof Deta
 					onChange={setSource}
 				/>
 			)}
+			{meta?.check === true && source !== null && "from" in source ? (
+				<Review
+					from={source.from}
+					meta={meta}
+					column={column}
+					onKeep={onKeep}
+					onRemove={() => onChange(null)}
+				/>
+			) : null}
 			{mapping !== undefined && source !== null ? (
 				<div className="space-y-3">
 					{field !== undefined && type !== undefined ? (
@@ -165,6 +184,59 @@ function Panel({ row, mapping, meta, columns, onChange }: Parameters<typeof Deta
 			{source !== null ? <Samples column={column} /> : null}
 			{meta !== undefined ? <Suggestion meta={meta} /> : null}
 		</section>
+	);
+}
+
+/** How many of the key's values the review banner quotes, and how much of each. */
+const REVIEW_VALUES = 3;
+const REVIEW_VALUE_MAX = 40;
+
+/** What a row to check asks the user to look at (StepMap.dc.html), by why it is checked. */
+function reviewLead(meta: RowMeta, missing: boolean): Msg {
+	if (missing) return M.reviewMissing;
+	const low = meta.confidence !== undefined && meta.confidence < 0.5;
+	if (meta.origin === "ai") return low ? M.reviewAiLow : M.reviewAiFormat;
+	if (meta.origin === "name") return low ? M.reviewNameLow : M.reviewNameFormat;
+	return M.reviewKey;
+}
+
+/**
+ * A row to check, in the detail panel (StepMap.dc.html): why, the key's first values, then
+ * "Keep it", which ends the check, or "Remove the key", which clears the row.
+ */
+function Review(p: {
+	from: string;
+	meta: RowMeta;
+	column: SampleColumn | undefined;
+	onKeep(): void;
+	onRemove(): void;
+}) {
+	const t = useT();
+	const { i18n } = useLingui();
+	const id = useId();
+	const values = (p.column?.values ?? [])
+		.filter((v) => v !== undefined && v !== null && shown(v).trim() !== "")
+		.slice(0, REVIEW_VALUES)
+		.map((v) => {
+			const text = shown(v);
+			return text.length > REVIEW_VALUE_MAX ? `${text.slice(0, REVIEW_VALUE_MAX - 1)}…` : text;
+		});
+	const lead = t(reviewLead(p.meta, p.column === undefined), { key: p.from });
+	const list = new Intl.ListFormat(i18n.locale || "en", { type: "unit", style: "short" });
+	const text =
+		values.length === 0 ? lead : `${lead} ${t(M.reviewValues, { values: list.format(values) })}`;
+	return (
+		<div className="flex flex-col gap-2">
+			<Banner id={id} variant="alert" size="sm" description={text} />
+			<div className="flex flex-wrap gap-2">
+				<Button variant="secondary" size="sm" aria-describedby={id} onClick={p.onKeep}>
+					{t(M.keepIt)}
+				</Button>
+				<Button variant="ghost" size="sm" aria-describedby={id} onClick={p.onRemove}>
+					{t(M.removeTheKey)}
+				</Button>
+			</div>
+		</div>
 	);
 }
 

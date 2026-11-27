@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { RESERVED_FIELD_SLUGS } from "../../src/admin/limits.js";
 import {
 	inferFieldType,
+	type LooksLike,
 	labelOf,
+	looksLike,
 	proposeField,
 } from "../../src/admin/wizard/map/new-fields/infer.js";
 import { labelOf as serverLabelOf } from "../../src/plugin/schema-apply.js";
@@ -55,6 +57,30 @@ describe("inferFieldType", () => {
 
 	it.each(cases)("infers %s", (_, values, type) => {
 		expect(inferFieldType(values)).toBe(type);
+	});
+});
+
+describe("looksLike", () => {
+	const cases: [string, unknown[], LooksLike | null][] = [
+		["no values", [], null],
+		["only empty values", [undefined, null, "", "  "], null],
+		["integers", ["1", "2", "-30"], "number"],
+		["decimals", ["0.5", "1.5", ""], "number"],
+		["JSON numbers", [1.25, 3], "number"],
+		["dd/MM/yyyy dates", ["01/03/2026", "02/03/2026"], "date"],
+		["ISO dates", ["2026-03-01T10:20:30Z"], "date"],
+		["SKUs", ["SKU-0", "SKU-1"], "text"],
+		["booleans", [true, false], "text"],
+		["ones and zeros", ["1", "0"], "text"],
+		["URLs", ["https://example.com/a"], "text"],
+		["a long value", ["x".repeat(300)], "text"],
+		["an object", [{ a: 1 }], "text"],
+		["mixed numbers and words", ["1", "two"], "text"],
+		["leading zeros", ["007"], "text"],
+	];
+
+	it.each(cases)("reads %s", (_, values, looks) => {
+		expect(looksLike(values)).toBe(looks);
 	});
 });
 

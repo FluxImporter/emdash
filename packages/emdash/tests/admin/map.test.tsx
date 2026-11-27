@@ -559,6 +559,50 @@ describe("MapStep", () => {
 		expect(screen.queryByText(/to check$/)).toBeNull();
 	});
 
+	it("says what a check is about from what the values look like, and Keep it ends the check", async () => {
+		const unsure = { origin: "ai", confidence: 0.3, rationale: "r", check: true } as const;
+		routes();
+		const { user } = renderMap({
+			...DRAFT,
+			columns: [...COLUMNS, { key: "Count", values: ["0.5", "1.5"] }],
+			rows: {
+				key: { from: "SKU" },
+				"field:title": { from: "Count", type: "text" },
+				"field:released": { from: "Released", type: "date" },
+			},
+			meta: { key: USER, "field:title": unsure, "field:released": { ...unsure, origin: "name" } },
+		});
+		await fieldsLoaded();
+		// Numbers into a text mapping (Copy: "Check: a number into a text field. AI was not sure.").
+		expect(
+			within(row("field:title")).getByText("Check: a number into a string field. AI was not sure."),
+		).toBeVisible();
+		// Dates into a date mapping are what it reads: the check says why only.
+		expect(
+			within(row("field:released")).getByText("Check: the suggestion was not sure."),
+		).toBeVisible();
+		expect(screen.getByText("2 to check")).toBeVisible();
+
+		await user.click(select("field:title", "Title"));
+		expect(
+			within(details()).getByText(
+				"AI suggested Count with low confidence. Values look like 0.5, 1.5.",
+			),
+		).toBeVisible();
+		await user.click(within(details()).getByRole("button", { name: "Keep it" }));
+		expect(probe.state.meta["field:title"]).toEqual({ ...unsure, check: false });
+		expect(probe.state.rows["field:title"]).toEqual({ from: "Count", type: "text" });
+		expect(within(row("field:title")).queryByText(/^Check:/)).toBeNull();
+		expect(within(details()).queryByRole("button", { name: "Keep it" })).toBeNull();
+		expect(screen.getByText("1 to check")).toBeVisible();
+
+		await user.click(select("field:released", "Released"));
+		await user.click(within(details()).getByRole("button", { name: "Remove the key" }));
+		expect(probe.state.rows["field:released"]).toBeUndefined();
+		expect(within(row("field:released")).getByText("No key")).toBeVisible();
+		expect(screen.queryByText(/to check$/)).toBeNull();
+	});
+
 	it("says how many required fields still need a key", async () => {
 		routes();
 		renderMap({ ...MAPPED, rows: { key: { from: "SKU" } }, meta: { key: USER } });
