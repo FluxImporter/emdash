@@ -7,12 +7,16 @@ roll back any run.
 
 - **Using it:** see the [package README](packages/emdash/README.md) and
   [fluximporter.com/emdash](https://www.fluximporter.com/emdash/).
+- **AI assistants:** `npx skills add FluxImporter/emdash` installs the
+  [`fluximporter` agent skill](skills/fluximporter/SKILL.md), for installing the plugin and running
+  imports through its MCP tools.
 - **Website:** the docs site lives in its own repo, `FluxImporter/fluximporter-site`.
 
 ## Layout
 
 | Path              | What it is                                                                                       |
 | ----------------- | ------------------------------------------------------------------------------------------------ |
+| `skills`          | The agent skill, in the [Agent Skills](https://agentskills.io) format.                           |
 | `packages/emdash` | The plugin, published to npm as `@fluximporter/emdash`. The only part that's published.         |
 | `sites/dev`       | An EmDash site on Node and SQLite. The integration tests run against it; use it for development. |
 | `sites/dev-cf`    | The same site on Cloudflare (workerd, D1 and R2), for the Cloudflare tests.                      |
