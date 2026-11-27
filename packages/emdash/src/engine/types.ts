@@ -123,7 +123,11 @@ export interface Job {
 	origin?: "agent" | "schedule";
 	/** M6b: the schedule that launched the job; not copied by a rollback. */
 	scheduleId?: string;
-	/** M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). */
+	/**
+	 * M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). A real
+	 * rollback is opened by `jobs/rollback` once its original is marked, so the pump drives it too,
+	 * and closed once it ends; absent on rollbacks stored before that, which only `jobs/next` drives.
+	 */
 	scheduled?: "open" | "closed";
 	/**
 	 * M6b (spec Ruling 33): the URL source whose data the job reads, or that a rollback undoes. Set

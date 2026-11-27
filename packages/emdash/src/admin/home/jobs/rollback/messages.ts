@@ -29,9 +29,10 @@ export const M = {
 	keep: { id: "fluximporter.home-rollback.keep", message: "Keep the import" },
 	cancel: { id: "fluximporter.home-rollback.cancel", message: "Cancel" },
 	rolling: { id: "fluximporter.home-rollback.rolling", message: "Rolling back…" },
+	/** Another holder's lease: a second tab, or the server's scheduled tasks. */
 	waiting: {
 		id: "fluximporter.home-rollback.waiting",
-		message: "Another tab is running a batch of this rollback; waiting for it.",
+		message: "Another tab or the server is running a batch of this rollback; waiting for it.",
 	},
 	progress: { id: "fluximporter.home-rollback.progress", message: "Rollback progress" },
 	progressCount: {
@@ -44,8 +45,16 @@ export const M = {
 	doneRecovered: { id: "fluximporter.home-rollback.done-recovered", message: "Brought back" },
 	doneKept: { id: "fluximporter.home-rollback.done-kept", message: "Kept" },
 	/**
-	 * The dialog drives the rollback (the server runs only scheduled jobs): closing it stops the
-	 * rollback where it is, and the job's row offers "Continue the rollback".
+	 * The server drives the rollback too (`scheduled: "open"`), so closing the dialog leaves it
+	 * running (Rollback.dc.html).
+	 */
+	closeNoteRunning: {
+		id: "fluximporter.home-rollback.close-note-running",
+		message: "You can close this. The rollback keeps running and shows in Jobs.",
+	},
+	/**
+	 * Only the dialog drives the rollback (one stored before the server drove rollbacks): closing
+	 * it stops the rollback where it is, and the job's row offers "Continue the rollback".
 	 */
 	closeNote: {
 		id: "fluximporter.home-rollback.close-note",

@@ -36,13 +36,16 @@ import { resolveJobTemplate } from "./job-templates.js";
 import { schedulesOverview, sourcesOverview } from "./overviews.js";
 import { withRuntime } from "./runtime.js";
 import {
+	armPump,
 	createSchedule,
 	cronOf,
 	deleteSchedule,
 	inUse,
 	listSchedules,
 	MAX_SCHEDULES,
+	openRollback,
 	pauseSchedule,
+	pumpDrives,
 	reconcile,
 	reopenScheduled,
 	runSchedule,
@@ -626,9 +629,9 @@ function transition(action: "pause" | "resume" | "cancel" | "retry"): PluginRout
 					false,
 				);
 			}
-			// Plan Ruling 11: a finalized scheduled job that runs again is the pump's again; the
-			// answer is the reopened row (preflight F19).
-			if ((action === "resume" || action === "retry") && job.origin === "schedule") {
+			// Plan Ruling 11: a finalized scheduled job or rollback that runs again is the pump's
+			// again; the answer is the reopened row (preflight F19).
+			if ((action === "resume" || action === "retry") && pumpDrives(job)) {
 				const id = job.id;
 				const reopen = () => reopenScheduled(deps.jobs, cronOf(ctx), id);
 				job = (await bestEffort(ctx, "reopening a scheduled job", reopen, null)) ?? job;
@@ -909,6 +912,19 @@ export const routes: Record<string, PluginRoute> = {
 				if (!rollback.dryRun && original.sourceId !== undefined) {
 					await clearLastImport(sources, original.sourceId, original.id).catch(() => {});
 				}
+				// A real rollback is handed to the pump too, so it finishes when no dialog drives
+				// it; the two share it by its lease. Best effort: a rollback left unopened is driven
+				// by jobs/next alone, and the hourly reconciliation arms a pump whose arm was lost.
+				let answer = rollback;
+				const cron = ctx.cron;
+				if (!rollback.dryRun && cron !== undefined) {
+					const open = () => openRollback(deps.jobs, rollback.id);
+					answer =
+						(await bestEffort(ctx, "opening the rollback to the pump", open, null)) ?? answer;
+					if (answer.scheduled === "open") {
+						await bestEffort(ctx, "arming the pump", () => armPump(cron), undefined);
+					}
+				}
 				// M6b (spec Ruling 32, plan Ruling 12): a real rollback of a scheduled job pauses its
 				// schedule and marks its run; the pump's finalization repeats both. Best effort, as
 				// the rollback is already created (preflight F11).
@@ -923,7 +939,7 @@ export const routes: Record<string, PluginRoute> = {
 						false,
 					);
 				}
-				return rollback;
+				return answer;
 			}),
 	),
 
