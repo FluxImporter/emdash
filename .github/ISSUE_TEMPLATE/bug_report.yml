@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in Flux Importer doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, don't use this form: see [SECURITY.md](https://github.com/FluxImporter/emdash/blob/main/SECURITY.md).
+        Remove anything private from logs and files (tokens, credentials, customer data) before you paste them.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Include error messages and codes exactly as shown.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps, and a small sample file if the problem depends on the data.
+      placeholder: |
+        1. Upload this CSV…
+        2. Map the "Price" column to…
+        3. Run the dry run…
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: "@fluximporter/emdash version"
+      placeholder: "0.7.0"
+    validations:
+      required: true
+  - type: input
+    id: emdash-version
+    attributes:
+      label: EmDash version
+      placeholder: "1.6.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Where the site runs
+      options:
+        - Node
+        - Cloudflare Workers
+        - Both
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where you saw it
+      options:
+        - The import wizard
+        - The Imports page (jobs, templates, sources, schedules)
+        - A scheduled import
+        - MCP tools / an AI agent
+        - The HTTP API
+        - Installing or building the site
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log lines around the error, if you have them.
+      render: text

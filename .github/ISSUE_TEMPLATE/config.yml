@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://www.fluximporter.com/emdash/
+    about: Setup, guides and the API reference.
+  - name: Report a security problem
+    url: https://github.com/FluxImporter/emdash/security/advisories/new
+    about: Report vulnerabilities privately, not as an issue.
+  - name: EmDash itself
+    url: https://github.com/emdash-cms/emdash/issues
+    about: Problems in EmDash rather than in the importer.

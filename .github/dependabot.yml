@@ -1,0 +1,8 @@
+# Keeps the GitHub Actions used by CI up to date. npm dependencies are pinned to the versions
+# EmDash's admin uses, so they are updated by hand with EmDash.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

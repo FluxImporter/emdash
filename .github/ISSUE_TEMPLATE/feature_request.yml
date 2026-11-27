@@ -1,0 +1,21 @@
+name: Feature request
+description: An idea for Flux Importer.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The import you want to run, or the problem you hit, in your own words. This matters more than a proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it working, if you have an idea.
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: Any workaround you use now.
