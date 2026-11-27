@@ -35,9 +35,26 @@ export interface Post {
   terms?: Record<string, TaxonomyTerm[]>;
 }
 
+export interface Product {
+  id: string;
+  slug: string | null;
+  status: string;
+  title?: string;
+  price?: number;
+  released?: string;
+  flux_source_id?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  publishedAt: Date | null;
+  byline?: BylineSummary | null;
+  bylines?: ContentBylineCredit[];
+  terms?: Record<string, TaxonomyTerm[]>;
+}
+
 declare module "emdash" {
   interface EmDashCollections {
     pages: Page;
     posts: Post;
+    products: Product;
   }
 }
