@@ -1,4 +1,4 @@
-import { DateTime, type Zone } from "luxon";
+import { DateTime, type DateTimeOptions, type TokenParser, type Zone } from "luxon";
 
 export interface DateOptions {
 	/** A Luxon format, `"unix"` (seconds) or `"unixMs"` (milliseconds); ISO 8601 when absent. */
@@ -37,6 +37,25 @@ export function localInstant(wall: number, zone: Zone): number | null {
 	return best;
 }
 
+/** Parsers by format, the latest `PARSERS_MAX` kept. */
+const parsers = new Map<string, TokenParser>();
+const PARSERS_MAX = 64;
+
+/**
+ * Luxon's parser for `format`. `DateTime.fromFormat` builds one (the format's tokens and a RegExp)
+ * on every call; `fromFormatParser` with a kept one reads text the same way for far less CPU.
+ * Throws as `fromFormat` would for a format Luxon cannot build, so callers call it per value.
+ */
+function formatParser(format: string): TokenParser {
+	let parser = parsers.get(format);
+	if (parser === undefined) {
+		parser = DateTime.buildFormatParser(format);
+		if (parsers.size >= PARSERS_MAX) parsers.clear();
+		parsers.set(format, parser);
+	}
+	return parser;
+}
+
 /**
  * Dates: ISO 8601 text (or text in `format`) read in `tz` when it has no offset, or Unix seconds
  * or milliseconds (JSON numbers or text). Into a `datetime` field (or with no known target) the
@@ -54,6 +73,10 @@ export function dateConverter(
 	const asText = targetType === "string" || targetType === "text";
 	const output = o.output ?? "yyyy-MM-dd";
 	const expected = o.format ?? "ISO 8601";
+	const parse = (text: string, options: DateTimeOptions) =>
+		o.format === undefined
+			? DateTime.fromISO(text, options)
+			: DateTime.fromFormatParser(text, formatParser(o.format), options);
 	const finish = (instant: number, shown: string): DateConverted => {
 		const utc = DateTime.fromMillis(instant, { zone: "utc" });
 		if (!utc.isValid || utc.year < 0 || utc.year > 9999) {
@@ -96,10 +119,7 @@ export function dateConverter(
 		}
 		try {
 			const options = { zone, setZone: true };
-			const parsed =
-				o.format === undefined
-					? DateTime.fromISO(text, options)
-					: DateTime.fromFormat(text, o.format, options);
+			const parsed = parse(text, options);
 			if (!parsed.isValid) return invalid;
 			// The text carried its own offset (or zone): it names one instant.
 			if (zone.isUniversal || !parsed.zone.equals(zone)) return finish(parsed.toMillis(), text);
@@ -107,10 +127,7 @@ export function dateConverter(
 			// Otherwise take the written fields (read in UTC, where every local time exists, keeping any
 			// zone the text named) and find the instant in `tz` that shows that wall-clock time.
 			const wOptions = { zone: "utc", setZone: true };
-			const w =
-				o.format === undefined
-					? DateTime.fromISO(text, wOptions)
-					: DateTime.fromFormat(text, o.format, wOptions);
+			const w = parse(text, wOptions);
 			let instant = localInstant(w.toMillis() + w.offset * 60_000, zone);
 			const dateOnly =
 				o.format === undefined
