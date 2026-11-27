@@ -1,5 +1,5 @@
 {
-	"name": "flux-import-workspace",
+	"name": "fluximporter-workspace",
 	"private": true,
 	"type": "module",
 	"packageManager": "pnpm@10.18.0",
@@ -10,9 +10,10 @@
 		"typecheck": "pnpm -r --parallel typecheck",
 		"lint": "biome check .",
 		"format": "biome check --write .",
-		"test": "pnpm --filter flux-import test",
-		"test:integration": "pnpm --filter flux-import test:integration",
-		"test:cf": "pnpm --filter flux-import test:cf"
+		"test": "pnpm --filter @fluximporter/emdash test",
+		"test:integration": "pnpm --filter @fluximporter/emdash test:integration",
+		"test:cf": "pnpm --filter @fluximporter/emdash test:cf",
+		"test:build": "pnpm --filter @fluximporter/emdash test:build"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

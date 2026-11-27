@@ -39,7 +39,7 @@ The job engine is one module used by both halves. Plugin routes and the cron hoo
 through `withEmDashRuntime()` so the writer always has the runtime; the trusted upload route is
 the only place that needs the raw `Request`.
 
-Plugin id `flux-import` (package name chosen in Milestone 8), permission checks on
+Plugin id `fluximporter` (npm package `@fluximporter/emdash`), permission checks on
 the existing `import:execute` permission (admin) for runs and `schema:manage` for schema changes.
 
 ### Why not alternatives
@@ -163,5 +163,5 @@ local site.
 
 ## Open points
 
-Resolved in the roadmap spec: plugin id `flux-import`; bylines map to existing records only in
+Resolved in the roadmap spec: plugin id `fluximporter`; bylines map to existing records only in
 v1; the external trigger is the `jobs/next` plugin route with a PAT, with no per-job secret URLs.

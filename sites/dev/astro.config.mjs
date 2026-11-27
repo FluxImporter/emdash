@@ -3,7 +3,7 @@ import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash, { local } from "emdash/astro";
 import { sqlite } from "emdash/db";
-import { fluxImport, fluxImportRoutes } from "flux-import";
+import { fluxImporter, fluxImporterRoutes } from "@fluximporter/emdash";
 
 // Integration tests point the site at a throwaway database and upload directory.
 const databaseFile = process.env.FLUX_DEV_DB ?? "./data.db";
@@ -29,14 +29,14 @@ export default defineConfig({
 		react(),
 		emdash({
 			database: sqlite({ url: `file:${databaseFile}` }),
-			plugins: [fluxImport()],
+			plugins: [fluxImporter()],
 			storage: local({
 				directory: uploadsDir,
 				baseUrl: "/_emdash/api/media/file",
 			}),
 			...(maxUploadSize ? { maxUploadSize } : {}),
 		}),
-		fluxImportRoutes({ ...(maxSourceBytes ? { maxSourceBytes } : {}), allowPrivateNetwork }),
+		fluxImporterRoutes({ ...(maxSourceBytes ? { maxSourceBytes } : {}), allowPrivateNetwork }),
 	],
 	fonts: [
 		{
