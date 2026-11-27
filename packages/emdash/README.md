@@ -125,10 +125,19 @@ Administrator enables them once under **Agent access**. A token needs the `mcp:t
 (or `mcp:tools`) scope, and the user behind it still needs `import:execute`. Starting an import and
 running a batch are marked destructive, so clients ask before each call.
 
+For AI coding assistants, the repo ships an [agent skill](https://github.com/FluxImporter/emdash/tree/main/skills/fluximporter)
+that covers installing the plugin and running imports through these tools:
+
+```sh
+npx skills add FluxImporter/emdash
+```
+
 ## Upgrading
 
 Update `@fluximporter/emdash` and `emdash` together. When an EmDash release moves its admin to a
 new Kumo version, a Flux Importer release follows with the matching `@cloudflare/kumo` version.
+After an upgrade that changes the MCP tools, EmDash stops serving them until an Administrator turns
+**Agent access** off and on again, even though the switch still shows it on.
 Releases before 1.0 may change stored data or options; the release notes say how.
 
 ## License
