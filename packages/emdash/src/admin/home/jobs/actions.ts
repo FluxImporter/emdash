@@ -108,10 +108,14 @@ export function jobName(
 	return { msg: M.rollbackOf, ...(own.values === undefined ? {} : { values: own.values }) };
 }
 
-/** Who started a job (plan Ruling 4, Fact D2): only agents and schedules are recorded; null otherwise. */
+/**
+ * Who started a job (plan Ruling 4, Fact D2): an agent, a schedule or the wizard; null for API
+ * jobs and for wizard jobs from before 0.9, which recorded no origin.
+ */
 export function originMsg(i: JobListItem): Msg | null {
 	if (i.origin === "agent") return M.originAgent;
 	if (i.origin === "schedule") return M.originSchedule;
+	if (i.origin === "wizard") return M.originWizard;
 	return null;
 }
 

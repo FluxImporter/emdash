@@ -176,7 +176,7 @@ function Granted(props: { tabs: TabComponents }) {
 /** How often the page asks whether a site import has ended. */
 const SITE_IMPORT_POLL_MS = 5_000;
 
-/** Each tab's count, once its list is read: Jobs shows "8+" while more pages exist. */
+/** Each tab's count, once its list is read: Jobs' is the exact total its first page answers. */
 function useTabCounts(): Partial<Record<TabId, string>> {
 	const { i18n } = useLingui();
 	const format = (n: number) => new Intl.NumberFormat(i18n.locale || "en").format(n);
@@ -187,7 +187,7 @@ function useTabCounts(): Partial<Record<TabId, string>> {
 	const counts: Partial<Record<TabId, string>> = {};
 	if (jobs.data !== undefined) {
 		const n = jobs.data.pages.reduce((sum, page) => sum + page.items.length, 0);
-		counts.jobs = jobs.hasNextPage ? `${format(n)}+` : format(n);
+		counts.jobs = format(Math.max(jobs.data.pages[0]?.total ?? 0, n));
 	}
 	if (templates.data !== undefined) counts.templates = format(templates.data.length);
 	if (sources.data !== undefined) counts.sources = format(sources.data.length);

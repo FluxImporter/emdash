@@ -51,7 +51,7 @@ export interface JobSummary {
 	status: JobStatus;
 	dryRun: boolean;
 	phase: Job["phase"];
-	origin?: "agent" | "schedule";
+	origin?: Job["origin"];
 	collection: string;
 	locale: string;
 	templateId?: string;
@@ -249,7 +249,7 @@ export interface JobListItem {
 	kind: "import" | "rollback";
 	status: JobStatus;
 	dryRun: boolean;
-	origin?: "agent" | "schedule";
+	origin?: Job["origin"];
 	scheduleId?: string;
 	collection: string;
 	locale: string;
@@ -261,6 +261,11 @@ export interface JobListItem {
 	startedAs?: string;
 	/** `rollbackRefusal(job, now) === null`. */
 	rollbackable: boolean;
+	/**
+	 * Records read of the source's `recordTotal`, while an import's first pass is unfinished;
+	 * absent when the total is unknown, and once the job completed or left the first pass.
+	 */
+	progress?: { processed: number; total: number };
 	counters: Required<
 		Pick<
 			Counters,
@@ -288,6 +293,13 @@ export interface ClearDryRunsReply {
 	cursor?: string;
 }
 
+/** An import's first pass, against its known record total (`JobListItem.progress`). */
+function progressOf(job: Job): JobListItem["progress"] {
+	if (job.kind === "rollback" || job.recordTotal === undefined) return undefined;
+	if (job.status === "completed" || job.phase !== "import") return undefined;
+	return { processed: job.cursor.seq, total: job.recordTotal };
+}
+
 /** A job as the Jobs table lists it; counters absent on old jobs read as 0. */
 export function listItem(
 	stored: Job,
@@ -296,6 +308,7 @@ export function listItem(
 ): JobListItem {
 	const job = upgradeJob(stored);
 	const { counters } = job;
+	const progress = progressOf(job);
 	return {
 		id: job.id,
 		kind: job.kind ?? "import",
@@ -311,6 +324,7 @@ export function listItem(
 		...(rollbackStatus === undefined ? {} : { rollbackStatus }),
 		...(job.startedAs === undefined ? {} : { startedAs: job.startedAs }),
 		rollbackable: rollbackRefusal(job, now) === null,
+		...(progress === undefined ? {} : { progress }),
 		counters: {
 			created: counters.created,
 			updated: counters.updated,

@@ -888,8 +888,9 @@ export function ownerOf(state: WizardState): string {
 
 /**
  * The `jobs/create` body. A dry run reads the chosen file; the real run reads the dry run's
- * upload, so it imports exactly what Preview showed (Coordinator's call 2). An unedited saved
- * template runs by ID and revision (preflight F1); otherwise the draft runs inline.
+ * upload, so it imports exactly what Preview showed (Coordinator's call 2), and the server takes
+ * its record total from that dry run. An unedited saved template runs by ID and revision
+ * (preflight F1); otherwise the draft runs inline. Both say they are the wizard's.
  */
 export function jobInput(state: WizardState, dryRun: boolean): CreateJobInput {
 	const uploadId = dryRun ? state.source?.uploadId : state.dryRun?.uploadId;
@@ -908,5 +909,6 @@ export function jobInput(state: WizardState, dryRun: boolean): CreateJobInput {
 		publish: options.status !== "draft",
 		...(options.batchSize === null ? {} : { batchSize: options.batchSize }),
 		journal: true,
+		origin: "wizard",
 	};
 }

@@ -59,4 +59,6 @@ export interface CreateJobInput {
 	batchSize?: number;
 	journal: true;
 	missing?: false | { maxPercent: number };
+	/** The Jobs tab shows the job as the wizard's (`Job.origin`). */
+	origin: "wizard";
 }

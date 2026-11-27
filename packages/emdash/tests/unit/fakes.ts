@@ -122,16 +122,26 @@ export class MemoryKv<T> implements KvCollection<T> {
 		this.rows.delete(id);
 		return { applied: true };
 	}
+	async count(where?: Where) {
+		this.checkWhere(where);
+		return [...this.rows.values()].filter((r) =>
+			matches(r.value as Record<string, unknown>, where ?? {}),
+		).length;
+	}
+	private checkWhere(where: Where | undefined) {
+		if (!this.indexed) return;
+		for (const field of Object.keys(where ?? {}))
+			if (!this.indexed.has(field))
+				throw new Error(`Cannot query on non-indexed field '${field}'.`);
+	}
 	async query(opts: {
 		where?: Where;
 		orderBy?: Record<string, "asc" | "desc">;
 		limit?: number;
 		cursor?: string;
 	}) {
+		this.checkWhere(opts.where);
 		if (this.indexed) {
-			for (const field of Object.keys(opts.where ?? {}))
-				if (!this.indexed.has(field))
-					throw new Error(`Cannot query on non-indexed field '${field}'.`);
 			for (const field of Object.keys(opts.orderBy ?? {}))
 				if (!this.indexed.has(field))
 					throw new Error(`Cannot order by non-indexed field '${field}'.`);

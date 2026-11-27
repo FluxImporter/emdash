@@ -117,10 +117,11 @@ export interface Job {
 	/**
 	 * M6c: the job was created by the agent routes (`jobs/plan`, `jobs/start`), under their rules:
 	 * a saved template, no missing phase, always a journal. M6b: `"schedule"`, created by a
-	 * schedule's launch (spec Ruling 22). Never inferred from a job's shape, and never copied by a
-	 * rollback (M6c spec Ruling 31).
+	 * schedule's launch (spec Ruling 22). `"wizard"`: created by the admin's New import wizard,
+	 * which says so in its `jobs/create` call (jobs from before 0.9, and API jobs, have none). Never
+	 * inferred from a job's shape, and never copied by a rollback (M6c spec Ruling 31).
 	 */
-	origin?: "agent" | "schedule";
+	origin?: "agent" | "schedule" | "wizard";
 	/** M6b: the schedule that launched the job; not copied by a rollback. */
 	scheduleId?: string;
 	/** M6b: a scheduled job is `"open"` until the pump finalizes it (spec Ruling 38). */
@@ -153,6 +154,12 @@ export interface Job {
 	unkeyed?: number;
 	/** M5c: the missing phase; absent until the job's first pass completes. */
 	missing?: MissingState;
+	/**
+	 * The records the source holds, when known at job creation: the XLSX conversion's row count,
+	 * or, for a real job, what a finished dry run of the same staged file and source block read.
+	 * Absent when unknown (streamed sources are never counted ahead) and on older jobs.
+	 */
+	recordTotal?: number;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;

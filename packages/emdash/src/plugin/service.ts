@@ -551,18 +551,32 @@ export async function listJobs(
 	return { ...jobs, items: jobs.items.map(upgradeJob) };
 }
 
+/** A page of `jobs/summaries`: the first page also says how many jobs the whole list holds. */
+export interface JobSummariesPage extends Page<JobListItem> {
+	/** Every job the list holds, on the first page (no cursor) only. */
+	total?: number;
+}
+
 /**
- * A page of the admin's Jobs table (M7b `jobs/summaries`): real imports or dry runs, newest
- * first, from one query the `["dryRun", "createdAt"]` index serves, plus one read per
- * rolled-back import for its rollback's status (at most `JOB_PAGE`).
+ * A page of the admin's Jobs table (M7b `jobs/summaries`): real imports or dry runs, of one
+ * status or all, newest first, from one query, plus one read per rolled-back import for its
+ * rollback's status (at most `JOB_PAGE`). `["dryRun", "createdAt"]` serves the query; with a
+ * status, the `status` index serves it too. The first page answers the list's exact `total`: a
+ * first page that is not full is the whole list, so only a full one counts, with one `count`
+ * over the same indexed fields. On D1 that count reads one index row per job it counts (a list
+ * retention keeps short); later pages never count.
  */
 export async function listJobSummaries(
 	deps: Pick<EngineDeps, "jobs" | "now">,
-	opts: { dryRun: boolean; cursor?: string },
-): Promise<Page<JobListItem>> {
+	opts: { dryRun: boolean; status?: JobStatus; cursor?: string },
+): Promise<JobSummariesPage> {
+	const where = {
+		dryRun: opts.dryRun,
+		...(opts.status === undefined ? {} : { status: opts.status }),
+	};
 	const jobs = page(
 		await deps.jobs.query({
-			where: { dryRun: opts.dryRun },
+			where,
 			orderBy: { createdAt: "desc" },
 			limit: JOB_PAGE,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),
@@ -578,7 +592,9 @@ export async function listJobSummaries(
 			return listItem(job, rollback?.status, now);
 		}),
 	);
-	return { ...jobs, items };
+	if (opts.cursor) return { ...jobs, items };
+	const total = jobs.hasMore ? await deps.jobs.count(where) : items.length;
+	return { ...jobs, items, total };
 }
 
 export async function listRecords(

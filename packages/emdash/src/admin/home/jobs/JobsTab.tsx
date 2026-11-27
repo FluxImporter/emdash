@@ -1,7 +1,8 @@
-import { Button, Empty, Pagination, Table } from "@cloudflare/kumo";
+import { Button, Empty, Pagination, Select, Table } from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import type { JobStatus } from "../../../engine/types.js";
 import type { JobListItem } from "../../../plugin/summaries.js";
 import { api, downloadLog } from "../../api.js";
 import { isForbidden } from "../../api-error.js";
@@ -23,15 +24,29 @@ import { DryRuns } from "./dry-runs/DryRuns.js";
 import { JobItem, JobRow, type RowAction, type RowProps } from "./JobRow.js";
 import { M, N } from "./messages.js";
 import { RollbackDialog, type RollbackTarget } from "./rollback/RollbackDialog.js";
+import { STATUS_MESSAGES } from "./status.js";
 
 type StartTarget = Extract<RollbackTarget, { kind: "start" }>;
 
+/** The status filter's choices, in the order a job moves through them; "all" is no filter. */
+const FILTERS = [
+	"all",
+	"created",
+	"running",
+	"paused",
+	"completed",
+	"failed",
+	"cancelled",
+] as const;
+type Filter = (typeof FILTERS)[number];
+
 /**
- * The Jobs tab (Jobs.dc.html): the summary line, then real imports newest first in pages of
- * `jobs/summaries` (never `jobs/list`, Review Focus 5), each row's menu of actions, the dry runs
- * as the table's footer, and Previous / Next. Stacked rows below about 700px of content.
- * `useJobPages` refetches the loaded pages every 5 s while a row is unfinished (plan Ruling 15).
- * The schedules are read only when a scheduled job's cancel or rollback dialog opens.
+ * The Jobs tab (Jobs.dc.html): the summary line with the status filter, then real imports newest
+ * first in pages of `jobs/summaries` (never `jobs/list`, Review Focus 5), filtered on the server,
+ * each row's menu of actions, the dry runs as the table's footer, and Previous / Next over the
+ * list's exact total. Stacked rows below about 700px of content. `useJobPages` refetches the
+ * loaded pages every 5 s while a row is unfinished (plan Ruling 15). The schedules are read only
+ * when a scheduled job's cancel or rollback dialog opens.
  */
 export function JobsTab() {
 	const t = useT();
@@ -41,8 +56,10 @@ export function JobsTab() {
 	const { announce } = useHome();
 	const [ref, narrow] = useNarrow<HTMLDivElement>();
 	const [page, setPage] = useState(1);
+	const [filter, setFilter] = useState<Filter>("all");
+	const status: JobStatus | null = filter === "all" ? null : filter;
 	const client = useQueryClient();
-	const jobs = useJobPages();
+	const jobs = useJobPages(status);
 	const templates = useAllTemplates();
 	const [busy, setBusy] = useState<string | null>(null);
 	const [problem, setProblem] = useState<unknown>(null);
@@ -194,18 +211,19 @@ export function JobsTab() {
 				? templates.error
 				: null;
 
-	// Pages are `jobs/summaries` pages (`JOB_PAGE` rows each). It has no total (TODO: a total
-	// count in jobs/summaries), so while more pages exist the last page is the one after those
-	// loaded, and going to it loads it. A page answered empty (the list ended on a page boundary)
-	// is not a page to show.
+	// Pages are `jobs/summaries` pages (`JOB_PAGE` rows each); the first answers the list's exact
+	// total, which sets the last page. Going to a page not loaded yet loads the pages up to it, one
+	// after the other. A page answered empty (the list ended on a page boundary) is not a page to
+	// show.
 	const loaded = (jobs.data?.pages ?? []).filter((p, i) => i === 0 || p.items.length > 0);
 	const more = jobs.hasNextPage;
-	const maxPage = Math.max(1, loaded.length + (more ? 1 : 0));
+	const all = loaded.flatMap((p) => p.items);
+	const total = Math.max(loaded[0]?.total ?? 0, all.length);
+	const maxPage = Math.max(1, Math.ceil(total / JOB_PAGE), loaded.length + (more ? 1 : 0));
 	const current = Math.min(page, maxPage);
 	const shown = Math.max(0, Math.min(current, loaded.length) - 1);
 	const waitingForPage = current > loaded.length;
 	const rows = loaded[shown]?.items ?? [];
-	const all = loaded.flatMap((p) => p.items);
 	const from = loaded.slice(0, shown).reduce((n, p) => n + p.items.length, 0) + 1;
 	const { fetchNextPage, isFetching, isFetchNextPageError } = jobs;
 	useEffect(() => {
@@ -224,6 +242,32 @@ export function JobsTab() {
 			onAction: (action) => onAction(item, name, when, action),
 		};
 	};
+
+	const choose = (value: unknown) => {
+		const next = FILTERS.find((f) => f === value);
+		if (next === undefined || next === filter) return;
+		setFilter(next);
+		setPage(1);
+	};
+	const filterItems = FILTERS.map((f) => ({
+		value: f,
+		label: t(f === "all" ? M.filterAll : STATUS_MESSAGES[f]),
+	}));
+	const filterSelect = (
+		<Select
+			size="sm"
+			aria-label={t(M.filterLabel)}
+			value={filter}
+			onValueChange={choose}
+			items={filterItems}
+		>
+			{filterItems.map((item) => (
+				<Select.Option key={item.value} value={item.value}>
+					{item.label}
+				</Select.Option>
+			))}
+		</Select>
+	);
 
 	let body: ReactNode;
 	if (failed !== null) {
@@ -247,6 +291,22 @@ export function JobsTab() {
 		);
 	} else if (jobs.isPending || templates.isPending) {
 		body = <LoadingRows label={t(M.loading)} columns={4} />;
+	} else if (all.length === 0 && status !== null) {
+		// A filter that matches nothing keeps the line and its filter, so another can be chosen.
+		body = (
+			<>
+				<TabSummary lead={tn(N.imports, 0)} action={filterSelect} />
+				<div className="rounded-lg border border-dashed border-kumo-line bg-kumo-base">
+					<Empty
+						size="sm"
+						icon={<FileTextIcon aria-hidden="true" size={28} />}
+						title={t(M.emptyFiltered)}
+						description={t(M.emptyFilteredText)}
+					/>
+				</div>
+				<DryRuns names={nameOf} standalone />
+			</>
+		);
 	} else if (all.length === 0) {
 		body = (
 			<>
@@ -262,16 +322,20 @@ export function JobsTab() {
 			</>
 		);
 	} else {
-		const running = all.filter((i) => i.status === "running").length;
-		const failures = all.filter((i) => i.status === "failed").length;
+		// Running and failed are counted from the rows, so only once every row is loaded and
+		// only without a filter (a filtered line counts that status already).
+		const counted = status === null && !more;
+		const running = counted ? all.filter((i) => i.status === "running").length : 0;
+		const failures = counted ? all.filter((i) => i.status === "failed").length : 0;
 		body = (
 			<>
 				<TabSummary
-					lead={tn(more ? N.latest : N.imports, all.length)}
+					lead={tn(N.imports, total)}
 					rest={[
 						running > 0 ? tn(N.running, running) : "",
 						failures > 0 ? tn(N.failed, failures) : "",
 					]}
+					action={filterSelect}
 				/>
 				{problem === null ? null : (
 					<p role="alert" className="text-sm text-kumo-danger">
@@ -328,8 +392,7 @@ export function JobsTab() {
 						page={current}
 						setPage={setPage}
 						perPage={JOB_PAGE}
-						// Kumo counts pages from a total: this one gives `maxPage`, never a total shown.
-						totalCount={maxPage * JOB_PAGE}
+						totalCount={Math.max(total, (maxPage - 1) * JOB_PAGE + 1)}
 						labels={{
 							navigation: t(M.pages),
 							previousPage: t(M.previousPage),
@@ -340,10 +403,10 @@ export function JobsTab() {
 							{() =>
 								waitingForPage
 									? t(M.loading)
-									: t(more ? M.rangeMore : M.range, {
+									: t(M.range, {
 											from: number(from),
 											to: number(from + rows.length - 1),
-											total: number(all.length),
+											total: number(total),
 										})
 							}
 						</Pagination.Info>

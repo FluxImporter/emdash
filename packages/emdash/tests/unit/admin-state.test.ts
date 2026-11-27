@@ -1372,6 +1372,7 @@ describe("jobInput", () => {
 			template: toTemplate(filled, "wizard-posts-en"),
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		const options = reducer(withDryRun, {
 			type: "optionsChanged",
@@ -1385,6 +1386,7 @@ describe("jobInput", () => {
 			publish: false,
 			batchSize: 50,
 			journal: true,
+			origin: "wizard",
 		});
 		const scheduled = reducer(filled, { type: "optionsChanged", patch: { status: "schedule" } });
 		expect(jobInput(scheduled, true).publish).toBe(true);
@@ -1401,6 +1403,7 @@ describe("jobInput", () => {
 			templateRevision: 3,
 			publish: true,
 			journal: true,
+			origin: "wizard",
 		});
 		const edited = reducer(s, { type: "rowSet", row: "slug", mapping: { from: "name" } });
 		const inline = jobInput(edited, true);

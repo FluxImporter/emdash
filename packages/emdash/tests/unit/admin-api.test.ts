@@ -57,6 +57,7 @@ const JOB_INPUT: CreateJobInput = {
 	template: { version: 1, collection: "posts", locale: "en", key: { from: "id" }, fields: {} },
 	publish: false,
 	journal: true,
+	origin: "wizard",
 };
 
 /**

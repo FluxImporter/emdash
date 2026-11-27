@@ -142,8 +142,10 @@ const uploadId = z.string().refine(isUploadId, "Invalid upload ID");
 const cursor = z.string().min(1).max(1024).optional();
 const byId = z.object({ id: jobId });
 
-/** `jobs/summaries` (M7b): real imports by default, or dry runs, a page at a time. */
-export const JOB_SUMMARIES_INPUT = z.object({ dryRun: z.boolean().optional(), cursor }).strict();
+/** `jobs/summaries` (M7b): real imports by default, or dry runs, of one status or all, a page at a time. */
+export const JOB_SUMMARIES_INPUT = z
+	.object({ dryRun: z.boolean().optional(), status: z.enum(JOB_STATUSES).optional(), cursor })
+	.strict();
 
 const format = z.enum(SOURCE_FORMATS);
 const templateId = z.string().regex(/^[0-9A-Za-z_-]{1,64}$/, "Invalid template ID");
@@ -491,6 +493,12 @@ const createInput = z
 		budgetMs: z.number().int().optional(),
 		/** Keep a journal so the job can be rolled back (M5a); default true. */
 		journal: z.boolean().optional(),
+		/**
+		 * The admin's New import wizard says it made the job, for the Jobs tab. Only `wizard`: the
+		 * agent and schedule origins are set by their own routes, never by a caller, so any other
+		 * value is dropped, as before 0.9 (M6c spec Ruling 31).
+		 */
+		origin: z.literal("wizard").optional().catch(undefined),
 		/** M5c: skip the missing phase for this run, or replace its threshold. */
 		missing: z
 			.union([
@@ -871,11 +879,13 @@ export const routes: Record<string, PluginRoute> = {
 			),
 	),
 
-	// M7b: the admin's Jobs table: list items, not job rows, of real imports or of dry runs.
+	// M7b: the admin's Jobs table: list items, not job rows, of real imports or of dry runs, of
+	// one status or all; the first page also answers the list's total.
 	"jobs/summaries": route(JOB_SUMMARIES_INPUT, (ctx) =>
 		withServices(ctx, ({ deps }) =>
 			listJobSummaries(deps, {
 				dryRun: ctx.input.dryRun ?? false,
+				...(ctx.input.status ? { status: ctx.input.status } : {}),
 				...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 			}),
 		),
