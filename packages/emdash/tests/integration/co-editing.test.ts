@@ -16,7 +16,9 @@ let cookie: string;
 
 beforeAll(async () => {
 	// Its own server: co-editing is a build option of the site.
-	server = await startServer(PORT, undefined, undefined, false, undefined, true);
+	server = await startServer(PORT, undefined, undefined, false, undefined, {
+		FLUX_DEV_CO_EDITING: "1",
+	});
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	const res = await fetch(`${server.baseUrl}/_emdash/api/setup/dev-bypass?content=0`, {
 		method: "POST",

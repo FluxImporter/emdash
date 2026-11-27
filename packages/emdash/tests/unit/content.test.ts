@@ -601,6 +601,46 @@ describe("EmDashContent translations (M4e)", () => {
 	});
 });
 
+describe("EmDashContent with Astro locale codes (EmDash 1.3.1, #4224)", () => {
+	// The config EmDash's middleware stores for `{ path: "en", codes: ["en-US"] }` (normalizeAstroI18n).
+	const i18n = { defaultLocale: "en", locales: ["en", "fr"], localeAliases: { "en-US": "en" } };
+	const store = globalThis as Record<symbol, unknown>;
+	const key = Symbol.for("emdash:i18n-config");
+
+	it("reads an entry stamped with a code as an entry of the code's locale", async () => {
+		const { runtime, content } = setup();
+		store[key] = i18n;
+		try {
+			await content.create({
+				collection: "products",
+				locale: "en",
+				data: { flux_source_id: "S1" },
+			});
+			(runtime.items.get("e1") as Item).locale = "en-US";
+			expect(await content.get("products", "en", "e1")).toMatchObject({ id: "e1" });
+			expect(await content.getIncludingTrashed("products", "en", "e1")).toMatchObject({
+				id: "e1",
+			});
+			expect(await content.get("products", "fr", "e1")).toBeNull();
+			runtime.translationsResult = ok({
+				translationGroup: "e1",
+				translations: [
+					{ id: "e1", locale: "en-US", slug: "desk", status: "draft", updatedAt: "t" },
+					{ id: "e2", locale: "fr", slug: "bureau", status: "draft", updatedAt: "t" },
+				],
+			});
+			expect(await content.translations("products", "e1")).toEqual([
+				{ id: "e1", locale: "en" },
+				{ id: "e2", locale: "fr" },
+			]);
+		} finally {
+			delete store[key];
+		}
+		// Without the alias, en-US is another locale.
+		expect(await content.get("products", "en", "e1")).toBeNull();
+	});
+});
+
 describe("EmDashContent for rollbacks (M5a)", () => {
 	it("reads status, schedule, draft, live data and timestamps into the snapshot", async () => {
 		const { runtime, content } = setup();

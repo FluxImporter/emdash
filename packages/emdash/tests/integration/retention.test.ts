@@ -5,9 +5,8 @@ import { UPLOAD_PREFIX } from "../../src/emdash/uploads.js";
 import { ApiError, Client, devBypass } from "./client.js";
 import { withDb } from "./db.js";
 import { productsCsv, template } from "./fixtures.js";
-import { type DevServer, startServer, stopServer } from "./server.js";
+import { type DevServer, freePort, startServer, stopServer } from "./server.js";
 
-const PORT = 4397;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -15,7 +14,7 @@ let server: DevServer;
 let client: Client;
 
 beforeAll(async () => {
-	server = await startServer(PORT);
+	server = await startServer(await freePort());
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	await client.createProducts("it_retention");
 });

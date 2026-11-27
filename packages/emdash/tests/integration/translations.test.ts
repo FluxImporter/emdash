@@ -18,9 +18,8 @@ import {
 import { Client, devBypass, type Product } from "./client.js";
 import { withDb } from "./db.js";
 import { FeedServer } from "./feed-server.js";
-import { type DevServer, startServer, stopServer } from "./server.js";
+import { type DevServer, freePort, startServer, stopServer } from "./server.js";
 
-const PORT = 4392;
 const n = translationNames("it_m4e");
 
 let server: DevServer;
@@ -32,7 +31,7 @@ beforeAll(async () => {
 	feeds.feeds.set("/desk.png", { body: RED_PNG, contentType: "image/png" });
 	feeds.feeds.set("/lampe.png", { body: BLUE_PNG, contentType: "image/png" });
 	// Its own server: photos are fetched from 127.0.0.1 (allowPrivateNetwork).
-	server = await startServer(PORT, undefined, undefined, true);
+	server = await startServer(await freePort(), undefined, undefined, true);
 	client = new Client(server.baseUrl, await devBypass(server.baseUrl));
 	await createTranslationSchema(client, n);
 });

@@ -1,9 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { freePort } from "../integration/server.js";
 
 /**
  * A production build of `sites/dev-cf`, run under `wrangler dev`: the M2 blocker. With EmDash
@@ -14,9 +14,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const SITE_DIR = resolve(import.meta.dirname, "../../../../sites/dev-cf");
 const DIST = join(SITE_DIR, "dist");
-/** Ports other tools on this machine hold, or the other suites use. */
-const AVOID = new Set([4392, 4396, 4397, 5432]);
-
 /** The parent environment without Vitest's markers, which make Astro behave as under test. */
 function childEnv(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
@@ -25,20 +22,6 @@ function childEnv(): NodeJS.ProcessEnv {
 		env[key] = value;
 	}
 	return env;
-}
-
-async function freePort(): Promise<number> {
-	for (;;) {
-		const port = await new Promise<number>((done, fail) => {
-			const probe = createServer();
-			probe.once("error", fail);
-			probe.listen(0, "127.0.0.1", () => {
-				const address = probe.address();
-				probe.close(() => done(typeof address === "object" && address ? address.port : 0));
-			});
-		});
-		if (port > 0 && !AVOID.has(port)) return port;
-	}
 }
 
 function run(command: string, args: string[], log: string[]): ChildProcess {
