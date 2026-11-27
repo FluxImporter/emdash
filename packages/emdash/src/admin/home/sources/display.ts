@@ -15,19 +15,25 @@ export function urlLabel(url: string): string {
 
 /**
  * Where a source's last fetch stands: the newer of `lastFetch` and `lastError`. A failure carries
- * its code only, never the message (which can quote the address with its query).
+ * its code and the HTTP status the server answered, when saved, never the message (which can
+ * quote the address with its query). A fetch carries its size, and its record count once a
+ * completed job has read it.
  */
 export function lastFetchState(
 	row: Pick<SourceRow, "lastFetch" | "lastError">,
 ):
 	| { kind: "never" }
-	| { kind: "fetched"; at: string }
-	| { kind: "failed"; at: string; code: string } {
+	| { kind: "fetched"; at: string; bytes: number; records?: number }
+	| { kind: "failed"; at: string; code: string; status?: number } {
 	const { lastFetch, lastError } = row;
 	if (lastError && (!lastFetch || Date.parse(lastError.at) > Date.parse(lastFetch.at))) {
-		return { kind: "failed", at: lastError.at, code: lastError.code };
+		const { at, code, status } = lastError;
+		return { kind: "failed", at, code, ...(typeof status === "number" ? { status } : {}) };
 	}
-	if (lastFetch) return { kind: "fetched", at: lastFetch.at };
+	if (lastFetch) {
+		const { at, bytes, records } = lastFetch;
+		return { kind: "fetched", at, bytes, ...(typeof records === "number" ? { records } : {}) };
+	}
 	return { kind: "never" };
 }
 

@@ -122,9 +122,20 @@ export function SourcesTab() {
 						</time>
 					)}
 					{state.kind === "failed" ? (
-						<span className="text-kumo-danger">{t(codeSentence(state.code))}</span>
-					) : state.kind === "fetched" && row.lastFetch !== undefined ? (
-						<span className="text-kumo-subtle">{sizeLabel(row.lastFetch.bytes, i18n.locale)}</span>
+						<span className="text-kumo-danger">
+							{state.code === "HTTP_ERROR" && state.status !== undefined
+								? t(M.httpStatus, { status: state.status })
+								: t(codeSentence(state.code))}
+						</span>
+					) : state.kind === "fetched" ? (
+						<span className="text-kumo-subtle">
+							{state.records === undefined
+								? sizeLabel(state.bytes, i18n.locale)
+								: t(M.recordsAndSize, {
+										records: tn(N.records, state.records),
+										size: sizeLabel(state.bytes, i18n.locale),
+									})}
+						</span>
 					) : null}
 				</div>
 			</div>

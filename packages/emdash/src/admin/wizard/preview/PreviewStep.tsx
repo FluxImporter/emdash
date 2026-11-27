@@ -330,7 +330,14 @@ export function PreviewStep() {
 			<Banner
 				variant="default"
 				icon={<InfoIcon aria-hidden="true" />}
-				description={<PublishingLine publishing={state.options} />}
+				description={
+					<div className="flex flex-wrap gap-x-1.5">
+						<PublishingLine publishing={state.options} />
+						{finished === null || (job?.warned ?? 0) === 0 ? null : (
+							<p className="text-sm">{tn(COUNT.warned, job?.warned ?? 0)}</p>
+						)}
+					</div>
+				}
 				action={
 					optionsLinked ? (
 						<Button
@@ -344,7 +351,7 @@ export function PreviewStep() {
 			/>
 			{total === 0 ? <Empty title={t(M.noRecords)} description={t(M.noRecordsHint)} /> : null}
 			{total !== null && total > 0 && jobId !== null ? (
-				<RecordsTable key={jobId} jobId={jobId} counters={job?.counters ?? null} />
+				<RecordsTable key={jobId} jobId={jobId} job={job} />
 			) : null}
 			<div>
 				<Button variant="ghost" onClick={() => dispatch({ type: "stepChanged", step: "map" })}>

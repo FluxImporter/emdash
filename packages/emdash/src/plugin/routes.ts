@@ -82,6 +82,7 @@ import {
 	fetchSource,
 	getSource,
 	listSources,
+	noteFetchRecords,
 	updateSource,
 } from "./sources.js";
 import { type SuggestDeps, suggestMapping } from "./suggest.js";
@@ -850,7 +851,10 @@ export const routes: Record<string, PluginRoute> = {
 				job.origin === "schedule" ? buildServices(ctx, services.runtime, null) : services;
 			// A unique holder per call: two concurrent calls never share a lease.
 			const holder = `${services.actor.id}:${ulid()}`;
-			return withoutPlannedTerms(await nextBatch(deps, uploads, ctx.input.id, holder, keep));
+			const next = await nextBatch(deps, uploads, ctx.input.id, holder, keep);
+			// Best effort: the batch is done whether or not its source's record count is saved.
+			await noteFetchRecords(services.sources, next).catch(() => {});
+			return withoutPlannedTerms(next);
 		}),
 	),
 
@@ -948,13 +952,20 @@ export const routes: Record<string, PluginRoute> = {
 	"jobs/cancel": transition("cancel"),
 	"jobs/retry": transition("retry"),
 
+	// `facet`: only the rows that change an entry, or that have warnings (Preview's filters).
 	"jobs/records": route(
-		z.object({ id: jobId, status: z.enum(RECORD_STATUSES).optional(), cursor }),
+		z.object({
+			id: jobId,
+			status: z.enum(RECORD_STATUSES).optional(),
+			facet: z.enum(["change", "warning"]).optional(),
+			cursor,
+		}),
 		(ctx) =>
 			withServices(ctx, ({ deps }) =>
 				listRecords(deps, {
 					id: ctx.input.id,
 					...(ctx.input.status ? { status: ctx.input.status } : {}),
+					...(ctx.input.facet ? { facet: ctx.input.facet } : {}),
 					...(ctx.input.cursor ? { cursor: ctx.input.cursor } : {}),
 				}),
 			),
@@ -980,12 +991,13 @@ export const routes: Record<string, PluginRoute> = {
 		return { job: summarize(job, services.deps.now()) };
 	}),
 
-	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep }) => {
+	"jobs/step": agentRoute(STEP_INPUT, async (ctx, { deps, uploads, actor, keep, sources }) => {
 		const { id } = ctx.input;
 		// As jobs/next: a unique holder per call, so two calls never share a lease.
 		const job = await stepAgentJob(deps.jobs, id, () =>
 			nextBatch(deps, uploads, id, `${actor.id}:${ulid()}`, keep),
 		);
+		await noteFetchRecords(sources, job).catch(() => {});
 		return step(job, deps.now());
 	}),
 

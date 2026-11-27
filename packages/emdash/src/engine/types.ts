@@ -157,6 +157,11 @@ export interface Job {
 	unkeyed?: number;
 	/** M5c: the missing phase; absent until the job's first pass completes. */
 	missing?: MissingState;
+	/**
+	 * Record rows with warnings (`RecordRow.warnings`), kept as the counters are. Absent: 0, also
+	 * on jobs created before it was counted, whose rows have no `facet` either.
+	 */
+	warned?: number;
 	uploadId: string;
 	template: Template;
 	dryRun: boolean;
@@ -246,6 +251,9 @@ export type RecordStatus =
 /** What a rollback row does to its entry (M5a); M5c adds `restore`, for a `trash` journal row. */
 export type RollbackAction = "delete" | "trash" | "revert" | "restore";
 
+/** `RecordRow.facet`: one indexed field, so one index serves both filters. */
+export type RecordFacet = "change" | "warning" | "change+warning";
+
 export interface RecordError {
 	field?: string;
 	code: string;
@@ -280,6 +288,12 @@ export interface RecordRow {
 	 * `MAX_RECORD_WARNINGS`. Absent when there are none.
 	 */
 	warnings?: RecordError[];
+	/**
+	 * What the records filters select the row by (`facetOf`): it changes an entry (it counts toward
+	 * `created`, `updated` or `removed`), it has warnings, or both. Absent when neither, and on rows
+	 * saved before it was kept.
+	 */
+	facet?: RecordFacet;
 	/** Rollback rows: the last revert step done (M5a); absent before the first. */
 	step?: number;
 	/**

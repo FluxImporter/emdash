@@ -23,11 +23,15 @@ export type UrlSourceErrorCode =
 	| "TOO_LARGE"
 	| "LENGTH_REQUIRED";
 
-/** A fetch failure with its route error code. Messages never contain header values. */
+/**
+ * A fetch failure with its route error code, and for `HTTP_ERROR` the status the server answered.
+ * Messages never contain header values.
+ */
 export class UrlSourceError extends Error {
 	constructor(
 		readonly code: UrlSourceErrorCode,
 		message: string,
+		readonly httpStatus?: number,
 	) {
 		super(message);
 		this.name = "UrlSourceError";
