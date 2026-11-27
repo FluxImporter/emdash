@@ -90,7 +90,8 @@ describe("URL sources on Node", () => {
 			[200, TOKEN],
 		]);
 		const stored = await client.plugin<SourceRow>("sources/get", { id: bearer.id });
-		expect(stored.lastFetch).toMatchObject({ status: 200, uploadId: done.uploadId });
+		// The completed job's records are saved on the fetch it read.
+		expect(stored.lastFetch).toMatchObject({ status: 200, uploadId: done.uploadId, records: 5 });
 		expect(JSON.stringify(stored)).not.toContain("feed-token-7f3a");
 	});
 
@@ -106,7 +107,7 @@ describe("URL sources on Node", () => {
 		expect(second?.headers["if-none-match"]).toMatch(/^"[0-9a-f]{16}"$/);
 		expect(
 			(await client.plugin<SourceRow>("sources/get", { id: bearer.id })).lastFetch,
-		).toMatchObject({ status: 304, uploadId: first.lastFetch?.uploadId });
+		).toMatchObject({ status: 304, uploadId: first.lastFetch?.uploadId, records: 5 });
 	});
 
 	it("skips a re-run when a server without validators sends the same body", async () => {
@@ -193,7 +194,7 @@ describe("URL sources on Node", () => {
 		expect(error).toMatchObject({ status: 502, code: "HTTP_ERROR" });
 		expect(
 			(await client.plugin<SourceRow>("sources/get", { id: missing.id })).lastError,
-		).toMatchObject({ code: "HTTP_ERROR", message: "The server answered HTTP 404" });
+		).toMatchObject({ code: "HTTP_ERROR", message: "The server answered HTTP 404", status: 404 });
 	});
 
 	it("fails with CREDENTIAL_MISSING after the credential is deleted", async () => {

@@ -23,7 +23,7 @@ import {
 } from "./schedules.js";
 import { nextBatch, tickLimits } from "./service.js";
 import type { Services } from "./services.js";
-import { clearLastImport } from "./sources.js";
+import { clearLastImport, noteFetchRecords } from "./sources.js";
 import { redact } from "./summaries.js";
 
 /** Finished scheduled jobs finalized per tick (spec Ruling 37). */
@@ -293,15 +293,19 @@ export function pumpDeps(ctx: PluginContext, services: Services): PumpDeps {
 	return {
 		...launchDeps(ctx, services),
 		fence: () => readFence(services.runtime.db),
-		batch: (id, holder) =>
-			nextBatch(
+		batch: async (id, holder) => {
+			const job = await nextBatch(
 				services.deps,
 				services.uploads,
 				id,
 				holder,
 				services.keep,
 				tickLimits(onWorkers()),
-			),
+			);
+			// Best effort: the run is done whether or not its source's record count is saved.
+			await noteFetchRecords(services.sources, job).catch(() => {});
+			return job;
+		},
 		clearLastImport: (sourceId, jobId) => clearLastImport(services.sources, sourceId, jobId),
 		error: (message) => ctx.log.error(message),
 	};
