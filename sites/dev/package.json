@@ -17,13 +17,13 @@
   "dependencies": {
     "@astrojs/node": "^11.1.5",
     "@astrojs/react": "^6.0.5",
-    "@cloudflare/kumo": "2.6.0",
+    "@cloudflare/kumo": "2.19.0",
     "astro": "^7.3.2",
-    "emdash": "1.2.0",
+    "emdash": "1.6.0",
     "@fluximporter/emdash": "workspace:*",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "zod": "4.5.4"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10"

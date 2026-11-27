@@ -203,7 +203,8 @@ export function ScheduleDialog(props: {
 				if (!open) close();
 			}}
 		>
-			<Dialog size="lg" className="max-h-[85vh] space-y-4 overflow-y-auto p-6">
+			{/* Kumo 2.19 caps a dialog's height to the window and scrolls it. */}
+			<Dialog size="lg" className="space-y-4 p-6">
 				<Dialog.Title className="text-lg font-semibold">
 					{editing === null ? t(M.createTitle) : t(M.editTitle, { name: editing.name })}
 				</Dialog.Title>

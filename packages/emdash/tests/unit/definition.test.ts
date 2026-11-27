@@ -157,8 +157,8 @@ describe("createPlugin", () => {
 		});
 	});
 
-	it("sets FLUX_IMPORTER_VERSION to 0.7.0", () => {
-		expect(FLUX_IMPORTER_VERSION).toBe("0.7.0");
+	it("sets FLUX_IMPORTER_VERSION to 0.8.0", () => {
+		expect(FLUX_IMPORTER_VERSION).toBe("0.8.0");
 	});
 
 	it("declares the React admin entry, then Imports and New import in one Imports folder (M7b)", () => {

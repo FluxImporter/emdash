@@ -36,7 +36,7 @@ describe("the admin package wiring (M7a Task 1)", () => {
 	it("declares the admin export, the host peers and the admin's @dnd-kit/core range", () => {
 		expect(pkg.exports["./admin"]).toBe("./src/admin/index.tsx");
 		expect(pkg.peerDependencies).toMatchObject({
-			"@cloudflare/kumo": "2.6.0",
+			"@cloudflare/kumo": "2.19.0",
 			"@emdash-cms/admin": "*",
 			"@lingui/core": "*",
 			"@lingui/react": "*",
@@ -48,7 +48,7 @@ describe("the admin package wiring (M7a Task 1)", () => {
 		// Nothing imports it (final review 8).
 		expect(pkg.dependencies["@dnd-kit/utilities"]).toBeUndefined();
 		expect(pkg.devDependencies["@cloudflare/kumo"]).toBe(adminPkg.dependencies["@cloudflare/kumo"]);
-		expect(pkg.devDependencies["@cloudflare/kumo"]).toBe("2.6.0");
+		expect(pkg.devDependencies["@cloudflare/kumo"]).toBe("2.19.0");
 		expect(pkg.dependencies["@dnd-kit/sortable"]).toBeUndefined();
 	});
 

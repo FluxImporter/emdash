@@ -2,16 +2,26 @@
 
 Import CSV, JSON, XML, Excel and ZIP files, and live URL feeds, into [EmDash](https://emdashcms.com).
 You map columns to fields in a visual wizard, preview a dry run, schedule repeat imports and roll
-back any run. Built for EmDash 1.2 and later.
+back any run. Built for EmDash 1.6 and later.
 
 Documentation: **[fluximporter.com/emdash](https://www.fluximporter.com/emdash/)**
 
 ## Requirements
 
-- EmDash 1.2 or later, on Node 22 or Cloudflare Workers
+- EmDash 1.6 or later, on Node 22 or Cloudflare Workers
 - Astro 6 or later, with `@astrojs/react` (EmDash's admin needs it already). Releases are tested
   with Astro 7.
-- `@cloudflare/kumo` at the version EmDash's admin uses: 2.6.0 for EmDash 1.2
+- `@cloudflare/kumo` at the exact version EmDash's admin uses: 2.19.0 for EmDash 1.6
+
+Each release follows one Kumo version, because EmDash's admin only styles the Kumo version it
+ships:
+
+| Flux Importer | EmDash     | `@cloudflare/kumo` |
+| ------------- | ---------- | ------------------ |
+| 0.8           | 1.6        | 2.19.0             |
+| 0.7           | 1.2 to 1.4 | 2.6.0              |
+
+EmDash 1.5 (Kumo 2.15.0) has no matching release; update EmDash to 1.6.
 
 ## Install
 

@@ -84,8 +84,8 @@ export function StepBar(props: { narrow?: boolean }) {
 								aria-current={current ? "step" : undefined}
 								className={
 									current
-										? "flex h-8 items-center gap-2 rounded-full bg-kumo-tint ps-1 pe-3 font-semibold text-kumo-default no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-focus"
-										: "flex h-8 items-center gap-2 rounded-full ps-1 pe-3 font-medium text-kumo-default no-underline hover:bg-kumo-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-focus"
+										? "flex h-8 items-center gap-2 rounded-full bg-kumo-tint ps-1.5 pe-3 font-semibold text-kumo-default no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-focus"
+										: "flex h-8 items-center gap-2 rounded-full ps-1.5 pe-3 font-medium text-kumo-default no-underline hover:bg-kumo-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-focus"
 								}
 								onClick={(e) => {
 									e.preventDefault();
@@ -97,7 +97,7 @@ export function StepBar(props: { narrow?: boolean }) {
 						) : (
 							<span
 								aria-disabled="true"
-								className="flex h-8 items-center gap-2 ps-1 pe-3 font-medium text-kumo-default"
+								className="flex h-8 items-center gap-2 ps-1.5 pe-3 font-medium text-kumo-default"
 							>
 								{content}
 								{done ? null : <span className="sr-only"> {t(SHELL.notAvailable)}</span>}

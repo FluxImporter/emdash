@@ -14,8 +14,9 @@ Its plugin ID is `fluximporter`. Docs: https://www.fluximporter.com/emdash/
 
 ## Add it to a site
 
-Requires EmDash 1.2 or later, Astro with `@astrojs/react`, and `@cloudflare/kumo` at the version
-EmDash's admin uses (2.6.0 for EmDash 1.2).
+Requires EmDash 1.6 or later, Astro with `@astrojs/react`, and `@cloudflare/kumo` at the exact
+version EmDash's admin uses (2.19.0 for EmDash 1.6). Sites on EmDash 1.2 to 1.4 use
+`@fluximporter/emdash@0.7` with Kumo 2.6.0.
 
 ```sh
 pnpm add @fluximporter/emdash
