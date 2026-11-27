@@ -179,6 +179,7 @@ describe("createPlugin", () => {
 			["jobId", "seq"],
 			["jobId", "status", "seq"],
 			["jobId", "sourceKey"],
+			["jobId", "facet", "seq"],
 		]);
 		expect(STORAGE.jobs.indexes).toEqual([
 			"status",

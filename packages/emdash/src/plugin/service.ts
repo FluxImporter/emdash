@@ -2,6 +2,7 @@ import { I18N_REQUIRED_MESSAGE, type LocaleResolution } from "../emdash/locale.j
 import { type StagedUpload, stageUpload, type UploadStorage } from "../emdash/uploads.js";
 import { onWorkers } from "../emdash/workers.js";
 import { runBatch } from "../engine/batch.js";
+import { FACETS } from "../engine/counters.js";
 import {
 	type CreateJobInput,
 	createJob,
@@ -581,21 +582,29 @@ export async function listJobSummaries(
 	return { ...jobs, items };
 }
 
-export async function listRecords(
-	deps: EngineDeps,
-	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
-): Promise<Page<RecordRow>> {
+/** Which records a page lists: one status or all, and only the rows of one facet (`FACETS`). */
+export type RecordFilter = {
+	id: string;
+	status?: RecordStatus;
+	facet?: keyof typeof FACETS;
+	cursor?: string;
+	limit?: number;
+};
+
+export async function listRecords(deps: EngineDeps, opts: RecordFilter): Promise<Page<RecordRow>> {
 	await getJob(deps, opts.id);
 	return recordPage(deps, opts);
 }
 
 /**
  * A page of a job's records by `seq`, one status or all, without reading the job (M6c,
- * `jobs/status` has read it). `limit` is 1-100 (EmDash's page clamp), default `PAGE_SIZE`.
+ * `jobs/status` has read it). With `facet`, only the rows that change an entry or that have
+ * warnings; rows saved before facets were kept have none. `limit` is 1-100 (EmDash's page clamp),
+ * default `PAGE_SIZE`.
  */
 export async function recordPage(
 	deps: Pick<EngineDeps, "records">,
-	opts: { id: string; status?: RecordStatus; cursor?: string; limit?: number },
+	opts: RecordFilter,
 ): Promise<Page<RecordRow>> {
 	const limit = opts.limit ?? PAGE_SIZE;
 	if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -603,7 +612,11 @@ export async function recordPage(
 	}
 	return page(
 		await deps.records.query({
-			where: opts.status ? { jobId: opts.id, status: opts.status } : { jobId: opts.id },
+			where: {
+				jobId: opts.id,
+				...(opts.status ? { status: opts.status } : {}),
+				...(opts.facet ? { facet: { in: FACETS[opts.facet] } } : {}),
+			},
 			orderBy: { seq: "asc" },
 			limit,
 			...(opts.cursor ? { cursor: opts.cursor } : {}),

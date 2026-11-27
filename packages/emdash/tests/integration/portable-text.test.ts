@@ -182,6 +182,30 @@ describe("Portable Text on Node", () => {
 		expect(await client.listAll("it_pt_dry")).toEqual([]);
 	});
 
+	it("pages a dry run's rows that change an entry or have warnings, and counts the warned", async () => {
+		await createPortableTextSchema(client, "it_pt_facets");
+		const { job } = await importPosts(
+			[
+				{ id: "F1", title: "Warned", html: "<table><tr><td>cell</td></tr></table>" },
+				{ id: "F2", title: "Plain", html: "<p>Plain</p>" },
+				{ id: "F3", title: "Warned too", html: "<dl><dt>t</dt></dl>" },
+			],
+			portableTextTemplate("it_pt_facets"),
+			{ dryRun: true },
+		);
+		expect(job).toMatchObject({ status: "completed", counters: { created: 3 }, warned: 2 });
+		const page = (facet: string) =>
+			client.plugin<{ items: RecordRow[]; hasMore: boolean }>("jobs/records", {
+				id: job.id,
+				facet,
+			});
+		const keys = (p: { items: RecordRow[] }) => p.items.map((r) => r.sourceKey);
+		expect(keys(await page("change"))).toEqual(["F1", "F2", "F3"]);
+		const warned = await page("warning");
+		expect(keys(warned)).toEqual(["F1", "F3"]);
+		expect(warned.items[0]?.facet).toBe("change+warning");
+	});
+
 	it("drops a 404 image with a warning, and fails the record with imageErrors: fail", async () => {
 		await createPortableTextSchema(client, "it_pt_404");
 		const missing = feeds.url("/t4/missing.png");

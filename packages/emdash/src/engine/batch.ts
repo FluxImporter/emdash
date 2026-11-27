@@ -1,5 +1,5 @@
 import { SourceError, type SourceRecord } from "../sources/reader.js";
-import { counterFor } from "./counters.js";
+import { counterFor, storedRow, warnedRow } from "./counters.js";
 import {
 	type Change,
 	type CurrentLinks,
@@ -108,8 +108,6 @@ import {
 	bump,
 	type Counters,
 	CREATED_LISTED,
-	capErrors,
-	capWarnings,
 	type EngineDeps,
 	emptyCounters,
 	iso,
@@ -183,6 +181,7 @@ async function release(deps: EngineDeps, job: Job, holder: string, outcome: Outc
 			...(job.warnings ? { warnings: job.warnings } : {}),
 			...(job.created ? { created: job.created } : {}),
 			...(job.unkeyed ? { unkeyed: job.unkeyed } : {}),
+			...(job.warned === undefined ? {} : { warned: job.warned }),
 			// M5c: the missing phase.
 			...(job.missing ? { missing: job.missing } : {}),
 			// M7b: a rollback job's split counts, kept as its counters are.
@@ -216,19 +215,14 @@ export async function processRecord(
 		const counter = counterFor(existing);
 		if (counter) bump(job.counters, counter);
 		if (unkeyedRow(existing)) job.unkeyed = (job.unkeyed ?? 0) + 1;
+		if (warnedRow(existing)) job.warned = (job.warned ?? 0) + 1;
 		return;
 	}
 
 	const base = { jobId: job.id, seq: rec.seq, start: rec.start, end: rec.end };
 	// Every row is saved through here, so the caps hold whatever produced its errors and warnings.
 	const save = (fields: RowFields) =>
-		deps.records.put(key, {
-			...base,
-			...fields,
-			...(fields.errors ? { errors: capErrors(fields.errors) } : {}),
-			...(fields.warnings ? { warnings: capWarnings(fields.warnings) } : {}),
-			updatedAt: iso(deps),
-		});
+		deps.records.put(key, { ...base, ...storedRow(fields, deps) });
 
 	const cache = opts.cache ?? new LookupCache();
 	const row = await decide(deps, job, template, rec, existing, save, cache);
@@ -236,10 +230,12 @@ export async function processRecord(
 	if (existing && opts.retry) {
 		const old = counterFor(existing);
 		if (old) bump(job.counters, old, -1);
+		if (warnedRow(existing)) job.warned = (job.warned ?? 0) - 1;
 	}
 	const counter = counterFor(row);
 	if (counter) bump(job.counters, counter);
 	if (!opts.retry && unkeyedRow(row)) job.unkeyed = (job.unkeyed ?? 0) + 1;
+	if (warnedRow(row)) job.warned = (job.warned ?? 0) + 1;
 }
 
 /** M5c: a row whose record had no readable key (a reader, filter or key error). */
@@ -2002,9 +1998,16 @@ async function readOneRecord(deps: EngineDeps, job: Job, row: RecordRow): Promis
 	throw new SourceError(code, "No record at the saved offset", row.start);
 }
 
-/** Rebuilds counters from the record rows, so a crashed retry batch cannot leave them skewed. */
-async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters> {
+/**
+ * Rebuilds counters and the warned count from the record rows, so a crashed retry batch cannot
+ * leave them skewed.
+ */
+async function tallyCounters(
+	deps: EngineDeps,
+	jobId: string,
+): Promise<{ counters: Counters; warned: number }> {
 	const counters = emptyCounters();
+	let warned = 0;
 	let cursor: string | undefined;
 	for (;;) {
 		const page = await deps.records.query({
@@ -2016,8 +2019,9 @@ async function tallyCounters(deps: EngineDeps, jobId: string): Promise<Counters>
 		for (const { data } of page.items) {
 			const counter = counterFor(data);
 			if (counter) bump(counters, counter);
+			if (warnedRow(data)) warned++;
 		}
-		if (!page.hasMore || !page.cursor) return counters;
+		if (!page.hasMore || !page.cursor) return { counters, warned };
 		cursor = page.cursor;
 	}
 }
@@ -2047,7 +2051,9 @@ async function retryPass(
 			limit: Math.min(limit, RETRY_PAGE),
 		});
 		if (page.items.length === 0) {
-			job.counters = await tallyCounters(deps, job.id);
+			const tally = await tallyCounters(deps, job.id);
+			job.counters = tally.counters;
+			job.warned = tally.warned;
 			return { done: true };
 		}
 		for (const { data: row } of page.items) {

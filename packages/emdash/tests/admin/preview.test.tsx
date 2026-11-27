@@ -325,9 +325,18 @@ describe("PreviewStep", () => {
 			within(filters)
 				.getAllByRole("tab")
 				.map((tab) => tab.textContent),
-		).toEqual(["All", "Will change", "Failed1", "Conflicts0", "Locked0", "Filtered out0"]);
+		).toEqual([
+			"All3",
+			"Will change2",
+			"Warnings0",
+			"Failed1",
+			"Conflicts0",
+			"Locked0",
+			"Filtered out0",
+		]);
 		// A filter no record matches is disabled, so it never shows an empty table.
 		expect(within(filters).getByRole("tab", { name: "Conflicts 0" })).toBeDisabled();
+		expect(within(filters).getByRole("tab", { name: "Warnings 0" })).toBeDisabled();
 		expect(within(filters).getByRole("tab", { name: "Failed 1" })).toBeEnabled();
 		const previous = screen.getByRole("button", { name: "Previous page" });
 		const next = screen.getByRole("button", { name: "Next page" });
@@ -351,6 +360,50 @@ describe("PreviewStep", () => {
 			{ id: JOB_ID, cursor: "c2" },
 			{ id: JOB_ID, status: "failed" },
 		]);
+	});
+
+	it("counts every filter exactly, and lists the rows that change and those with warnings", async () => {
+		const records: RouteHandler = (body) => {
+			const { facet } = body as { facet?: string };
+			if (facet === "warning") {
+				return {
+					items: [
+						row({
+							seq: 2,
+							sourceKey: "w1",
+							action: "unchanged",
+							warnings: [{ field: "body", code: "unknown_markup", message: "Kept 1 <table>" }],
+						}),
+					],
+					hasMore: false,
+				};
+			}
+			if (facet === "change") {
+				return { items: [row({ seq: 1, sourceKey: "c1", action: "create" })], hasMore: false };
+			}
+			return { items: [row({ seq: 1, sourceKey: "c1", action: "create" })], hasMore: false };
+		};
+		const { calls } = mockRoutes({
+			"jobs/create": () => job(),
+			// The missing phase's planned removals count as changes; its unchanged rows do not.
+			"jobs/next": () =>
+				completed({ created: 2, updated: 1, unchanged: 4, removed: 1 }, { warned: 1 }),
+			"jobs/records": records,
+		});
+		const { user } = renderPreview();
+		expect(await screen.findByRole("cell", { name: "c1" })).toBeVisible();
+		const filters = screen.getByRole("group", { name: "Show records" });
+		expect(within(filters).getByRole("tab", { name: "All 8" })).toBeEnabled();
+		await user.click(within(filters).getByRole("tab", { name: "Will change 4" }));
+		await user.click(within(filters).getByRole("tab", { name: "Warnings 1" }));
+		expect(await screen.findByRole("cell", { name: "w1" })).toBeVisible();
+		expect(calls.filter((c) => c.route === "jobs/records").map((c) => c.body)).toEqual([
+			{ id: JOB_ID },
+			{ id: JOB_ID, facet: "change" },
+			{ id: JOB_ID, facet: "warning" },
+		]);
+		// The publishing note says how many records have warnings.
+		expect(screen.getByText("1 record has a warning.")).toBeVisible();
 	});
 
 	it.each<[string, Partial<MissingState>, Partial<Job>, string]>([
