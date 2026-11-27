@@ -71,11 +71,14 @@ function Counts(p: { job: Job }) {
 	if (missing !== undefined) items.push([missingMsg, c.removed ?? 0]);
 	return (
 		<section aria-label={t(M.counts)} className="flex flex-col gap-2">
-			<dl className="flex flex-wrap divide-x divide-kumo-line rounded-lg border border-kumo-hairline bg-kumo-base">
+			<dl className="flex flex-wrap rounded-lg border border-kumo-hairline bg-kumo-base">
 				{items.map(([msg, n]) => (
 					// The number first, then its label: `order-1` moves the label (and its note) after it,
 					// while the label stays first for screen readers, as a <dl> needs.
-					<div key={msg.id} className="flex min-w-28 flex-1 flex-col gap-0.5 px-4 py-3">
+					<div
+						key={msg.id}
+						className="flex min-w-28 flex-1 flex-col gap-0.5 border-s border-kumo-line px-4 py-3 first:border-s-0"
+					>
 						<dt
 							className={
 								n === 0 ? "order-1 text-sm text-kumo-subtle" : "order-1 text-sm text-kumo-default"

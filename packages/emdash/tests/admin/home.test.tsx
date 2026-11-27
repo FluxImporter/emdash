@@ -86,9 +86,10 @@ describe("Home", () => {
 			"/_emdash/admin/plugins/fluximporter/import",
 		);
 		expect(screen.getByRole("heading", { level: 1, name: "Imports" })).toBeVisible();
-		// The page's only primary button (Critique 7).
+		// The page's only primary button (Critique 7), with an icon as Home gives it (Kumo 2.19
+		// pads a button with an icon differently).
 		const { container } = render(
-			<LinkButton variant="primary" href="/x">
+			<LinkButton variant="primary" icon={<svg aria-hidden="true" />} href="/x">
 				x
 			</LinkButton>,
 		);

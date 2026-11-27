@@ -551,7 +551,7 @@ describe("DetailPanel", () => {
 		ref.unmount();
 
 		const image = setup(fieldRow("image"), { type: "image", from: "Name" });
-		const alt = screen.getByRole("group", { name: "Alt text" });
+		const alt = screen.getByRole("radiogroup", { name: "Alt text" });
 		await image.user.click(within(alt).getByRole("radio", { name: "Source key" }));
 		await image.user.click(screen.getByRole("combobox", { name: "Alt text key" }));
 		await image.user.click(screen.getByRole("option", { name: "Status" }));

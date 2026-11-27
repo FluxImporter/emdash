@@ -35,7 +35,10 @@ describe("the wizard's error and warning sentences", () => {
 	});
 
 	it("pins the code lists (F22, the M6d warnings table)", () => {
-		expect(WIZARD_ERROR_CODES).toHaveLength(51);
+		expect(WIZARD_ERROR_CODES).toHaveLength(53);
+		// EmDash 1.5 and 1.6's plugin-route 503s.
+		expect(WIZARD_ERROR_CODES).toContain("STORAGE_INDEXES_NOT_READY");
+		expect(WIZARD_ERROR_CODES).toContain("PLUGIN_SYNC_ERROR");
 		expect(WIZARD_ERROR_CODES).toContain("NOT_AUTHENTICATED");
 		expect(WIZARD_ERROR_CODES).toContain("UNSUPPORTED_TEMPLATE_VERSION");
 		expect(WIZARD_ERROR_CODES).toContain("INVALID_TRANSITION");

@@ -20,6 +20,6 @@ describe("the pinned Anthropic SDK (spec Ruling 54)", () => {
 		const lock = await read("pnpm-lock.yaml");
 		expect(lock).toContain("\n  standardwebhooks@1.1.1:\n");
 		expect(lock).not.toMatch(/standardwebhooks@1\.[23]\./);
-		expect(lock).toContain("'@anthropic-ai/sdk@1.5.0(zod@4.5.4)':");
+		expect(lock).toContain("'@anthropic-ai/sdk@1.5.0(zod@4.6.7)':");
 	});
 });

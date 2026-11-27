@@ -3,9 +3,14 @@ import { type Kysely, PostgresAdapter, sql } from "kysely";
 
 export type EmDashDb = Kysely<Database>;
 
-/** Same detection as EmDash's own `isPostgres` (src/database/dialect-helpers.ts:33-46). */
+/**
+ * Same detection as EmDash's own (src/database/dialect-helpers.ts). EmDash 1.6 also checks the
+ * class name, because Vite can load a second copy of kysely (Hyperdrive under `astro dev`), and
+ * then `instanceof` fails for the other copy's adapter.
+ */
 export function isPostgres(db: EmDashDb): boolean {
-	return db.getExecutor().adapter instanceof PostgresAdapter;
+	const adapter = db.getExecutor().adapter;
+	return adapter instanceof PostgresAdapter || adapter.constructor.name === "PostgresAdapter";
 }
 
 /**

@@ -22,6 +22,10 @@ export const WIZARD_ERROR_CODES: readonly string[] = [
 	"INVALID_PLUGIN_REQUEST",
 	"NOT_FOUND",
 	"INTERNAL_ERROR",
+	// EmDash 1.5+: plugin storage indexes still being built on a fresh runtime (503)
+	"STORAGE_INDEXES_NOT_READY",
+	// EmDash 1.6+: the plugin state could not be read, or the plugin failed to load (503)
+	"PLUGIN_SYNC_ERROR",
 	// The upload route
 	"UNSUPPORTED_SOURCE",
 	"TOO_LARGE",
@@ -141,6 +145,14 @@ export const ERROR_MESSAGES: Readonly<Record<string, Msg>> = {
 	INTERNAL_ERROR: {
 		id: "fluximporter.error.internal-error",
 		message: "Something went wrong on the server. Try again.",
+	},
+	STORAGE_INDEXES_NOT_READY: {
+		id: "fluximporter.error.storage-indexes-not-ready",
+		message: "EmDash is still setting up the importer's storage. Try again in a moment.",
+	},
+	PLUGIN_SYNC_ERROR: {
+		id: "fluximporter.error.plugin-sync-error",
+		message: "EmDash couldn't load the importer just now. Try again in a moment.",
 	},
 	UNSUPPORTED_SOURCE: {
 		id: "fluximporter.error.unsupported-source",

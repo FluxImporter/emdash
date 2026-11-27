@@ -32,31 +32,31 @@ export type RowAction = JobAction | "failedLog";
 
 /** Each menu item's visible text, its accessible name (which names the row) and its icon. */
 const ITEMS: Readonly<Record<RowAction, { text: Msg; row: Msg; icon: ReactNode }>> = {
-	open: { text: M.open, row: M.openRow, icon: <ArrowSquareOutIcon className="mr-2" /> },
-	log: { text: M.log, row: M.logRow, icon: <DownloadSimpleIcon className="mr-2" /> },
+	open: { text: M.open, row: M.openRow, icon: <ArrowSquareOutIcon /> },
+	log: { text: M.log, row: M.logRow, icon: <DownloadSimpleIcon /> },
 	failedLog: {
 		text: M.failedLog,
 		row: M.failedLogRow,
-		icon: <DownloadSimpleIcon className="mr-2" />,
+		icon: <DownloadSimpleIcon />,
 	},
-	pause: { text: M.pause, row: M.pauseRow, icon: <PauseIcon className="mr-2" /> },
-	resume: { text: M.resume, row: M.resumeRow, icon: <PlayIcon className="mr-2" /> },
-	retry: { text: M.retry, row: M.retryRow, icon: <ArrowClockwiseIcon className="mr-2" /> },
-	cancel: { text: M.cancel, row: M.cancelRow, icon: <XIcon className="mr-2" /> },
+	pause: { text: M.pause, row: M.pauseRow, icon: <PauseIcon /> },
+	resume: { text: M.resume, row: M.resumeRow, icon: <PlayIcon /> },
+	retry: { text: M.retry, row: M.retryRow, icon: <ArrowClockwiseIcon /> },
+	cancel: { text: M.cancel, row: M.cancelRow, icon: <XIcon /> },
 	rollback: {
 		text: M.rollBack,
 		row: M.rollBackRow,
-		icon: <ArrowCounterClockwiseIcon className="mr-2" />,
+		icon: <ArrowCounterClockwiseIcon />,
 	},
 	continueRollback: {
 		text: M.continueRollback,
 		row: M.continueRollbackRow,
-		icon: <PlayIcon className="mr-2" />,
+		icon: <PlayIcon />,
 	},
 	retryRollback: {
 		text: M.retryRollback,
 		row: M.retryRollbackRow,
-		icon: <ArrowClockwiseIcon className="mr-2" />,
+		icon: <ArrowClockwiseIcon />,
 	},
 };
 
