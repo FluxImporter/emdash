@@ -3,7 +3,7 @@ import react from "@astrojs/react";
 import { d1, r2 } from "@emdash-cms/cloudflare";
 import { defineConfig } from "astro/config";
 import emdash from "emdash/astro";
-import { fluxImport, fluxImportRoutes } from "flux-import";
+import { fluxImporter, fluxImporterRoutes } from "@fluximporter/emdash";
 
 // Same plugin and routes as sites/dev, on D1 and R2 under workerd.
 export default defineConfig({
@@ -16,10 +16,10 @@ export default defineConfig({
 		emdash({
 			database: d1({ binding: "DB" }),
 			storage: r2({ binding: "MEDIA" }),
-			plugins: [fluxImport()],
+			plugins: [fluxImporter()],
 		}),
 		// The parity tests fetch URL sources from a local HTTP server (development only).
-		fluxImportRoutes({ allowPrivateNetwork: true }),
+		fluxImporterRoutes({ allowPrivateNetwork: true }),
 	],
 	devToolbar: { enabled: false },
 });

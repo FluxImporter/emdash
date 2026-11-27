@@ -1,10 +1,10 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "flux-import-dev-cf",
+	"name": "fluximporter-dev-cf",
 	"main": "./src/worker.ts",
 	"compatibility_date": "2026-02-24",
 	"compatibility_flags": ["nodejs_compat"],
-	"d1_databases": [{ "binding": "DB", "database_name": "flux-import-dev-cf" }],
-	"r2_buckets": [{ "binding": "MEDIA", "bucket_name": "flux-import-dev-cf-media" }],
+	"d1_databases": [{ "binding": "DB", "database_name": "fluximporter-dev-cf" }],
+	"r2_buckets": [{ "binding": "MEDIA", "bucket_name": "fluximporter-dev-cf-media" }],
 	"triggers": { "crons": ["* * * * *"] }
 }

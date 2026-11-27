@@ -4,7 +4,7 @@
 // Plugin admin pages render inside the EmDash admin, which loads one prebuilt stylesheet
 // (@emdash-cms/admin/dist/styles.css); our source is not scanned by its Tailwind build, so a
 // class that stylesheet lacks does nothing. This checks:
-//   1. every class in packages/flux-import/src/admin (className="…" and string literals in
+//   1. every class in packages/emdash/src/admin (className="…" and string literals in
 //      className={…}), with file and line;
 //   2. every utility named in the design spec (docs/flux-design-handoff/admin/Spec.dc.html),
 //      flagging the ones the spec marks with * as "needs checking", with the spec's suggested
@@ -20,7 +20,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PKG = join(ROOT, "packages/flux-import");
+const PKG = join(ROOT, "packages/emdash");
 const SRC = join(PKG, "src/admin");
 const SPEC = join(ROOT, "docs/flux-design-handoff/admin/Spec.dc.html");
 const showAll = process.argv.includes("--all");
