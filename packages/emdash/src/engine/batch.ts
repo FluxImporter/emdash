@@ -88,6 +88,7 @@ import {
 	sameInstant,
 	scheduleLanded,
 	schedulePlan,
+	schedulingDisabled,
 	sweptSince,
 	type Target,
 	targetOf,
@@ -311,6 +312,12 @@ const PENDING_SCHEDULE_MESSAGE =
 	"Not imported: the entry is scheduled, and this import did not schedule it";
 const REV_CONFLICT_MESSAGE = "Not imported: the entry changed since it was read; retry to re-apply";
 const LOCKED_MESSAGE = "Not imported: the entry is being edited (locked)";
+/** The rows that carry a record's `not_scheduled` or `scheduling_disabled` warning. */
+const SCHEDULE_WARNED: ReadonlySet<RowFields["status"]> = new Set([
+	"created",
+	"updated",
+	"unchanged",
+]);
 
 function notImported(
 	status: "conflict" | "locked",
@@ -1211,12 +1218,15 @@ async function decideRecord(
 			target.kind === "at" ? schedulePlan(job, entry, link, plan, record, target.at) : null;
 		if (scheduled !== null && "warning" in scheduled) ctx.notScheduled = scheduled.warning;
 		if (scheduled !== null && "change" in scheduled) ctx.schedule = scheduled.change;
-		// `not_scheduled` describes a write that went live, so only a written update carries it.
-		const write = async (p: RecordPlan) => {
-			const row = await writeRecord(ctx, entry, p, unprotected(ctx, record, guarded));
-			if (ctx.notScheduled && row.status === "updated") found.warnings.push(ctx.notScheduled);
+		// `not_scheduled` describes a write that went live, and `scheduling_disabled` one kept as a
+		// draft, so only a row the record wrote, or found written, carries them.
+		const warned = (row: RowFields) => {
+			if (ctx.notScheduled && SCHEDULE_WARNED.has(row.status))
+				found.warnings.push(ctx.notScheduled);
 			return row;
 		};
+		const write = async (p: RecordPlan) =>
+			warned(await writeRecord(ctx, entry, p, unprotected(ctx, record, guarded)));
 		const misses = [...(images?.lookups ?? [])].filter(([url]) => !images?.items.has(url));
 		if (job.dryRun) {
 			if (plan.action === "create") cache.plannedKeys.set(sourceKey, true);
@@ -1242,7 +1252,7 @@ async function decideRecord(
 		if (entry) {
 			if (plan.action === "unchanged") {
 				await setFields(ctx, entry, record, plan, links, guarded);
-				return await finishUnchanged(ctx, entry, link, existing, repaired);
+				return warned(await finishUnchanged(ctx, entry, link, existing, repaired));
 			}
 			// A schedule someone else set is pending too (M5b): a publish would clear it.
 			const pending = entry.pendingPublish || entry.scheduledAt !== null;
@@ -1324,7 +1334,7 @@ async function decideRecord(
 		}
 		await setFields(ctx, entry, record, final, links, guarded);
 		if (entry && final.action === "unchanged") {
-			return await finishUnchanged(ctx, entry, link, existing, repaired);
+			return warned(await finishUnchanged(ctx, entry, link, existing, repaired));
 		}
 		return await write(final);
 	} catch (e) {
@@ -1603,6 +1613,9 @@ async function finishUnchanged(
 		const at = target.at;
 		if (landed || (proven && sameInstant(entry.scheduledAt, at))) {
 			await putLink(ctx, entryId, entry.rev, at);
+		} else if (proven && job.scheduling === false) {
+			// The collection refuses schedules: the draft stays, as `schedulePlan` plans it.
+			ctx.notScheduled = schedulingDisabled();
 		} else if (proven) {
 			const scheduled = await scheduleRev(ctx, entryId, entry.rev, at);
 			if (!scheduled.ok)

@@ -105,6 +105,8 @@ export type StartOptions = {
 	batchSize?: number;
 	/** M5b: whether the collection keeps revisions, for templates that map publishAt. */
 	revisions?: boolean;
+	/** `false`: the collection refuses schedules (EmDash 1.5 `no-scheduling`). */
+	scheduling?: false;
 	/** M5c: the URL source the job's file came from (`Job.sourceId`). */
 	sourceId?: string;
 	/** M5c: the job option `missing`. */

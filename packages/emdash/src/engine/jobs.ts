@@ -95,6 +95,8 @@ export type CreateJobInput = {
 	sourceId?: string;
 	/** Whether the collection keeps revisions (M5b), for templates that map `publishAt`; default true. */
 	revisions?: boolean;
+	/** `false` when the collection refuses schedules (`no-scheduling`), for templates that map `publishAt`. */
+	scheduling?: false;
 	/**
 	 * M5c: `false` skips the missing phase for this run; `{ maxPercent }` replaces the template's
 	 * threshold for this run. Only with `rules.missing`.
@@ -270,6 +272,9 @@ export async function createJob(deps: EngineDeps, input: CreateJobInput): Promis
 		...(input.scheduled === undefined ? {} : { scheduled: input.scheduled }),
 		...(input.feedSourceId === undefined ? {} : { feedSourceId: input.feedSourceId }),
 		...(template.publishAt === undefined ? {} : { revisions: input.revisions ?? true }),
+		...(template.publishAt === undefined || input.scheduling === undefined
+			? {}
+			: { scheduling: input.scheduling }),
 		...(missingLimit === undefined ? {} : { missingLimit }),
 		...(input.skippedRows ? { unkeyed: input.skippedRows } : {}),
 		uploadId: input.uploadId,

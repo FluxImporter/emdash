@@ -146,6 +146,12 @@ export interface Job {
 	 */
 	revisions?: boolean;
 	/**
+	 * `false` when the collection refuses schedules (EmDash 1.5's `no-scheduling`, read at job
+	 * creation when the template maps `publishAt`): a record whose time is ahead is saved as a draft
+	 * with a `scheduling_disabled` warning instead. Absent otherwise (and on older jobs).
+	 */
+	scheduling?: false;
+	/**
 	 * M5c: the missing phase's threshold, resolved at job creation from `rules.missing` and the job
 	 * option `missing` (`false`: the option turned the phase off). Absent without `rules.missing`.
 	 */

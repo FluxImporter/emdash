@@ -368,6 +368,7 @@ describe("describeRecordWarning (a dry run's per-record warnings)", () => {
 				"not_found",
 				"field_edited",
 				"not_scheduled",
+				"scheduling_disabled",
 				"translation_source_not_found",
 				"translation_not_linked",
 				"unknown_markup",
@@ -378,7 +379,7 @@ describe("describeRecordWarning (a dry run's per-record warnings)", () => {
 				"warnings_truncated",
 			]),
 		);
-		expect(RECORD_WARNING_CODES).toHaveLength(18);
+		expect(RECORD_WARNING_CODES).toHaveLength(19);
 	});
 
 	it("says what to do about an entry that is not linked as a translation", () => {

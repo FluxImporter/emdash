@@ -240,6 +240,14 @@ describe("jobs with rules and publishAt (M5b)", () => {
 		expect(await create({}, { revisions: false })).not.toHaveProperty("revisions");
 	});
 
+	it("stores that the collection refuses schedules only when the template maps publishAt", async () => {
+		expect((await create({ publishAt: { from: "go" } }, { scheduling: false })).scheduling).toBe(
+			false,
+		);
+		expect(await create({ publishAt: { from: "go" } })).not.toHaveProperty("scheduling");
+		expect(await create({}, { scheduling: false })).not.toHaveProperty("scheduling");
+	});
+
 	it("stores the site time zone for publishAt with tz site", async () => {
 		const job = await create(
 			{ publishAt: { from: "go", tz: "site" } },
@@ -267,6 +275,25 @@ describe("readCollection and publishAtCollection (M5b)", () => {
 		expect(await revisions(["drafts"])).toBe(false);
 		expect(await revisions(undefined)).toBe(false);
 		expect(await revisions(["revisions"], "missing")).toBeNull();
+	});
+
+	it("reads no-scheduling from the collection's supports (EmDash 1.5)", async () => {
+		const read = async (supports: string[] | undefined) =>
+			readCollection(registry(supports), "products");
+		expect(await read(["drafts", "revisions", "no-scheduling"])).toMatchObject({
+			revisions: true,
+			scheduling: false,
+		});
+		// Scheduling is allowed by default; the legacy "scheduling" value has no effect.
+		for (const supports of [["drafts", "revisions"], ["scheduling"], undefined]) {
+			expect(await read(supports)).not.toHaveProperty("scheduling");
+		}
+		expect(
+			await readPublishAtCollection(registry(["no-scheduling"]), {
+				...base,
+				publishAt: { from: "go" },
+			}),
+		).toEqual({ collection: "products", fields: [], revisions: false, scheduling: false });
 	});
 
 	it("reads fields and revisions in one registry call, and passes revisions: false on", async () => {
