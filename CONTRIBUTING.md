@@ -7,6 +7,8 @@ Thanks for helping with Flux Importer. Bug reports, fixes and docs improvements 
   you write the code.
 - **Security problems:** don't open an issue. See [SECURITY.md](SECURITY.md).
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Set up
 
 You need Node 22.16 or later and pnpm 10. The [README](README.md#development) explains the layout
