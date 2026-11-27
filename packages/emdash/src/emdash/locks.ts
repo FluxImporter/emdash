@@ -57,7 +57,7 @@ export async function isEntryLocked(
  * EmDash's co-editing rooms (`EmDashRuntime.rooms`, EmDash 1.5 `coEditing: true`): null where
  * co-editing is off or the host can't run rooms.
  */
-export type RoomReader = { isOpen(roomId: string): Promise<boolean> } | null;
+export type RoomReader = { isOpen(roomId: string): Promise<boolean> } | null | undefined;
 
 /**
  * Whether a co-editing room holds the entry. People editing in a room take no edit lock, and a
@@ -74,7 +74,7 @@ export async function isRoomOpen(
 	collection: string,
 	entryId: string,
 ): Promise<boolean> {
-	return rooms !== null && (await rooms.isOpen(`${collection}:${entryId}`));
+	return rooms != null && (await rooms.isOpen(`${collection}:${entryId}`));
 }
 
 /** An entry someone else is editing: a live lease (`isEntryLocked`) or an open room. */
